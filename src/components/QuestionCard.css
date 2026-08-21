@@ -177,6 +177,7 @@
   font-size: 0.9375rem;
   line-height: 1.7;
   color: var(--color-text-primary);
+  text-align: justify;
 }
 
 /* Diagram */
@@ -257,6 +258,7 @@
   font-size: 0.875rem;
   line-height: 1.6;
   color: var(--color-text-primary);
+  text-align: justify;
 }
 
 .q-sub-marks {

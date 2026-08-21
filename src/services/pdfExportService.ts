@@ -174,16 +174,16 @@ export function openStudentPaperPrintWindow(
     .title-block { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 16px; }
     .title { font-size: 20px; font-weight: bold; margin: 0 0 4px; }
     .subtitle { font-size: 14px; color: #333; font-weight: bold; }
-    .inst-box { border: 1px solid #777; padding: 10px 14px; font-family: Arial, sans-serif; font-size: 12px; margin-bottom: 24px; background: #fafafa; }
+    .inst-box { border: 1px solid #777; padding: 10px 14px; font-family: Arial, sans-serif; font-size: 12px; margin-bottom: 24px; background: #fafafa; text-align: justify; }
     .q-block { margin-bottom: 28px; page-break-inside: avoid; }
     .q-header { display: flex; align-items: baseline; gap: 12px; font-size: 15px; }
     .q-num { font-weight: bold; font-size: 16px; min-width: 22px; }
-    .q-text { flex: 1; line-height: 1.6; }
+    .q-text { flex: 1; line-height: 1.6; text-align: justify; }
     .mcq-choice { margin: 6px 0 6px 34px; font-size: 14px; }
     .sub-block { margin: 12px 0 12px 28px; }
     .sub-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
     .sub-id { font-weight: bold; min-width: 26px; }
-    .sub-text { flex: 1; }
+    .sub-text { flex: 1; text-align: justify; }
     .marks { font-weight: bold; font-size: 13px; white-space: nowrap; }
     .ans-lines { margin: 8px 0 8px 30px; display: flex; flex-direction: column; gap: 12px; }
     .ans-line { border-bottom: 1px dotted #888; height: 1px; width: 100%; }

@@ -257,6 +257,7 @@ function convertTextAndTablesToDocxElements(rawText: string, prefix = '', textSi
     const textStr = currentTextLines.join(' ');
     elements.push(
       new Paragraph({
+        alignment: AlignmentType.JUSTIFIED,
         children: [
           ...(activePrefix ? [new TextRun({ text: activePrefix, bold: true, size: textSize })] : []),
           ...parseFormattedTextToDocxRuns(textStr, { size: textSize }),
