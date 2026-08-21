@@ -96,6 +96,13 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
   return localRecord;
 }
 
+export interface CustomTestWithDetails extends CustomTest {
+  topics: string[];
+  subjects: string[];
+  primaryTopic: string;
+  primarySubject: string;
+}
+
 /**
  * Fetches all saved custom tests from Supabase and local storage
  */
@@ -120,6 +127,95 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
   }
 
   return localTests;
+}
+
+/**
+ * Fetches all saved custom tests enriched with topic and subject metadata
+ */
+export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDetails[]> {
+  const tests = await fetchCustomTests();
+  if (tests.length === 0) return [];
+
+  // Collect all unique question IDs
+  const allQIds = Array.from(new Set(tests.flatMap((t) => t.question_ids || [])));
+
+  const questionMetaMap = new Map<string, { topic: string; subject: string }>();
+
+  if (allQIds.length > 0) {
+    try {
+      const { data: qData } = await supabase
+        .from('questions')
+        .select(`
+          id,
+          topic,
+          syllabuses (
+            subject_name
+          )
+        `)
+        .in('id', allQIds);
+
+      if (qData && Array.isArray(qData)) {
+        qData.forEach((q: any) => {
+          const subject = q.syllabuses?.subject_name || 'General';
+          questionMetaMap.set(q.id, {
+            topic: q.topic || 'General',
+            subject,
+          });
+        });
+      }
+    } catch (err) {
+      console.warn('Could not fetch question metadata for tests:', err);
+    }
+  }
+
+  return tests.map((t) => {
+    const qIds = t.question_ids || [];
+    const testTopics: string[] = [];
+    const testSubjects: string[] = [];
+    const topicCounts = new Map<string, number>();
+
+    qIds.forEach((qid) => {
+      const meta = questionMetaMap.get(qid);
+      if (meta) {
+        if (meta.topic) {
+          testTopics.push(meta.topic);
+          topicCounts.set(meta.topic, (topicCounts.get(meta.topic) || 0) + 1);
+        }
+        if (meta.subject && !testSubjects.includes(meta.subject)) {
+          testSubjects.push(meta.subject);
+        }
+      }
+    });
+
+    const uniqueTopics = Array.from(new Set(testTopics));
+    let primaryTopic = 'General';
+
+    if (uniqueTopics.length === 1) {
+      primaryTopic = uniqueTopics[0];
+    } else if (uniqueTopics.length > 1) {
+      // Find highest frequency topic
+      let maxCount = 0;
+      for (const [top, count] of topicCounts.entries()) {
+        if (count > maxCount) {
+          maxCount = count;
+          primaryTopic = top;
+        }
+      }
+      if (uniqueTopics.length > 2 && maxCount <= qIds.length / 2) {
+        primaryTopic = 'Multi-Topic';
+      }
+    }
+
+    const primarySubject = testSubjects.length > 0 ? testSubjects[0] : 'General';
+
+    return {
+      ...t,
+      topics: uniqueTopics.length > 0 ? uniqueTopics : ['General'],
+      subjects: testSubjects.length > 0 ? testSubjects : ['General'],
+      primaryTopic,
+      primarySubject,
+    };
+  });
 }
 
 /**
