@@ -26,12 +26,185 @@ export interface DocxExportOptions {
 }
 
 /**
- * Cleanly converts LaTeX math formulas into clear, readable typography for Word
+ * Transforms raw text containing LaTeX math, Markdown, HTML sub/sup tags,
+ * and scientific notation into docx `TextRun` objects with native `subScript` and `superScript`.
+ */
+export function parseFormattedTextToDocxRuns(
+  rawText: string,
+  baseOpts: { size?: number; bold?: boolean; color?: string; italics?: boolean } = {}
+): TextRun[] {
+  if (!rawText) return [];
+
+  // Step 1: Pre-process common LaTeX math symbols and standard chemistry/physics replacements
+  let processed = rawText
+    // Replace arrows & special math symbols
+    .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
+    .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
+    .replace(/\\rightarrow/g, ' → ')
+    .replace(/\\leftarrow/g, ' ← ')
+    .replace(/\\rightleftharpoons/g, ' ⇌ ')
+    .replace(/\\times/g, ' × ')
+    .replace(/\\cdot/g, ' · ')
+    .replace(/\\div/g, ' ÷ ')
+    .replace(/\\pm/g, ' ± ')
+    .replace(/\\mp/g, ' ∓ ')
+    .replace(/\\approx/g, ' ≈ ')
+    .replace(/\\neq/g, ' ≠ ')
+    .replace(/\\le(q)?/g, ' ≤ ')
+    .replace(/\\ge(q)?/g, ' ≥ ')
+    .replace(/\\infty/g, ' ∞ ')
+    .replace(/\\degree/g, '°')
+    .replace(/\\circ/g, '°')
+    .replace(/\^\{\\circ\}/g, '°')
+    .replace(/\^\\circ/g, '°')
+    // Greek letters
+    .replace(/\\Delta/g, 'Δ')
+    .replace(/\\delta/g, 'δ')
+    .replace(/\\alpha/g, 'α')
+    .replace(/\\beta/g, 'β')
+    .replace(/\\gamma/g, 'γ')
+    .replace(/\\theta/g, 'θ')
+    .replace(/\\pi/g, 'π')
+    .replace(/\\mu/g, 'μ')
+    .replace(/\\sigma/g, 'σ')
+    .replace(/\\omega/g, 'ω')
+    .replace(/\\Omega/g, 'Ω')
+    .replace(/\\lambda/g, 'λ')
+    .replace(/\\phi/g, 'ϕ')
+    // Fractions: \frac{a}{b} -> (a / b)
+    .replace(/\\frac\{(.*?)\}\{(.*?)\}/g, '($1 / $2)')
+    // Font wrappers inside LaTeX
+    .replace(/\\text\{(.*?)\}/g, '$1')
+    .replace(/\\mathrm\{(.*?)\}/g, '$1')
+    .replace(/\\mathbf\{(.*?)\}/g, '$1')
+    .replace(/\\mathit\{(.*?)\}/g, '$1')
+    .replace(/\\quad/g, '   ')
+    .replace(/\\qquad/g, '      ')
+    // Convert HTML tags to standard bracketed markers for tokenization
+    .replace(/<sub>(.*?)<\/sub>/gi, '_{$1}')
+    .replace(/<sup>(.*?)<\/sup>/gi, '^{$1}')
+    // Remove outer LaTeX math delimiters while keeping content
+    .replace(/\$\$(.*?)\$\$/g, '$1')
+    .replace(/\$(.*?)\$/g, '$1')
+    .replace(/\\\[(.*?)\\\]/g, '$1')
+    .replace(/\\\((.*?)\\\)/g, '$1');
+
+  // Step 2: Convert single-character sub/super syntax (e.g. H_2O -> H_{2}O, 10^3 -> 10^{3})
+  processed = processed.replace(/([a-zA-Z0-9\)\]])_([0-9a-zA-Z\+\-\*])/g, '$1_{$2}');
+  processed = processed.replace(/\^([0-9a-zA-Z\+\-\*])/g, '^{$1}');
+
+  // Convert unicode sub/superscripts to standard markers
+  const unicodeSubMap: Record<string, string> = {
+    '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4',
+    '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
+    '₊': '+', '₋': '-', '₌': '=', '₍': '(', '₎': ')',
+    'ₐ': 'a', 'ₑ': 'e', 'ₕ': 'h', 'ᵢ': 'i', 'ⱼ': 'j',
+    'ₖ': 'k', 'ₗ': 'l', 'ₘ': 'm', 'ₙ': 'n', 'ₒ': 'o',
+    'ₚ': 'p', 'ᵣ': 'r', 'ₛ': 's', 'ₜ': 't', 'ᵤ': 'u', 'ᵥ': 'v', 'ₓ': 'x',
+  };
+  const unicodeSuperMap: Record<string, string> = {
+    '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+    '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+    '⁺': '+', '⁻': '-', '⁼': '=', '⁽': '(', '⁾': ')',
+    'ⁿ': 'n', 'ⁱ': 'i',
+  };
+
+  for (const [uSub, norm] of Object.entries(unicodeSubMap)) {
+    processed = processed.replaceAll(uSub, `_{${norm}}`);
+  }
+  for (const [uSuper, norm] of Object.entries(unicodeSuperMap)) {
+    processed = processed.replaceAll(uSuper, `^{${norm}}`);
+  }
+
+  // Step 3: Tokenize the text into runs (Normal, Subscript, Superscript, Bold)
+  const runs: TextRun[] = [];
+  const tokenRegex = /(\_\{[^{}]*\}|\^\{[^{}]*\}|\*\*[^*]+\*\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(processed)) !== null) {
+    if (match.index > lastIndex) {
+      const normalText = processed.substring(lastIndex, match.index);
+      if (normalText) {
+        runs.push(
+          new TextRun({
+            text: normalText,
+            size: baseOpts.size,
+            bold: baseOpts.bold,
+            color: baseOpts.color,
+            italics: baseOpts.italics,
+          })
+        );
+      }
+    }
+
+    const matchedStr = match[0];
+    if (matchedStr.startsWith('_{') && matchedStr.endsWith('}')) {
+      const subContent = matchedStr.slice(2, -1);
+      if (subContent) {
+        runs.push(
+          new TextRun({
+            text: subContent,
+            subScript: true,
+            size: baseOpts.size,
+            bold: baseOpts.bold,
+            color: baseOpts.color,
+          })
+        );
+      }
+    } else if (matchedStr.startsWith('^{') && matchedStr.endsWith('}')) {
+      const superContent = matchedStr.slice(2, -1);
+      if (superContent) {
+        runs.push(
+          new TextRun({
+            text: superContent,
+            superScript: true,
+            size: baseOpts.size,
+            bold: baseOpts.bold,
+            color: baseOpts.color,
+          })
+        );
+      }
+    } else if (matchedStr.startsWith('**') && matchedStr.endsWith('**')) {
+      const boldContent = matchedStr.slice(2, -2);
+      if (boldContent) {
+        const innerRuns = parseFormattedTextToDocxRuns(boldContent, {
+          ...baseOpts,
+          bold: true,
+        });
+        runs.push(...innerRuns);
+      }
+    }
+
+    lastIndex = tokenRegex.lastIndex;
+  }
+
+  if (lastIndex < processed.length) {
+    const trailing = processed.substring(lastIndex);
+    if (trailing) {
+      runs.push(
+        new TextRun({
+          text: trailing,
+          size: baseOpts.size,
+          bold: baseOpts.bold,
+          color: baseOpts.color,
+          italics: baseOpts.italics,
+        })
+      );
+    }
+  }
+
+  return runs.length > 0
+    ? runs
+    : [new TextRun({ text: rawText, size: baseOpts.size, bold: baseOpts.bold, color: baseOpts.color })];
+}
+
+/**
+ * Fallback string cleaner for contexts requiring a plain string
  */
 export function cleanLatexForWord(text: string): string {
   if (!text) return '';
   return text
-    // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
     .replace(/\\rightarrow/g, ' → ')
@@ -59,7 +232,6 @@ export function cleanLatexForWord(text: string): string {
     .replace(/\\frac\{(.*?)\}\{(.*?)\}/g, '($1 / $2)')
     .replace(/\\quad/g, '   ')
     .replace(/\\qquad/g, '      ')
-    // Remove remaining math wrappers
     .replace(/\$\$(.*?)\$\$/g, '$1')
     .replace(/\$(.*?)\$/g, '$1')
     .replace(/\\\[(.*?)\\\]/g, '$1')
@@ -87,7 +259,7 @@ function convertTextAndTablesToDocxElements(rawText: string, prefix = '', textSi
       new Paragraph({
         children: [
           ...(activePrefix ? [new TextRun({ text: activePrefix, bold: true, size: textSize })] : []),
-          new TextRun({ text: cleanLatexForWord(textStr), size: textSize }),
+          ...parseFormattedTextToDocxRuns(textStr, { size: textSize }),
         ],
         spacing: { before: 100, after: 80 },
       })
@@ -115,7 +287,7 @@ function convertTextAndTablesToDocxElements(rawText: string, prefix = '', textSi
             new TableCell({
               children: [
                 new Paragraph({
-                  children: [new TextRun({ text: cleanLatexForWord(h), bold: true, size: 18 })],
+                  children: parseFormattedTextToDocxRuns(h, { bold: true, size: 18 }),
                   alignment: AlignmentType.CENTER,
                 }),
               ],
@@ -135,7 +307,7 @@ function convertTextAndTablesToDocxElements(rawText: string, prefix = '', textSi
               new TableCell({
                 children: [
                   new Paragraph({
-                    children: [new TextRun({ text: cleanLatexForWord(cell), size: 18 })],
+                    children: parseFormattedTextToDocxRuns(cell, { size: 18 }),
                     alignment: AlignmentType.CENTER,
                   }),
                 ],
@@ -358,7 +530,8 @@ export async function exportStudentPaperDocx(
         docParagraphs.push(
           new Paragraph({
             children: [
-              new TextRun({ text: `     ${cleanLatexForWord(opt)}`, size: 20 }),
+              new TextRun({ text: '     ', size: 20 }),
+              ...parseFormattedTextToDocxRuns(opt, { size: 20 }),
             ],
             spacing: { before: 40, after: 40 },
           })
@@ -556,7 +729,7 @@ export async function exportTeacherMarkSchemeDocx(
               }),
               new TableCell({
                 width: { size: 55, type: WidthType.PERCENTAGE },
-                children: [new Paragraph({ children: [new TextRun({ text: cleanLatexForWord(msText), size: 18 })] })],
+                children: [new Paragraph({ children: parseFormattedTextToDocxRuns(msText, { size: 18 }) })],
               }),
               new TableCell({
                 width: { size: 15, type: WidthType.PERCENTAGE },
@@ -583,11 +756,11 @@ export async function exportTeacherMarkSchemeDocx(
             }),
             new TableCell({
               width: { size: 55, type: WidthType.PERCENTAGE },
-              children: [new Paragraph({ children: [new TextRun({ text: cleanLatexForWord(msPoints), size: 18 })] })],
+              children: [new Paragraph({ children: parseFormattedTextToDocxRuns(msPoints, { size: 18 }) })],
             }),
             new TableCell({
               width: { size: 15, type: WidthType.PERCENTAGE },
-              children: [new Paragraph({ children: [new TextRun({ text: acceptable, size: 18 })] })],
+              children: [new Paragraph({ children: parseFormattedTextToDocxRuns(acceptable, { size: 18 }) })],
             }),
             new TableCell({
               width: { size: 15, type: WidthType.PERCENTAGE },

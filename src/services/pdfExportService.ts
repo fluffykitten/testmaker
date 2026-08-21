@@ -3,7 +3,67 @@
 
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
-import { cleanLatexForWord } from './docxExportService';
+
+/**
+ * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean HTML
+ */
+export function formatLatexForHtml(text: string): string {
+  if (!text) return '';
+  return text
+    // Replace arrows & special math symbols
+    .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
+    .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
+    .replace(/\\rightarrow/g, ' → ')
+    .replace(/\\leftarrow/g, ' ← ')
+    .replace(/\\rightleftharpoons/g, ' ⇌ ')
+    .replace(/\\times/g, ' × ')
+    .replace(/\\cdot/g, ' · ')
+    .replace(/\\div/g, ' ÷ ')
+    .replace(/\\pm/g, ' ± ')
+    .replace(/\\mp/g, ' ∓ ')
+    .replace(/\\approx/g, ' ≈ ')
+    .replace(/\\neq/g, ' ≠ ')
+    .replace(/\\le(q)?/g, ' ≤ ')
+    .replace(/\\ge(q)?/g, ' ≥ ')
+    .replace(/\\infty/g, ' ∞ ')
+    .replace(/\\degree/g, '°')
+    .replace(/\\circ/g, '°')
+    .replace(/\^\{\\circ\}/g, '°')
+    .replace(/\^\\circ/g, '°')
+    // Greek letters
+    .replace(/\\Delta/g, 'Δ')
+    .replace(/\\delta/g, 'δ')
+    .replace(/\\alpha/g, 'α')
+    .replace(/\\beta/g, 'β')
+    .replace(/\\gamma/g, 'γ')
+    .replace(/\\theta/g, 'θ')
+    .replace(/\\pi/g, 'π')
+    .replace(/\\mu/g, 'μ')
+    .replace(/\\sigma/g, 'σ')
+    .replace(/\\omega/g, 'ω')
+    .replace(/\\Omega/g, 'Ω')
+    .replace(/\\lambda/g, 'λ')
+    .replace(/\\phi/g, 'ϕ')
+    // Fractions: \frac{a}{b} -> (a / b)
+    .replace(/\\frac\{(.*?)\}\{(.*?)\}/g, '($1 / $2)')
+    // Font wrappers inside LaTeX
+    .replace(/\\text\{(.*?)\}/g, '$1')
+    .replace(/\\mathrm\{(.*?)\}/g, '$1')
+    .replace(/\\mathbf\{(.*?)\}/g, '$1')
+    .replace(/\\mathit\{(.*?)\}/g, '$1')
+    .replace(/\\quad/g, '   ')
+    .replace(/\\qquad/g, '      ')
+    // Remove outer LaTeX math delimiters while keeping content
+    .replace(/\$\$(.*?)\$\$/g, '$1')
+    .replace(/\$(.*?)\$/g, '$1')
+    .replace(/\\\[(.*?)\\\]/g, '$1')
+    .replace(/\\\((.*?)\\\)/g, '$1')
+    // Subscripts & Superscripts to HTML tags
+    .replace(/_{([^{}]*)}/g, '<sub>$1</sub>')
+    .replace(/\^{([^{}]*)}/g, '<sup>$1</sup>')
+    .replace(/([a-zA-Z0-9\)\]])_([0-9a-zA-Z\+\-\*])/g, '$1<sub>$2</sub>')
+    .replace(/\^([0-9a-zA-Z\+\-\*])/g, '<sup>$1</sup>');
+}
 
 /**
  * Converts text and embedded markdown tables into styled HTML
@@ -40,7 +100,7 @@ function convertMarkdownTablesToHtml(text: string): string {
         headers
           .map(
             (h) =>
-              `<th style="border: 1px solid #4b5563; padding: 6px 12px; background: #f3f4f6; text-align: center; font-weight: bold;">${cleanLatexForWord(h)}</th>`
+              `<th style="border: 1px solid #4b5563; padding: 6px 12px; background: #f3f4f6; text-align: center; font-weight: bold;">${formatLatexForHtml(h)}</th>`
           )
           .join('') +
         '</tr></thead>';
@@ -53,7 +113,7 @@ function convertMarkdownTablesToHtml(text: string): string {
               row
                 .map(
                   (c) =>
-                    `<td style="border: 1px solid #4b5563; padding: 6px 12px; text-align: center;">${cleanLatexForWord(c)}</td>`
+                    `<td style="border: 1px solid #4b5563; padding: 6px 12px; text-align: center;">${formatLatexForHtml(c)}</td>`
                 )
                 .join('') +
               '</tr>'
@@ -75,7 +135,7 @@ function convertMarkdownTablesToHtml(text: string): string {
         flushTable();
         inTable = false;
       }
-      result.push(cleanLatexForWord(line));
+      result.push(formatLatexForHtml(line));
     }
   }
   if (inTable) flushTable();
@@ -182,7 +242,7 @@ export function openStudentPaperPrintWindow(
 
       if (q.options && q.options.length > 0) {
         q.options.forEach((opt) => {
-          content += `<div class="mcq-choice">${cleanLatexForWord(opt)}</div>`;
+          content += `<div class="mcq-choice">${formatLatexForHtml(opt)}</div>`;
         });
       }
 
@@ -316,7 +376,7 @@ export function openTeacherMarkSchemePrintWindow(
                 return `
                   <tr>
                     <td class="q-col">${qNum} ${sub.sub_id}</td>
-                    <td class="ans-col">${cleanLatexForWord(msText)}</td>
+                    <td class="ans-col">${formatLatexForHtml(msText)}</td>
                     <td class="acc-col">—</td>
                     <td class="mark-col">[${sub.marks}]</td>
                   </tr>
@@ -330,8 +390,8 @@ export function openTeacherMarkSchemePrintWindow(
             return `
               <tr>
                 <td class="q-col">${qNum}</td>
-                <td class="ans-col">• ${cleanLatexForWord(msPoints)}</td>
-                <td class="acc-col">${acceptable}</td>
+                <td class="ans-col">• ${formatLatexForHtml(msPoints)}</td>
+                <td class="acc-col">${formatLatexForHtml(acceptable)}</td>
                 <td class="mark-col">[${q.marks}]</td>
               </tr>
             `;
