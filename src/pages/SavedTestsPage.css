@@ -60,7 +60,69 @@
   box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
 }
 
-/* ─── Control Bar (Grouping + Search) ──────────────────────────────────────── */
+/* ─── 1st Level: Subject Selection Bar ─────────────────────────────────────── */
+
+.saved-subject-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 12px 18px;
+  box-shadow: var(--shadow-sm);
+  flex-wrap: wrap;
+}
+
+.saved-subject-label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.saved-subject-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.saved-subject-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.saved-subject-tab:hover {
+  background: var(--color-surface);
+  border-color: var(--color-primary-300);
+  color: var(--color-primary-600);
+}
+
+.saved-subject-tab--active {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700));
+  border-color: transparent;
+  color: white;
+  font-weight: 700;
+  box-shadow: 0 2px 8px var(--shadow-glow);
+}
+
+/* ─── 2nd Level: Control Bar (Topic Grouping + Search) ─────────────────────── */
 
 .saved-controls-card {
   background: var(--color-surface);
@@ -191,6 +253,15 @@
   flex-wrap: wrap;
   padding-top: 4px;
   border-top: 1px solid var(--color-surface-sunken);
+}
+
+.saved-pills-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
 }
 
 .saved-filter-pill {

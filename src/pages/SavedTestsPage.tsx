@@ -16,8 +16,6 @@ interface SavedTestsPageProps {
   onNavigateToBank: () => void;
 }
 
-type GroupByMode = 'topic' | 'subject' | 'none';
-
 export function SavedTestsPage({
   onLoadTestIntoBuilder,
   onNavigateToBuilder,
@@ -28,9 +26,14 @@ export function SavedTestsPage({
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [loadingTestId, setLoadingTestId] = useState<string | null>(null);
-  const [groupBy, setGroupBy] = useState<GroupByMode>('topic');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState('all');
+
+  // 1st Level: Selected Subject (defaults to 'all' or first available subject)
+  const [selectedSubject, setSelectedSubject] = useState<string>('all');
+
+  // 2nd Level: Topic Filtering & Grouping within that Subject
+  const [isGroupedByTopic, setIsGroupedByTopic] = useState<boolean>(true);
+  const [activeTopicFilter, setActiveTopicFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [exportData, setExportData] = useState<{
     headerConfig: ExamHeaderConfig;
@@ -114,9 +117,35 @@ export function SavedTestsPage({
     }
   };
 
-  // Filter list by search query and active category filter
-  const filteredTests = useMemo(() => {
-    return tests.filter((t) => {
+  // 1. All unique available subjects
+  const availableSubjects = useMemo(() => {
+    const set = new Set<string>();
+    tests.forEach((t) => {
+      t.subjects.forEach((s) => set.add(s));
+    });
+    return Array.from(set).sort();
+  }, [tests]);
+
+  // 2. Tests filtered by Subject selection
+  const subjectFilteredTests = useMemo(() => {
+    if (selectedSubject === 'all') return tests;
+    return tests.filter(
+      (t) => t.subjects.includes(selectedSubject) || t.primarySubject === selectedSubject
+    );
+  }, [tests, selectedSubject]);
+
+  // 3. Topics available STRICTLY within the selected subject
+  const availableTopicsForSubject = useMemo(() => {
+    const set = new Set<string>();
+    subjectFilteredTests.forEach((t) => {
+      t.topics.forEach((top) => set.add(top));
+    });
+    return Array.from(set).sort();
+  }, [subjectFilteredTests]);
+
+  // 4. Tests filtered by Subject + Topic Filter + Search Query
+  const finalFilteredList = useMemo(() => {
+    return subjectFilteredTests.filter((t) => {
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch =
         !query ||
@@ -128,46 +157,30 @@ export function SavedTestsPage({
 
       if (!matchesSearch) return false;
 
-      if (activeFilter === 'all') return true;
+      if (activeTopicFilter === 'all') return true;
 
-      if (groupBy === 'subject') {
-        return t.subjects.includes(activeFilter) || t.primarySubject === activeFilter;
-      }
-      return t.topics.includes(activeFilter) || t.primaryTopic === activeFilter;
+      return t.topics.includes(activeTopicFilter) || t.primaryTopic === activeTopicFilter;
     });
-  }, [tests, searchQuery, activeFilter, groupBy]);
+  }, [subjectFilteredTests, searchQuery, activeTopicFilter]);
 
-  // Unique topic/subject filter tabs
-  const categoryFilters = useMemo(() => {
-    const set = new Set<string>();
-    tests.forEach((t) => {
-      if (groupBy === 'subject') {
-        t.subjects.forEach((s) => set.add(s));
-      } else {
-        t.topics.forEach((top) => set.add(top));
-      }
-    });
-    return Array.from(set).sort();
-  }, [tests, groupBy]);
-
-  // Grouped tests map
-  const groupedSections = useMemo(() => {
-    if (groupBy === 'none') {
-      return { 'All Assessments': filteredTests };
+  // 5. Group tests by Topic within the active subject
+  const groupedTopicSections = useMemo(() => {
+    if (!isGroupedByTopic) {
+      return { 'All Assessments': finalFilteredList };
     }
 
     const map: Record<string, CustomTestWithDetails[]> = {};
 
-    filteredTests.forEach((test) => {
-      const key = groupBy === 'subject' ? test.primarySubject : test.primaryTopic;
+    finalFilteredList.forEach((test) => {
+      const key = test.primaryTopic || 'General';
       if (!map[key]) map[key] = [];
       map[key].push(test);
     });
 
     return map;
-  }, [filteredTests, groupBy]);
+  }, [finalFilteredList, isGroupedByTopic]);
 
-  const groupKeys = Object.keys(groupedSections).sort((a, b) => {
+  const groupKeys = Object.keys(groupedTopicSections).sort((a, b) => {
     if (a === 'Multi-Topic') return 1;
     if (b === 'Multi-Topic') return -1;
     return a.localeCompare(b);
@@ -181,7 +194,7 @@ export function SavedTestsPage({
           <div>
             <h1 className="saved-title">Saved Exams & Tests</h1>
             <p className="saved-subtitle">
-              Browse, organize by topic/subject, review, and export all your custom-assembled assessments.
+              Select a subject to view its topic breakdowns, explore saved assessments, and export Word/PDF papers.
             </p>
           </div>
 
@@ -194,42 +207,67 @@ export function SavedTestsPage({
           </button>
         </div>
 
-        {/* ─── Control Bar (Grouping + Search) ──────────────────────────────── */}
+        {/* ─── 1st Level: Subject Selection Bar ────────────────────────────── */}
         {!isLoading && !error && tests.length > 0 && (
+          <div className="saved-subject-bar animate-fade-in">
+            <span className="saved-subject-label">Select Subject:</span>
+            <div className="saved-subject-tabs">
+              <button
+                type="button"
+                className={`saved-subject-tab ${selectedSubject === 'all' ? 'saved-subject-tab--active' : ''}`}
+                onClick={() => {
+                  setSelectedSubject('all');
+                  setActiveTopicFilter('all');
+                }}
+              >
+                🌐 All Subjects ({tests.length})
+              </button>
+
+              {availableSubjects.map((subj) => {
+                const count = tests.filter(
+                  (t) => t.subjects.includes(subj) || t.primarySubject === subj
+                ).length;
+
+                return (
+                  <button
+                    key={subj}
+                    type="button"
+                    className={`saved-subject-tab ${selectedSubject === subj ? 'saved-subject-tab--active' : ''}`}
+                    onClick={() => {
+                      setSelectedSubject(subj);
+                      setActiveTopicFilter('all');
+                    }}
+                  >
+                    📚 {subj} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ─── 2nd Level: Topic Controls (Scoped strictly to Selected Subject) ── */}
+        {!isLoading && !error && subjectFilteredTests.length > 0 && (
           <div className="saved-controls-card animate-fade-in">
             <div className="saved-controls-top">
-              {/* Group By Selector */}
+              {/* Grouping Toggle */}
               <div className="saved-group-toggle">
-                <span className="saved-group-label">Group By:</span>
+                <span className="saved-group-label">View Mode:</span>
                 <button
                   type="button"
-                  className={`saved-group-btn ${groupBy === 'topic' ? 'saved-group-btn--active' : ''}`}
-                  onClick={() => {
-                    setGroupBy('topic');
-                    setActiveFilter('all');
-                  }}
+                  className={`saved-group-btn ${isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
+                  onClick={() => setIsGroupedByTopic(true)}
+                  title="Group tests by topic sections"
                 >
-                  🏷️ Topics
+                  🏷️ Group by Topic
                 </button>
                 <button
                   type="button"
-                  className={`saved-group-btn ${groupBy === 'subject' ? 'saved-group-btn--active' : ''}`}
-                  onClick={() => {
-                    setGroupBy('subject');
-                    setActiveFilter('all');
-                  }}
+                  className={`saved-group-btn ${!isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
+                  onClick={() => setIsGroupedByTopic(false)}
+                  title="Show all tests in a flat list"
                 >
-                  📚 Subjects
-                </button>
-                <button
-                  type="button"
-                  className={`saved-group-btn ${groupBy === 'none' ? 'saved-group-btn--active' : ''}`}
-                  onClick={() => {
-                    setGroupBy('none');
-                    setActiveFilter('all');
-                  }}
-                >
-                  📋 Flat List
+                  📋 Flat Grid
                 </button>
               </div>
 
@@ -239,7 +277,7 @@ export function SavedTestsPage({
                 <input
                   type="text"
                   className="saved-search-input"
-                  placeholder="Search by test name, topic, or subject…"
+                  placeholder={`Search ${selectedSubject === 'all' ? 'all' : selectedSubject} tests…`}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -255,31 +293,30 @@ export function SavedTestsPage({
               </div>
             </div>
 
-            {/* Quick Filter Pills */}
-            {categoryFilters.length > 1 && groupBy !== 'none' && (
+            {/* Subject-Scoped Topic Filter Pills */}
+            {availableTopicsForSubject.length > 1 && (
               <div className="saved-filter-pills">
+                <span className="saved-pills-label">Topics in {selectedSubject === 'all' ? 'All Subjects' : selectedSubject}:</span>
                 <button
                   type="button"
-                  className={`saved-filter-pill ${activeFilter === 'all' ? 'saved-filter-pill--active' : ''}`}
-                  onClick={() => setActiveFilter('all')}
+                  className={`saved-filter-pill ${activeTopicFilter === 'all' ? 'saved-filter-pill--active' : ''}`}
+                  onClick={() => setActiveTopicFilter('all')}
                 >
-                  All ({tests.length})
+                  All Topics ({subjectFilteredTests.length})
                 </button>
-                {categoryFilters.map((cat) => {
-                  const count = tests.filter((t) =>
-                    groupBy === 'subject'
-                      ? t.subjects.includes(cat) || t.primarySubject === cat
-                      : t.topics.includes(cat) || t.primaryTopic === cat
+                {availableTopicsForSubject.map((top) => {
+                  const count = subjectFilteredTests.filter(
+                    (t) => t.topics.includes(top) || t.primaryTopic === top
                   ).length;
 
                   return (
                     <button
-                      key={cat}
+                      key={top}
                       type="button"
-                      className={`saved-filter-pill ${activeFilter === cat ? 'saved-filter-pill--active' : ''}`}
-                      onClick={() => setActiveFilter(cat)}
+                      className={`saved-filter-pill ${activeTopicFilter === top ? 'saved-filter-pill--active' : ''}`}
+                      onClick={() => setActiveTopicFilter(top)}
                     >
-                      {cat} ({count})
+                      🏷️ {top} ({count})
                     </button>
                   );
                 })}
@@ -331,41 +368,43 @@ export function SavedTestsPage({
         )}
 
         {/* No Matches Filter State */}
-        {!isLoading && !error && tests.length > 0 && filteredTests.length === 0 && (
+        {!isLoading && !error && tests.length > 0 && finalFilteredList.length === 0 && (
           <div className="saved-empty animate-fade-in">
             <div className="saved-empty-icon">🔎</div>
             <h2 className="saved-empty-title">No Matching Exams</h2>
             <p className="saved-empty-desc">
-              No saved tests match your search criteria. Try adjusting your search query or reset your filter.
+              No saved tests match your search criteria in {selectedSubject === 'all' ? 'all subjects' : selectedSubject}. Try adjusting your search query or reset your filter.
             </p>
             <button
               type="button"
               className="saved-btn saved-btn--secondary"
               onClick={() => {
                 setSearchQuery('');
-                setActiveFilter('all');
+                setActiveTopicFilter('all');
+                setSelectedSubject('all');
               }}
             >
-              Clear Filters
+              Reset All Filters
             </button>
           </div>
         )}
 
         {/* ─── Grouped Topic Sections ──────────────────────────────────────── */}
-        {!isLoading && !error && filteredTests.length > 0 && (
+        {!isLoading && !error && finalFilteredList.length > 0 && (
           <div className="saved-sections-wrapper">
             {groupKeys.map((groupName) => {
-              const groupTests = groupedSections[groupName] || [];
+              const groupTests = groupedTopicSections[groupName] || [];
               if (groupTests.length === 0) return null;
 
               const isMultiTopic = groupName === 'Multi-Topic';
+              const isAll = groupName === 'All Assessments';
 
               return (
                 <section key={groupName} className="saved-group-section animate-fade-in">
                   <div className="saved-group-header">
                     <div className="saved-group-title-row">
                       <span className="saved-group-icon">
-                        {groupBy === 'subject' ? '📚' : isMultiTopic ? '🎯' : '🧪'}
+                        {isAll ? '📋' : isMultiTopic ? '🎯' : '🧪'}
                       </span>
                       <h2 className="saved-group-name">{groupName}</h2>
                       <span className="saved-group-count">
