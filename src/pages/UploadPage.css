@@ -1,0 +1,146 @@
+/* ─── Upload Page ───────────────────────────────────────────────────────────── */
+
+.upload-page {
+  min-height: calc(100vh - 64px);
+  background: var(--color-surface-sunken);
+  padding: 40px 24px 60px;
+}
+
+.upload-page-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ─── Page Header ───────────────────────────────────────────────────────────── */
+
+.upload-page-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.upload-page-title {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+  letter-spacing: -0.03em;
+}
+
+.upload-page-desc {
+  font-size: 1rem;
+  color: var(--color-text-secondary);
+  margin: 0;
+  max-width: 500px;
+  line-height: 1.6;
+}
+
+/* ─── Center Layout ─────────────────────────────────────────────────────────── */
+
+.upload-page-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+}
+
+/* ─── Retry Button ──────────────────────────────────────────────────────────── */
+
+.upload-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.upload-retry-btn:hover {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border-hover);
+}
+
+/* ─── Success State ─────────────────────────────────────────────────────────── */
+
+.upload-success {
+  text-align: center;
+  padding: 60px 32px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-lg);
+  max-width: 520px;
+  width: 100%;
+}
+
+.upload-success-icon {
+  font-size: 3rem;
+  margin-bottom: 16px;
+}
+
+.upload-success-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+}
+
+.upload-success-desc {
+  font-size: 0.9375rem;
+  color: var(--color-text-secondary);
+  margin: 0 0 28px;
+  line-height: 1.6;
+}
+
+.upload-success-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.upload-success-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-lg);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.upload-success-btn--primary {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700));
+  color: white;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+
+.upload-success-btn--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+}
+
+/* ─── Responsive ────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .upload-page {
+    padding: 24px 16px 40px;
+  }
+
+  .upload-page-title {
+    font-size: 1.375rem;
+  }
+}

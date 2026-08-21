@@ -1,0 +1,95 @@
+/* ─── KaTeX Math Rendering Styles ─────────────────────────────────────────── */
+
+.exam-math-wrapper {
+  display: inline;
+  line-height: inherit;
+  color: inherit;
+}
+
+.exam-math-inline {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0 2px;
+  line-height: 0;
+}
+
+.exam-math-inline .katex {
+  font-size: 1.05em;
+  line-height: 1.2;
+  text-rendering: auto;
+}
+
+.exam-math-block {
+  display: block;
+  margin: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.exam-math-block .katex-display {
+  margin: 0 !important;
+}
+
+.exam-math-block .katex {
+  font-size: 1.15em;
+}
+
+.exam-math-fallback {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.875em;
+  background: var(--color-surface-sunken);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+/* Prevent flex containers or wrapping from breaking KaTeX character sequences vertically */
+.katex .base {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.katex .strut {
+  display: inline-block;
+}
+
+/* ─── Markdown Tables in Exams ─────────────────────────────────────────────── */
+
+.exam-table-container {
+  margin: 14px 0;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.exam-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 auto;
+  font-size: 0.9375rem;
+  background: var(--color-surface, #ffffff);
+  border: 1.5px solid #374151;
+}
+
+.exam-markdown-table th,
+.exam-markdown-table td {
+  border: 1px solid #4b5563;
+  padding: 8px 14px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.exam-markdown-table th {
+  background: var(--color-surface-sunken, #f3f4f6);
+  font-weight: 700;
+  color: var(--color-text-primary, #111827);
+  letter-spacing: 0.02em;
+}
+
+.exam-markdown-table tr:nth-child(even) td {
+  background: rgba(0, 0, 0, 0.015);
+}
+
+.exam-text-block {
+  display: block;
+}

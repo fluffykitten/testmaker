@@ -1,0 +1,339 @@
+/* ─── Test Paper Preview (Past Paper Style) ────────────────────────────── */
+
+.paper-preview-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+}
+
+.paper-print-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 820px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 12px 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.paper-print-bar-info {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.paper-print-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700));
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  transition: all var(--transition-fast);
+}
+
+.paper-print-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+}
+
+/* ─── Authentic Exam Sheet Layout ────────────────────────────────────────── */
+
+.exam-paper-sheet {
+  width: 100%;
+  max-width: 820px;
+  background: white;
+  color: #111827;
+  padding: 48px 56px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+  border: 1px solid #e5e7eb;
+  font-family: 'Times New Roman', Times, serif, system-ui;
+}
+
+/* Header */
+.exam-school-name {
+  font-size: 1.125rem;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 20px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.exam-candidate-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1.5px solid #111827;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+}
+
+.exam-cand-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+}
+
+.exam-cand-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.exam-cand-field--name {
+  flex: 3;
+}
+
+.exam-cand-field--class {
+  flex: 1.5;
+}
+
+.exam-cand-field--date {
+  flex: 1.5;
+}
+
+.exam-cand-label {
+  font-size: 0.8125rem;
+  font-weight: bold;
+  font-family: Arial, Helvetica, sans-serif;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.exam-cand-line {
+  flex: 1;
+  border-bottom: 1px dotted #4b5563;
+  height: 1px;
+}
+
+.exam-divider {
+  border-top: 2px solid #111827;
+  margin: 16px 0;
+}
+
+.exam-meta-block {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.exam-title-text {
+  font-size: 1.375rem;
+  font-weight: bold;
+  margin: 0 0 4px;
+}
+
+.exam-subject-text {
+  font-size: 1rem;
+  font-weight: bold;
+  color: #374151;
+}
+
+.exam-meta-right {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.exam-time-text {
+  font-size: 0.9375rem;
+  font-weight: bold;
+}
+
+.exam-marks-total-box {
+  font-size: 0.875rem;
+  border: 1px solid #111827;
+  padding: 4px 10px;
+  display: inline-block;
+}
+
+/* Instructions */
+.exam-instructions-box {
+  border: 1px solid #9ca3af;
+  padding: 12px 18px;
+  font-size: 0.8125rem;
+  font-family: Arial, Helvetica, sans-serif;
+  margin-bottom: 32px;
+  background: #f9fafb;
+}
+
+.exam-inst-title {
+  font-weight: bold;
+  margin: 0 0 6px;
+}
+
+.exam-inst-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Questions */
+.exam-question-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+
+.exam-q-section {
+  page-break-inside: avoid;
+}
+
+.exam-q-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.exam-q-num {
+  font-size: 1.125rem;
+  font-weight: bold;
+  min-width: 24px;
+}
+
+.exam-q-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.exam-q-stem {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.exam-q-diagram {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.exam-q-diagram img {
+  max-width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+}
+
+/* MCQ in Paper */
+.exam-mcq-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 16px;
+}
+
+.exam-mcq-row {
+  font-size: 0.9375rem;
+}
+
+/* Sub questions */
+.exam-sub-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.exam-sub-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.exam-sub-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.exam-sub-id {
+  font-weight: bold;
+  min-width: 28px;
+}
+
+.exam-sub-text {
+  flex: 1;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.exam-mark-right {
+  font-weight: bold;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+/* Answer lines for handwriting */
+.exam-answer-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 8px 0 8px 28px;
+}
+
+.exam-line {
+  border-bottom: 1px dotted #9ca3af;
+  height: 1px;
+  width: 100%;
+}
+
+.exam-q-total-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.exam-q-total-badge {
+  font-weight: bold;
+  font-size: 0.875rem;
+}
+
+/* ─── Print Stylesheet ─────────────────────────────────────────────────────── */
+
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .no-print,
+  .navbar,
+  .test-sidebar,
+  .paper-print-bar {
+    display: none !important;
+  }
+
+  .paper-preview-wrapper {
+    padding: 0 !important;
+  }
+
+  .exam-paper-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .exam-q-section {
+    page-break-inside: avoid;
+  }
+}

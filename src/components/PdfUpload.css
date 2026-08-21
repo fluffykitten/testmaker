@@ -1,0 +1,291 @@
+.upload-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: 680px;
+}
+
+.upload-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.upload-section-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.upload-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.upload-badge--required {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--color-primary-600);
+}
+
+.upload-badge--optional {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-tertiary);
+}
+
+/* ─── Drop Zone ─────────────────────────────────────────────────────────────── */
+
+.drop-zone {
+  position: relative;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 32px 24px;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  background: var(--color-surface);
+  text-align: center;
+}
+
+.drop-zone--secondary {
+  padding: 20px 24px;
+  border-style: dashed;
+  background: var(--color-surface-sunken);
+}
+
+.drop-zone--secondary:hover {
+  background: var(--color-surface);
+  border-color: var(--color-primary-300);
+}
+
+.drop-zone-title-sm {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-primary-600);
+  margin: 0 0 4px;
+}
+
+.drop-zone:hover {
+  border-color: var(--color-primary-300);
+  background: var(--color-primary-50);
+}
+
+.drop-zone--active {
+  border-color: var(--color-primary-500);
+  background: var(--color-primary-50);
+  border-style: solid;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+  transform: scale(1.01);
+}
+
+.drop-zone--has-file {
+  border-color: var(--color-accent-400);
+  border-style: solid;
+  background: rgba(16, 185, 129, 0.04);
+  padding: 24px 32px;
+  cursor: default;
+}
+
+.drop-zone--has-file:hover {
+  background: rgba(16, 185, 129, 0.06);
+  border-color: var(--color-accent-500);
+}
+
+.drop-zone--error {
+  border-color: var(--color-danger-400);
+  background: rgba(244, 63, 94, 0.04);
+}
+
+.drop-zone-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ─── Drop Zone Content ─────────────────────────────────────────────────────── */
+
+.drop-zone-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.drop-zone-icon {
+  color: var(--color-text-tertiary);
+  margin-bottom: 8px;
+  transition: all var(--transition-base);
+}
+
+.drop-zone-icon--active {
+  color: var(--color-primary-500);
+  transform: scale(1.15);
+}
+
+.drop-zone-title {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.drop-zone-subtitle {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.drop-zone-browse {
+  color: var(--color-primary-500);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color var(--transition-fast);
+}
+
+.drop-zone:hover .drop-zone-browse {
+  text-decoration-color: var(--color-primary-500);
+}
+
+.drop-zone-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin: 4px 0 0;
+}
+
+/* ─── File Preview ──────────────────────────────────────────────────────────── */
+
+.file-preview {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.file-preview-icon {
+  flex-shrink: 0;
+  color: var(--color-accent-500);
+}
+
+.file-preview-info {
+  flex: 1;
+  text-align: left;
+  min-width: 0;
+}
+
+.file-preview-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-preview-size {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  margin: 2px 0 0;
+}
+
+.file-preview-remove {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8125rem;
+  transition: all var(--transition-fast);
+}
+
+.file-preview-remove:hover {
+  border-color: var(--color-danger-400);
+  color: var(--color-danger-500);
+  background: rgba(244, 63, 94, 0.06);
+}
+
+/* ─── Error Message ─────────────────────────────────────────────────────────── */
+
+.upload-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--radius-lg);
+  background: rgba(244, 63, 94, 0.06);
+  border: 1px solid rgba(244, 63, 94, 0.2);
+  color: var(--color-danger-500);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.upload-error-icon {
+  font-size: 1rem;
+}
+
+/* ─── Extract Button ────────────────────────────────────────────────────────── */
+
+.extract-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 28px;
+  border: none;
+  border-radius: var(--radius-xl);
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700));
+  color: white;
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+
+.extract-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+}
+
+.extract-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.extract-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.extract-btn-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

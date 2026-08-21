@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Upload past papers, extract questions with AI, and build custom exams with drag-and-drop precision. Powered by Supabase and Gemini." />
+    <meta name="theme-color" content="#6366f1" />
+    <title>fluffykitten's test maker 🐱</title>
+    <script>
+      (function() {
+        try {
+          var raw = localStorage.getItem('testmaker_user_settings');
+          var settings = raw ? JSON.parse(raw) : null;
+          var theme = settings && settings.theme ? settings.theme : 'light';
+          var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch(e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
