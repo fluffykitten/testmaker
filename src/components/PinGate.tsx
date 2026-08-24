@@ -7,9 +7,10 @@ const SESSION_KEY = 'testmaker_pin_verified';
 
 interface PinGateProps {
   children: ReactNode;
+  onBackToPortal?: () => void;
 }
 
-export function PinGate({ children }: PinGateProps) {
+export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === 'true');
   const [loading, setLoading] = useState(true);
   const [correctPin, setCorrectPin] = useState<string | null>(null);
@@ -224,6 +225,25 @@ export function PinGate({ children }: PinGateProps) {
             >
               Unlock
             </button>
+
+            {onBackToPortal && (
+              <button
+                type="button"
+                className="pin-back-portal-btn"
+                onClick={onBackToPortal}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--color-text-secondary)',
+                  fontSize: '0.8125rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  marginTop: '10px',
+                }}
+              >
+                ← Back to Portal Landing Page
+              </button>
+            )}
 
             <a
               href="https://github.com/fluffykitten"

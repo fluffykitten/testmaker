@@ -1,0 +1,915 @@
+/* ─── Smart Test Auto-Assembler Modal ─────────────────────────────────────── */
+
+.assembler-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.assembler-modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  max-width: 980px;
+  width: 100%;
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+}
+
+/* ─── Header ────────────────────────────────────────────────────────────────── */
+
+.assembler-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--color-surface-elevated);
+  border-bottom: 1px solid var(--color-surface-sunken);
+  flex-shrink: 0;
+}
+
+.assembler-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.assembler-header-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(234, 88, 12, 0.2));
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+}
+
+.assembler-title {
+  font-size: 1.1875rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.assembler-subtitle {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  margin: 2px 0 0;
+}
+
+.assembler-close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all var(--transition-fast);
+}
+
+.assembler-close-btn:hover {
+  background: rgba(244, 63, 94, 0.08);
+  color: var(--color-danger-500);
+  border-color: var(--color-danger-300);
+}
+
+/* ─── Body ────────────────────────────────────────────────────────────────── */
+
+.assembler-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.assembler-alert {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.8125rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assembler-alert--error {
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.25);
+  color: var(--color-danger-500);
+}
+
+/* ─── Config Step Layout ──────────────────────────────────────────────────── */
+
+.assembler-config-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 20px;
+}
+
+.assembler-config-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.assembler-section {
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assembler-section--full-height {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.assembler-section--split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.assembler-label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assembler-help-text {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
+}
+
+/* Marks Row */
+.assembler-marks-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.assembler-pill-btn {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assembler-pill-btn:hover {
+  border-color: var(--color-primary-400);
+  color: var(--color-primary-600);
+}
+
+.assembler-pill-btn--active {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700)) !important;
+  color: white !important;
+  border-color: var(--color-primary-600) !important;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
+.assembler-custom-marks-wrap {
+  position: relative;
+  width: 90px;
+}
+
+.assembler-custom-marks-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border: 1px dashed var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  text-align: center;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.assembler-custom-marks-input:focus,
+.assembler-custom-marks-input--active {
+  border: 1px solid var(--color-primary-500);
+  background: var(--color-surface-elevated);
+}
+
+/* Difficulty Presets */
+.assembler-diff-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.assembler-diff-card {
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all var(--transition-fast);
+}
+
+.assembler-diff-card:hover {
+  border-color: var(--color-primary-300);
+}
+
+.assembler-diff-card--active {
+  border-color: var(--color-primary-500) !important;
+  background: rgba(99, 102, 241, 0.04) !important;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.assembler-diff-card-title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.assembler-diff-card-desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.35;
+  flex: 1;
+}
+
+.assembler-diff-bars {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  display: flex;
+  margin-top: 4px;
+  background: var(--color-surface-sunken);
+}
+
+.diff-bar {
+  height: 100%;
+}
+
+.diff-bar--easy { background: #10b981; }
+.diff-bar--med { background: #f59e0b; }
+.diff-bar--hard { background: #ef4444; }
+
+/* Format Row & Selects */
+.assembler-format-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.assembler-select {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  font-family: var(--font-sans);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Topics Column: Subject Picker -> Topic Matrix */
+.assembler-subject-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assembler-subject-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.assembler-subject-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assembler-subject-chip:hover {
+  background: var(--color-surface-elevated);
+  border-color: var(--color-primary-300);
+  color: var(--color-primary-600);
+}
+
+.assembler-subject-chip--active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(168, 85, 247, 0.15)) !important;
+  border-color: var(--color-primary-500) !important;
+  color: var(--color-primary-600) !important;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.assembler-subject-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--color-primary-600);
+}
+
+.assembler-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 4px 0;
+}
+
+.assembler-topics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.assembler-topics-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+.assembler-text-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-primary-600);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.assembler-text-btn:hover {
+  text-decoration: underline;
+}
+
+/* Add Custom Topic Tag Form */
+.assembler-add-topic-form {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+
+.assembler-add-topic-input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: all var(--transition-fast);
+}
+
+.assembler-add-topic-input:focus {
+  border-style: solid;
+  border-color: var(--color-primary-500);
+  background: var(--color-surface-elevated);
+}
+
+.assembler-add-topic-btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-700));
+  color: white;
+  border: none;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.assembler-add-topic-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Proportion Mode Toolbar */
+.assembler-proportion-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  margin-bottom: 8px;
+}
+
+.assembler-proportion-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.assembler-prop-mode-btn {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assembler-prop-mode-btn:hover {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+}
+
+.assembler-prop-mode-btn--active {
+  background: var(--color-primary-600) !important;
+  color: white !important;
+  border-color: var(--color-primary-700) !important;
+}
+
+.assembler-prop-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+
+.assembler-prop-total-badge {
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.assembler-prop-total-badge--ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.assembler-prop-total-badge--warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.assembler-normalize-btn {
+  padding: 3px 8px;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--color-primary-600);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assembler-normalize-btn:hover {
+  background: var(--color-primary-600);
+  color: white;
+}
+
+.assembler-topics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.assembler-topics-loading,
+.assembler-topics-empty {
+  padding: 20px;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.assembler-topics-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(99, 102, 241, 0.2);
+  border-top-color: var(--color-primary-600);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* Topic Card with Optional Slider */
+.assembler-topic-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  transition: all var(--transition-fast);
+}
+
+.assembler-topic-card:hover {
+  background: var(--color-surface-elevated);
+  border-color: var(--color-primary-300);
+}
+
+.assembler-topic-card--selected {
+  background: rgba(99, 102, 241, 0.05) !important;
+  border-color: rgba(99, 102, 241, 0.3) !important;
+}
+
+.assembler-topic-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.assembler-topic-checkbox {
+  accent-color: var(--color-primary-600);
+  cursor: pointer;
+}
+
+.assembler-topic-name {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  font-weight: 500;
+  flex: 1;
+}
+
+.assembler-topic-count-pill {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-surface-sunken);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* Slider Row */
+.assembler-topic-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 24px;
+  padding-top: 2px;
+}
+
+.assembler-topic-range {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--color-primary-600);
+  cursor: pointer;
+}
+
+.assembler-topic-slider-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 100px;
+  justify-content: flex-end;
+}
+
+.assembler-topic-weight-value {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-primary-600);
+}
+
+.assembler-topic-approx-marks {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+/* ─── Preview Step Layout ─────────────────────────────────────────────────── */
+
+.assembler-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.assembler-metrics-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr) 2fr;
+  gap: 10px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+}
+
+.assembler-metric-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assembler-metric-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.assembler-metric-value {
+  font-size: 1.0625rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assembler-match-tag {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #059669;
+  background: rgba(16, 185, 129, 0.12);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.assembler-diff-tag {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.assembler-live-diff-bar {
+  height: 18px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  margin-top: 2px;
+}
+
+.live-diff-fill {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.live-diff-fill--easy { background: #10b981; }
+.live-diff-fill--med { background: #f59e0b; }
+.live-diff-fill--hard { background: #ef4444; }
+
+/* Topic Tags Strip */
+.assembler-topic-tags-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.assembler-topic-strip-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.assembler-topic-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.assembler-topic-stat-tag {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+/* Questions Preview List */
+.assembler-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.assembler-preview-item {
+  padding: 10px 14px;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assembler-preview-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assembler-q-num {
+  font-weight: 800;
+  font-size: 0.8125rem;
+  color: var(--color-primary-600);
+}
+
+.assembler-q-topic {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.assembler-q-diff {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.diff-easy {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+}
+
+.diff-med {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+.diff-hard {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.assembler-q-marks {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.assembler-preview-item-body {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+}
+
+/* ─── Footer ────────────────────────────────────────────────────────────────── */
+
+.assembler-footer {
+  padding: 14px 24px;
+  background: var(--color-surface-elevated);
+  border-top: 1px solid var(--color-surface-sunken);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.assembler-footer-left {
+  display: flex;
+  align-items: center;
+}
+
+.assembler-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assembler-btn-secondary {
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.assembler-btn-secondary:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-primary);
+}
+
+.assembler-btn-tool {
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.assembler-btn-tool:hover {
+  border-color: var(--color-primary-400);
+  color: var(--color-primary-600);
+}
+
+.assembler-btn-primary {
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #f59e0b, #ea580c);
+  color: white;
+  border: none;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  transition: all var(--transition-fast);
+}
+
+.assembler-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.4);
+}
+
+.assembler-btn-primary:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+@media (max-width: 820px) {
+  .assembler-config-grid {
+    grid-template-columns: 1fr;
+  }
+  .assembler-metrics-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+}

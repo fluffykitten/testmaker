@@ -35,6 +35,7 @@ export function UploadPage() {
   const [previewUrls, setPreviewUrls] = useState<Map<string, string>>(new Map());
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [uploadedQpFile, setUploadedQpFile] = useState<File | null>(null);
 
   const selectedFilesRef = useRef<{ qpFile: File | null; msFile: File | null }>({
     qpFile: null,
@@ -45,24 +46,33 @@ export function UploadPage() {
 
   // ─── Handle PDF Selection & Extraction ───────────────────────────────────
 
-  const handleFilesSelected = useCallback(async (qpFile: File, msFile: File | null) => {
-    setSavedCount(null);
-    setExtractionResult(null);
-    selectedFilesRef.current = { qpFile, msFile };
+  const handleFilesSelected = useCallback(
+    async (
+      qpFile: File,
+      msFile: File | null,
+      options: { includeGuidance: boolean } = { includeGuidance: true }
+    ) => {
+      setSavedCount(null);
+      setExtractionResult(null);
+      setUploadedQpFile(qpFile);
+      selectedFilesRef.current = { qpFile, msFile };
 
-    try {
-      const { result, diagramData: data, previewUrls: urls } = await runExtractionPipeline(
-        qpFile,
-        msFile,
-        setPipelineState
-      );
-      setExtractionResult(result);
-      setDiagramData(data);
-      setPreviewUrls(urls);
-    } catch {
-      // Error state is already set by the pipeline
-    }
-  }, []);
+      try {
+        const { result, diagramData: data, previewUrls: urls } = await runExtractionPipeline(
+          qpFile,
+          msFile,
+          setPipelineState,
+          options
+        );
+        setExtractionResult(result);
+        setDiagramData(data);
+        setPreviewUrls(urls);
+      } catch {
+        // Error state is already set by the pipeline
+      }
+    },
+    []
+  );
 
   // ─── Handle Save to Database (Uploads storage files on confirm) ──────────
 
@@ -172,10 +182,23 @@ export function UploadPage() {
         )}
 
         {/* Stage: Reviewing — Show Extracted Questions */}
-        {pipelineState.stage === 'reviewing' && extractionResult && (
+        {pipelineState.stage === 'reviewing' && (extractionResult || pipelineState.result) && (
           <ExtractionReview
-            result={extractionResult}
+            result={extractionResult || pipelineState.result!}
             diagramUrls={previewUrls}
+            pdfFile={uploadedQpFile || selectedFilesRef.current.qpFile}
+            onUpdateDiagram={(qNum, item) => {
+              setDiagramData((prev) => {
+                const next = new Map(prev);
+                next.set(qNum, item);
+                return next;
+              });
+              setPreviewUrls((prev) => {
+                const next = new Map(prev);
+                next.set(qNum, item.localUrl);
+                return next;
+              });
+            }}
             onConfirmSave={handleConfirmSave}
             onCancel={handleCancel}
             isSaving={isSaving}

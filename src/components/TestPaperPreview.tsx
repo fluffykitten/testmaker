@@ -1,6 +1,7 @@
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { ExamMathText } from './ExamMathText';
+import { parseMcqOption } from '../utils/mcqUtils';
 import './TestPaperPreview.css';
 
 interface TestPaperPreviewProps {
@@ -119,11 +120,17 @@ export function TestPaperPreview({
                   {/* MCQ Options */}
                   {q.options && q.options.length > 0 && (
                     <div className="exam-mcq-table">
-                      {q.options.map((opt, oi) => (
-                        <div key={oi} className="exam-mcq-row">
-                          <ExamMathText content={opt} />
-                        </div>
-                      ))}
+                      {q.options.map((opt, oi) => {
+                        const { letter, text } = parseMcqOption(opt, oi);
+                        return (
+                          <div key={oi} className="exam-mcq-row" style={{ display: 'flex', alignItems: 'baseline', gap: '14px' }}>
+                            <span style={{ fontWeight: 'bold', minWidth: '22px', color: '#1e293b' }}>{letter}</span>
+                            <div style={{ flex: 1 }}>
+                              <ExamMathText content={text} />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 

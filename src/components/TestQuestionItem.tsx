@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
+import { parseMcqOption } from '../utils/mcqUtils';
 import './TestQuestionItem.css';
 
 interface TestQuestionItemProps {
@@ -10,6 +11,8 @@ interface TestQuestionItemProps {
   onMoveUp: (index: number) => void;
   onMoveDown: (index: number) => void;
   onRemove: (questionId: string) => void;
+  onEdit?: (question: Question) => void;
+  onGenerateVariant?: (question: Question) => void;
 }
 
 export function TestQuestionItem({
@@ -19,6 +22,8 @@ export function TestQuestionItem({
   onMoveUp,
   onMoveDown,
   onRemove,
+  onEdit,
+  onGenerateVariant,
 }: TestQuestionItemProps) {
   const [showMarkScheme, setShowMarkScheme] = useState(false);
 
@@ -89,6 +94,30 @@ export function TestQuestionItem({
             </button>
           </div>
 
+          {/* Edit button */}
+          {onEdit && (
+            <button
+              type="button"
+              className="test-q-edit-btn"
+              onClick={() => onEdit(question)}
+              title="Edit this question text, formulas, or mark scheme"
+            >
+              ✏️
+            </button>
+          )}
+
+          {/* Generate Variant button */}
+          {onGenerateVariant && (
+            <button
+              type="button"
+              className="test-q-variant-btn"
+              onClick={() => onGenerateVariant(question)}
+              title="Generate AI-powered variant / twin of this question"
+            >
+              ✨ Variant
+            </button>
+          )}
+
           {/* Remove button */}
           <button
             type="button"
@@ -121,11 +150,17 @@ export function TestQuestionItem({
         {/* MCQ Choices */}
         {question.options && question.options.length > 0 && (
           <div className="q-mcq-grid">
-            {question.options.map((opt, oi) => (
-              <div key={oi} className="q-mcq-choice">
-                <ExamMathText content={opt} />
-              </div>
-            ))}
+            {question.options.map((opt, oi) => {
+              const { letter, text } = parseMcqOption(opt, oi);
+              return (
+                <div key={oi} className="q-mcq-choice" style={{ display: 'flex', alignItems: 'baseline', gap: '12px' }}>
+                  <span style={{ fontWeight: 'bold', minWidth: '20px', color: '#1e293b' }}>{letter}</span>
+                  <div style={{ flex: 1 }}>
+                    <ExamMathText content={text} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 

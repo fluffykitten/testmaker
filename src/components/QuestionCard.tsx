@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { Question } from '../types/database';
+import { isQuestionBookmarked, toggleBookmarkQuestion } from '../services/questionBookmarkService';
+import { getQuestionTags, addQuestionTag, removeQuestionTag } from '../services/questionTagService';
 import { ExamMathText } from './ExamMathText';
 import './QuestionCard.css';
 
@@ -8,7 +10,9 @@ interface QuestionCardProps {
   isSelected?: boolean;
   onToggleSelect?: (question: Question) => void;
   onViewDetails?: (question: Question) => void;
+  onEdit?: (question: Question) => void;
   onDelete?: (question: Question) => void;
+  onGenerateVariant?: (question: Question) => void;
   showMarkSchemeDefault?: boolean;
 }
 
@@ -17,10 +21,75 @@ export function QuestionCard({
   isSelected = false,
   onToggleSelect,
   onViewDetails,
+  onEdit,
   onDelete,
+  onGenerateVariant,
   showMarkSchemeDefault = false,
 }: QuestionCardProps) {
   const [showMarkScheme, setShowMarkScheme] = useState(showMarkSchemeDefault);
+  const [isBookmarked, setIsBookmarked] = useState(() => isQuestionBookmarked(question.id));
+  const [tags, setTags] = useState<string[]>(() => getQuestionTags(question.id));
+  const [isAddingTag, setIsAddingTag] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+
+  useEffect(() => {
+    const handleBookmarkUpdate = () => {
+      setIsBookmarked(isQuestionBookmarked(question.id));
+    };
+    const handleTagUpdate = () => {
+      setTags(getQuestionTags(question.id));
+    };
+
+    window.addEventListener('bookmarks_updated', handleBookmarkUpdate);
+    window.addEventListener('tags_updated', handleTagUpdate);
+    return () => {
+      window.removeEventListener('bookmarks_updated', handleBookmarkUpdate);
+      window.removeEventListener('tags_updated', handleTagUpdate);
+    };
+  }, [question.id]);
+
+  const handleToggleBookmark = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = toggleBookmarkQuestion(question.id);
+    setIsBookmarked(updated);
+  };
+
+  const handleAddTagSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (tagInput.trim()) {
+      const updated = addQuestionTag(question.id, tagInput.trim());
+      setTags(updated);
+      setTagInput('');
+      setIsAddingTag(false);
+    }
+  };
+
+  const handleRemoveTag = (e: React.MouseEvent, tag: string) => {
+    e.stopPropagation();
+    const updated = removeQuestionTag(question.id, tag);
+    setTags(updated);
+  };
+
+  const cleanOptionText = (text: string, oIdx: number) => {
+    if (!text) return '';
+    const letter = String.fromCharCode(65 + oIdx);
+    return text
+      .replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '')
+      .trim();
+  };
+
+  const cleanQuestionStem = (stem: string, options?: string[] | null) => {
+    if (!stem || !options || options.length === 0) return stem;
+    const lines = stem.split('\n');
+    const optStartIdx = lines.findIndex((l) => /^\s*A[.)\s:-]/.test(l));
+    if (optStartIdx > 0 && lines.length - optStartIdx <= 6) {
+      const remaining = lines.slice(optStartIdx).join('\n');
+      if (/\bB[.)\s:-]/.test(remaining) && /\bC[.)\s:-]/.test(remaining)) {
+        return lines.slice(0, optStartIdx).join('\n').trim();
+      }
+    }
+    return stem;
+  };
 
   const difficultyClass = (diff: string | null) => {
     switch (diff) {
@@ -54,6 +123,15 @@ export function QuestionCard({
             </label>
           )}
 
+          <button
+            type="button"
+            className={`q-bookmark-btn ${isBookmarked ? 'q-bookmark-btn--active' : ''}`}
+            onClick={handleToggleBookmark}
+            title={isBookmarked ? 'Remove from bookmarked questions' : 'Bookmark this question'}
+          >
+            {isBookmarked ? '⭐' : '☆'}
+          </button>
+
           <span className="q-number">Q{question.question_number}</span>
 
           <span className="q-badge q-badge--paper">
@@ -85,7 +163,7 @@ export function QuestionCard({
       {/* ─── Question Stem & Content ───────────────────────────────────────── */}
       <div className="q-card-body">
         <div className="q-stem-text">
-          <ExamMathText content={question.question_text} />
+          <ExamMathText content={cleanQuestionStem(question.question_text, question.options)} />
         </div>
 
         {/* Diagram Preview */}
@@ -106,11 +184,59 @@ export function QuestionCard({
           <div className="q-mcq-grid">
             {question.options.map((opt, oi) => (
               <div key={oi} className="q-mcq-choice">
-                <ExamMathText content={opt} />
+                <span className="q-mcq-letter">{String.fromCharCode(65 + oi)}</span>
+                <span className="q-mcq-text">
+                  <ExamMathText content={cleanOptionText(opt, oi)} />
+                </span>
               </div>
             ))}
           </div>
         )}
+
+        {/* Custom Teacher Tags Bar */}
+        <div className="q-tags-container">
+          <span className="q-tags-label">🏷️</span>
+          {tags.map((t) => (
+            <span key={t} className="q-tag-chip">
+              #{t}
+              <button
+                type="button"
+                className="q-tag-remove-btn"
+                onClick={(e) => handleRemoveTag(e, t)}
+                title={`Remove #${t}`}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+
+          {isAddingTag ? (
+            <form onSubmit={handleAddTagSubmit} className="q-tag-input-form" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="text"
+                className="q-tag-input"
+                placeholder="tag name..."
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                autoFocus
+                onBlur={() => {
+                  if (!tagInput.trim()) setIsAddingTag(false);
+                }}
+              />
+              <button type="submit" className="q-tag-submit-btn">✓</button>
+              <button type="button" className="q-tag-cancel-btn" onClick={() => setIsAddingTag(false)}>✕</button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="q-tag-add-btn"
+              onClick={() => setIsAddingTag(true)}
+              title="Add a custom teacher tag (e.g. #homework, #mock2026, #hard)"
+            >
+              + Tag
+            </button>
+          )}
+        </div>
 
         {/* Sub-Questions (Structured Questions) */}
         {hasSubQuestions && (
@@ -142,6 +268,24 @@ export function QuestionCard({
                     </div>
                   </div>
                 )}
+
+                {/* Sub-question teacher guidance */}
+                {sub.guidance && showMarkScheme && (
+                  <div className="q-sub-guidance animate-fade-in">
+                    <span className="q-guidance-badge">💡 Examiner Tip:</span>
+                    <span className="q-guidance-text"><ExamMathText content={sub.guidance} /></span>
+                  </div>
+                )}
+
+                {/* Sub-question student misconceptions */}
+                {sub.common_misconceptions && sub.common_misconceptions.length > 0 && showMarkScheme && (
+                  <div className="q-sub-misconception animate-fade-in">
+                    <span className="q-misconception-badge">⚠️ Common Trap:</span>
+                    <span className="q-guidance-text">
+                      <ExamMathText content={sub.common_misconceptions.join('; ')} />
+                    </span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -156,7 +300,10 @@ export function QuestionCard({
               onClick={() => setShowMarkScheme(!showMarkScheme)}
             >
               <span className={`q-ms-chevron ${showMarkScheme ? 'q-ms-chevron--open' : ''}`}>›</span>
-              {showMarkScheme ? 'Hide Mark Scheme' : 'Show Mark Scheme'}
+              {showMarkScheme ? 'Hide Mark Scheme & Insights' : 'Show Mark Scheme & Insights'}
+              {(question.mark_scheme.guidance?.length || question.mark_scheme.common_misconceptions?.length) ? (
+                <span className="q-insights-indicator">✨ Insights</span>
+              ) : null}
             </button>
 
             {showMarkScheme && (
@@ -177,6 +324,36 @@ export function QuestionCard({
                     ))}
                   </div>
                 )}
+
+                {/* Teacher Guidance Notes */}
+                {question.mark_scheme.guidance && question.mark_scheme.guidance.length > 0 && (
+                  <div className="q-guidance-container">
+                    <div className="q-guidance-title">
+                      <span>💡</span> Examiner Marking Notes & Guidance
+                    </div>
+                    {question.mark_scheme.guidance.map((g, gi) => (
+                      <div key={gi} className="q-guidance-item">
+                        <span className="q-guidance-bullet">•</span>
+                        <ExamMathText content={g} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Common Student Misconceptions */}
+                {question.mark_scheme.common_misconceptions && question.mark_scheme.common_misconceptions.length > 0 && (
+                  <div className="q-misconceptions-container">
+                    <div className="q-misconceptions-title">
+                      <span>⚠️</span> Common Student Misconceptions & Traps
+                    </div>
+                    {question.mark_scheme.common_misconceptions.map((m, mi) => (
+                      <div key={mi} className="q-misconception-item">
+                        <span className="q-misconception-bullet">•</span>
+                        <ExamMathText content={m} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -193,6 +370,28 @@ export function QuestionCard({
               onClick={() => onViewDetails(question)}
             >
               🔍 View Details
+            </button>
+          )}
+
+          {onEdit && (
+            <button
+              type="button"
+              className="q-action-btn q-action-btn--edit"
+              onClick={() => onEdit(question)}
+              title="Edit question text, formulas, sub-questions, and mark scheme"
+            >
+              ✏️ Edit
+            </button>
+          )}
+
+          {onGenerateVariant && (
+            <button
+              type="button"
+              className="q-action-btn q-action-btn--variant"
+              onClick={() => onGenerateVariant(question)}
+              title="Generate AI-powered twin question or scaffolding/extension variant"
+            >
+              ✨ Similar
             </button>
           )}
 

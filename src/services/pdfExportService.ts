@@ -1,8 +1,14 @@
 // ─── PDF / Print Export Service ─────────────────────────────────────────────
-// Opens high-resolution, print-optimized document windows for saving as PDF.
+// Opens high-resolution, print-optimized document windows for saving as PDF
+// with support for authentic Cambridge, Modern Worksheet, Answer Booklet, and Mark Scheme layouts.
 
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
+import type { ExportLayoutOptions } from '../types/exportTemplates';
+import { getCambridgeCoverDetails, renderCambridgeCoverPageHtml, renderMcqAnswerSheetHtml } from './cambridgeCoverService';
+import { parseMcqOption } from '../utils/mcqUtils';
+import { renderPeriodicTableHtml } from './periodicTableService';
+import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 
 /**
  * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean HTML
@@ -26,10 +32,30 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\\le(q)?/g, ' ≤ ')
     .replace(/\\ge(q)?/g, ' ≥ ')
     .replace(/\\infty/g, ' ∞ ')
-    .replace(/\\degree/g, '°')
-    .replace(/\\circ/g, '°')
+    // LaTeX spacing commands: \, \: \; \! \ ~
+    .replace(/\\,/g, ' ')
+    .replace(/\\:/g, ' ')
+    .replace(/\\;/g, ' ')
+    .replace(/\\!/g, '')
+    .replace(/\\ /g, ' ')
+    .replace(/~/g, ' ')
+    // Comprehensive Temperature formats: 25^\circ C, 25^{\circ}\text{C}, 25\degree C, 25\celsius, 45\,°C
+    .replace(/\\(degreeC|celsius)\b/g, '°C')
+    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
+    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
+    .replace(/\\degree\s*C\b/gi, '°C')
+    .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
+    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}\}/gi, '°C')
+    .replace(/\^\{\\circ\s*C\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*F\s*\}/gi, '°F')
+    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
     .replace(/\^\{\\circ\}/g, '°')
     .replace(/\^\\circ/g, '°')
+    .replace(/\\degree\b/g, '°')
+    .replace(/\\circ\b/g, '°')
     // Greek letters
     .replace(/\\Delta/g, 'Δ')
     .replace(/\\delta/g, 'δ')
@@ -57,12 +83,18 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\$\$(.*?)\$\$/g, '$1')
     .replace(/\$(.*?)\$/g, '$1')
     .replace(/\\\[(.*?)\\\]/g, '$1')
-    .replace(/\\\((.*?)\\\)/g, '$1')
+    // Nuclide / Isotope notation: _^{40}_{20}W or {}^{40}_{20}W or ^{40}_{20}W
+    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '<sup>$1</sup><sub>$2</sub>')
+    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '<sup>$2</sup><sub>$1</sub>')
+    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '<sup>$1</sup><sub>$2</sub>')
+    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '<sup>$2</sup><sub>$1</sub>')
+    // Clean percentage escaping
+    .replace(/\\%/g, '%')
     // Subscripts & Superscripts to HTML tags
     .replace(/_{([^{}]*)}/g, '<sub>$1</sub>')
     .replace(/\^{([^{}]*)}/g, '<sup>$1</sup>')
-    .replace(/([a-zA-Z0-9\)\]])_([0-9a-zA-Z\+\-\*])/g, '$1<sub>$2</sub>')
-    .replace(/\^([0-9a-zA-Z\+\-\*])/g, '<sup>$1</sup>');
+    .replace(/([a-zA-Z0-9)\]])_([0-9a-zA-Z+\-*]+)/g, '$1<sub>$2</sub>')
+    .replace(/\^([0-9a-zA-Z+\-*]+)/g, '<sup>$1</sup>');
 }
 
 /**
@@ -100,35 +132,33 @@ function convertMarkdownTablesToHtml(text: string): string {
         headers
           .map(
             (h) =>
-              `<th style="border: 1px solid #4b5563; padding: 6px 12px; background: #f3f4f6; text-align: center; font-weight: bold;">${formatLatexForHtml(h)}</th>`
+              `<th style="border: 1px solid #4b5563; padding: 6px 10px; background: #f3f4f6; font-weight: bold; text-align: center;">${formatLatexForHtml(h)}</th>`
           )
           .join('') +
-        '</tr></thead>';
-      tableHtml +=
-        '<tbody>' +
-        body
-          .map(
-            (row) =>
-              '<tr>' +
-              row
-                .map(
-                  (c) =>
-                    `<td style="border: 1px solid #4b5563; padding: 6px 12px; text-align: center;">${formatLatexForHtml(c)}</td>`
-                )
-                .join('') +
-              '</tr>'
-          )
-          .join('') +
-        '</tbody>';
-      tableHtml += '</table></div>';
+        '</tr></thead><tbody>';
+
+      body.forEach((row) => {
+        tableHtml +=
+          '<tr>' +
+          row
+            .map(
+              (cell) =>
+                `<td style="border: 1px solid #6b7280; padding: 6px 10px; text-align: center;">${formatLatexForHtml(cell)}</td>`
+            )
+            .join('') +
+          '</tr>';
+      });
+
+      tableHtml += '</tbody></table></div>';
       result.push(tableHtml);
     }
     tableLines = [];
   };
 
   for (const line of lines) {
-    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
-      if (!inTable) inTable = true;
+    const isTableRow = line.trim().startsWith('|') && line.trim().endsWith('|');
+    if (isTableRow) {
+      inTable = true;
       tableLines.push(line);
     } else {
       if (inTable) {
@@ -149,9 +179,18 @@ function convertMarkdownTablesToHtml(text: string): string {
 export function openStudentPaperPrintWindow(
   headerConfig: ExamHeaderConfig,
   questions: Question[],
-  options: { includeAnswerLines?: boolean; linesPerMark?: number } = {}
+  options: Partial<ExportLayoutOptions> = {}
 ) {
-  const { includeAnswerLines = true, linesPerMark = 2 } = options;
+  const {
+    template = 'cambridge_official',
+    columns = 1,
+    includeAnswerLines = true,
+    linesPerMark = 2,
+    answerLineStyle = 'dotted',
+    schoolName = '',
+    showTurnOverNotice = true,
+  } = options;
+
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
 
   const printWindow = window.open('', '_blank');
@@ -160,131 +199,724 @@ export function openStudentPaperPrintWindow(
     return;
   }
 
+  const isCambridge = template === 'cambridge_official';
+  const isWorksheet = template === 'school_worksheet';
+  const isSeparate = template === 'separate_answer_booklet';
+
+  const answerLineBorder = answerLineStyle === 'dotted' ? '1.5px dotted #64748b' : '1.2px solid #94a3b8';
+
   const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
   <title>${headerConfig.title || 'Exam Paper'} — Student Assessment</title>
   <style>
-    @page { size: A4; margin: 20mm 15mm 20mm 15mm; }
-    body { font-family: "Times New Roman", Times, Georgia, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
-    .header-box { border: 1.5px solid #111; padding: 12px 16px; margin-bottom: 20px; }
-    .cand-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; font-family: Arial, sans-serif; font-size: 13px; font-weight: bold; }
-    .line { border-bottom: 1px dotted #555; flex: 1; height: 1px; display: inline-block; }
-    .title-block { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 16px; }
-    .title { font-size: 20px; font-weight: bold; margin: 0 0 4px; }
-    .subtitle { font-size: 14px; color: #333; font-weight: bold; }
-    .inst-box { border: 1px solid #777; padding: 10px 14px; font-family: Arial, sans-serif; font-size: 12px; margin-bottom: 24px; background: #fafafa; text-align: justify; }
-    .q-block { margin-bottom: 28px; page-break-inside: avoid; }
-    .q-header { display: flex; align-items: baseline; gap: 12px; font-size: 15px; }
-    .q-num { font-weight: bold; font-size: 16px; min-width: 22px; }
-    .q-text { flex: 1; line-height: 1.6; text-align: justify; }
-    .mcq-choice { margin: 6px 0 6px 34px; font-size: 14px; }
-    .sub-block { margin: 12px 0 12px 28px; }
-    .sub-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
-    .sub-id { font-weight: bold; min-width: 26px; }
-    .sub-text { flex: 1; text-align: justify; }
-    .marks { font-weight: bold; font-size: 13px; white-space: nowrap; }
-    .ans-lines { margin: 8px 0 8px 30px; display: flex; flex-direction: column; gap: 12px; }
-    .ans-line { border-bottom: 1px dotted #888; height: 1px; width: 100%; }
-    .total-row { text-align: right; font-weight: bold; font-size: 14px; margin-top: 4px; }
-    .no-print { text-align: center; padding: 10px; background: #e0e7ff; font-family: Arial, sans-serif; font-size: 13px; margin-bottom: 20px; }
+    @page {
+      size: A4;
+      margin: 15mm 15mm 20mm 15mm;
+      @top-center {
+        content: counter(page);
+        font-weight: bold;
+        font-family: Arial, sans-serif;
+        font-size: 12pt;
+      }
+    }
+    @page:first {
+      @top-center {
+        content: none;
+      }
+    }
+    body {
+      font-family: ${isCambridge ? '"Times New Roman", Times, Georgia, serif' : 'Arial, sans-serif'};
+      color: #111;
+      line-height: 1.5;
+      margin: 0;
+      padding: 10px;
+      background: white;
+    }
+    .no-print {
+      text-align: center;
+      padding: 12px;
+      background: #e0e7ff;
+      color: #3730a3;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      margin-bottom: 20px;
+      border-radius: 6px;
+      border: 1px solid #c7d2fe;
+    }
+    @media print {
+      .no-print { display: none; }
+    }
+
+    /* Cambridge Candidate Box */
+    .cambridge-cand-box {
+      border: 1.5px solid #111;
+      padding: 10px 14px;
+      margin-bottom: 18px;
+    }
+    .cambridge-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .box-grid {
+      display: inline-flex;
+      gap: 4px;
+      margin-left: 6px;
+    }
+    .grid-square {
+      width: 18px;
+      height: 18px;
+      border: 1.5px solid #111;
+      display: inline-block;
+    }
+
+    /* Worksheet Header Box */
+    .worksheet-header-box {
+      border: 1.5px solid #cbd5e1;
+      background: #f8fafc;
+      padding: 12px 16px;
+      margin-bottom: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-radius: 6px;
+    }
+    .worksheet-school-title {
+      font-size: 18px;
+      font-weight: bold;
+      color: #1e40af;
+      margin-bottom: 4px;
+    }
+    .worksheet-cand-details {
+      font-size: 13px;
+      color: #334155;
+    }
+    .worksheet-score-box {
+      border: 2px solid #1e293b;
+      background: white;
+      padding: 8px 16px;
+      text-align: center;
+      min-width: 100px;
+      border-radius: 4px;
+    }
+    .score-label {
+      font-size: 11px;
+      font-weight: bold;
+      color: #64748b;
+      text-transform: uppercase;
+    }
+    .score-val {
+      font-size: 20px;
+      font-weight: bold;
+      color: #0f172a;
+    }
+
+    /* Title Block */
+    .title-block {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      border-bottom: 2px solid #111;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }
+    .title {
+      font-size: 20px;
+      font-weight: bold;
+      margin: 0 0 4px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #333;
+      font-weight: bold;
+    }
+
+    /* Instructions Box */
+    .inst-box {
+      border: 1px solid #777;
+      padding: 10px 14px;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      margin-bottom: 24px;
+      background: #fafafa;
+      text-align: justify;
+    }
+
+    /* Question Stream Container (1 or 2 columns) */
+    .questions-container {
+      ${columns === 2 ? 'column-count: 2; column-gap: 24px; column-rule: 1px solid #e2e8f0;' : ''}
+    }
+
+    .q-block {
+      margin-bottom: 28px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .q-header {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 15px;
+    }
+    .q-num {
+      font-weight: bold;
+      font-size: 16px;
+      min-width: 22px;
+    }
+    .q-text {
+      flex: 1;
+      line-height: 1.6;
+      text-align: justify;
+    }
+    .mcq-choice {
+      margin: 6px 0 6px 32px;
+      font-size: 14px;
+    }
+    .sub-block {
+      margin: 12px 0 12px 24px;
+    }
+    .sub-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 14px;
+    }
+    .sub-id {
+      font-weight: bold;
+      min-width: 26px;
+    }
+    .sub-text {
+      flex: 1;
+      text-align: justify;
+    }
+    .marks {
+      font-weight: bold;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .ans-lines {
+      margin: 12px 0 12px 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+    }
+    .ans-line {
+      border-bottom: ${answerLineBorder};
+      height: 1px;
+      width: 100%;
+    }
+    .total-row {
+      text-align: right;
+      font-weight: bold;
+      font-size: 14px;
+      margin-top: 6px;
+    }
+    .turn-over {
+      text-align: right;
+      font-style: italic;
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <strong>Print Ready Preview (${isCambridge ? 'Cambridge Official' : isWorksheet ? 'Modern Worksheet' : 'Question Paper'})</strong> — Press <code>Ctrl + P</code> (or Cmd + P) to Save as PDF or Print.
+  </div>
+
+  ${
+    isCambridge
+      ? renderCambridgeCoverPageHtml(getCambridgeCoverDetails(headerConfig, questions))
+      : `
+    ${
+      isWorksheet
+        ? `
+      <div class="worksheet-header-box">
+        <div>
+          ${schoolName || headerConfig.schoolName ? `<div class="worksheet-school-title">${schoolName || headerConfig.schoolName}</div>` : ''}
+          <div class="worksheet-cand-details">
+            <strong>Student Name:</strong> ___________________________ &nbsp;&nbsp;
+            <strong>Class:</strong> _______ &nbsp;&nbsp;
+            <strong>Date:</strong> _______
+          </div>
+        </div>
+        <div class="worksheet-score-box">
+          <div class="score-label">Score / Grade</div>
+          <div class="score-val">___ / ${totalMarks}</div>
+        </div>
+      </div>
+      `
+        : `
+      <div style="border: 1px solid #111; padding: 8px 12px; margin-bottom: 16px; font-size: 13px; font-weight: bold;">
+        NAME: _____________________________________ &nbsp;&nbsp;&nbsp;&nbsp; DATE: ____________
+      </div>
+      `
+    }
+
+    <div class="title-block">
+      <div>
+        <h1 class="title">${headerConfig.title || 'Examination Assessment'}</h1>
+        <div class="subtitle">${headerConfig.subject || ''} ${headerConfig.subjectCode ? `(${headerConfig.subjectCode})` : ''}</div>
+      </div>
+      <div style="text-align: right;">
+        <div style="font-weight: bold; font-size: 14px;">${headerConfig.durationMinutes || 45} minutes</div>
+        <div style="font-weight: bold; font-size: 13px; border: 1px solid #111; padding: 2px 8px; margin-top: 4px; display: inline-block;">Total Marks: ${totalMarks}</div>
+      </div>
+    </div>
+
+    ${
+      headerConfig.instructions
+        ? `<div class="inst-box">
+            <div style="font-weight: bold; margin-bottom: 4px;">INSTRUCTIONS TO CANDIDATES:</div>
+            <div>• ${headerConfig.instructions}</div>
+            ${headerConfig.additionalMaterials ? `<div>• Additional Materials: ${headerConfig.additionalMaterials}</div>` : ''}
+            <div>• The number of marks is given in brackets [ ] at the end of each question or part question.</div>
+          </div>`
+        : ''
+    }
+    `
+  }
+
+  <div class="questions-container">
+    ${questions
+      .map((q, idx) => {
+        const qNum = idx + 1;
+        const stem = convertMarkdownTablesToHtml(q.question_text);
+
+        let content = `
+          <div class="q-block">
+            <div class="q-header">
+              <span class="q-num">${qNum}.</span>
+              <div class="q-text">${stem}</div>
+            </div>
+        `;
+
+        const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+        if (diagramUrl) {
+          content += `
+            <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
+              <img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />
+            </div>
+          `;
+        }
+
+        if (q.options && q.options.length > 0) {
+          q.options.forEach((opt, optIdx) => {
+            const { letter, text } = parseMcqOption(opt, optIdx);
+            content += `
+              <div class="mcq-choice" style="display: flex; align-items: baseline; margin: 6px 0 6px 32px; font-size: 14px;">
+                <span style="font-weight: bold; min-width: 28px; margin-right: 14px; font-size: 15px;">${letter}</span>
+                <div style="flex: 1; text-align: justify;">${formatLatexForHtml(text)}</div>
+              </div>
+            `;
+          });
+        }
+
+        if (q.sub_questions && q.sub_questions.length > 0) {
+          q.sub_questions.forEach((sub) => {
+            content += `
+              <div class="sub-block">
+                <div class="sub-row">
+                  <span class="sub-id">${sub.sub_id}</span>
+                  <span class="sub-text">${convertMarkdownTablesToHtml(sub.question_text)}</span>
+                  <span class="marks">[${sub.marks}]</span>
+                </div>
+            `;
+
+            const subDiagramUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
+            if (subDiagramUrl) {
+              content += `
+                <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
+                  <img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />
+                </div>
+              `;
+            }
+
+            if (includeAnswerLines && !isSeparate) {
+              const lineCount = Math.min(6, Math.max(2, (sub.marks || 1) * linesPerMark));
+              content += `<div class="ans-lines">`;
+              for (let li = 0; li < lineCount; li++) {
+                content += `<div class="ans-line"></div>`;
+              }
+              content += `</div>`;
+            }
+
+            content += `</div>`;
+          });
+        } else if (includeAnswerLines && !isSeparate && (!q.options || q.options.length === 0)) {
+          const lineCount = Math.min(6, Math.max(2, (q.marks || 1) * linesPerMark));
+          content += `<div class="ans-lines">`;
+          for (let li = 0; li < lineCount; li++) {
+            content += `<div class="ans-line"></div>`;
+          }
+          content += `</div>`;
+        }
+
+        content += `
+            <div class="total-row">[Total: ${q.marks || 1}]</div>
+          </div>
+        `;
+
+        return content;
+      })
+      .join('')}
+  </div>
+
+  ${showTurnOverNotice ? `<div class="turn-over">[Turn over</div>` : ''}
+
+  ${
+    options.includeMcqAnswerSheet
+      ? `
+    <!-- Attached Multiple Choice Answer Sheet -->
+    <div style="page-break-before: always; break-before: page; margin-top: 30px;">
+      ${renderMcqAnswerSheetHtml(headerConfig, questions, options)}
+    </div>
+    `
+      : ''
+  }
+
+  ${
+    options.includePeriodicTable
+      ? `
+    <!-- Attached Cambridge IGCSE Periodic Table of Elements -->
+    ${renderPeriodicTableHtml({ rotated: true })}
+    `
+      : ''
+  }
+
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      // Calculate realistic A4 page height (approx 1020px printable area per page)
+      const printablePageHeight = 1020;
+      const questionsContainer = document.querySelector('.questions-container');
+      const countEl = document.getElementById('cambridge-page-count');
+      
+      if (questionsContainer && countEl) {
+        const contentHeight = questionsContainer.scrollHeight;
+        const questionPages = Math.max(1, Math.ceil(contentHeight / printablePageHeight));
+        const totalCalculatedPages = 1 + questionPages + ${options.includeMcqAnswerSheet ? 1 : 0} + ${options.includePeriodicTable ? 1 : 0}; // Cover + Questions + Extras
+        countEl.textContent = String(totalCalculatedPages);
+      }
+      
+      setTimeout(() => { window.print(); }, 400);
+    });
+  </script>
+</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+}
+
+/**
+ * Opens a dedicated Cambridge IGCSE Periodic Table in a printable window
+ */
+export function openPeriodicTablePrintWindow(headerConfig: ExamHeaderConfig) {
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Please allow popups to open the Periodic Table.');
+    return;
+  }
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${headerConfig.subject || 'Chemistry'} — The Periodic Table of Elements</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: white; }
+    .no-print { text-align: center; padding: 10px; background: #e0e7ff; color: #3730a3; font-size: 13px; margin-bottom: 12px; }
     @media print { .no-print { display: none; } }
   </style>
 </head>
 <body>
   <div class="no-print">
-    <strong>Print Ready Preview</strong> — Press <code>Ctrl + P</code> (or Cmd + P) to Save as PDF or Print.
+    <strong>Cambridge IGCSE Chemistry Periodic Table</strong> — Press <code>Ctrl + P</code> to Save as PDF or Print (Landscape).
+  </div>
+  ${renderPeriodicTableHtml({ rotated: false })}
+  <script>
+    setTimeout(() => { window.print(); }, 400);
+  </script>
+</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+}
+
+/**
+ * Opens a dedicated Insert / Resource Booklet for Social Sciences & Humanities (Geography, History, Sociology, Economics, etc.)
+ */
+export function openInsertBookletPrintWindow(
+  headerConfig: ExamHeaderConfig,
+  questions: Question[],
+  options: Partial<ExportLayoutOptions> = {}
+) {
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Please allow popups to open the Insert Booklet.');
+    return;
+  }
+
+  const schoolLogo = options.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
+  const cambridgeLogo = DEFAULT_CAMBRIDGE_LOGO;
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${headerConfig.title || 'Exam'} — Insert / Resource Booklet</title>
+  <style>
+    @page { size: A4; margin: 15mm; }
+    body { font-family: "Times New Roman", Times, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
+    .no-print { text-align: center; padding: 10px; background: #e0e7ff; color: #3730a3; font-size: 13px; margin-bottom: 16px; border-radius: 6px; font-family: Arial, sans-serif; }
+    @media print { .no-print { display: none; } }
+    .header-logo-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 16px; }
+    .cand-box { border: 1.5px solid #111; padding: 10px 14px; margin-bottom: 20px; }
+    .inst-box { border: 1.5px solid #111; padding: 12px 16px; background: #fdfdfd; margin-bottom: 24px; font-family: Arial, sans-serif; }
+    .resource-item { border: 1px solid #cbd5e1; border-radius: 6px; padding: 16px; margin-bottom: 24px; page-break-inside: avoid; background: white; }
+    .resource-title { font-weight: bold; font-size: 16px; color: #1e3a8a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <strong>Cambridge IGCSE Insert / Resource Booklet</strong> — Press <code>Ctrl + P</code> to Save as PDF or Print.
   </div>
 
-  <div class="header-box">
+  <div class="header-logo-row">
+    <img src="${schoolLogo}" alt="School Logo" style="height: 48px; max-width: 160px; object-fit: contain;" />
+    <img src="${cambridgeLogo}" alt="Cambridge Logo" style="height: 48px; max-width: 180px; object-fit: contain;" />
+  </div>
+
+  <div style="text-align: center; margin-bottom: 18px;">
+    <h1 style="font-size: 22px; font-weight: bold; margin: 0 0 6px;">${headerConfig.subject || 'Social Sciences'} — INSERT / RESOURCE BOOKLET</h1>
+    <div style="font-size: 14px; font-weight: bold; color: #4b5563;">${headerConfig.title || 'Assessment Resources'} &nbsp;•&nbsp; ${headerConfig.subjectCode || ''}</div>
+  </div>
+
+  <div class="inst-box">
+    <div style="font-weight: bold; margin-bottom: 6px; font-size: 13px;">INFORMATION & INSTRUCTIONS:</div>
+    <div style="font-size: 12px; line-height: 1.6;">
+      • This insert contains all the resources, figures, maps, tables, case studies, and source extracts referred to in the question paper.<br />
+      • You may make any necessary annotations or highlights directly on the insert.<br />
+      • This Insert is not assessed. Write your answers only in the question paper / answer booklet.
+    </div>
+  </div>
+
+  <div class="resources-container">
+    ${questions
+      .map((q, idx) => {
+        const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+        const hasTable = q.question_text && q.question_text.includes('|');
+        if (!diagramUrl && !hasTable) return '';
+
+        return `
+          <div class="resource-item">
+            <div class="resource-title">Resource for Question ${idx + 1} (${q.topic || 'Source Material'})</div>
+            ${diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${diagramUrl}" alt="Resource Diagram ${idx + 1}" style="max-width: 90%; max-height: 320px; object-fit: contain;" /></div>` : ''}
+            ${hasTable ? `<div style="margin-top: 10px;">${convertMarkdownTablesToHtml(q.question_text)}</div>` : ''}
+          </div>
+        `;
+      })
+      .join('')}
+  </div>
+
+  <script>
+    setTimeout(() => { window.print(); }, 400);
+  </script>
+</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+}
+
+/**
+ * Opens a dedicated Multiple Choice Bubble Answer Sheet in a printable PDF window
+ */
+export function openMcqAnswerSheetPrintWindow(
+  headerConfig: ExamHeaderConfig,
+  questions: Question[],
+  options: Partial<ExportLayoutOptions> = {}
+) {
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Please allow popups to open the MCQ Answer Sheet.');
+    return;
+  }
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${headerConfig.title || 'Exam'} — Multiple Choice Answer Sheet</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 10mm 12mm 10mm 12mm;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      color: #111;
+      line-height: 1.4;
+      margin: 0;
+      padding: 10px;
+      background: white;
+    }
+    .no-print {
+      text-align: center;
+      padding: 12px;
+      background: #e0e7ff;
+      color: #3730a3;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      margin-bottom: 20px;
+      border-radius: 6px;
+      border: 1px solid #c7d2fe;
+    }
+    @media print {
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <strong>Multiple Choice Bubble Answer Sheet Preview</strong> — Press <code>Ctrl + P</code> (or Cmd + P) to Save as PDF or Print.
+  </div>
+
+  ${renderMcqAnswerSheetHtml(headerConfig, questions, options)}
+
+  <script>
+    setTimeout(() => { window.print(); }, 400);
+  </script>
+</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+}
+
+/**
+ * Opens a dedicated student Answer Booklet in a printable PDF window
+ */
+export function openAnswerBookletPrintWindow(
+  headerConfig: ExamHeaderConfig,
+  questions: Question[],
+  options: Partial<ExportLayoutOptions> = {}
+) {
+  const { linesPerMark = 3, answerLineStyle = 'dotted', showTurnOverNotice = true } = options;
+  const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Please allow popups to open the Answer Booklet.');
+    return;
+  }
+
+  const answerLineBorder = answerLineStyle === 'dotted' ? '1.5px dotted #64748b' : '1.2px solid #94a3b8';
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${headerConfig.title || 'Exam'} — Candidate Answer Booklet</title>
+  <style>
+    @page { size: A4; margin: 15mm; }
+    body { font-family: "Times New Roman", Times, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
+    .no-print { text-align: center; padding: 12px; background: #e0e7ff; color: #3730a3; font-family: Arial, sans-serif; font-size: 13px; margin-bottom: 20px; border-radius: 6px; }
+    @media print { .no-print { display: none; } }
+    .cand-box { border: 1.5px solid #111; padding: 10px 14px; margin-bottom: 16px; }
+    .cand-row { display: flex; justify-content: space-between; align-items: baseline; font-family: Arial, sans-serif; font-size: 13px; font-weight: bold; }
+    .box-grid { display: inline-flex; gap: 4px; margin-left: 6px; }
+    .grid-square { width: 18px; height: 18px; border: 1.5px solid #111; display: inline-block; }
+    .title-block { border-bottom: 2px solid #111; padding-bottom: 8px; margin-bottom: 16px; }
+    .q-booklet-item { margin-bottom: 24px; page-break-inside: avoid; }
+    .q-booklet-title { font-weight: bold; font-size: 16px; color: #1e40af; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 10px; }
+    .sub-booklet-id { font-weight: bold; font-size: 14px; margin-bottom: 6px; }
+    .ans-lines { display: flex; flex-direction: column; gap: 26px; margin-bottom: 16px; }
+    .ans-line { border-bottom: ${answerLineBorder}; height: 1px; width: 100%; }
+    .turn-over { text-align: right; font-style: italic; font-size: 12px; color: #64748b; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <strong>Candidate Answer Booklet Preview</strong> — Press <code>Ctrl + P</code> (or Cmd + P) to Save as PDF or Print.
+  </div>
+
+  <div class="cand-box">
+    <div class="cand-row" style="margin-bottom: 8px;">
+      <span style="min-width: 120px;">CANDIDATE NAME:</span>
+      <span style="flex: 1; border-bottom: 1px dotted #888; height: 1px; display: inline-block; margin-right: 16px;"></span>
+    </div>
     <div class="cand-row">
-      <span style="min-width: 50px;">NAME:</span> <span class="line" style="margin-right: 20px;"></span>
-      <span style="min-width: 55px;">CLASS:</span> <span class="line" style="max-width: 140px; margin-right: 20px;"></span>
-      <span style="min-width: 48px;">DATE:</span> <span class="line" style="max-width: 140px;"></span>
+      <span>CENTRE NUMBER:</span>
+      <div class="box-grid">
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+      </div>
+      <span style="margin-left: 20px;">CANDIDATE NUMBER:</span>
+      <div class="box-grid">
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+        <span class="grid-square"></span>
+      </div>
     </div>
   </div>
 
   <div class="title-block">
-    <div>
-      <h1 class="title">${headerConfig.title || 'Examination Assessment'}</h1>
-      <div class="subtitle">${headerConfig.subject || ''} ${headerConfig.subjectCode ? `(${headerConfig.subjectCode})` : ''}</div>
-    </div>
-    <div style="text-align: right;">
-      <div style="font-weight: bold; font-size: 14px;">${headerConfig.durationMinutes || 45} minutes</div>
-      <div style="font-weight: bold; font-size: 13px; border: 1px solid #111; padding: 2px 8px; margin-top: 4px; display: inline-block;">Total Marks: ${totalMarks}</div>
-    </div>
+    <h1 style="font-size: 20px; font-weight: bold; margin: 0 0 4px;">${headerConfig.title || 'Examination Assessment'} — CANDIDATE ANSWER BOOKLET</h1>
+    <div style="font-size: 14px; color: #4b5563;">Subject: ${headerConfig.subject || ''} &nbsp;•&nbsp; Total Marks: ${totalMarks}</div>
   </div>
-
-  ${
-    headerConfig.instructions
-      ? `<div class="inst-box">
-          <div style="font-weight: bold; margin-bottom: 4px;">INSTRUCTIONS:</div>
-          <div>• ${headerConfig.instructions}</div>
-          ${headerConfig.additionalMaterials ? `<div>• Additional materials: ${headerConfig.additionalMaterials}</div>` : ''}
-          <div>• The number of marks is shown in brackets [ ] at the end of each question or part question.</div>
-        </div>`
-      : ''
-  }
 
   ${questions
     .map((q, idx) => {
       const qNum = idx + 1;
-      const stem = convertMarkdownTablesToHtml(q.question_text);
-
-      let content = `
-        <div class="q-block">
-          <div class="q-header">
-            <span class="q-num">${qNum}</span>
-            <div class="q-text">${stem}</div>
-          </div>
+      let res = `
+        <div class="q-booklet-item">
+          <div class="q-booklet-title">Question ${qNum} <span style="font-size: 13px; color: #4b5563; font-weight: normal;">[${q.marks || 1} mark${q.marks !== 1 ? 's' : ''}]</span></div>
       `;
-
-      if (q.options && q.options.length > 0) {
-        q.options.forEach((opt) => {
-          content += `<div class="mcq-choice">${formatLatexForHtml(opt)}</div>`;
-        });
-      }
 
       if (q.sub_questions && q.sub_questions.length > 0) {
         q.sub_questions.forEach((sub) => {
-          content += `
-            <div class="sub-block">
-              <div class="sub-row">
-                <span class="sub-id">${sub.sub_id}</span>
-                <span class="sub-text">${convertMarkdownTablesToHtml(sub.question_text)}</span>
-                <span class="marks">[${sub.marks}]</span>
-              </div>
+          const subLines = Math.max(2, (sub.marks || 1) * linesPerMark);
+          res += `
+            <div class="sub-booklet-id">${sub.sub_id} <span style="font-size: 12px; color: #64748b; font-weight: normal;">[${sub.marks || 1}]</span></div>
+            <div class="ans-lines">
           `;
-
-          if (includeAnswerLines) {
-            const lineCount = Math.min(6, Math.max(2, (sub.marks || 1) * linesPerMark));
-            content += `<div class="ans-lines">`;
-            for (let li = 0; li < lineCount; li++) {
-              content += `<div class="ans-line"></div>`;
-            }
-            content += `</div>`;
+          for (let li = 0; li < subLines; li++) {
+            res += `<div class="ans-line"></div>`;
           }
-
-          content += `</div>`;
+          res += `</div>`;
         });
-      } else if (includeAnswerLines && (!q.options || q.options.length === 0)) {
-        const lineCount = Math.min(6, Math.max(2, (q.marks || 1) * linesPerMark));
-        content += `<div class="ans-lines">`;
+      } else {
+        const lineCount = Math.max(2, (q.marks || 1) * linesPerMark);
+        res += `<div class="ans-lines">`;
         for (let li = 0; li < lineCount; li++) {
-          content += `<div class="ans-line"></div>`;
+          res += `<div class="ans-line"></div>`;
         }
-        content += `</div>`;
+        res += `</div>`;
       }
 
-      content += `
-          <div class="total-row">[Total: ${q.marks}]</div>
-        </div>
-      `;
-
-      return content;
+      res += `</div>`;
+      return res;
     })
     .join('')}
+
+  ${showTurnOverNotice ? `<div class="turn-over">[Turn over</div>` : ''}
 
   <script>
     setTimeout(() => { window.print(); }, 500);
@@ -298,17 +930,19 @@ export function openStudentPaperPrintWindow(
 }
 
 /**
- * Opens a clean printable window formatted for Teacher Mark Scheme & Answer Key PDF export
+/**
+ * Opens a clean printable window formatted for Comprehensive Teacher Mark Scheme PDF export
  */
 export function openTeacherMarkSchemePrintWindow(
   headerConfig: ExamHeaderConfig,
-  questions: Question[]
+  questions: Question[],
+  _options: Partial<ExportLayoutOptions> = {}
 ) {
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
 
   const printWindow = window.open('', '_blank');
   if (!printWindow) {
-    alert('Please allow popups to open the print-ready PDF window.');
+    alert('Please allow popups to open the print-ready Mark Scheme.');
     return;
   }
 
@@ -316,90 +950,119 @@ export function openTeacherMarkSchemePrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Teacher Mark Scheme: ${headerConfig.title || 'Assessment'}</title>
+  <title>${headerConfig.title || 'Assessment'} — Comprehensive Teacher Solutions</title>
   <style>
-    @page { size: A4; margin: 20mm 15mm 20mm 15mm; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #111; line-height: 1.4; margin: 0; padding: 10px; font-size: 13px; }
-    .header { border-bottom: 2px solid #1e3a8a; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: baseline; }
-    .title { font-size: 20px; font-weight: bold; color: #1e3a8a; margin: 0 0 4px; }
-    .sub { font-size: 13px; color: #4b5563; font-weight: bold; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th { background: #1e3a8a; color: white; text-align: left; padding: 8px 10px; font-size: 12px; text-transform: uppercase; }
-    td { border-bottom: 1px solid #e5e7eb; padding: 10px 10px; vertical-align: top; }
-    tr:nth-child(even) td { background: #f9fafb; }
-    .q-col { font-weight: bold; width: 12%; color: #1e3a8a; }
-    .ans-col { width: 62%; line-height: 1.6; }
-    .acc-col { width: 16%; color: #4b5563; font-style: italic; }
-    .mark-col { width: 10%; font-weight: bold; text-align: right; }
-    .no-print { text-align: center; padding: 10px; background: #e0e7ff; font-size: 13px; margin-bottom: 20px; font-weight: bold; }
+    @page { size: A4; margin: 15mm; }
+    body { font-family: Arial, sans-serif; color: #111827; line-height: 1.4; margin: 0; padding: 10px; }
+    .no-print { text-align: center; padding: 10px; background: #fee2e2; color: #991b1b; font-size: 13px; margin-bottom: 20px; border-radius: 6px; }
     @media print { .no-print { display: none; } }
+    .title-block { border-bottom: 2px solid #1e3a8a; padding-bottom: 8px; margin-bottom: 16px; }
+    .title { font-size: 20px; font-weight: bold; color: #1e3a8a; margin: 0 0 4px; }
+    .subtitle { font-size: 13px; color: #4b5563; font-weight: bold; }
+    .q-section { margin-bottom: 24px; page-break-inside: avoid; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+    .q-banner { background: #f8fafc; padding: 8px 12px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
+    .q-banner-title { font-weight: bold; font-size: 14px; color: #1e3a8a; }
+    .q-banner-meta { font-size: 12px; color: #64748b; }
+    .q-stem-box { padding: 10px 12px; font-size: 13px; color: #374151; background: #ffffff; border-bottom: 1px solid #f1f5f9; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { background: #1e3a8a; color: white; border: 1px solid #1e3a8a; padding: 6px 10px; text-align: left; }
+    td { border: 1px solid #e5e7eb; padding: 6px 10px; vertical-align: top; }
+    tr:nth-child(even) { background: #fafafa; }
+    .guidance-box { margin-top: 4px; font-size: 11px; color: #2563eb; font-style: italic; background: #eff6ff; padding: 4px 6px; border-radius: 4px; }
+    .trap-box { margin-top: 4px; font-size: 11px; color: #d97706; font-style: italic; background: #fffbeb; padding: 4px 6px; border-radius: 4px; }
   </style>
 </head>
 <body>
   <div class="no-print">
-    <strong>Teacher Mark Scheme & Solutions</strong> — Press <code>Ctrl + P</code> to Save as PDF or Print.
+    <strong>Comprehensive Teacher Mark Scheme & Solutions Preview</strong> — Press <code>Ctrl + P</code> to Save as PDF or Print.
   </div>
 
-  <div class="header">
-    <div>
-      <h1 class="title">TEACHER MARK SCHEME</h1>
-      <div class="sub">${headerConfig.title || 'Custom Exam Assessment'} • ${headerConfig.subject || 'Exam'} (${headerConfig.subjectCode || 'General'})</div>
-    </div>
-    <div style="text-align: right; font-weight: bold; font-size: 14px; color: #1e3a8a;">
-      Maximum Mark: ${totalMarks}
-    </div>
+  <div class="title-block">
+    <h1 class="title">COMPREHENSIVE TEACHER MARK SCHEME & SOLUTIONS</h1>
+    <div class="subtitle">${headerConfig.title || 'Assessment'} &nbsp;•&nbsp; Subject: ${headerConfig.subject || 'General'} (${headerConfig.subjectCode || ''}) &nbsp;•&nbsp; Maximum Mark: ${totalMarks}</div>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th class="q-col">Question</th>
-        <th class="ans-col">Answer / Marking Criteria</th>
-        <th class="acc-col">Acceptable Answers</th>
-        <th class="mark-col">Marks</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${questions
-        .map((q, idx) => {
-          const qNum = idx + 1;
-          if (q.sub_questions && q.sub_questions.length > 0) {
-            return q.sub_questions
-              .map((sub) => {
-                const msText =
-                  typeof sub.mark_scheme === 'string'
-                    ? sub.mark_scheme
-                    : Array.isArray(sub.mark_scheme)
-                      ? (sub.mark_scheme as string[]).join('; ')
-                      : 'See marking scheme points';
+  ${questions
+    .map((q, idx) => {
+      const qNum = idx + 1;
+      const stem = convertMarkdownTablesToHtml(q.question_text || '');
 
-                return `
-                  <tr>
-                    <td class="q-col">${qNum} ${sub.sub_id}</td>
-                    <td class="ans-col">${formatLatexForHtml(msText)}</td>
-                    <td class="acc-col">—</td>
-                    <td class="mark-col">[${sub.marks}]</td>
-                  </tr>
-                `;
-              })
-              .join('');
-          } else {
-            const msPoints = q.mark_scheme?.marking_points?.join('<br />• ') || 'Award mark according to standard criteria.';
-            const acceptable = q.mark_scheme?.acceptable_answers?.join(', ') || '—';
+      let subRowsHtml = '';
+      if (q.sub_questions && q.sub_questions.length > 0) {
+        subRowsHtml = q.sub_questions
+          .map((sub) => {
+            const msText =
+              typeof sub.mark_scheme === 'string'
+                ? sub.mark_scheme
+                : Array.isArray(sub.mark_scheme)
+                ? (sub.mark_scheme as string[]).join('<br />• ')
+                : 'Credit scientifically accurate answer with appropriate working.';
 
             return `
+            <tr>
+              <td style="width: 12%;"><strong>${sub.sub_id}</strong></td>
+              <td style="width: 58%;">
+                ${sub.question_text ? `<div style="color: #64748b; font-size: 11px; margin-bottom: 3px;"><em>${formatLatexForHtml(sub.question_text)}</em></div>` : ''}
+                • ${formatLatexForHtml(msText)}
+                ${sub.guidance ? `<div class="guidance-box">💡 <strong>Examiner Guidance:</strong> ${formatLatexForHtml(sub.guidance)}</div>` : ''}
+                ${sub.common_misconceptions && sub.common_misconceptions.length > 0 ? `<div class="trap-box">⚠️ <strong>Common Trap:</strong> ${sub.common_misconceptions.map(formatLatexForHtml).join('; ')}</div>` : ''}
+              </td>
+              <td style="width: 18%; font-size: 11px; color: #4b5563;">Allow ECF from earlier parts</td>
+              <td style="width: 12%; text-align: center; font-weight: bold;">[${sub.marks || 1}]</td>
+            </tr>
+          `;
+          })
+          .join('');
+      } else {
+        const ms = q.mark_scheme;
+        const points = ms?.marking_points ? ms.marking_points.map(formatLatexForHtml).join('<br />• ') : 'Credit scientifically accurate answer with appropriate working.';
+        const acceptable = ms?.acceptable_answers ? ms.acceptable_answers.map(formatLatexForHtml).join(', ') : 'Synonyms & valid alternatives accepted';
+        const guidance = ms?.guidance ? ms.guidance.map(formatLatexForHtml).join('; ') : '';
+        const traps = ms?.common_misconceptions ? ms.common_misconceptions.map(formatLatexForHtml).join('; ') : '';
+
+        subRowsHtml = `
+          <tr>
+            <td style="width: 12%;"><strong>Q${qNum}</strong></td>
+            <td style="width: 58%;">
+              • ${points}
+              ${guidance ? `<div class="guidance-box">💡 <strong>Examiner Guidance:</strong> ${guidance}</div>` : ''}
+              ${traps ? `<div class="trap-box">⚠️ <strong>Common Trap:</strong> ${traps}</div>` : ''}
+            </td>
+            <td style="width: 18%; font-size: 11px; color: #4b5563;">${acceptable}</td>
+            <td style="width: 12%; text-align: center; font-weight: bold;">[${q.marks || 1}]</td>
+          </tr>
+        `;
+      }
+
+      const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+
+      return `
+        <div class="q-section">
+          <div class="q-banner">
+            <span class="q-banner-title">Question ${qNum} [${q.marks || 1} mark${q.marks !== 1 ? 's' : ''}]</span>
+            <span class="q-banner-meta">${q.topic ? `${q.topic}${q.sub_topic ? ` › ${q.sub_topic}` : ''}` : ''}</span>
+          </div>
+          <div class="q-stem-box">
+            ${stem}
+            ${diagramUrl ? `<div style="text-align: center; margin: 8px 0;"><img src="${diagramUrl}" alt="Diagram" style="max-width: 75%; max-height: 200px; object-fit: contain;" /></div>` : ''}
+          </div>
+          <table>
+            <thead>
               <tr>
-                <td class="q-col">${qNum}</td>
-                <td class="ans-col">• ${formatLatexForHtml(msPoints)}</td>
-                <td class="acc-col">${formatLatexForHtml(acceptable)}</td>
-                <td class="mark-col">[${q.marks}]</td>
+                <th style="width: 12%;">Part</th>
+                <th style="width: 58%;">Marking Criteria & Model Answer</th>
+                <th style="width: 18%;">Acceptable / ECF</th>
+                <th style="width: 12%; text-align: center;">Marks</th>
               </tr>
-            `;
-          }
-        })
-        .join('')}
-    </tbody>
-  </table>
+            </thead>
+            <tbody>
+              ${subRowsHtml}
+            </tbody>
+          </table>
+        </div>
+      `;
+    })
+    .join('')}
 
   <script>
     setTimeout(() => { window.print(); }, 500);

@@ -720,3 +720,92 @@ export async function cropAndUploadDiagrams(
   const publicUrls = await uploadDiagramsToStorage(localMap, paperInfo, onProgress);
   return publicUrls;
 }
+
+/**
+ * Gets total page count of a PDF document
+ */
+export async function getPdfPageCount(pdfSource: File | ArrayBuffer): Promise<number> {
+  const data = pdfSource instanceof File ? await pdfSource.arrayBuffer() : pdfSource;
+  const pdfDocument = await pdfjsLib.getDocument({ data }).promise;
+  return pdfDocument.numPages;
+}
+
+/**
+ * Renders a specific page of a PDF document to an HTMLCanvasElement for interactive viewing or fine-tuning
+ */
+export async function renderPdfPageToCanvas(
+  pdfSource: File | ArrayBuffer,
+  pageNumber: number,
+  scale: number = 2.5
+): Promise<HTMLCanvasElement> {
+  const data = pdfSource instanceof File ? await pdfSource.arrayBuffer() : pdfSource;
+  const pdfDocument = await pdfjsLib.getDocument({ data }).promise;
+  return renderPdfPage(pdfDocument, pageNumber, scale);
+}
+
+/**
+ * Interactive fine-tuning crop of a bounding box [ymin, xmin, ymax, xmax] from a canvas
+ */
+export async function cropCanvasRegion(
+  canvas: HTMLCanvasElement,
+  box: [number, number, number, number]
+): Promise<{ blob: Blob; localUrl: string }> {
+  return cropExactCanvasRegion(canvas, box);
+}
+
+/**
+ * Crops the exact user-defined bounding box from a canvas without automatic padding shifts
+ */
+export async function cropExactCanvasRegion(
+  canvas: HTMLCanvasElement,
+  box: [number, number, number, number]
+): Promise<{ blob: Blob; localUrl: string }> {
+  const [ymin, xmin, ymax, xmax] = normalizeBoundingBox(box);
+  const { width, height } = canvas;
+
+  const cropX = Math.max(0, Math.round((xmin / 1000) * width));
+  const cropY = Math.max(0, Math.round((ymin / 1000) * height));
+  const cropW = Math.min(width - cropX, Math.max(20, Math.round(((xmax - xmin) / 1000) * width)));
+  const cropH = Math.min(height - cropY, Math.max(20, Math.round(((ymax - ymin) / 1000) * height)));
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = cropW;
+  outCanvas.height = cropH;
+  const ctx = outCanvas.getContext('2d');
+  if (!ctx) throw new Error('Failed to get crop canvas context');
+
+  ctx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  // Convert to WebP or PNG blob
+  const blob: Blob = await new Promise((resolve, reject) => {
+    outCanvas.toBlob(
+      (b) => {
+        if (b) resolve(b);
+        else {
+          outCanvas.toBlob((png) => {
+            if (png) resolve(png);
+            else reject(new Error('Failed to create blob'));
+          }, 'image/png');
+        }
+      },
+      'image/webp',
+      0.92
+    );
+  });
+
+  const localUrl = URL.createObjectURL(blob);
+  return { blob, localUrl };
+}
+
+/**
+ * Uploads a single diagram Blob directly to Supabase Storage and returns the public URL
+ */
+export async function uploadSingleDiagramBlob(
+  blob: Blob,
+  pathInfo: { subject_code?: string; year?: number; paper_number?: number; question_number: string }
+): Promise<string | null> {
+  const { subject_code = 'GEN', year = new Date().getFullYear(), paper_number = 1, question_number } = pathInfo;
+  const sanitizedQ = question_number.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const fileName = `${subject_code}_${year}_p${paper_number}_q${sanitizedQ}_${Date.now()}`;
+  return uploadToStorage(blob, fileName);
+}

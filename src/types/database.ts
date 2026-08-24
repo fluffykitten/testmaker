@@ -16,6 +16,8 @@ export type QuestionStyle =
 export interface MarkScheme {
   marking_points: string[];
   acceptable_answers?: string[];
+  guidance?: string[];               // Teacher / Examiner tips & alternate allowable methods
+  common_misconceptions?: string[];   // Common student errors & conceptual traps
 }
 
 export interface SubQuestion {
@@ -23,6 +25,8 @@ export interface SubQuestion {
   question_text: string;    // LaTeX-enriched text
   marks: number;
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
+  guidance?: string;        // Sub-question specific teacher guidance/examiner tip
+  common_misconceptions?: string[]; // Sub-question specific common student errors
 }
 
 // ─── Table Interfaces ──────────────────────────────────────────────────────────
@@ -57,11 +61,13 @@ export interface Question {
 
 export interface CustomTest {
   id: string;               // UUID
-  user_id: string | null;   // FK → auth.users (null when auth is deferred)
+  user_id?: string | null;  // FK → auth.users (null when auth is deferred)
   title: string;
   total_marks: number;
   question_ids: string[];   // UUID[]
   created_at: string;
+  updated_at?: string;
+  header_config?: any;
 }
 
 export interface AppConfig {

@@ -11,6 +11,7 @@ export interface AppSettings {
   accent: AccentColor;
   fontSize: FontSize;
   density: Density;
+  defaultAiGuidanceEnabled: boolean;
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   accent: 'indigo',
   fontSize: 'normal',
   density: 'comfortable',
+  defaultAiGuidanceEnabled: true,
 };
 
 // Accent palette color mappings for --color-primary tokens

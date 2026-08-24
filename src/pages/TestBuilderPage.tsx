@@ -9,24 +9,34 @@ import { TestQuestionItem } from '../components/TestQuestionItem';
 import { TestStatsSidebar } from '../components/TestStatsSidebar';
 import { TestPaperPreview } from '../components/TestPaperPreview';
 import { ExportModal } from '../components/ExportModal';
+import { QuestionEditorModal } from '../components/QuestionEditorModal';
+import { QuestionVariantModal } from '../components/QuestionVariantModal';
+import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
+import { StudentShareModal } from '../components/StudentShareModal';
 import './TestBuilderPage.css';
 
 interface TestBuilderPageProps {
   initialQuestions: Question[];
   onRemoveQuestion: (questionId: string) => void;
   onNavigateToBank: () => void;
+  onLaunchTestRun?: (questions: Question[], headerConfig: ExamHeaderConfig) => void;
 }
 
 export function TestBuilderPage({
   initialQuestions,
   onRemoveQuestion,
   onNavigateToBank,
+  onLaunchTestRun,
 }: TestBuilderPageProps) {
   const [questions, setQuestions] = useState<Question[]>(initialQuestions);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccessMsg, setSavedSuccessMsg] = useState<string | null>(null);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
+  const [variantQuestion, setVariantQuestion] = useState<Question | null>(null);
+  const [isAssemblerOpen, setIsAssemblerOpen] = useState(false);
 
   // Sync questions if props change
   useEffect(() => {
@@ -113,25 +123,56 @@ export function TestBuilderPage({
           <div className="builder-view-switcher">
             <button
               type="button"
+              className="builder-assemble-btn"
+              onClick={() => setIsAssemblerOpen(true)}
+              title="Automatically assemble exam matching target marks and topics"
+            >
+              ⚡ Auto-Assemble
+            </button>
+
+            <button
+              type="button"
+              className="builder-share-top-btn"
+              onClick={() => setIsShareModalOpen(true)}
+              disabled={questions.length === 0}
+              title="Share Quiz code or export to Canvas/Moodle/Google Forms"
+            >
+              🔗 Share & LMS
+            </button>
+
+            {onLaunchTestRun && (
+              <button
+                type="button"
+                className="builder-testrun-top-btn"
+                onClick={() => onLaunchTestRun(questions, headerConfig)}
+                disabled={questions.length === 0}
+                title="Launch interactive student test-run simulation"
+              >
+                ▶️ Test-Run Quiz
+              </button>
+            )}
+
+            <button
+              type="button"
               className="builder-export-top-btn"
               onClick={() => setIsExportModalOpen(true)}
               disabled={questions.length === 0}
             >
-              ⚡ Export Exam
+              📄 Export Word/PDF
             </button>
             <button
               type="button"
               className={`builder-switch-btn ${!isPreviewMode ? 'builder-switch-btn--active' : ''}`}
               onClick={() => setIsPreviewMode(false)}
             >
-              ✏️ Editor Mode
+              ✏️ Editor
             </button>
             <button
               type="button"
               className={`builder-switch-btn ${isPreviewMode ? 'builder-switch-btn--active' : ''}`}
               onClick={() => setIsPreviewMode(true)}
             >
-              👁️ Paper Preview Mode
+              👁️ Paper Preview
             </button>
           </div>
         </div>
@@ -159,15 +200,24 @@ export function TestBuilderPage({
             <h2 className="builder-empty-title">Your Test Workspace is Empty</h2>
             <p className="builder-empty-desc">
               You haven't selected any questions for this custom exam yet.
-              Browse the Question Bank and select past paper questions to begin assembling your test.
+              Browse the Question Bank, or use the <strong>Smart Auto-Assembler</strong> to generate a complete paper in seconds.
             </p>
-            <button
-              type="button"
-              className="builder-btn-primary"
-              onClick={onNavigateToBank}
-            >
-              ← Go to Question Bank
-            </button>
+            <div className="builder-empty-actions">
+              <button
+                type="button"
+                className="builder-btn-assemble"
+                onClick={() => setIsAssemblerOpen(true)}
+              >
+                ⚡ Auto-Assemble with Criteria
+              </button>
+              <button
+                type="button"
+                className="builder-btn-secondary"
+                onClick={onNavigateToBank}
+              >
+                ← Go to Question Bank
+              </button>
+            </div>
           </div>
         ) : (
           /* ─── Workspace Layout ─────────────────────────────────────────────── */
@@ -207,6 +257,8 @@ export function TestBuilderPage({
                         onMoveUp={handleMoveUp}
                         onMoveDown={handleMoveDown}
                         onRemove={handleRemove}
+                        onEdit={(target) => setEditingQuestion(target)}
+                        onGenerateVariant={(target) => setVariantQuestion(target)}
                       />
                     ))}
                   </div>
@@ -229,6 +281,69 @@ export function TestBuilderPage({
           )
         )}
       </div>
+
+      {/* Question Variant Generator Modal */}
+      <QuestionVariantModal
+        isOpen={!!variantQuestion}
+        question={variantQuestion}
+        onClose={() => setVariantQuestion(null)}
+        onAddToTest={(newVariant) => {
+          setQuestions((prev) => [...prev, newVariant]);
+          setSavedSuccessMsg(`✨ Variant question ${newVariant.question_number} added to exam!`);
+          setTimeout(() => setSavedSuccessMsg(null), 3000);
+        }}
+        onSaveToBank={(newVariant) => {
+          setQuestions((prev) => [...prev, newVariant]);
+          setSavedSuccessMsg(`✨ Variant question ${newVariant.question_number} saved & added to exam!`);
+          setTimeout(() => setSavedSuccessMsg(null), 3000);
+        }}
+        onOpenInEditor={(newVariant) => {
+          setVariantQuestion(null);
+          setEditingQuestion(newVariant);
+        }}
+      />
+
+      {/* Smart Test Auto-Assembler Modal */}
+      <SmartTestAssemblerModal
+        isOpen={isAssemblerOpen}
+        onClose={() => setIsAssemblerOpen(false)}
+        onLoadIntoBuilder={(assembled) => {
+          setQuestions(assembled);
+          const totalM = assembled.reduce((sum, q) => sum + (q.marks || 1), 0);
+          setSavedSuccessMsg(`⚡ Auto-assembled ${assembled.length} questions (${totalM} marks) loaded into custom test!`);
+          setTimeout(() => setSavedSuccessMsg(null), 4000);
+        }}
+      />
+
+      {/* Question Editor Modal */}
+      <QuestionEditorModal
+        isOpen={!!editingQuestion}
+        question={editingQuestion}
+        onClose={() => setEditingQuestion(null)}
+        onSave={(savedQuestion) => {
+          setQuestions((prev) => {
+            const exists = prev.some((q) => q.id === savedQuestion.id);
+            if (exists) {
+              return prev.map((q) => (q.id === savedQuestion.id ? savedQuestion : q));
+            }
+            return [...prev, savedQuestion];
+          });
+          setSavedSuccessMsg(`Question ${savedQuestion.question_number} updated in custom exam.`);
+          setTimeout(() => setSavedSuccessMsg(null), 3000);
+        }}
+      />
+
+      {/* Student Share & LMS Export Modal */}
+      <StudentShareModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        headerConfig={headerConfig}
+        questions={questions}
+        onLaunchTestRun={() => {
+          setIsShareModalOpen(false);
+          if (onLaunchTestRun) onLaunchTestRun(questions, headerConfig);
+        }}
+      />
 
       {/* Export Modal */}
       <ExportModal

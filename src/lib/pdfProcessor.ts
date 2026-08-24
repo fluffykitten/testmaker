@@ -148,7 +148,8 @@ export async function saveExtractedQuestions(
 export async function runExtractionPipeline(
   file: File,
   markSchemeFile: File | null,
-  onStateChange: (state: PipelineState) => void
+  onStateChange: (state: PipelineState) => void,
+  options: { includeGuidance?: boolean } = { includeGuidance: true }
 ): Promise<{
   result: ExtractionResult;
   diagramData: Map<string, DiagramCropItem>;
@@ -169,15 +170,20 @@ export async function runExtractionPipeline(
     const base64 = await fileToBase64(file);
     const msBase64 = markSchemeFile ? await fileToBase64(markSchemeFile) : undefined;
 
-    const result = await extractQuestionsFromPdf(base64, msBase64, (status) => {
-      onStateChange({
-        stage: 'extracting',
-        message: status,
-        progress: 50,
-        result: null,
-        error: null,
-      });
-    });
+    const result = await extractQuestionsFromPdf(
+      base64,
+      msBase64,
+      (status) => {
+        onStateChange({
+          stage: 'extracting',
+          message: status,
+          progress: 50,
+          result: null,
+          error: null,
+        });
+      },
+      { includeGuidance: options.includeGuidance !== false }
+    );
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)
     onStateChange({

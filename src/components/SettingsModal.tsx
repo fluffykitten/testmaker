@@ -150,7 +150,26 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* 5. Tools & Management */}
+          {/* 5. AI Extraction Preferences */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">AI Extraction Defaults</h3>
+            <div className="settings-action-row">
+              <div className="settings-action-info">
+                <span className="settings-action-name">✨ Auto-Generate Teacher Insights</span>
+                <span className="settings-action-desc">Include examiner guidance notes & student misconceptions by default during past paper extraction</span>
+              </div>
+              <button
+                type="button"
+                className={`settings-seg-btn ${settings.defaultAiGuidanceEnabled ? 'settings-seg-btn--active' : ''}`}
+                style={{ flex: 'none', padding: '6px 16px' }}
+                onClick={() => updateSetting('defaultAiGuidanceEnabled', !settings.defaultAiGuidanceEnabled)}
+              >
+                {settings.defaultAiGuidanceEnabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>
+          </div>
+
+          {/* 6. Tools & Management */}
           <div className="settings-section">
             <h3 className="settings-section-title">Tools & Reset</h3>
             <div className="settings-actions-list">

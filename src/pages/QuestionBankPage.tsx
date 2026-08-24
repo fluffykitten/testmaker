@@ -11,6 +11,9 @@ import type { Question, Syllabus } from '../types/database';
 import { QuestionFilters } from '../components/QuestionFilters';
 import { QuestionCard } from '../components/QuestionCard';
 import { QuestionDetailModal } from '../components/QuestionDetailModal';
+import { QuestionEditorModal } from '../components/QuestionEditorModal';
+import { QuestionVariantModal } from '../components/QuestionVariantModal';
+import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import './QuestionBankPage.css';
 
@@ -46,6 +49,27 @@ export function QuestionBankPage({
 
   const [selectedDetailQuestion, setSelectedDetailQuestion] = useState<Question | null>(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+
+  // Question Editor state (Create new or Edit existing)
+  const [editorState, setEditorState] = useState<{
+    isOpen: boolean;
+    question: Question | null;
+  }>({
+    isOpen: false,
+    question: null,
+  });
+
+  // Question Variant Generator state
+  const [variantModalState, setVariantModalState] = useState<{
+    isOpen: boolean;
+    question: Question | null;
+  }>({
+    isOpen: false,
+    question: null,
+  });
+
+  // Smart Test Auto-Assembler modal state
+  const [isAssemblerOpen, setIsAssemblerOpen] = useState(false);
 
   // Question deletion modal state
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -99,6 +123,20 @@ export function QuestionBankPage({
   useEffect(() => {
     loadQuestions();
   }, [loadQuestions]);
+
+  useEffect(() => {
+    const handleBookmarkOrTagUpdate = () => {
+      if (filters.bookmarkedOnly || filters.customTag) {
+        loadQuestions();
+      }
+    };
+    window.addEventListener('bookmarks_updated', handleBookmarkOrTagUpdate);
+    window.addEventListener('tags_updated', handleBookmarkOrTagUpdate);
+    return () => {
+      window.removeEventListener('bookmarks_updated', handleBookmarkOrTagUpdate);
+      window.removeEventListener('tags_updated', handleBookmarkOrTagUpdate);
+    };
+  }, [filters.bookmarkedOnly, filters.customTag, loadQuestions]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= totalPages) {
@@ -192,6 +230,24 @@ export function QuestionBankPage({
               onClick={() => setShowMobileFilters(!showMobileFilters)}
             >
               ⚙️ {showMobileFilters ? 'Hide Filters' : 'Filters'}
+            </button>
+
+            <button
+              type="button"
+              className="bank-btn bank-btn--assemble"
+              onClick={() => setIsAssemblerOpen(true)}
+              title="Automatically generate a balanced test matching custom marks and topics"
+            >
+              ⚡ Auto-Assemble Test
+            </button>
+
+            <button
+              type="button"
+              className="bank-btn bank-btn--create"
+              onClick={() => setEditorState({ isOpen: true, question: null })}
+              title="Create a new custom question from scratch"
+            >
+              ✨ Create Question
             </button>
 
             <button
@@ -306,6 +362,8 @@ export function QuestionBankPage({
                       isSelected={selectedQuestionIds.has(q.id)}
                       onToggleSelect={onToggleSelectQuestion}
                       onViewDetails={(target) => setSelectedDetailQuestion(target)}
+                      onEdit={(target) => setEditorState({ isOpen: true, question: target })}
+                      onGenerateVariant={(target) => setVariantModalState({ isOpen: true, question: target })}
                       onDelete={handleRequestDeleteSingle}
                     />
                   ))}
@@ -391,8 +449,107 @@ export function QuestionBankPage({
           onClose={() => setSelectedDetailQuestion(null)}
           isSelected={selectedQuestionIds.has(selectedDetailQuestion.id)}
           onToggleSelect={onToggleSelectQuestion}
+          onEdit={(target) => {
+            setSelectedDetailQuestion(null);
+            setEditorState({ isOpen: true, question: target });
+          }}
+          onGenerateVariant={(target) => {
+            setSelectedDetailQuestion(null);
+            setVariantModalState({ isOpen: true, question: target });
+          }}
+          onQuestionUpdated={(updated) => {
+            setQuestions((prev) => prev.map((q) => (q.id === updated.id ? updated : q)));
+            setSelectedDetailQuestion(updated);
+          }}
         />
       )}
+
+      {/* ─── Question Variant Generator Modal ───────────────────────────────── */}
+      <QuestionVariantModal
+        isOpen={variantModalState.isOpen}
+        question={variantModalState.question}
+        onClose={() => setVariantModalState({ isOpen: false, question: null })}
+        onSaveToBank={(newQuestion) => {
+          setQuestions((prev) => [newQuestion, ...prev]);
+          setTotalCount((c) => c + 1);
+          setActionToast({
+            message: `✨ Variant question ${newQuestion.question_number} saved to Question Bank!`,
+            type: 'success',
+          });
+          setTimeout(() => setActionToast(null), 3000);
+        }}
+        onAddToTest={(newQuestion) => {
+          onToggleSelectQuestion(newQuestion);
+          setActionToast({
+            message: `✨ Variant question ${newQuestion.question_number} added to custom test!`,
+            type: 'success',
+          });
+          setTimeout(() => setActionToast(null), 3000);
+        }}
+        onOpenInEditor={(variantQuestion) => {
+          setVariantModalState({ isOpen: false, question: null });
+          setEditorState({ isOpen: true, question: variantQuestion });
+        }}
+      />
+
+      {/* ─── Smart Test Auto-Assembler Modal ─────────────────────────────── */}
+      <SmartTestAssemblerModal
+        isOpen={isAssemblerOpen}
+        onClose={() => setIsAssemblerOpen(false)}
+        syllabuses={syllabuses}
+        topics={topics}
+        onLoadIntoBuilder={(assembled) => {
+          // Select all assembled questions
+          assembled.forEach((q) => {
+            if (!selectedQuestionIds.has(q.id)) {
+              onToggleSelectQuestion(q);
+            }
+          });
+
+          setActionToast({
+            message: `⚡ Auto-assembled ${assembled.length} questions for custom test!`,
+            type: 'success',
+          });
+          setTimeout(() => setActionToast(null), 3000);
+
+          if (onNavigateToBuilder) {
+            onNavigateToBuilder();
+          }
+        }}
+      />
+
+      {/* ─── Question Editor Modal (Create or Edit) ────────────────────────── */}
+      <QuestionEditorModal
+        isOpen={editorState.isOpen}
+        question={editorState.question}
+        syllabuses={syllabuses}
+        onClose={() => setEditorState({ isOpen: false, question: null })}
+        onSave={(savedQuestion) => {
+          setQuestions((prev) => {
+            const exists = prev.some((q) => q.id === savedQuestion.id);
+            if (exists) {
+              return prev.map((q) => (q.id === savedQuestion.id ? savedQuestion : q));
+            }
+            return [savedQuestion, ...prev];
+          });
+
+          if (selectedDetailQuestion && selectedDetailQuestion.id === savedQuestion.id) {
+            setSelectedDetailQuestion(savedQuestion);
+          }
+
+          if (!editorState.question?.id) {
+            setTotalCount((c) => c + 1);
+          }
+
+          setActionToast({
+            message: editorState.question?.id
+              ? `Question ${savedQuestion.question_number} updated!`
+              : `Question ${savedQuestion.question_number} created and added to bank!`,
+            type: 'success',
+          });
+          setTimeout(() => setActionToast(null), 3000);
+        }}
+      />
 
       {/* ─── Confirm Delete Modal ─────────────────────────────────────────── */}
       <ConfirmDeleteModal

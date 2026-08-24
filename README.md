@@ -1,28 +1,42 @@
 # 🐱 fluffykitten's test maker
 
-An intelligent, AI-powered exam assessment and past paper authoring studio. Upload past paper PDFs, extract questions and diagrams automatically with Google Gemini multimodal AI, and build customized exam papers with drag-and-drop ease.
+An intelligent, AI-powered exam assessment and past paper authoring studio. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, and build customized, publication-grade exam papers with drag-and-drop ease.
 
 Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-- **🧠 AI Past Paper Extraction**: Sends past paper PDFs & mark schemes to Google's Gemini multimodal AI to extract questions, sub-questions, options, topics, difficulty ratings, and official marking criteria.
-- **📐 High-Resolution Diagram Cropper**: Automatic canvas-based rendering with intelligent multi-pass boundary expansion and WebP compression for crystal-clear scientific apparatus, biological diagrams, and mathematical graphs.
-- **📚 Question Bank & Catalog**: Search, filter by syllabus/topic/difficulty/marks, and preview with full KaTeX mathematical and chemical notation rendering.
-- **🗑️ Question Bank Management**: Permanently delete single or bulk-selected questions directly from the question bank with confirmation safeguards.
-- **🛠️ Drag-and-Drop Test Builder**: Assemble custom tests, reorder questions, calculate mark distributions, and view live topic coverage analytics.
-- **📄 One-Click Export Engine**:
-  - **Microsoft Word (.docx)**: Clean layout with LaTeX-to-Word conversions, sub-question indentation, mark totals, and teacher answer keys.
-  - **PDF Export**: Print-ready exam sheets.
-- **🎨 Appearance & Customization Settings**:
-  - `☀️ Light`, `🌙 Dark`, and `💻 System` color themes.
-  - 6 Accent Palettes (*Indigo*, *Emerald*, *Violet*, *Rose*, *Amber*, *Sky*).
-  - Adjustable text sizes (*Small*, *Default*, *Medium*, *Large*).
-  - Cozy & Compact layout density.
-- **🔒 PIN Access Gate**: Full-screen PIN security powered by Supabase remote configuration (no hardcoded credentials).
-- **💡 First-Time Guided Tour**: Interactive spotlight onboarding for new users.
+### 🧠 1. Multimodal AI Extraction & Fault-Tolerant Parsing
+- **Gemini Multimodal AI**: Automatically parses past paper PDFs and mark schemes into structured questions, sub-questions, MCQ options, topics, difficulty ratings, and official marking criteria.
+- **Robust JSON Repair Engine**: Multi-pass repair and balanced-brace fallback algorithms that smoothly recover questions even during network anomalies or long token generations.
+- **LaTeX Math & Chemistry Normalization**: Automatic formatting and KaTeX rendering for nuclide/isotope symbols (`^{40}_{20}\text{Ca}`), chemical sub/superscripts, escaped percentages, temperatures (`°C`), and arrows.
+
+### 🏛️ 2. Publication-Quality Cambridge & School Exam Export
+- **Authentic Cambridge IGCSE Cover Pages**:
+  - Dual Header Logos (School Crest on top left, Cambridge Assessment on top right).
+  - Dynamic instructions adapting for Paper 1/2 (Multiple Choice) vs. Paper 3/4 (Theory & Structured).
+  - Accurate bold page counts and centered headers.
+- **🧪 Cambridge IGCSE Chemistry Periodic Table**:
+  - Official 118-element periodic table including Lanthanoid and Actinoid series, key legend, and gas volume constant ($24\text{ dm}^3$ at r.t.p.).
+  - Rotated 270° in full landscape orientation to utilize the whole page width.
+  - Stripped clean of barcodes, copyright text, margin warning labels, and crop marks.
+  - Automatically available when the assessment subject is Chemistry.
+- **🗺️ Social Science & Humanities Insert Booklets**:
+  - Standalone Resource Insert generation for Geography, History, Sociology, Economics, and Business Studies.
+  - Extracts figures, maps, data tables, and case studies into a clean insert.
+- **⭕ Multiple Choice Bubble Answer Sheets**:
+  - Standard bubble answer grid for MCQ papers with candidate info boxes and examiner score boxes.
+- **📐 Spacious Handwriting Answer Lines**:
+  - Standard handwriting height (~8mm / 26px gap) in PDF and native 360-spacing in Word (`.docx`).
+
+### 🛠️ 3. Question Bank & Interactive Studio
+- **Dynamic Search & Filters**: Filter by subject, paper number, year, topic, sub-topic, difficulty, and custom teacher tags (`#tag`).
+- **High-Resolution Diagram Cropper**: Automatic canvas-based rendering with intelligent multi-pass boundary expansion and WebP compression.
+- **AI Question Variant Generator**: Re-synthesize alternative numerical parameters and scientific contexts while preserving exam difficulty.
+- **Smart Test Assembler**: Build balanced tests automatically based on target mark totals, topics, and difficulty distribution.
+- **Interactive Student Quiz Runner**: Live in-browser student testing mode with instant grading and LMS QTI/Moodle export.
 
 ---
 
@@ -33,7 +47,7 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 - **PDF Engine**: PDF.js (v4+) with high-resolution offscreen canvas rendering
 - **AI Backend**: Google Gemini Multimodal APIs (Flash & Pro with dynamic discovery)
 - **Database & Storage**: Supabase (PostgreSQL + Supabase Storage for diagrams)
-- **Export**: Docx.js, jsPDF
+- **Export Engine**: `docx` (Word), HTML5 Print Window (PDF)
 
 ---
 
@@ -65,7 +79,8 @@ Run the SQL migrations in order in your **Supabase SQL Editor**:
 1. `supabase/migrations/001_initial_schema.sql` — Tables for syllabuses, questions, custom tests
 2. `supabase/migrations/002_storage_setup.sql` — Storage buckets for diagrams and raw PDFs
 3. `supabase/migrations/003_storage_public_fix.sql` — Public read policies for diagrams
-4. `supabase/migrations/004_app_config.sql` — PIN configuration (`404354`)
+4. `supabase/migrations/004_app_config.sql` — PIN configuration
+5. `supabase/migrations/005_add_options_column.sql` — Multiple choice options support
 
 ### 5. Run Locally
 ```bash
@@ -75,24 +90,5 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ---
 
-## 🌐 Deployment
-
-### Vercel
-1. Import the repository into [Vercel](https://vercel.com).
-2. Set the environment variables (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GEMINI_API_KEY`).
-3. Deploy!
-
-### Netlify
-1. Import into [Netlify](https://app.netlify.com).
-2. Build command: `npm run build`, Output directory: `dist`.
-3. Add your environment variables in Site configuration.
-
-### Cloudflare Pages
-1. Connect repository in [Cloudflare Pages](https://pages.cloudflare.com).
-2. Build preset: `Vite`, Build command: `npm run build`, Output directory: `dist`.
-3. Add environment variables and deploy.
-
----
-
 ## 📄 License
-MIT License. Created by [fluffykitten](https://github.com/fluffykitten).
+MIT License. Created with 🐾 by [fluffykitten](https://github.com/fluffykitten).

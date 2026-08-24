@@ -1,0 +1,323 @@
+/* ─── Dual Portal Landing Page Styles ────────────────────────────────────── */
+
+.portal-root {
+  min-height: 100vh;
+  background: var(--color-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ambient glow balls */
+.portal-glow {
+  position: absolute;
+  width: 500px;
+  height: 500px;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.portal-glow--1 {
+  top: -100px;
+  left: 10%;
+  background: radial-gradient(circle, #6366f1 0%, transparent 70%);
+}
+
+.portal-glow--2 {
+  bottom: -100px;
+  right: 10%;
+  background: radial-gradient(circle, #a855f7 0%, transparent 70%);
+}
+
+.portal-content {
+  width: 100%;
+  max-width: 980px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 10;
+}
+
+/* Brand Header */
+.portal-brand-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.portal-avatar-wrap {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 12px;
+}
+
+.portal-cat-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 3px solid var(--color-surface-elevated);
+  box-shadow: var(--shadow-lg);
+  object-fit: cover;
+}
+
+.portal-online-dot {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 14px;
+  height: 14px;
+  background: #10b981;
+  border: 2px solid var(--color-bg);
+  border-radius: 50%;
+}
+
+.portal-title {
+  font-size: 2rem;
+  font-weight: 900;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+}
+
+.portal-subtitle {
+  font-size: 0.9375rem;
+  color: var(--color-text-secondary);
+  max-width: 540px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* Cards Grid */
+.portal-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  .portal-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.portal-card {
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  box-shadow: var(--shadow-xl);
+  transition: all var(--transition-base);
+}
+
+.portal-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.4);
+}
+
+.portal-card--student:hover {
+  border-color: var(--color-primary-500);
+}
+
+.portal-card--teacher {
+  cursor: pointer;
+}
+
+.portal-card--teacher:hover {
+  border-color: #8b5cf6;
+}
+
+.portal-card-badge {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  font-size: 0.625rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.portal-card-badge--student {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--color-primary-500);
+}
+
+.portal-card-badge--teacher {
+  background: rgba(139, 92, 246, 0.12);
+  color: #8b5cf6;
+}
+
+.portal-card-icon-wrap {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-xl);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.75rem;
+  margin-bottom: 18px;
+}
+
+.portal-card-icon--student {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.portal-card-icon--teacher {
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.portal-card-heading {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  margin: 0 0 8px;
+}
+
+.portal-card-desc {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0 0 20px;
+  min-height: 48px;
+}
+
+/* Quiz Form */
+.portal-quiz-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: auto;
+}
+
+.portal-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portal-input-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.portal-input-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.portal-input-icon {
+  position: absolute;
+  left: 12px;
+  font-size: 1rem;
+}
+
+.portal-code-input {
+  width: 100%;
+  padding: 12px 14px 12px 40px;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  outline: none;
+  transition: all var(--transition-fast);
+}
+
+.portal-code-input:focus {
+  border-color: var(--color-primary-500);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+}
+
+.portal-error-text {
+  font-size: 0.75rem;
+  color: #ef4444;
+  font-weight: 600;
+}
+
+/* Teacher features list */
+.portal-teacher-features-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+  margin-top: auto;
+}
+
+.feature-pill {
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+/* Buttons */
+.portal-btn {
+  width: 100%;
+  padding: 12px 20px;
+  border-radius: var(--radius-lg);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 800;
+  cursor: pointer;
+  border: none;
+  transition: all var(--transition-fast);
+  text-align: center;
+}
+
+.portal-btn--student {
+  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-700));
+  color: white;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+
+.portal-btn--student:hover {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-600));
+  transform: translateY(-1px);
+}
+
+.portal-btn--teacher {
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+  color: white;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3);
+}
+
+.portal-btn--teacher:hover {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  transform: translateY(-1px);
+}
+
+.portal-card-footer-note {
+  margin-top: 14px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Footer */
+.portal-footer {
+  margin-top: 36px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  display: flex;
+  gap: 12px;
+}

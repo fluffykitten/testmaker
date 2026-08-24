@@ -15,50 +15,57 @@ interface TutorialStep {
 const STEPS: TutorialStep[] = [
   {
     targetSelector: null, // Welcome step — centered card
-    title: 'Welcome to Test Maker! 🐱',
+    title: "Welcome to fluffykitten's Test Maker! 🐱",
     description:
-      "Let's take a quick tour of the app so you know where everything is. This will only take a moment!",
+      'The all-in-one Cambridge & Science exam suite: AI question extraction, drag-and-drop test building, Word/PDF exporting, and interactive anti-cheating live quizzes!',
   },
   {
     targetSelector: '#nav-home',
-    title: 'Dashboard',
+    title: '🏠 System Dashboard',
     description:
-      'This is your home base. Get an overview of all the features and quick-access buttons to jump into any section.',
+      'Your command center. View real-time question statistics, quick-action shortcuts, and the 4-step assessment workflow.',
     position: 'bottom',
   },
   {
     targetSelector: '#nav-bank',
-    title: 'Question Bank',
+    title: '📚 Question Bank & Formula Search',
     description:
-      'Browse all extracted exam questions. Filter by topic, difficulty, year, marks, and more. Select questions to add them to your test.',
+      'Search questions with chemical formula expansion (e.g. H2SO4, KMnO4, \\Delta H). Star favorites with ⭐ Bookmarks and organize with custom #tags.',
     position: 'bottom',
   },
   {
     targetSelector: '#nav-builder',
-    title: 'Test Builder',
+    title: '📝 Drag-and-Drop Test Builder',
     description:
-      'Assemble your custom exam here. Reorder questions with drag-and-drop, view live stats, and save or export your test.',
+      'Assemble custom tests with live mark tracking, topic coverage analytics, difficulty balancing, and instant preview.',
     position: 'bottom',
   },
   {
     targetSelector: '#nav-saved',
-    title: 'Saved Tests',
+    title: '📑 Saved Tests & Header Configurator',
     description:
-      'Access all your previously saved tests. Load them back into the builder to edit, or export directly as Word/PDF.',
+      'Access previously assembled tests. Edit custom school headers, re-open into builder, and export Word (.docx), PDF, or Comprehensive Mark Schemes.',
+    position: 'bottom',
+  },
+  {
+    targetSelector: '#nav-quizzes',
+    title: '🚀 Interactive Quizzes & Proctoring',
+    description:
+      'Launch paperless live assessments with access codes, anti-cheating Exam Browser mode (Alt+Tab lock), live answer logs, and multi-sheet Excel (.xlsx) gradebooks!',
     position: 'bottom',
   },
   {
     targetSelector: '#nav-upload',
-    title: 'Upload Papers',
+    title: '⚡ AI PDF Ingestion Pipeline',
     description:
-      'Upload past exam papers as PDFs. Our AI extracts questions, diagrams, topics, and mark schemes automatically.',
+      'Upload past paper exam PDFs and mark schemes. Our Gemini AI extracts questions, diagrams, and examiner guidance automatically.',
     position: 'bottom',
   },
   {
     targetSelector: '#hero-bank-btn',
-    title: 'Quick Actions',
+    title: '🎯 Quick Launch Actions',
     description:
-      "Use these shortcut buttons on the dashboard to jump straight into any section. Try browsing the Question Bank first!",
+      'Jump straight into any workflow with one click. Let’s start by exploring the Question Bank!',
     position: 'top',
   },
 ];

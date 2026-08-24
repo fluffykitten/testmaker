@@ -1,8 +1,13 @@
 import { useCallback, useState, useRef } from 'react';
+import { getSavedSettings } from '../lib/settings';
 import './PdfUpload.css';
 
 interface PdfUploadProps {
-  onFilesSelected: (questionPaper: File, markScheme: File | null) => void;
+  onFilesSelected: (
+    questionPaper: File,
+    markScheme: File | null,
+    options: { includeGuidance: boolean }
+  ) => void;
   isProcessing: boolean;
 }
 
@@ -10,6 +15,7 @@ interface PdfUploadProps {
  * Dual-slot upload component:
  * 1. Question Paper PDF (Required)
  * 2. Mark Scheme PDF (Optional - auto-generates if omitted)
+ * 3. AI Teacher Guidance & Misconceptions Toggle (Optional, enabled by default)
  */
 export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [qpDragOver, setQpDragOver] = useState(false);
@@ -17,6 +23,9 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
 
   const [qpFile, setQpFile] = useState<File | null>(null);
   const [msFile, setMsFile] = useState<File | null>(null);
+  const [includeGuidance, setIncludeGuidance] = useState<boolean>(() => {
+    return getSavedSettings().defaultAiGuidanceEnabled ?? true;
+  });
   const [error, setError] = useState<string | null>(null);
 
   const qpInputRef = useRef<HTMLInputElement>(null);
@@ -68,7 +77,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
 
   const handleExtract = () => {
     if (qpFile) {
-      onFilesSelected(qpFile, msFile);
+      onFilesSelected(qpFile, msFile, { includeGuidance });
     }
   };
 
@@ -204,6 +213,33 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         </div>
       </div>
 
+      {/* ─── AI Teacher Guidance Toggle (Optional Feature) ───────────────── */}
+      <div className="upload-ai-options-card">
+        <label className="upload-toggle-label" htmlFor="ai-guidance-toggle">
+          <div className="upload-toggle-info">
+            <div className="upload-toggle-heading">
+              <span className="upload-toggle-icon">✨</span>
+              <span className="upload-toggle-title">AI Teacher Marking Insights</span>
+              <span className="upload-badge upload-badge--new">Enhanced</span>
+            </div>
+            <p className="upload-toggle-desc">
+              Auto-generates examiner tips, method marks (M1, A1), error carried forward (ecf) rules, and common student misconceptions for each question.
+            </p>
+          </div>
+
+          <div className="upload-switch-wrapper">
+            <input
+              type="checkbox"
+              id="ai-guidance-toggle"
+              checked={includeGuidance}
+              onChange={(e) => setIncludeGuidance(e.target.checked)}
+              className="upload-switch-input"
+            />
+            <span className="upload-switch-slider" />
+          </div>
+        </label>
+      </div>
+
       {/* Error Message */}
       {error && (
         <div className="upload-error animate-fade-in">
@@ -230,7 +266,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                 <path d="M10 2L10 14M6 10l4 4 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M3 15v2a2 2 0 002 2h10a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              Extract Questions {msFile ? '(Using Official Mark Scheme)' : '(With AI Auto-Generated Mark Scheme)'}
+              Extract Questions {includeGuidance ? 'with Teacher Insights' : ''} {msFile ? '(Using Official Mark Scheme)' : '(Auto-Solved)'}
             </>
           )}
         </button>

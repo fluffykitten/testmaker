@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import type { QuestionFilterParams } from '../services/questionBankService';
 import type { Syllabus, QuestionDifficulty, QuestionStyle } from '../types/database';
+import { getBookmarkedQuestionIds } from '../services/questionBookmarkService';
+import { getDistinctCustomTags } from '../services/questionTagService';
 import './QuestionFilters.css';
 
 interface QuestionFiltersProps {
@@ -19,6 +21,24 @@ export function QuestionFilters({
   totalResults,
 }: QuestionFiltersProps) {
   const [searchInput, setSearchInput] = useState(filters.searchQuery || '');
+  const [bookmarkCount, setBookmarkCount] = useState(() => getBookmarkedQuestionIds().size);
+  const [customTags, setCustomTags] = useState(() => getDistinctCustomTags());
+
+  useEffect(() => {
+    const handleBookmarkUpdate = () => {
+      setBookmarkCount(getBookmarkedQuestionIds().size);
+    };
+    const handleTagUpdate = () => {
+      setCustomTags(getDistinctCustomTags());
+    };
+
+    window.addEventListener('bookmarks_updated', handleBookmarkUpdate);
+    window.addEventListener('tags_updated', handleTagUpdate);
+    return () => {
+      window.removeEventListener('bookmarks_updated', handleBookmarkUpdate);
+      window.removeEventListener('tags_updated', handleTagUpdate);
+    };
+  }, []);
 
   // Debounce search input
   useEffect(() => {
@@ -30,6 +50,23 @@ export function QuestionFilters({
 
     return () => clearTimeout(handler);
   }, [searchInput, filters, onFilterChange]);
+
+  const handleToggleBookmarkFilter = () => {
+    onFilterChange({
+      ...filters,
+      bookmarkedOnly: !filters.bookmarkedOnly ? true : undefined,
+      page: 1,
+    });
+  };
+
+  const handleCustomTagChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    onFilterChange({
+      ...filters,
+      customTag: val || undefined,
+      page: 1,
+    });
+  };
 
   const handleSyllabusChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
@@ -103,22 +140,38 @@ export function QuestionFilters({
     filters.difficulty ||
     filters.paperNumber ||
     filters.questionStyle ||
+    filters.bookmarkedOnly ||
+    filters.customTag ||
     filters.minMarks ||
     filters.maxMarks
   );
 
   return (
     <aside className="filters-sidebar">
+      {/* Quick Bookmark Toggle Pill */}
+      <div className="filter-group">
+        <button
+          type="button"
+          className={`filter-bookmark-pill ${filters.bookmarkedOnly ? 'active' : ''}`}
+          onClick={handleToggleBookmarkFilter}
+        >
+          <span>⭐ Bookmarked Questions</span>
+          <span className="bookmark-count-badge">{bookmarkCount}</span>
+        </button>
+      </div>
+
       {/* Search Box */}
       <div className="filter-group">
-        <label className="filter-label" htmlFor="q-search-input">Search Questions</label>
+        <label className="filter-label" htmlFor="q-search-input">
+          Search Questions & Formulas
+        </label>
         <div className="search-input-wrapper">
           <span className="search-icon">🔍</span>
           <input
             id="q-search-input"
             type="text"
             className="search-input"
-            placeholder="Search topic, formula, text…"
+            placeholder="Search topic, formula (e.g. H2SO4)…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
@@ -133,7 +186,30 @@ export function QuestionFilters({
             </button>
           )}
         </div>
+        <p className="filter-search-hint">💡 Auto-expands formulas: <code>H2SO4</code>, <code>KMnO4</code>, <code>\Delta H</code></p>
       </div>
+
+      {/* Custom Teacher Tag Selector */}
+      {customTags.length > 0 && (
+        <div className="filter-group">
+          <label className="filter-label" htmlFor="tag-select">
+            🏷️ Teacher Custom Tag
+          </label>
+          <select
+            id="tag-select"
+            className="filter-select"
+            value={filters.customTag || ''}
+            onChange={handleCustomTagChange}
+          >
+            <option value="">All Tags ({customTags.reduce((acc, t) => acc + t.count, 0)})</option>
+            {customTags.map((t) => (
+              <option key={t.tag} value={t.tag}>
+                #{t.tag} ({t.count})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Subject / Syllabus Selector */}
       <div className="filter-group">
