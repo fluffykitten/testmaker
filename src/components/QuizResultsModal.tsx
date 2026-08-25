@@ -8,6 +8,10 @@ import {
   exportSingleSubmissionExcel,
   type StudentSubmission,
 } from '../services/quizSubmissionService';
+import {
+  exportClassQuizReportPdf,
+  exportIndividualStudentReportPdf,
+} from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
 import './QuizResultsModal.css';
 
@@ -115,14 +119,37 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
           <div className="qrm-header-actions">
             {submissions.length > 0 && (
-              <button
-                type="button"
-                className="qrm-btn qrm-btn-excel"
-                onClick={handleExportAllExcel}
-                title="Export all results to Excel (.xlsx)"
-              >
-                📗 Export All (Excel .xlsx)
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="qrm-btn"
+                  style={{
+                    background: '#dc2626',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '0.8125rem',
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onClick={() => exportClassQuizReportPdf(quiz, submissions)}
+                  title="Export complete class diagnostic report as PDF"
+                >
+                  📄 Export Class Report (PDF)
+                </button>
+                <button
+                  type="button"
+                  className="qrm-btn qrm-btn-excel"
+                  onClick={handleExportAllExcel}
+                  title="Export all results to Excel (.xlsx)"
+                >
+                  📗 Export All (Excel .xlsx)
+                </button>
+              </>
             )}
             <button type="button" className="qrm-close-btn" onClick={onClose}>
               ✕
@@ -291,11 +318,33 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   <div className="cand-actions">
                     <button
                       type="button"
+                      className="qrm-btn"
+                      style={{
+                        background: '#dc2626',
+                        color: '#ffffff',
+                        fontWeight: 700,
+                        fontSize: '0.8125rem',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                      onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
+                      title="Export this candidate's diagnostic report as PDF"
+                    >
+                      📄 Export PDF Report
+                    </button>
+
+                    <button
+                      type="button"
                       className="qrm-btn qrm-btn-excel-sm"
                       onClick={() => handleExportSingleExcel(selectedSubmission)}
                       title="Export individual student report to Excel (.xlsx)"
                     >
-                      📗 Export Student Report (.xlsx)
+                      📗 Export Excel (.xlsx)
                     </button>
 
                     <button

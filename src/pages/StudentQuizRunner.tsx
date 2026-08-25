@@ -9,6 +9,7 @@ import {
 } from '../services/quizSubmissionService';
 import { gradeDeterministicAnswer } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
+import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
 import './StudentQuizRunner.css';
 
@@ -1253,7 +1254,63 @@ export function StudentQuizRunner({
             </div>
           </div>
 
-          <div className="results-footer-actions">
+          <div className="results-footer-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '24px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="sq-btn"
+              style={{
+                background: '#dc2626',
+                color: '#ffffff',
+                fontWeight: 800,
+                padding: '10px 20px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.9375rem',
+                boxShadow: '0 4px 12px rgba(220, 38, 38, 0.3)',
+              }}
+              onClick={() => {
+                const results = calculateResults();
+                const submissionToExport: StudentSubmission = completedSubmission || {
+                  id: `sub_${Date.now()}`,
+                  quizId: testIdOrCode || 'direct_quiz',
+                  quizCode: testIdOrCode || 'EXAM',
+                  quizTitle: title,
+                  subject: headerConfig?.subject || 'Chemistry',
+                  studentName: candidateName.trim() || 'Candidate',
+                  submittedAt: new Date().toISOString(),
+                  durationSeconds: Math.floor((Date.now() - startTime) / 1000),
+                  score: results.mcqEarned,
+                  totalMarks: results.mcqTotal,
+                  percentage: results.percentage,
+                  violationsCount: violations.length,
+                  proctoringLogs: violations.map((v, i) => ({
+                    timestamp: v.timestamp,
+                    event: v.detail,
+                    strike: i + 1,
+                    severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+                  })),
+                  questionResults: results.questionResults,
+                  topicBreakdown: Object.fromEntries(
+                    Object.entries(results.topicStats).map(([topic, stat]) => [
+                      topic,
+                      {
+                        totalMarks: stat.total,
+                        earnedMarks: stat.earned,
+                        percentage: stat.total > 0 ? Math.round((stat.earned / stat.total) * 100) : 0,
+                      },
+                    ])
+                  ),
+                };
+                exportIndividualStudentReportPdf(submissionToExport);
+              }}
+            >
+              📄 Download My Exam Report (PDF)
+            </button>
+
             {onExit && (
               <button className="sq-btn sq-btn-primary" onClick={onExit}>
                 ← Return to Portal
