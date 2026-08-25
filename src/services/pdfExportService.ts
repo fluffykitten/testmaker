@@ -9,13 +9,15 @@ import { getCambridgeCoverDetails, renderCambridgeCoverPageHtml, renderMcqAnswer
 import { parseMcqOption } from '../utils/mcqUtils';
 import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
+import { autoFormatChemistryAndMath } from '../components/ExamMathText';
 
 /**
  * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean HTML
  */
 export function formatLatexForHtml(text: string): string {
   if (!text) return '';
-  return text
+  const chemFormatted = autoFormatChemistryAndMath(text);
+  return chemFormatted
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')

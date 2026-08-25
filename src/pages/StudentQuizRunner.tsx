@@ -1136,38 +1136,89 @@ export function StudentQuizRunner({
                       <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
                     </div>
 
+                    {/* Question Diagram if present */}
+                    {q.diagram_url && (
+                      <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
+                        <img
+                          src={q.diagram_url}
+                          alt={`Diagram for Question ${idx + 1}`}
+                          style={{
+                            maxWidth: '100%',
+                            maxHeight: '340px',
+                            borderRadius: 'var(--radius-md)',
+                            border: '1px solid var(--color-border)',
+                            cursor: 'zoom-in',
+                            background: '#ffffff',
+                          }}
+                          onClick={() => setZoomedImage(q.diagram_url || null)}
+                          title="Click to zoom diagram"
+                        />
+                      </div>
+                    )}
+
                     {/* Sub-Questions Results Breakdown if present */}
                     {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
-                      <div className="sol-sub-results-list" style={{ margin: '10px 0', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {qRes.subQuestionResults.map((sub, sIdx) => (
-                          <div
-                            key={sIdx}
-                            style={{
-                              background: 'var(--color-surface-sunken)',
-                              padding: '10px 14px',
-                              borderRadius: 'var(--radius-md)',
-                              border: '1px solid var(--color-border)',
-                            }}
-                          >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                              <strong>Part ({sub.subId})</strong>
-                              <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
-                                {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
-                              Your Answer:{' '}
-                              <strong style={{ color: 'var(--color-text-primary)' }}>
-                                <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
-                              </strong>
-                            </div>
-                            {sub.feedback && (
-                              <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)' }}>
-                                <ExamMathText content={sub.feedback} />
+                      <div className="sol-sub-results-list" style={{ margin: '12px 0', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {qRes.subQuestionResults.map((sub, sIdx) => {
+                          const subQ = q.sub_questions?.[sIdx];
+                          return (
+                            <div
+                              key={sIdx}
+                              style={{
+                                background: 'var(--color-surface-sunken)',
+                                padding: '12px 16px',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1px solid var(--color-border)',
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                                <strong>Part ({sub.subId})</strong>
+                                <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
+                                  {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
+                                </span>
                               </div>
-                            )}
-                          </div>
-                        ))}
+
+                              {/* Sub Question Prompt & Table if present */}
+                              {subQ?.question_text && (
+                                <div style={{ fontSize: '0.875rem', marginBottom: 8, color: 'var(--color-text-primary)' }}>
+                                  <ExamMathText content={subQ.question_text} />
+                                </div>
+                              )}
+
+                              {/* Sub Question Diagram if present */}
+                              {subQ?.diagram_url && (
+                                <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                                  <img
+                                    src={subQ.diagram_url}
+                                    alt={`Diagram for Part (${sub.subId})`}
+                                    style={{
+                                      maxWidth: '100%',
+                                      maxHeight: '260px',
+                                      borderRadius: 'var(--radius-md)',
+                                      border: '1px solid var(--color-border)',
+                                      cursor: 'zoom-in',
+                                      background: '#ffffff',
+                                    }}
+                                    onClick={() => setZoomedImage(subQ.diagram_url || null)}
+                                    title="Click to zoom diagram"
+                                  />
+                                </div>
+                              )}
+
+                              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
+                                Your Answer:{' '}
+                                <strong style={{ color: 'var(--color-text-primary)' }}>
+                                  <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                                </strong>
+                              </div>
+                              {sub.feedback && (
+                                <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
+                                  <ExamMathText content={sub.feedback} />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 

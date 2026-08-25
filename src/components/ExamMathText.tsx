@@ -20,11 +20,77 @@ const KATEX_OPTIONS = {
   },
 };
 
+const SUB_MAP: Record<string, string> = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+  '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+  '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎',
+  'a': 'ₐ', 'e': 'ₑ', 'h': 'ₕ', 'i': 'ᵢ', 'j': 'ⱼ', 'k': 'ₖ', 'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'o': 'ₒ', 'p': 'ₚ', 'r': 'ᵣ', 's': 'ₛ', 't': 'ₜ', 'u': 'ᵤ', 'v': 'ᵥ', 'x': 'ₓ'
+};
+
+const SUP_MAP: Record<string, string> = {
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+  '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+  '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+  'n': 'ⁿ'
+};
+
+export function toUnicodeSubscripts(str: string): string {
+  return str.split('').map((c) => SUB_MAP[c] || c).join('');
+}
+
+export function toUnicodeSuperscripts(str: string): string {
+  return str.split('').map((c) => SUP_MAP[c] || c).join('');
+}
+
+export function autoFormatChemistryAndMath(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+
+  // 1. Normalize reaction arrows
+  let res = text
+    .replace(/\s*(?:-->|->|\\rightarrow)\s*/g, ' → ')
+    .replace(/\s*(?:<->|<=>|\\rightleftharpoons)\s*/g, ' ⇌ ')
+    .replace(/\s*(?:<-|\\leftarrow)\s*/g, ' ← ');
+
+  // 2. Format ions like Cu2+, Fe3+, Al3+, Cl-, e-, Na+, H+, OH-, SO4^2-, NO3-
+  res = res.replace(/(?:^|[\s+=(;,])(\d*\s*)((?:[A-Z][a-z]?|\([A-Za-z0-9]+\)|e))(\d*)([+-])(?=[\s+=(;.,\]\-]|$)/g, (match, coef, elem, num, charge) => {
+    if (!elem) return match;
+    const prefix = match.slice(0, match.indexOf(coef + elem));
+    const supCharge = toUnicodeSuperscripts(num + charge);
+    return prefix + (coef || '') + elem + supCharge;
+  });
+
+  // 3. Format neutral chemical formulas with subscripts:
+  // e.g. 2H2O, 3CO2, 2Al(OH)3, 3Na2SO4, Fe2O3, H2SO4, C10H18O
+  res = res.replace(/(?:^|[\s+=(;,])(\d*\s*)((?:[A-Z][a-z]?(?:\d+|[a-z])?|\([A-Za-z0-9]+\)\d*)+)(?=[\s+=(;.,\]\-]|$)/g, (match, coef, formula) => {
+    // Exclude English words
+    if (/^(State|Solid|Liquid|Gas|Steam|Option|Acid|Base|Salt|Heat|Mass|Moles?|Time|Temp|Rate|Name|Graph|Table|Test|Figure|Part|Note|Mark|Answer|True|False|Yes|No|May|Can|Will|For|With|From|And|All|Correct)$/i.test(formula)) {
+      return match;
+    }
+
+    // Must have at least a digit or parentheses with uppercase letter
+    if (!/\d|\(/.test(formula)) {
+      return match;
+    }
+
+    const prefix = match.slice(0, match.indexOf(coef + formula));
+    const subFormula = formula.replace(/([A-Za-z\)])(\d+)/g, (_: string, char: string, num: string) => {
+      return char + toUnicodeSubscripts(num);
+    });
+
+    return prefix + (coef || '') + subFormula;
+  });
+
+  return res;
+}
+
 export function ensureInlineMathDelimiters(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
-  // 1. First normalize common temperature/degree symbols and isotopes
-  let normalized = text
+  // 1. Auto-format chemistry formulas & reaction arrows in raw text
+  let normalized = autoFormatChemistryAndMath(text);
+
+  // 2. Normalize common temperature/degree symbols and isotopes
+  normalized = normalized
     .replace(/\\(degreeC|celsius)\b/g, '°C')
     .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
     .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
