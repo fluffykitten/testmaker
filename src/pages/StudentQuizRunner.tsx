@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz } from '../services/quizCodeService';
@@ -29,6 +29,134 @@ interface ViolationRecord {
 const QUICK_CHEM_SYMBOLS = [
   '→', '⇌', 'Δ', '°C', 'mol/dm³', 'g/cm³', 'kJ/mol', '(s)', '(l)', '(g)', '(aq)', '⁺', '⁻', '²', '³', '⁴'
 ];
+
+interface ModelAnswerClause {
+  label: string;
+  content: string;
+  marks?: string;
+}
+
+function parseModelAnswerClauses(rawText: string): ModelAnswerClause[] {
+  if (!rawText) return [];
+
+  // Split by semicolon or newline
+  const rawParts = rawText
+    .split(/(?:;|\n)+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const results: ModelAnswerClause[] = [];
+
+  for (const part of rawParts) {
+    let text = part;
+
+    // 1. Extract subId or label prefix like "4(a)", "(a)", "4(e)(i)", "State at $T_1$:", "State at T1:", "anode:"
+    let label = '';
+    const labelMatch = text.match(/^(\d*\([a-z0-9ivx]+\)(?:\([a-z0-9ivx]+\))?|state at \$?[a-z0-9_]+\$?:|[a-z0-9\s\$_\{\}]+:)/i);
+    if (labelMatch) {
+      label = labelMatch[1].replace(/:$/, '').trim();
+      text = text.slice(labelMatch[0].length).trim();
+    }
+
+    // 2. Extract mark annotations: [1], [2], [M1], [A1], (1 mark), [2 marks], (1), (2)
+    let marks = '';
+    const marksMatch = text.match(/(?:\[|\()(\d+)\s*(?:marks?|m)?(?:\]|\))/i) || text.match(/\[([A-Za-z0-9\s]+)\]/);
+    if (marksMatch) {
+      marks = marksMatch[1];
+    }
+
+    // 3. Clean marks from text
+    const cleanText = text
+      .replace(/\[\s*(?:\d+|[A-Za-z]\d*)\s*(?:marks?)?\s*\]/gi, '')
+      .replace(/\(\s*\d+\s*(?:marks?)?\s*\)/gi, '')
+      .trim();
+
+    results.push({
+      label,
+      content: cleanText || text,
+      marks: marks ? `${marks} mark${marks !== '1' && !isNaN(Number(marks)) ? 's' : ''}` : undefined,
+    });
+  }
+
+  return results;
+}
+
+function renderStructuredModelAnswer(markScheme: any) {
+  const rawText = typeof markScheme === 'string'
+    ? markScheme
+    : Array.isArray(markScheme?.marking_points)
+    ? markScheme.marking_points.join('; ')
+    : markScheme?.acceptable_answers?.join('; ') || 'Credit valid scientific derivation';
+
+  const clauses = parseModelAnswerClauses(rawText);
+
+  if (clauses.length <= 1) {
+    return (
+      <div className="sol-points-single" style={{ padding: '8px 12px', background: 'var(--color-surface-sunken)', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+        <ExamMathText content={rawText} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="sol-points-grid" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+      {clauses.map((clause, cIdx) => (
+        <div
+          key={cIdx}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '10px',
+            background: 'var(--color-surface-sunken)',
+            padding: '8px 12px',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--color-border)',
+            fontSize: '0.875rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+            {clause.label ? (
+              <span
+                style={{
+                  fontWeight: 800,
+                  fontSize: '0.75rem',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  background: 'var(--color-primary-500, #8b5cf6)',
+                  color: '#ffffff',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <ExamMathText content={clause.label} />
+              </span>
+            ) : (
+              <span style={{ color: 'var(--color-text-secondary)', fontWeight: 700 }}>•</span>
+            )}
+            <div style={{ flex: 1, color: 'var(--color-text-primary)' }}>
+              <ExamMathText content={clause.content} />
+            </div>
+          </div>
+          {clause.marks && (
+            <span
+              style={{
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                background: 'rgba(255, 255, 255, 0.08)',
+                padding: '2px 8px',
+                borderRadius: '6px',
+                color: 'var(--color-text-secondary)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              [{clause.marks}]
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function StudentQuizRunner({
   testIdOrCode,
@@ -86,6 +214,38 @@ export function StudentQuizRunner({
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Accurate Sub-Questions and Answered Items Counting
+  const quizStats = useMemo(() => {
+    let totalItems = 0;
+    let answeredItems = 0;
+
+    for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+      const q = questions[qIdx];
+      if (q.sub_questions && q.sub_questions.length > 0) {
+        for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
+          totalItems++;
+          const subKey = `${qIdx}_${sIdx}`;
+          const val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          if (val !== undefined && String(val).trim().length > 0) {
+            answeredItems++;
+          }
+        }
+      } else {
+        totalItems++;
+        const val = answers[qIdx];
+        if (val !== undefined && String(val).trim().length > 0) {
+          answeredItems++;
+        }
+      }
+    }
+
+    return {
+      totalItems,
+      answeredItems,
+      unansweredItems: Math.max(0, totalItems - answeredItems),
+    };
+  }, [questions, answers]);
 
   // ─── 1. Load Quiz by Code or ID ─────────────────────────────────────────────
   useEffect(() => {
@@ -878,12 +1038,12 @@ export function StudentQuizRunner({
 
             <div className="results-stats-panel">
               <div className="stat-row">
-                <span>Total Questions:</span>
-                <strong>{questions.length}</strong>
+                <span>Total Questions / Parts:</span>
+                <strong>{quizStats.totalItems}</strong>
               </div>
               <div className="stat-row">
                 <span>Questions Attempted:</span>
-                <strong>{Object.keys(answers).length} of {questions.length}</strong>
+                <strong>{quizStats.answeredItems} of {quizStats.totalItems}</strong>
               </div>
               <div className="stat-row">
                 <span>Integrity Violations:</span>
@@ -983,23 +1143,26 @@ export function StudentQuizRunner({
                             key={sIdx}
                             style={{
                               background: 'var(--color-surface-sunken)',
-                              padding: '8px 12px',
+                              padding: '10px 14px',
                               borderRadius: 'var(--radius-md)',
                               border: '1px solid var(--color-border)',
                             }}
                           >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                               <strong>Part ({sub.subId})</strong>
                               <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
-                                {sub.earnedMarks} / {sub.maxMarks} marks
+                                {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
                               </span>
                             </div>
-                            <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                              Your Answer: <strong style={{ color: 'var(--color-text-primary)' }}>{String(sub.studentAnswer || '(blank)')}</strong>
+                            <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
+                              Your Answer:{' '}
+                              <strong style={{ color: 'var(--color-text-primary)' }}>
+                                <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                              </strong>
                             </div>
                             {sub.feedback && (
-                              <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
-                                {sub.feedback}
+                              <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)' }}>
+                                <ExamMathText content={sub.feedback} />
                               </div>
                             )}
                           </div>
@@ -1009,11 +1172,11 @@ export function StudentQuizRunner({
 
                     {/* Point-by-Point Criteria Breakdown */}
                     {qRes?.criteriaBreakdown && qRes.criteriaBreakdown.length > 0 && (
-                      <div className="sol-criteria-box" style={{ margin: '10px 0' }}>
+                      <div className="sol-criteria-box" style={{ margin: '12px 0' }}>
                         <strong style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6 }}>
                           📋 Mark Scheme Criteria Breakdown:
                         </strong>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                           {qRes.criteriaBreakdown.map((crit, cIdx) => (
                             <div
                               key={cIdx}
@@ -1023,15 +1186,21 @@ export function StudentQuizRunner({
                                 gap: '8px',
                                 fontSize: '0.8125rem',
                                 color: crit.achieved ? '#22c55e' : 'var(--color-text-secondary)',
+                                background: crit.achieved ? 'rgba(34, 197, 94, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                                padding: '6px 10px',
+                                borderRadius: 'var(--radius-sm)',
+                                border: `1px solid ${crit.achieved ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
                               }}
                             >
-                              <span>{crit.achieved ? '✓' : '✗'}</span>
-                              <div>
-                                <span>{crit.point}</span>
+                              <span style={{ fontWeight: 800 }}>{crit.achieved ? '✓' : '✗'}</span>
+                              <div style={{ flex: 1 }}>
+                                <div>
+                                  <ExamMathText content={crit.point} />
+                                </div>
                                 {crit.examinerNote && (
-                                  <span style={{ display: 'block', fontSize: '0.75rem', opacity: 0.8 }}>
-                                    Note: {crit.examinerNote}
-                                  </span>
+                                  <div style={{ fontSize: '0.75rem', opacity: 0.85, marginTop: 2, fontStyle: 'italic' }}>
+                                    <ExamMathText content={`Note: ${crit.examinerNote}`} />
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -1045,40 +1214,36 @@ export function StudentQuizRunner({
                       <div
                         className="sol-ai-feedback"
                         style={{
-                          background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1))',
-                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(59, 130, 246, 0.12))',
+                          border: '1px solid rgba(139, 92, 246, 0.35)',
                           borderRadius: 'var(--radius-md)',
                           padding: '10px 14px',
-                          margin: '8px 0',
+                          margin: '10px 0',
                           fontSize: '0.8125rem',
                         }}
                       >
-                        <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 2 }}>💡 Examiner Feedback:</strong>
-                        <p style={{ margin: 0, color: 'var(--color-text-primary)' }}>{qRes.aiFeedback}</p>
+                        <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 4 }}>💡 Examiner Feedback:</strong>
+                        <div style={{ margin: 0, color: 'var(--color-text-primary)' }}>
+                          <ExamMathText content={qRes.aiFeedback} />
+                        </div>
                       </div>
                     )}
 
-                    {/* Official Cambridge Mark Scheme */}
-                    <div className="sol-points">
-                      <strong>Model Answer:</strong>
-                      <ExamMathText
-                        content={
-                          typeof q.mark_scheme === 'string'
-                            ? q.mark_scheme
-                            : Array.isArray(q.mark_scheme?.marking_points)
-                            ? q.mark_scheme.marking_points.join('; ')
-                            : 'Credit valid scientific derivation'
-                        }
-                      />
+                    {/* Official Cambridge Mark Scheme Structured Breakdown */}
+                    <div className="sol-points" style={{ marginTop: '12px' }}>
+                      <strong style={{ display: 'block', marginBottom: '6px', color: 'var(--color-text-primary)' }}>
+                        Official Model Answer & Mark Scheme:
+                      </strong>
+                      {renderStructuredModelAnswer(q.mark_scheme)}
                     </div>
 
                     {q.mark_scheme?.guidance && q.mark_scheme.guidance.length > 0 && (
-                      <div className="sol-guidance">
+                      <div className="sol-guidance" style={{ marginTop: 8 }}>
                         💡 <strong>Examiner Guidance:</strong> <ExamMathText content={q.mark_scheme.guidance.join('; ')} />
                       </div>
                     )}
                     {q.mark_scheme?.common_misconceptions && q.mark_scheme.common_misconceptions.length > 0 && (
-                      <div className="sol-traps">
+                      <div className="sol-traps" style={{ marginTop: 6 }}>
                         ⚠️ <strong>Common Pitfall:</strong> <ExamMathText content={q.mark_scheme.common_misconceptions.join('; ')} />
                       </div>
                     )}
@@ -1377,7 +1542,7 @@ export function StudentQuizRunner({
           <div className="sq-navigator-card">
             <h3 className="sq-nav-card-title">Question Navigator</h3>
             <p className="sq-nav-card-subtitle">
-              {Object.keys(answers).length} of {questions.length} Answered
+              {quizStats.answeredItems} of {quizStats.totalItems} Items Answered
             </p>
 
             <div className="sq-nav-matrix-grid">
@@ -1450,35 +1615,27 @@ export function StudentQuizRunner({
             </p>
 
             {/* Answered vs Unanswered summary */}
-            {(() => {
-              const answeredCount = questions.filter((_, idx) =>
-                answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`))
-              ).length;
-              const unanswered = questions.length - answeredCount;
-              return (
-                <div
-                  style={{
-                    background: unanswered > 0 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
-                    border: `1px solid ${unanswered > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
-                    borderRadius: '12px',
-                    padding: '10px 14px',
-                    marginBottom: '20px',
-                    fontSize: '0.8125rem',
-                    display: 'flex',
-                    justifyContent: 'space-around',
-                  }}
-                >
-                  <div>
-                    <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Answered:</span>{' '}
-                    <strong style={{ color: '#10b981' }}>{answeredCount}</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Unanswered:</span>{' '}
-                    <strong style={{ color: unanswered > 0 ? '#ef4444' : '#10b981' }}>{unanswered}</strong>
-                  </div>
-                </div>
-              );
-            })()}
+            <div
+              style={{
+                background: quizStats.unansweredItems > 0 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                border: `1px solid ${quizStats.unansweredItems > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                borderRadius: '12px',
+                padding: '10px 14px',
+                marginBottom: '20px',
+                fontSize: '0.8125rem',
+                display: 'flex',
+                justifyContent: 'space-around',
+              }}
+            >
+              <div>
+                <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Answered:</span>{' '}
+                <strong style={{ color: '#10b981' }}>{quizStats.answeredItems}</strong>
+              </div>
+              <div>
+                <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Unanswered:</span>{' '}
+                <strong style={{ color: quizStats.unansweredItems > 0 ? '#ef4444' : '#10b981' }}>{quizStats.unansweredItems}</strong>
+              </div>
+            </div>
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
               <button
