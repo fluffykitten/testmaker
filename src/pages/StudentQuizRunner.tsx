@@ -65,6 +65,7 @@ export function StudentQuizRunner({
   const [answers, setAnswers] = useState<Record<string | number, string | number>>(() => savedExam?.answers || {});
   const [flaggedIndices, setFlaggedIndices] = useState<Set<number>>(() => new Set(savedExam?.flaggedIndices || []));
   const [isExamMode, setIsExamMode] = useState<boolean>(() => savedExam?.isExamMode ?? true); // true = Strict Timed Exam, false = Practice Mode
+  const [isTeacherLocked, setIsTeacherLocked] = useState<boolean>(() => !!testIdOrCode);
   const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(() => savedExam?.isSubmitted || false);
   const [timeLeft, setTimeLeft] = useState<number>(() => savedExam?.timeLeft ?? (45 * 60));
@@ -122,6 +123,7 @@ export function StudentQuizRunner({
           if (data.securityEnabled !== undefined) {
             setSecurityEnabled(data.securityEnabled);
           }
+          setIsTeacherLocked(true);
         }
       } catch (err: any) {
         setError(`Failed to load quiz: ${err?.message || 'Network error'}`);
@@ -675,69 +677,164 @@ export function StudentQuizRunner({
             />
           </div>
 
-          {/* Mode Selector */}
-          <div className="student-mode-toggle-box">
-            <label className="student-mode-toggle">
-              <input
-                type="checkbox"
-                checked={isExamMode}
-                onChange={(e) => setIsExamMode(e.target.checked)}
-              />
-              <span><strong>Strict Timed Exam Mode</strong> (Enforces countdown timer & submit gate)</span>
-            </label>
-
-            <label className="student-mode-toggle" style={{ marginTop: 8 }}>
-              <input
-                type="checkbox"
-                checked={securityEnabled}
-                onChange={(e) => setSecurityEnabled(e.target.checked)}
-              />
-              <span><strong>🔒 Anti-Cheating Exam Browser Mode</strong> (Fullscreen lock & tab-switch alerts)</span>
-            </label>
-          </div>
-
-          {/* Quick Switch to Quizizz Game Mode Banner */}
-          {onSwitchToGameMode && (
+          {/* Mode Policy: Locked for Formal Teacher Exams vs Configurable for Practice Previews */}
+          {isTeacherLocked ? (
             <div
               style={{
-                background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(236, 72, 153, 0.15))',
-                border: '1.5px solid rgba(139, 92, 246, 0.4)',
+                background: 'var(--color-surface-sunken)',
+                border: '1.5px solid var(--color-border)',
                 borderRadius: 'var(--radius-lg)',
-                padding: '12px 16px',
+                padding: '14px 18px',
+                margin: '16px 0',
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px',
-                marginTop: '16px',
+                flexDirection: 'column',
+                gap: '10px',
+                textAlign: 'left',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '1.5rem' }}>🎮</span>
-                <div>
-                  <strong style={{ fontSize: '0.875rem', color: 'var(--color-text-primary)', display: 'block' }}>
-                    Prefer a gamified Quizizz challenge?
-                  </strong>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                    Play with 4 colored cards, audio effects, power-ups, and streaks!
-                  </span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span
+                  style={{
+                    fontSize: '0.8125rem',
+                    fontWeight: 800,
+                    color: 'var(--color-text-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  🛡️ Formal Examination Policy
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                    background: 'rgba(16, 185, 129, 0.15)',
+                    color: '#10b981',
+                    padding: '3px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  Enforced by Teacher
+                </span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div
+                  style={{
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '8px 12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span style={{ fontSize: '1.2rem' }}>⏱️</span>
+                  <div>
+                    <strong style={{ fontSize: '0.8rem', display: 'block', color: 'var(--color-text-primary)' }}>
+                      {isExamMode ? `${Math.round(timeLeft / 60)} Mins Countdown` : 'Self-Paced Practice'}
+                    </strong>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
+                      {isExamMode ? 'Strict timer with auto-submit' : 'No time limit'}
+                    </span>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '8px 12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span style={{ fontSize: '1.2rem' }}>🔒</span>
+                  <div>
+                    <strong style={{ fontSize: '0.8rem', display: 'block', color: 'var(--color-text-primary)' }}>
+                      {securityEnabled ? 'Anti-Cheating Monitored' : 'Standard Browser'}
+                    </strong>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
+                      {securityEnabled ? 'Fullscreen & tab-switch tracking' : 'Open browser'}
+                    </span>
+                  </div>
                 </div>
               </div>
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
-                  color: '#ffffff',
-                  fontWeight: 800,
-                  fontSize: '0.8125rem',
-                  padding: '8px 14px',
-                  whiteSpace: 'nowrap',
-                }}
-                onClick={onSwitchToGameMode}
-              >
-                🎮 Switch to Quizizz Mode
-              </button>
             </div>
+          ) : (
+            <>
+              {/* Practice Preview Mode Selector */}
+              <div className="student-mode-toggle-box">
+                <label className="student-mode-toggle">
+                  <input
+                    type="checkbox"
+                    checked={isExamMode}
+                    onChange={(e) => setIsExamMode(e.target.checked)}
+                  />
+                  <span><strong>Strict Timed Exam Mode</strong> (Enforces countdown timer & submit gate)</span>
+                </label>
+
+                <label className="student-mode-toggle" style={{ marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={securityEnabled}
+                    onChange={(e) => setSecurityEnabled(e.target.checked)}
+                  />
+                  <span><strong>🔒 Anti-Cheating Exam Browser Mode</strong> (Fullscreen lock & tab-switch alerts)</span>
+                </label>
+              </div>
+
+              {/* Quick Switch to Quizizz Game Mode Banner */}
+              {onSwitchToGameMode && (
+                <div
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(236, 72, 153, 0.15))',
+                    border: '1.5px solid rgba(139, 92, 246, 0.4)',
+                    borderRadius: 'var(--radius-lg)',
+                    padding: '12px 16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    marginTop: '16px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '1.5rem' }}>🎮</span>
+                    <div>
+                      <strong style={{ fontSize: '0.875rem', color: 'var(--color-text-primary)', display: 'block' }}>
+                        Prefer a gamified Quizizz challenge?
+                      </strong>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                        Play with 4 colored cards, audio effects, power-ups, and streaks!
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="sq-btn"
+                    style={{
+                      background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                      color: '#ffffff',
+                      fontWeight: 800,
+                      fontSize: '0.8125rem',
+                      padding: '8px 14px',
+                      whiteSpace: 'nowrap',
+                    }}
+                    onClick={onSwitchToGameMode}
+                  >
+                    🎮 Switch to Quizizz Mode
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           <div className="student-lobby-actions">

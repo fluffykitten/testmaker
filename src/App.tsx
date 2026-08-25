@@ -747,7 +747,7 @@ function StudentQuizDispatcher({
       initialQuestions={initialQuestions}
       initialHeaderConfig={initialHeaderConfig}
       onExit={onExit}
-      onSwitchToGameMode={() => setResolvedMode('game')}
+      onSwitchToGameMode={!codeOrId ? () => setResolvedMode('game') : undefined}
     />
   );
 }
