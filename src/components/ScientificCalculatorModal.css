@@ -99,7 +99,7 @@
 }
 
 .sc-btn {
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   padding: 12px 0;
   font-size: 0.95rem;
@@ -117,56 +117,62 @@
 }
 
 .sc-btn--fn {
-  background: rgba(139, 92, 246, 0.15);
-  color: #c084fc;
+  background: rgba(139, 92, 246, 0.22) !important;
+  color: #d8b4fe !important;
   font-size: 0.85rem;
 }
 .sc-btn--fn:hover {
-  background: rgba(139, 92, 246, 0.25);
+  background: rgba(139, 92, 246, 0.35) !important;
+  color: #ffffff !important;
 }
 
 .sc-btn--num {
-  background: var(--color-surface, #334155);
-  color: #ffffff;
-  font-size: 1.05rem;
+  background: #334155 !important;
+  color: #ffffff !important;
+  font-size: 1.1rem;
+  font-weight: 800;
 }
 .sc-btn--num:hover {
-  background: #475569;
+  background: #475569 !important;
+  color: #38bdf8 !important;
 }
 
 .sc-btn--op {
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  font-size: 1.1rem;
+  background: rgba(56, 189, 248, 0.22) !important;
+  color: #38bdf8 !important;
+  font-size: 1.15rem;
 }
 .sc-btn--op:hover {
-  background: rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.35) !important;
+  color: #ffffff !important;
 }
 
 .sc-btn--del {
-  background: rgba(249, 115, 22, 0.2);
-  color: #fb923c;
-  font-size: 0.8rem;
+  background: rgba(249, 115, 22, 0.25) !important;
+  color: #fb923c !important;
+  font-size: 0.85rem;
 }
 .sc-btn--del:hover {
-  background: rgba(249, 115, 22, 0.3);
+  background: rgba(249, 115, 22, 0.38) !important;
+  color: #ffffff !important;
 }
 
 .sc-btn--ac {
-  background: rgba(239, 68, 68, 0.2);
-  color: #f87171;
+  background: rgba(239, 68, 68, 0.25) !important;
+  color: #f87171 !important;
   font-size: 0.85rem;
 }
 .sc-btn--ac:hover {
-  background: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.38) !important;
+  color: #ffffff !important;
 }
 
 .sc-btn--eq {
-  background: linear-gradient(135deg, #10b981, #059669);
-  color: #ffffff;
-  font-size: 1.2rem;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  color: #ffffff !important;
+  font-size: 1.25rem;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
 }
 .sc-btn--eq:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.15);
 }

@@ -10,7 +10,7 @@ interface PeriodicTableDrawerProps {
 export const PeriodicTableDrawer: React.FC<PeriodicTableDrawerProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
-  const periodicTableHtml = renderPeriodicTableHtml();
+  const periodicTableHtml = renderPeriodicTableHtml({ rotated: false });
 
   return (
     <div className="pt-drawer-backdrop animate-fade-in" onClick={onClose}>
