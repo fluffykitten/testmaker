@@ -11,6 +11,8 @@ import { gradeDeterministicAnswer } from '../services/deterministicGradingServic
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
+import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
+import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -186,7 +188,9 @@ export function StudentQuizRunner({
   const savedExam = useRef(getSavedExamState()).current;
 
   // Candidate Info
-  const [candidateName, setCandidateName] = useState<string>(() => savedExam?.candidateName || `Candidate ${Math.floor(1000 + Math.random() * 9000)}`);
+  const [candidateName, setCandidateName] = useState<string>(() => savedExam?.candidateName || '');
+  const [candidateClass, setCandidateClass] = useState<string>(() => savedExam?.candidateClass || '');
+  const [candidateNumber, setCandidateNumber] = useState<string>(() => savedExam?.candidateNumber || '');
   const [startTime, setStartTime] = useState<number>(() => savedExam?.startTime || Date.now());
 
   // Exam Progress State
@@ -198,6 +202,11 @@ export function StudentQuizRunner({
   const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(() => savedExam?.isSubmitted || false);
   const [timeLeft, setTimeLeft] = useState<number>(() => savedExam?.timeLeft ?? (45 * 60));
+
+  // Reference & Tool Drawers
+  const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
+  const [showCalculator, setShowCalculator] = useState<boolean>(false);
+  const [timeWarning, setTimeWarning] = useState<string | null>(null);
 
   // Grading & AI Evaluation State
   const [isGrading, setIsGrading] = useState<boolean>(false);
@@ -527,6 +536,8 @@ export function StudentQuizRunner({
         quizTitle: title,
         subject: headerConfig?.subject || 'Chemistry',
         studentName: candidateName.trim() || 'Candidate',
+        studentClass: candidateClass.trim() || 'General',
+        candidateNumber: candidateNumber.trim() || undefined,
         submittedAt: new Date().toISOString(),
         durationSeconds: durationSec,
         score: earnedMarks,
@@ -557,7 +568,7 @@ export function StudentQuizRunner({
     } finally {
       setIsGrading(false);
     }
-  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, title, headerConfig, candidateName, violations, sessionKey]);
+  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey]);
 
   // Auto-persist exam state to sessionStorage across page refreshes
   useEffect(() => {
@@ -567,6 +578,8 @@ export function StudentQuizRunner({
           sessionKey,
           JSON.stringify({
             candidateName,
+            candidateClass,
+            candidateNumber,
             startTime,
             currentIndex,
             answers,
@@ -586,6 +599,8 @@ export function StudentQuizRunner({
   }, [
     sessionKey,
     candidateName,
+    candidateClass,
+    candidateNumber,
     startTime,
     currentIndex,
     answers,
@@ -598,12 +613,20 @@ export function StudentQuizRunner({
     violations,
   ]);
 
-  // ─── 5. Countdown Timer ───────────────────────────────────────────────────
+  // ─── 5. Countdown Timer & Time Remaining Warnings ──────────────────────────
   useEffect(() => {
     if (!hasStarted || isSubmitted || !isExamMode) return;
     if (timeLeft <= 0) {
       handleSubmitExam();
       return;
+    }
+
+    if (timeLeft === 300) {
+      setTimeWarning('⚠️ 5 Minutes Remaining! Please review and finalize your answers.');
+      setTimeout(() => setTimeWarning(null), 6000);
+    } else if (timeLeft === 60) {
+      setTimeWarning('🚨 1 Minute Remaining! Examination will auto-submit when the countdown reaches zero.');
+      setTimeout(() => setTimeWarning(null), 6000);
     }
 
     const timer = setInterval(() => {
@@ -820,30 +843,82 @@ export function StudentQuizRunner({
             </div>
           )}
 
-          {/* Candidate Name Input */}
-          <div className="student-candidate-name-box" style={{ margin: '16px 0' }}>
-            <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 6, color: 'var(--color-text-primary)' }}>
-              Candidate / Student Name:
-            </label>
-            <input
-              type="text"
-              className="student-name-input"
-              value={candidateName}
-              onChange={(e) => setCandidateName(e.target.value)}
-              placeholder="e.g. Alex Johnson or Student ID"
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                borderRadius: 'var(--radius-lg)',
-                border: '1.5px solid var(--color-border)',
-                background: 'var(--color-surface-sunken)',
-                color: 'var(--color-text-primary)',
-                fontSize: '0.875rem',
-                fontWeight: 600,
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-            />
+          {/* Candidate Information Form */}
+          <div className="student-candidate-name-box" style={{ margin: '16px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-text-primary)' }}>
+                Candidate Full Name: <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <input
+                type="text"
+                className="student-name-input"
+                value={candidateName}
+                onChange={(e) => setCandidateName(e.target.value)}
+                placeholder="e.g. Alex Johnson"
+                style={{
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-lg)',
+                  border: '1.5px solid var(--color-border)',
+                  background: 'var(--color-surface-sunken)',
+                  color: 'var(--color-text-primary)',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-text-primary)' }}>
+                  Class / Section / Set:
+                </label>
+                <input
+                  type="text"
+                  value={candidateClass}
+                  onChange={(e) => setCandidateClass(e.target.value)}
+                  placeholder="e.g. 10-A, Year 11-1"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1.5px solid var(--color-border)',
+                    background: 'var(--color-surface-sunken)',
+                    color: 'var(--color-text-primary)',
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-text-primary)' }}>
+                  Candidate ID / Seat #:
+                </label>
+                <input
+                  type="text"
+                  value={candidateNumber}
+                  onChange={(e) => setCandidateNumber(e.target.value)}
+                  placeholder="e.g. 0042 or Seat 12"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1.5px solid var(--color-border)',
+                    background: 'var(--color-surface-sunken)',
+                    color: 'var(--color-text-primary)',
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            </div>
           </div>
 
           {/* Mode Policy: Locked for Formal Teacher Exams vs Configurable for Practice Previews */}
@@ -1388,6 +1463,55 @@ export function StudentQuizRunner({
         </div>
 
         <div className="sq-runner-header-right">
+          {/* Interactive Exam Reference Tools: Periodic Table & Scientific Calculator */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              className="sq-btn"
+              style={{
+                background: 'rgba(56, 189, 248, 0.15)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                borderRadius: '8px',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                padding: '6px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: 'pointer',
+              }}
+              onClick={() => setShowPeriodicTable(true)}
+              title="Open Cambridge Periodic Table of Elements & Physical Constants"
+            >
+              <span>🧪</span>
+              <span>Periodic Table</span>
+            </button>
+
+            <button
+              type="button"
+              className="sq-btn"
+              style={{
+                background: 'rgba(139, 92, 246, 0.15)',
+                color: '#c084fc',
+                border: '1px solid rgba(139, 92, 246, 0.35)',
+                borderRadius: '8px',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                padding: '6px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: 'pointer',
+              }}
+              onClick={() => setShowCalculator(true)}
+              title="Open On-Screen Scientific Calculator"
+            >
+              <span>🧮</span>
+              <span>Calculator</span>
+            </button>
+          </div>
+
           {/* Violations Badge */}
           {securityEnabled && violations.length > 0 && (
             <div className="sq-violation-badge" title="Security alerts recorded">
@@ -1413,6 +1537,44 @@ export function StudentQuizRunner({
           </button>
         </div>
       </header>
+
+      {/* Time Remaining Warning Banner */}
+      {timeWarning && (
+        <div
+          className="animate-fade-in"
+          style={{
+            background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+            color: '#ffffff',
+            padding: '10px 18px',
+            fontWeight: 800,
+            fontSize: '0.875rem',
+            textAlign: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            boxShadow: '0 4px 12px rgba(217, 119, 6, 0.3)',
+          }}
+        >
+          <span>{timeWarning}</span>
+          <button
+            type="button"
+            onClick={() => setTimeWarning(null)}
+            style={{
+              background: 'rgba(0,0,0,0.2)',
+              border: 'none',
+              color: '#ffffff',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              cursor: 'pointer',
+              marginLeft: '8px',
+              fontSize: '0.75rem',
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Security Banner Alert */}
       {securityAlert && (
@@ -1778,6 +1940,18 @@ export function StudentQuizRunner({
           </div>
         </div>
       )}
+
+      {/* Cambridge Chemistry Reference Sheet & Periodic Table Drawer */}
+      <PeriodicTableDrawer
+        isOpen={showPeriodicTable}
+        onClose={() => setShowPeriodicTable(false)}
+      />
+
+      {/* On-Screen Scientific Calculator Modal */}
+      <ScientificCalculatorModal
+        isOpen={showCalculator}
+        onClose={() => setShowCalculator(false)}
+      />
     </div>
   );
 }

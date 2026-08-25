@@ -4,9 +4,11 @@ import {
   getSubmissionsForQuiz,
   deleteSubmission,
   clearSubmissionsForQuiz,
+  updateSubmission,
   exportAllSubmissionsExcel,
   exportSingleSubmissionExcel,
   type StudentSubmission,
+  type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
 import {
   exportClassQuizReportPdf,
@@ -27,14 +29,30 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'flagged'>('all');
+  const [selectedClass, setSelectedClass] = useState<string>('all');
+
+  // Teacher Mark Override State
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
+  const [editMarksInput, setEditMarksInput] = useState<number>(0);
+  const [editTeacherNote, setEditTeacherNote] = useState<string>('');
 
   const refreshSubmissions = () => {
     setSubmissions(getSubmissionsForQuiz(quiz.id, quiz.quizCode));
   };
 
+  // ─── Unique Classes ─────────────────────────────────────────────────────────
+  const availableClasses = useMemo(() => {
+    const classes = Array.from(new Set(submissions.map((s) => s.studentClass || 'General')));
+    return classes.sort();
+  }, [submissions]);
+
   // ─── Analytics Summary ──────────────────────────────────────────────────────
   const stats = useMemo(() => {
-    if (submissions.length === 0) {
+    const activeSubmissions = selectedClass === 'all'
+      ? submissions
+      : submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase());
+
+    if (activeSubmissions.length === 0) {
       return {
         count: 0,
         avgScore: 0,
@@ -46,13 +64,13 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       };
     }
 
-    const count = submissions.length;
-    const totalScore = submissions.reduce((s, sub) => s + sub.score, 0);
+    const count = activeSubmissions.length;
+    const totalScore = activeSubmissions.reduce((s, sub) => s + sub.score, 0);
     const avgScore = totalScore / count;
     const avgPercentage = (avgScore / (quiz.totalMarks || 1)) * 100;
-    const highestScore = Math.max(...submissions.map((s) => s.score));
-    const lowestScore = Math.min(...submissions.map((s) => s.score));
-    const cleanCount = submissions.filter((s) => s.violationsCount === 0).length;
+    const highestScore = Math.max(...activeSubmissions.map((s) => s.score));
+    const lowestScore = Math.min(...activeSubmissions.map((s) => s.score));
+    const cleanCount = activeSubmissions.filter((s) => s.violationsCount === 0).length;
     const flaggedCount = count - cleanCount;
 
     return {
@@ -64,21 +82,24 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       cleanCount,
       flaggedCount,
     };
-  }, [submissions, quiz.totalMarks]);
+  }, [submissions, quiz.totalMarks, selectedClass]);
 
   // ─── Filtered Submissions ───────────────────────────────────────────────────
   const filteredSubmissions = useMemo(() => {
     return submissions.filter((sub) => {
       const q = searchFilter.toLowerCase().trim();
-      const matchesSearch = !q || sub.studentName.toLowerCase().includes(q);
+      const matchesSearch = !q || sub.studentName.toLowerCase().includes(q) || (sub.candidateNumber && sub.candidateNumber.includes(q));
       const matchesStatus =
         statusFilter === 'all' ||
         (statusFilter === 'clean' && sub.violationsCount === 0) ||
         (statusFilter === 'flagged' && sub.violationsCount > 0);
+      const matchesClass =
+        selectedClass === 'all' ||
+        (sub.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase();
 
-      return matchesSearch && matchesStatus;
+      return matchesSearch && matchesStatus && matchesClass;
     });
-  }, [submissions, searchFilter, statusFilter]);
+  }, [submissions, searchFilter, statusFilter, selectedClass]);
 
   const handleDelete = (id: string) => {
     if (confirm('Delete this submission record?')) {
@@ -102,6 +123,45 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
   const handleExportSingleExcel = (sub: StudentSubmission) => {
     exportSingleSubmissionExcel(sub);
+  };
+
+  const handleStartEditing = (qr: QuestionSubmissionResult) => {
+    setEditingQuestionId(qr.questionId);
+    setEditMarksInput(qr.earnedMarks);
+    setEditTeacherNote('');
+  };
+
+  const handleSaveMarkOverride = (qr: QuestionSubmissionResult) => {
+    if (!selectedSubmission) return;
+
+    const diff = editMarksInput - qr.earnedMarks;
+    const newScore = Math.max(0, Math.min(selectedSubmission.totalMarks, selectedSubmission.score + diff));
+    const newPct = selectedSubmission.totalMarks > 0 ? (newScore / selectedSubmission.totalMarks) * 100 : 0;
+
+    const updatedQuestionResults = selectedSubmission.questionResults.map((q) => {
+      if (q.questionId === qr.questionId) {
+        return {
+          ...q,
+          earnedMarks: editMarksInput,
+          isCorrect: editMarksInput === q.maxMarks,
+          aiFeedback: editTeacherNote ? `${q.aiFeedback ? q.aiFeedback + '\n' : ''}✏️ [Teacher Note]: ${editTeacherNote}` : q.aiFeedback,
+        };
+      }
+      return q;
+    });
+
+    const updatedSubmission: StudentSubmission = {
+      ...selectedSubmission,
+      score: newScore,
+      percentage: newPct,
+      questionResults: updatedQuestionResults,
+      teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
+    };
+
+    updateSubmission(updatedSubmission);
+    setSelectedSubmission(updatedSubmission);
+    refreshSubmissions();
+    setEditingQuestionId(null);
   };
 
   return (
@@ -136,7 +196,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     alignItems: 'center',
                     gap: '6px',
                   }}
-                  onClick={() => exportClassQuizReportPdf(quiz, submissions)}
+                  onClick={() => exportClassQuizReportPdf(quiz, submissions, selectedClass)}
                   title="Export complete class diagnostic report as PDF"
                 >
                   📄 Export Class Report (PDF)
@@ -161,13 +221,13 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         <div className="qrm-kpi-ribbon">
           <div className="qrm-kpi-card">
             <span className="kpi-val">{stats.count}</span>
-            <span className="kpi-lbl">Total Students</span>
+            <span className="kpi-lbl">Total Students {selectedClass !== 'all' ? `(${selectedClass})` : ''}</span>
           </div>
           <div className="qrm-kpi-card">
             <span className="kpi-val">
               {stats.count > 0 ? `${stats.avgScore.toFixed(1)} / ${quiz.totalMarks}` : '-'}
             </span>
-            <span className="kpi-lbl">Class Average ({stats.avgPercentage.toFixed(0)}%)</span>
+            <span className="kpi-lbl">Average Score ({stats.avgPercentage.toFixed(0)}%)</span>
           </div>
           <div className="qrm-kpi-card">
             <span className="kpi-val">
@@ -193,10 +253,44 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               <input
                 type="text"
                 className="qrm-roster-search"
-                placeholder="Search candidate name..."
+                placeholder="Search candidate name or ID..."
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
               />
+
+              {/* Class Filter Selection */}
+              {availableClasses.length > 1 && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '8px 0' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)' }}>Class:</span>
+                  <select
+                    className="qrm-class-select"
+                    value={selectedClass}
+                    onChange={(e) => setSelectedClass(e.target.value)}
+                    style={{
+                      background: 'var(--color-surface)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-primary)',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      outline: 'none',
+                      cursor: 'pointer',
+                      flex: 1,
+                    }}
+                  >
+                    <option value="all">All Classes ({submissions.length})</option>
+                    {availableClasses.map((cls) => {
+                      const clsCount = submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === cls.toLowerCase()).length;
+                      return (
+                        <option key={cls} value={cls}>
+                          {cls} ({clsCount} students)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               <div className="qrm-status-filter-pills">
                 <button
@@ -204,7 +298,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   className={`qrm-filter-pill ${statusFilter === 'all' ? 'active' : ''}`}
                   onClick={() => setStatusFilter('all')}
                 >
-                  All ({submissions.length})
+                  All ({filteredSubmissions.length})
                 </button>
                 <button
                   type="button"
@@ -251,7 +345,17 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       <div className="qrm-sc-top">
                         <div className="qrm-sc-name-wrap">
                           <span className="qrm-sc-avatar">👤</span>
-                          <strong className="qrm-sc-name">{sub.studentName}</strong>
+                          <div>
+                            <strong className="qrm-sc-name">{sub.studentName}</strong>
+                            <div style={{ display: 'flex', gap: '6px', marginTop: '2px', fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
+                              <span style={{ background: 'rgba(255, 255, 255, 0.08)', padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>
+                                {sub.studentClass || 'General'}
+                              </span>
+                              {sub.candidateNumber && (
+                                <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>#{sub.candidateNumber}</span>
+                              )}
+                            </div>
+                          </div>
                         </div>
 
                         <div className="qrm-sc-score-badge">
@@ -303,6 +407,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 <div className="qrm-candidate-header-card">
                   <div className="cand-info">
                     <h2>{selectedSubmission.studentName}</h2>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '4px 0 6px' }}>
+                      <span style={{ background: 'var(--color-primary-500, #8b5cf6)', color: '#ffffff', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 700 }}>
+                        Class: {selectedSubmission.studentClass || 'General'}
+                      </span>
+                      {selectedSubmission.candidateNumber && (
+                        <span style={{ background: 'rgba(255, 255, 255, 0.1)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                          Cand ID: {selectedSubmission.candidateNumber}
+                        </span>
+                      )}
+                    </div>
                     <p>
                       Submitted on {new Date(selectedSubmission.submittedAt).toLocaleString()} • Duration: {Math.floor(selectedSubmission.durationSeconds / 60)}m {selectedSubmission.durationSeconds % 60}s
                     </p>
@@ -428,21 +542,149 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                             <span className="q-topic">{qr.topic}</span>
                           </div>
 
-                          <div className="q-marks-tag">
-                            {qr.isCorrect ? '✓ ' : '✗ '}
-                            {qr.earnedMarks} / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
+                          <div className="q-marks-tag" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {editingQuestionId === qr.questionId ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={qr.maxMarks}
+                                  value={editMarksInput}
+                                  onChange={(e) => setEditMarksInput(Math.max(0, Math.min(qr.maxMarks, Number(e.target.value))))}
+                                  style={{
+                                    width: '48px',
+                                    padding: '2px 4px',
+                                    borderRadius: '4px',
+                                    border: '1px solid var(--color-border)',
+                                    background: 'var(--color-surface)',
+                                    color: 'var(--color-text-primary)',
+                                    fontWeight: 700,
+                                    textAlign: 'center',
+                                    fontSize: '0.8125rem',
+                                  }}
+                                />
+                                <span>/ {qr.maxMarks}</span>
+                                <button
+                                  type="button"
+                                  className="sq-btn sq-btn-primary"
+                                  style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                                  onClick={() => handleSaveMarkOverride(qr)}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  className="sq-btn sq-btn-secondary"
+                                  style={{ padding: '2px 6px', fontSize: '0.75rem' }}
+                                  onClick={() => setEditingQuestionId(null)}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <span>
+                                  {qr.isCorrect ? '✓ ' : '✗ '}
+                                  {qr.earnedMarks} / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
+                                </span>
+                                <button
+                                  type="button"
+                                  style={{
+                                    background: 'rgba(255, 255, 255, 0.08)',
+                                    border: '1px solid var(--color-border)',
+                                    color: 'var(--color-text-secondary)',
+                                    borderRadius: '4px',
+                                    padding: '2px 6px',
+                                    fontSize: '0.7rem',
+                                    cursor: 'pointer',
+                                  }}
+                                  onClick={() => handleStartEditing(qr)}
+                                  title="Adjust mark or add teacher remark"
+                                >
+                                  ✏️ Remark
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
 
-                        <div className="q-answer-details">
-                          <div className="ans-block">
-                            <span className="ans-lbl">Student Answer:</span>
-                            <span className={`ans-val ${qr.isCorrect ? 'correct-text' : 'wrong-text'}`}>
-                              {typeof qr.studentAnswer === 'number'
-                                ? `Option ${String.fromCharCode(65 + qr.studentAnswer)}`
-                                : String(qr.studentAnswer || '(No answer provided)')}
-                            </span>
+                        {/* Teacher Remark Input Form if editing */}
+                        {editingQuestionId === qr.questionId && (
+                          <div style={{ padding: '8px 12px', background: 'rgba(255, 255, 255, 0.04)', borderRadius: '6px', margin: '6px 0' }}>
+                            <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>
+                              Teacher Remark / Feedback Annotation:
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. Awarded +1 for valid alternative derivation of molar volume"
+                              value={editTeacherNote}
+                              onChange={(e) => setEditTeacherNote(e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid var(--color-border)',
+                                background: 'var(--color-surface)',
+                                color: 'var(--color-text-primary)',
+                                fontSize: '0.8125rem',
+                                boxSizing: 'border-box',
+                              }}
+                            />
                           </div>
+                        )}
+
+                        <div className="q-answer-details">
+                          {/* Sub-Questions Results if present */}
+                          {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                              {qr.subQuestionResults.map((sub, sIdx) => (
+                                <div
+                                  key={sIdx}
+                                  style={{
+                                    background: 'var(--color-surface-sunken)',
+                                    padding: '8px 12px',
+                                    borderRadius: 'var(--radius-md)',
+                                    border: '1px solid var(--color-border)',
+                                    fontSize: '0.8125rem',
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                                    <strong>Part ({sub.subId})</strong>
+                                    <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
+                                      {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
+                                    </span>
+                                  </div>
+                                  <div style={{ color: 'var(--color-text-secondary)' }}>
+                                    Candidate Answer:{' '}
+                                    <strong style={{ color: 'var(--color-text-primary)' }}>
+                                      <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                                    </strong>
+                                  </div>
+                                  {sub.feedback && (
+                                    <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
+                                      <ExamMathText content={sub.feedback} />
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="ans-block">
+                              <span className="ans-lbl">Student Answer:</span>
+                              <span className={`ans-val ${qr.isCorrect ? 'correct-text' : 'wrong-text'}`}>
+                                {typeof qr.studentAnswer === 'number'
+                                  ? `Option ${String.fromCharCode(65 + qr.studentAnswer)}`
+                                  : <ExamMathText content={String(qr.studentAnswer || '(No answer provided)')} />}
+                              </span>
+                            </div>
+                          )}
+
+                          {qr.aiFeedback && (
+                            <div style={{ background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.3)', borderRadius: '6px', padding: '6px 10px', margin: '6px 0', fontSize: '0.8125rem' }}>
+                              <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 2 }}>💡 Examiner Feedback:</strong>
+                              <ExamMathText content={qr.aiFeedback} />
+                            </div>
+                          )}
 
                           {qr.correctAnswer && (
                             <div className="ans-block">

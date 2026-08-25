@@ -26,33 +26,44 @@ function deriveGrade(percentage: number): { grade: string; color: string } {
  */
 export function exportClassQuizReportPdf(
   quiz: { title: string; quizCode: string; subject?: string; totalMarks: number },
-  submissions: StudentSubmission[]
+  submissions: StudentSubmission[],
+  selectedClass: string = 'all'
 ): void {
   if (!submissions || submissions.length === 0) {
     alert('No student submissions available to generate a class report.');
     return;
   }
 
-  const count = submissions.length;
+  // Filter by selected class if specified
+  const filteredSubmissions = selectedClass === 'all'
+    ? submissions
+    : submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase());
+
+  if (filteredSubmissions.length === 0) {
+    alert(`No student submissions found for class "${selectedClass}".`);
+    return;
+  }
+
+  const count = filteredSubmissions.length;
   const totalMarks = quiz.totalMarks || 1;
-  const totalScore = submissions.reduce((s, sub) => s + sub.score, 0);
+  const totalScore = filteredSubmissions.reduce((s, sub) => s + sub.score, 0);
   const avgScore = totalScore / count;
   const avgPct = (avgScore / totalMarks) * 100;
-  const highestScore = Math.max(...submissions.map((s) => s.score));
-  const lowestScore = Math.min(...submissions.map((s) => s.score));
-  const cleanCount = submissions.filter((s) => s.violationsCount === 0).length;
+  const highestScore = Math.max(...filteredSubmissions.map((s) => s.score));
+  const lowestScore = Math.min(...filteredSubmissions.map((s) => s.score));
+  const cleanCount = filteredSubmissions.filter((s) => s.violationsCount === 0).length;
   const integrityRate = Math.round((cleanCount / count) * 100);
 
   // Grade Distribution Counts
   const gradeCounts: Record<string, number> = { 'A*': 0, 'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0, 'U': 0 };
-  submissions.forEach((s) => {
+  filteredSubmissions.forEach((s) => {
     const { grade } = deriveGrade(s.percentage);
     gradeCounts[grade] = (gradeCounts[grade] || 0) + 1;
   });
 
   // Topic Aggregations
   const topicStats: Record<string, { totalAvailable: number; totalEarned: number; count: number }> = {};
-  submissions.forEach((s) => {
+  filteredSubmissions.forEach((s) => {
     if (s.topicBreakdown) {
       Object.entries(s.topicBreakdown).forEach(([top, data]) => {
         if (!topicStats[top]) {
@@ -65,8 +76,20 @@ export function exportClassQuizReportPdf(
     }
   });
 
+  // Class Breakdown Stats if multiple classes exist
+  const classBreakdown: Record<string, { count: number; totalScore: number; avgPct: number }> = {};
+  submissions.forEach((s) => {
+    const cName = s.studentClass || 'General';
+    if (!classBreakdown[cName]) classBreakdown[cName] = { count: 0, totalScore: 0, avgPct: 0 };
+    classBreakdown[cName].count++;
+    classBreakdown[cName].totalScore += s.score;
+  });
+  Object.values(classBreakdown).forEach((item) => {
+    item.avgPct = Math.round(((item.totalScore / (item.count * totalMarks)) * 100));
+  });
+
   // Sort submissions by rank (score desc)
-  const rankedSubmissions = [...submissions].sort((a, b) => b.score - a.score || a.durationSeconds - b.durationSeconds);
+  const rankedSubmissions = [...filteredSubmissions].sort((a, b) => b.score - a.score || a.durationSeconds - b.durationSeconds);
 
   // HTML Document Assembly
   const htmlContent = `<!DOCTYPE html>
@@ -344,13 +367,15 @@ export function exportClassQuizReportPdf(
   <table>
     <thead>
       <tr>
-        <th style="width: 6%; text-align: center;">Rank</th>
-        <th style="width: 32%;">Candidate / Student Name</th>
-        <th style="width: 14%; text-align: center;">Score</th>
-        <th style="width: 12%; text-align: center;">Percentage</th>
-        <th style="width: 10%; text-align: center;">Grade</th>
-        <th style="width: 14%; text-align: center;">Time Taken</th>
-        <th style="width: 12%; text-align: center;">Integrity</th>
+        <th style="width: 5%; text-align: center;">Rank</th>
+        <th style="width: 25%;">Candidate / Student Name</th>
+        <th style="width: 14%;">Class / Section</th>
+        <th style="width: 10%; text-align: center;">Cand #</th>
+        <th style="width: 12%; text-align: center;">Score</th>
+        <th style="width: 10%; text-align: center;">%</th>
+        <th style="width: 8%; text-align: center;">Grade</th>
+        <th style="width: 12%; text-align: center;">Time</th>
+        <th style="width: 10%; text-align: center;">Integrity</th>
       </tr>
     </thead>
     <tbody>
@@ -363,6 +388,8 @@ export function exportClassQuizReportPdf(
           <tr>
             <td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td>
             <td><strong>${sub.studentName}</strong></td>
+            <td><span style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: 600;">${sub.studentClass || 'General'}</span></td>
+            <td style="text-align: center; font-family: monospace; color: #64748b;">${sub.candidateNumber || '-'}</td>
             <td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td>
             <td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td>
             <td style="text-align: center;">
@@ -370,7 +397,7 @@ export function exportClassQuizReportPdf(
             </td>
             <td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td>
             <td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">
-              ${isClean ? 'Clean (0)' : `⚠️ ${sub.violationsCount} Strikes`}
+              ${isClean ? 'Clean (0)' : `⚠️ ${sub.violationsCount}`}
             </td>
           </tr>
         `;
@@ -629,7 +656,9 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
   <div class="cand-header-card">
     <div class="cand-name-title">
       <h1>👤 ${submission.studentName}</h1>
-      <div class="cand-sub">${submission.quizTitle} • ${submission.subject || 'Chemistry'}</div>
+      <div class="cand-sub">
+        ${submission.quizTitle} • ${submission.subject || 'Chemistry'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
+      </div>
     </div>
     <div class="cand-score-pill">
       <div class="cand-score-box">
@@ -641,14 +670,18 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
   </div>
 
   <!-- Assessment Metadata Grid -->
-  <div class="meta-bar">
+  <div class="meta-bar" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="meta-item">
+      <span>Class / Section:</span>
+      <strong>${submission.studentClass || 'General'}</strong>
+    </div>
+    <div class="meta-item">
+      <span>Candidate ID:</span>
+      <strong style="font-family: monospace;">${submission.candidateNumber || 'N/A'}</strong>
+    </div>
     <div class="meta-item">
       <span>Access Code:</span>
       <strong>${submission.quizCode}</strong>
-    </div>
-    <div class="meta-item">
-      <span>Completed At:</span>
-      <strong>${new Date(submission.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • ${new Date(submission.submittedAt).toLocaleDateString('en-GB')}</strong>
     </div>
     <div class="meta-item">
       <span>Time Taken:</span>

@@ -45,6 +45,8 @@ export interface StudentSubmission {
   quizTitle: string;
   subject: string;
   studentName: string;
+  studentClass?: string;       // e.g. "10-A", "Year 11 Set 2", "IB Chem HL"
+  candidateNumber?: string;    // e.g. "0012", "Seat 4"
   submittedAt: string;
   durationSeconds: number;
   score: number;
@@ -54,6 +56,8 @@ export interface StudentSubmission {
   proctoringLogs: ProctoringViolationEvent[];
   questionResults: QuestionSubmissionResult[];
   topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }>;
+  teacherAdjustedMarks?: number; // Optional teacher manual mark override
+  teacherNotes?: string;         // Optional teacher annotation / remark notes
 }
 
 const SUBMISSIONS_STORAGE_KEY = 'fluffykitten_quiz_submissions';
@@ -84,6 +88,10 @@ export function saveQuizSubmission(submission: StudentSubmission): void {
   }
 }
 
+export function updateSubmission(submission: StudentSubmission): void {
+  saveQuizSubmission(submission);
+}
+
 export function deleteSubmission(id: string): void {
   try {
     const existing = getAllSubmissions();
@@ -105,7 +113,7 @@ export function clearSubmissionsForQuiz(quizId: string): void {
 }
 
 /**
- * Exports all student submissions for a quiz to a formatted Excel workbook (.xlsx)
+ * Exports comprehensive class gradebook and item analysis to Excel (.xlsx)
  */
 export function exportAllSubmissionsExcel(
   quizTitle: string,
@@ -113,20 +121,23 @@ export function exportAllSubmissionsExcel(
   totalMarks: number,
   submissions: StudentSubmission[]
 ): void {
-  if (submissions.length === 0) {
+  if (!submissions || submissions.length === 0) {
     alert('No submissions available to export.');
     return;
   }
 
   const wb = XLSX.utils.book_new();
 
-  // ── Sheet 1: Gradebook Summary ─────────────────────────────────────────────
+  // ── Sheet 1: Gradebook Summary ──────────────────────────────────────────────
   const summaryRows = submissions.map((s, idx) => ({
-    'No.': idx + 1,
+    'Rank': idx + 1,
     'Candidate Name': s.studentName,
-    'Score': s.score,
+    'Class / Section': s.studentClass || 'General',
+    'Candidate #': s.candidateNumber || '-',
+    'Score Earned': s.score,
     'Total Marks': s.totalMarks || totalMarks,
-    'Percentage (%)': `${s.percentage.toFixed(1)}%`,
+    'Percentage': `${Math.round(s.percentage)}%`,
+    'Grade': s.percentage >= 90 ? 'A*' : s.percentage >= 80 ? 'A' : s.percentage >= 70 ? 'B' : s.percentage >= 60 ? 'C' : s.percentage >= 50 ? 'D' : s.percentage >= 40 ? 'E' : 'U',
     'Time Taken': `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`,
     'Strikes': s.violationsCount,
     'Integrity Status': s.violationsCount === 0 ? 'Clean (0 Strikes)' : s.violationsCount >= 3 ? 'Flagged / Disqualified' : `Suspicious (${s.violationsCount} strikes)`,
@@ -137,9 +148,12 @@ export function exportAllSubmissionsExcel(
   wsSummary['!cols'] = [
     { wch: 6 },
     { wch: 25 },
-    { wch: 10 },
+    { wch: 16 },
+    { wch: 14 },
     { wch: 12 },
-    { wch: 15 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 8 },
     { wch: 14 },
     { wch: 10 },
     { wch: 24 },
