@@ -5,6 +5,7 @@
 import { saveAs } from 'file-saver';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
+import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 
 export function exportOfflineInteractiveHtmlQuiz(
   headerConfig: ExamHeaderConfig,
@@ -18,9 +19,12 @@ export function exportOfflineInteractiveHtmlQuiz(
     questions.map((q, idx) => ({
       id: q.id || `q_${idx + 1}`,
       number: idx + 1,
-      text: q.question_text || '',
-      options: q.options || [],
-      subQuestions: q.sub_questions || [],
+      text: ensureInlineMathDelimiters(q.question_text || ''),
+      options: (q.options || []).map((opt) => ensureInlineMathDelimiters(opt)),
+      subQuestions: (q.sub_questions || []).map((sq) => ({
+        ...sq,
+        question_text: ensureInlineMathDelimiters(sq.question_text || ''),
+      })),
       marks: q.marks || 1,
       topic: q.topic || 'General',
       subTopic: q.sub_topic || '',

@@ -20,12 +20,14 @@ import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
   onLaunchTestRun: (questions: Question[], headerConfig?: ExamHeaderConfig) => void;
+  onLaunchGameHost?: (quiz: PublishedQuiz, questions: Question[]) => void;
   onNavigateToBuilder: () => void;
   onNavigateToSaved: () => void;
 }
 
 export function QuizManagerPage({
   onLaunchTestRun,
+  onLaunchGameHost,
   onNavigateToBuilder,
   onNavigateToSaved,
 }: QuizManagerPageProps) {
@@ -114,7 +116,7 @@ export function QuizManagerPage({
   }, [filteredQuizzes]);
 
   // ─── 4. Create / Edit Quiz Flow ─────────────────────────────────────────────
-  const handleOpenCreateModal = () => {
+  const handleOpenCreateModal = (initialMode: 'exam' | 'game' = 'exam') => {
     if (savedTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before creating an interactive quiz.');
       onNavigateToBuilder();
@@ -124,6 +126,7 @@ export function QuizManagerPage({
     const firstTest = savedTests[0];
     setSelectedTestId(firstTest.id);
     const draft = createDraftFromTest(firstTest);
+    draft.quizMode = initialMode;
     setActiveQuizDraft(draft);
     setIsConfigModalOpen(true);
   };
@@ -133,14 +136,27 @@ export function QuizManagerPage({
     const selected = savedTests.find((t) => t.id === testId);
     if (selected) {
       const draft = createDraftFromTest(selected);
+      if (activeQuizDraft?.quizMode) {
+        draft.quizMode = activeQuizDraft.quizMode;
+      }
       setActiveQuizDraft(draft);
     }
   };
 
   const handleOpenEditModal = (quiz: PublishedQuiz) => {
-    setActiveQuizDraft({ ...quiz });
+    setActiveQuizDraft({ ...quiz, quizMode: quiz.quizMode || 'exam' });
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
+  };
+
+  const handleQuickSetMode = (quizId: string, mode: 'exam' | 'game') => {
+    const target = quizzes.find((q) => q.id === quizId);
+    if (!target) return;
+    const updated = { ...target, quizMode: mode, updatedAt: new Date().toISOString() };
+    savePublishedQuiz(updated);
+    setQuizzes(getPublishedQuizzes());
+    setSaveSuccessMsg(`Switched "${updated.title}" to ${mode === 'game' ? '🎮 Quizizz Game Mode' : '📝 Formal Exam Mode'}!`);
+    setTimeout(() => setSaveSuccessMsg(null), 3000);
   };
 
   const handleSaveQuizConfig = () => {
@@ -157,6 +173,7 @@ export function QuizManagerPage({
       ...activeQuizDraft,
       quizCode: cleanCode,
       subject: cleanSubject,
+      quizMode: activeQuizDraft.quizMode || 'exam',
       updatedAt: new Date().toISOString(),
     };
 
@@ -200,17 +217,35 @@ export function QuizManagerPage({
     onLaunchTestRun(questions, quiz.headerConfig);
   };
 
+  const handleStartLiveGame = async (quiz: PublishedQuiz) => {
+    const res = await fetchCustomTestWithQuestions(quiz.testId);
+    const questions = res?.questions || [];
+    if (onLaunchGameHost) {
+      onLaunchGameHost(quiz, questions);
+    } else {
+      onLaunchTestRun(questions, quiz.headerConfig);
+    }
+  };
+
   // Helper function to render a quiz card
   const renderQuizCard = (quiz: PublishedQuiz) => {
     const directLink = `${window.location.origin}${window.location.pathname}?quiz=${quiz.quizCode}`;
     const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode).length;
+    const isGame = quiz.quizMode === 'game';
 
     return (
-      <div key={quiz.id} className="qm-quiz-card animate-scale-up">
+      <div key={quiz.id} className={`qm-quiz-card animate-scale-up ${isGame ? 'qm-quiz-card--game' : ''}`}>
         {/* Card Header */}
         <div className="qm-card-header">
           <div className="qm-card-title-group">
-            <span className="qm-subject-pill">{quiz.subject || 'Chemistry'}</span>
+            <div className="qm-pill-row">
+              <span className="qm-subject-pill">{quiz.subject || 'Chemistry'}</span>
+              {isGame ? (
+                <span className="qm-mode-badge qm-mode-badge--game">🎮 QUIZIZZ GAME</span>
+              ) : (
+                <span className="qm-mode-badge qm-mode-badge--exam">📝 FORMAL EXAM</span>
+              )}
+            </div>
             <h3 className="qm-quiz-title">{quiz.title}</h3>
           </div>
 
@@ -221,6 +256,27 @@ export function QuizManagerPage({
             title="Click to toggle quiz active status"
           >
             {quiz.isActive ? '🟢 Active' : '⏸️ Paused'}
+          </button>
+        </div>
+
+        {/* 1-Click Format Switcher Bar on Card */}
+        <div className="qm-card-format-toggle-bar">
+          <span className="qm-format-lbl">MODE:</span>
+          <button
+            type="button"
+            className={`qm-format-chip ${!isGame ? 'qm-format-chip--active-exam' : ''}`}
+            onClick={() => handleQuickSetMode(quiz.id, 'exam')}
+            title="Switch this quiz to Formal Exam mode"
+          >
+            📝 Formal Exam
+          </button>
+          <button
+            type="button"
+            className={`qm-format-chip ${isGame ? 'qm-format-chip--active-game' : ''}`}
+            onClick={() => handleQuickSetMode(quiz.id, 'game')}
+            title="Switch this quiz to Quizizz Game mode"
+          >
+            🎮 Quizizz Game
           </button>
         </div>
 
@@ -253,17 +309,29 @@ export function QuizManagerPage({
 
         {/* Config Badges */}
         <div className="qm-config-pills">
-          <span className="qm-pill">
-            ⏱️ {quiz.durationMinutes} mins ({quiz.isExamMode ? 'Timed Exam' : 'Practice'})
-          </span>
-          <span className="qm-pill">
-            📝 {quiz.questionCount} Questions • {quiz.totalMarks} Marks
-          </span>
-          <span className={`qm-pill ${quiz.securityEnabled ? 'qm-pill--security' : ''}`}>
-            {quiz.securityEnabled ? '🔒 Anti-Cheating ON' : '🔓 Open Browser'}
-          </span>
-          {quiz.showInstantSolutions && (
-            <span className="qm-pill">💡 Instant Solutions</span>
+          {isGame ? (
+            <>
+              <span className="qm-pill">⚡ {quiz.questionTimerSeconds || 20}s per Question</span>
+              <span className="qm-pill">🏆 {quiz.pointsPerQuestion || 1000} Base Pts</span>
+              {quiz.enablePowerUps && <span className="qm-pill">✂️ Power-Ups</span>}
+              {quiz.enableStreaks && <span className="qm-pill">🔥 Streaks</span>}
+              {quiz.enableFunSounds && <span className="qm-pill">🔊 Sound FX</span>}
+            </>
+          ) : (
+            <>
+              <span className="qm-pill">
+                ⏱️ {quiz.durationMinutes} mins ({quiz.isExamMode ? 'Timed Exam' : 'Practice'})
+              </span>
+              <span className="qm-pill">
+                📝 {quiz.questionCount} Questions • {quiz.totalMarks} Marks
+              </span>
+              <span className={`qm-pill ${quiz.securityEnabled ? 'qm-pill--security' : ''}`}>
+                {quiz.securityEnabled ? '🔒 Anti-Cheating ON' : '🔓 Open Browser'}
+              </span>
+              {quiz.showInstantSolutions && (
+                <span className="qm-pill">💡 Instant Solutions</span>
+              )}
+            </>
           )}
         </div>
 
@@ -279,15 +347,49 @@ export function QuizManagerPage({
 
         {/* Actions 2-Tier Container */}
         <div className="qm-card-actions-wrap">
-          {/* Top Tier: Full-Width Primary Test-Run Button */}
-          <button
-            type="button"
-            className="qm-btn qm-btn-testrun"
-            onClick={() => handleRunQuizSimulation(quiz)}
-            title="Test-run this quiz in the browser as a student"
-          >
-            ▶️ Test-Run Interactive Quiz
-          </button>
+          {/* Top Tier: Full-Width Primary Button */}
+          {isGame ? (
+            <div className="qm-dual-launch-row">
+              <button
+                type="button"
+                className="qm-btn qm-btn-testrun qm-btn-game-host"
+                onClick={() => handleStartLiveGame(quiz)}
+                title="Start real-time multiplayer game session as teacher host"
+              >
+                🎮 Start Live Multiplayer Game (Host)
+              </button>
+              <button
+                type="button"
+                className="qm-btn qm-btn-solo-game"
+                onClick={() => handleRunQuizSimulation(quiz)}
+                title="Test-run this quiz in solo game mode"
+              >
+                🕹️ Solo Run
+              </button>
+            </div>
+          ) : (
+            <div className="qm-dual-launch-row">
+              <button
+                type="button"
+                className="qm-btn qm-btn-testrun"
+                onClick={() => handleRunQuizSimulation(quiz)}
+                title="Test-run this quiz in the browser as a formal timed exam"
+              >
+                ▶️ Test-Run Interactive Exam
+              </button>
+              <button
+                type="button"
+                className="qm-btn qm-btn-solo-game"
+                onClick={() => {
+                  handleQuickSetMode(quiz.id, 'game');
+                  handleStartLiveGame({ ...quiz, quizMode: 'game' });
+                }}
+                title="Launch as Quizizz Game mode instead"
+              >
+                🎮 Play as Game
+              </button>
+            </div>
+          )}
 
           {/* Bottom Tier: Results, Settings & Delete */}
           <div className="qm-card-sub-actions">
@@ -332,17 +434,26 @@ export function QuizManagerPage({
             <div className="qm-title-badge">STUDENT ASSESSMENT HUB</div>
             <h1 className="qm-page-title">Interactive Quizzes & Live Assessments</h1>
             <p className="qm-page-subtitle">
-              Convert saved tests into live interactive student quizzes with custom access codes, timer countdowns, and strict anti-cheating controls.
+              Convert saved tests into live interactive student quizzes or competitive Quizizz game arenas with custom codes, timer countdowns, and live leaderboards.
             </p>
           </div>
 
           <div className="qm-top-actions">
             <button
               type="button"
-              className="qm-btn qm-btn-primary qm-btn-header"
-              onClick={handleOpenCreateModal}
+              className="qm-btn qm-btn-primary qm-btn-header qm-btn-quizizz-top"
+              onClick={() => handleOpenCreateModal('game')}
+              title="Create a new fast-paced gamified quiz (Quizizz style)"
             >
-              ⚡ Publish Quiz from Saved Test
+              🎮 Create Quizizz Game
+            </button>
+            <button
+              type="button"
+              className="qm-btn qm-btn-secondary qm-btn-header"
+              onClick={() => handleOpenCreateModal('exam')}
+              title="Publish as formal timed exam paper"
+            >
+              📝 Publish Formal Exam
             </button>
           </div>
         </div>
@@ -449,10 +560,17 @@ export function QuizManagerPage({
             <div className="qm-empty-actions">
               <button
                 type="button"
-                className="qm-btn qm-btn-primary"
-                onClick={handleOpenCreateModal}
+                className="qm-btn qm-btn-primary qm-btn-quizizz-top"
+                onClick={() => handleOpenCreateModal('game')}
               >
-                ⚡ Create & Publish First Quiz
+                🎮 Create First Quizizz Game
+              </button>
+              <button
+                type="button"
+                className="qm-btn qm-btn-secondary"
+                onClick={() => handleOpenCreateModal('exam')}
+              >
+                📝 Publish Formal Exam
               </button>
               {savedTests.length === 0 ? (
                 <button
@@ -618,92 +736,266 @@ export function QuizManagerPage({
                 </span>
               </div>
 
-              {/* Step 4: Duration & Mode */}
-              <div className="qm-form-row">
-                <div className="qm-form-group" style={{ flex: 1 }}>
-                  <label className="qm-form-label">Duration (Minutes):</label>
-                  <input
-                    type="number"
-                    className="qm-form-input"
-                    value={activeQuizDraft.durationMinutes}
-                    onChange={(e) =>
+              {/* Step 4: Assessment Format (Formal Exam vs Quizizz Game) */}
+              <div className="qm-form-group">
+                <label className="qm-form-label">Quiz Assessment Format:</label>
+                <div className="qm-mode-selector-grid">
+                  <div
+                    className={`qm-mode-card ${activeQuizDraft.quizMode !== 'game' ? 'qm-mode-card--selected' : ''}`}
+                    onClick={() =>
                       setActiveQuizDraft({
                         ...activeQuizDraft,
-                        durationMinutes: Math.max(5, parseInt(e.target.value, 10) || 45),
-                      })
-                    }
-                    min={5}
-                    max={300}
-                  />
-                </div>
-
-                <div className="qm-form-group" style={{ flex: 1 }}>
-                  <label className="qm-form-label">Assessment Mode:</label>
-                  <select
-                    className="qm-form-select"
-                    value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
-                    onChange={(e) =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        isExamMode: e.target.value === 'exam',
+                        quizMode: 'exam',
                       })
                     }
                   >
-                    <option value="exam">⏱️ Timed Exam Mode</option>
-                    <option value="practice">💡 Self-Paced Practice</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Step 5: Anti-Cheating & Security Controls */}
-              <div className="qm-security-toggle-card">
-                <div className="qm-sec-header">
-                  <span className="sec-icon">🔒</span>
-                  <div>
-                    <strong>Anti-Cheating & Exam Browser Lock</strong>
-                    <p>Enforces fullscreen view, tracks Alt+Tab / tab switching, and blocks copy/paste.</p>
+                    <span className="qm-mode-icon">📝</span>
+                    <div className="qm-mode-info">
+                      <strong>Formal Exam Mode</strong>
+                      <p>Timed assessment with fullscreen lockdown, tab-switch tracking, and proctoring audit log.</p>
+                    </div>
                   </div>
-                  <label className="qm-switch">
-                    <input
-                      type="checkbox"
-                      checked={activeQuizDraft.securityEnabled}
-                      onChange={(e) =>
-                        setActiveQuizDraft({
-                          ...activeQuizDraft,
-                          securityEnabled: e.target.checked,
-                        })
-                      }
-                    />
-                    <span className="qm-slider" />
-                  </label>
-                </div>
 
-                {activeQuizDraft.securityEnabled && (
-                  <div className="qm-sec-subrules">
-                    <div className="sec-rule-item">✓ Mandatory Fullscreen prompt on start</div>
-                    <div className="sec-rule-item">✓ Real-time Alt+Tab and window blur strikes</div>
-                    <div className="sec-rule-item">✓ Disabled Right-Click, F12 inspect, and Copy/Paste</div>
-                    <div className="sec-rule-item">✓ Timestamped Proctoring Audit Trail on teacher results</div>
-                  </div>
-                )}
-              </div>
-
-              {/* Step 6: Show Instant Solutions */}
-              <div className="qm-checkbox-row">
-                <label className="qm-checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={activeQuizDraft.showInstantSolutions}
-                    onChange={(e) =>
+                  <div
+                    className={`qm-mode-card ${activeQuizDraft.quizMode === 'game' ? 'qm-mode-card--selected qm-mode-card--game-sel' : ''}`}
+                    onClick={() =>
                       setActiveQuizDraft({
                         ...activeQuizDraft,
-                        showInstantSolutions: e.target.checked,
+                        quizMode: 'game',
                       })
                     }
-                  />
-                  <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
-                </label>
+                  >
+                    <span className="qm-mode-icon">🎮</span>
+                    <div className="qm-mode-info">
+                      <strong>Quizizz Game Mode (MCQ)</strong>
+                      <p>Fast-paced game-show with power-ups (50/50, time freeze), answer streaks, fun sounds, and live leaderboard.</p>
+                    </div>
+                  </div>
+                </div>
               </div>
+
+              {/* Conditional Settings based on quizMode */}
+              {activeQuizDraft.quizMode === 'game' ? (
+                /* ─── Game Mode Settings ────────────────────────────────────────── */
+                <div className="qm-game-settings-panel animate-fade-in">
+                  <div className="qm-form-row">
+                    <div className="qm-form-group" style={{ flex: 1 }}>
+                      <label className="qm-form-label">Seconds Per Question:</label>
+                      <select
+                        className="qm-form-select"
+                        value={activeQuizDraft.questionTimerSeconds || 20}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            questionTimerSeconds: parseInt(e.target.value, 10),
+                          })
+                        }
+                      >
+                        <option value={10}>⚡ 10 Seconds (Speedrun)</option>
+                        <option value={15}>⏱️ 15 Seconds (Fast)</option>
+                        <option value={20}>⏱️ 20 Seconds (Standard)</option>
+                        <option value={30}>⏱️ 30 Seconds (Relaxed)</option>
+                        <option value={45}>⏱️ 45 Seconds (Deep Thinking)</option>
+                        <option value={60}>⏱️ 60 Seconds (Calculations)</option>
+                      </select>
+                    </div>
+
+                    <div className="qm-form-group" style={{ flex: 1 }}>
+                      <label className="qm-form-label">Base Points / Question:</label>
+                      <input
+                        type="number"
+                        className="qm-form-input"
+                        value={activeQuizDraft.pointsPerQuestion || 1000}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            pointsPerQuestion: parseInt(e.target.value, 10) || 1000,
+                          })
+                        }
+                        step={100}
+                        min={100}
+                        max={5000}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Game Toggles Grid */}
+                  <div className="qm-game-toggles-grid">
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.enablePowerUps ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            enablePowerUps: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>✂️ Power-Ups (50/50, Time Freeze, 2× Points)</span>
+                    </label>
+
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.enableStreaks ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            enableStreaks: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>🔥 Streak Multipliers (Up to 3× Score)</span>
+                    </label>
+
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.enableFunSounds ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            enableFunSounds: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>🔊 Fun Synthesized Sound FX & Airhorns</span>
+                    </label>
+
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.enableMemes ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            enableMemes: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>🎉 Meme Reactions & Emoji Feedback</span>
+                    </label>
+
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.shuffleQuestions ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            shuffleQuestions: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>🔀 Randomize Question Order</span>
+                    </label>
+
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.shuffleOptions ?? true}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            shuffleOptions: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>🔀 Randomize MCQ Choices</span>
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                /* ─── Formal Exam Mode Settings ─────────────────────────────────── */
+                <>
+                  <div className="qm-form-row">
+                    <div className="qm-form-group" style={{ flex: 1 }}>
+                      <label className="qm-form-label">Duration (Minutes):</label>
+                      <input
+                        type="number"
+                        className="qm-form-input"
+                        value={activeQuizDraft.durationMinutes}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            durationMinutes: Math.max(5, parseInt(e.target.value, 10) || 45),
+                          })
+                        }
+                        min={5}
+                        max={300}
+                      />
+                    </div>
+
+                    <div className="qm-form-group" style={{ flex: 1 }}>
+                      <label className="qm-form-label">Assessment Mode:</label>
+                      <select
+                        className="qm-form-select"
+                        value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            isExamMode: e.target.value === 'exam',
+                          })
+                        }
+                      >
+                        <option value="exam">⏱️ Timed Exam Mode</option>
+                        <option value="practice">💡 Self-Paced Practice</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Anti-Cheating & Security Controls */}
+                  <div className="qm-security-toggle-card">
+                    <div className="qm-sec-header">
+                      <span className="sec-icon">🔒</span>
+                      <div>
+                        <strong>Anti-Cheating & Exam Browser Lock</strong>
+                        <p>Enforces fullscreen view, tracks Alt+Tab / tab switching, and blocks copy/paste.</p>
+                      </div>
+                      <label className="qm-switch">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.securityEnabled}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              securityEnabled: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="qm-slider" />
+                      </label>
+                    </div>
+
+                    {activeQuizDraft.securityEnabled && (
+                      <div className="qm-sec-subrules">
+                        <div className="sec-rule-item">✓ Mandatory Fullscreen prompt on start</div>
+                        <div className="sec-rule-item">✓ Real-time Alt+Tab and window blur strikes</div>
+                        <div className="sec-rule-item">✓ Disabled Right-Click, F12 inspect, and Copy/Paste</div>
+                        <div className="sec-rule-item">✓ Timestamped Proctoring Audit Trail on teacher results</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Show Instant Solutions */}
+                  <div className="qm-checkbox-row">
+                    <label className="qm-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={activeQuizDraft.showInstantSolutions}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            showInstantSolutions: e.target.checked,
+                          })
+                        }
+                      />
+                      <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="qm-modal-footer">

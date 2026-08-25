@@ -1,30 +1,39 @@
 // ─── Quiz Manager Service ───────────────────────────────────────────────────
 // Manages published interactive quizzes, custom codes, and anti-cheating settings.
 
-import type { ExamHeaderConfig } from './testBuilderService';
+import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
+import type { ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode } from './quizCodeService';
 
 export interface PublishedQuiz {
-  id: string;                    // UUID
-  testId: string;                // FK → custom_tests.id
-  title: string;
-  quizCode: string;              // Custom or generated (e.g. "CHEM-101", "PERIOD-3")
-  subject: string;
+  id: string;                            // Unique published quiz ID
+  testId: string;                        // Associated CustomTest ID
+  title: string;                         // Assessment Title
+  quizCode: string;                      // 6-8 character student access code (e.g., CHEM-101)
+  subject?: string;                      // Syllabus / subject name
   totalMarks: number;
   questionCount: number;
   questionIds: string[];
   headerConfig?: ExamHeaderConfig;
-  
-  // Interactive Assessment Configuration
   durationMinutes: number;
-  isExamMode: boolean;           // true = Timed Exam, false = Practice
-  securityEnabled: boolean;      // Anti-cheating lock (fullscreen + tab switch detection)
-  maxViolations: number;         // e.g. 3 strikes before submission warning
-  showInstantSolutions: boolean; // Show model solutions & misconceptions after test
-  isActive: boolean;
+  isExamMode: boolean;                   // Enforce timer and submit gate
+  securityEnabled: boolean;              // Anti-cheating fullscreen / tab lock
+  maxViolations: number;                 // Auto-submit after N tab violations
+  showInstantSolutions: boolean;         // Show step-by-step breakdown on submit
+  isActive: boolean;                     // Open for student submissions
   createdAt: string;
   updatedAt: string;
+  // Game Mode Configuration (Quizizz / Kahoot Style)
+  quizMode?: 'exam' | 'game';            // Which runner to launch (default 'exam')
+  enablePowerUps?: boolean;               // Allow 50/50, time freeze, double points
+  enableStreaks?: boolean;                // Streak multiplier system
+  enableFunSounds?: boolean;              // Sound effects (ding, buzz, airhorn)
+  enableMemes?: boolean;                  // Fun reaction messages after answers
+  pointsPerQuestion?: number;             // Base points per question (default 1000)
+  questionTimerSeconds?: number;          // Per-question countdown (default 20)
+  shuffleQuestions?: boolean;             // Randomize question order
+  shuffleOptions?: boolean;               // Randomize MCQ option order
 }
 
 const STORAGE_KEY = 'fluffykitten_published_quizzes';
@@ -39,12 +48,45 @@ export function getPublishedQuizzes(): PublishedQuiz[] {
   }
 }
 
+export async function fetchPublishedQuizzesFromSupabase(): Promise<PublishedQuiz[]> {
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'published_quizzes')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Could not fetch published quizzes from Supabase cloud:', err);
+  }
+  return [];
+}
+
+export function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): void {
+  try {
+    (supabase.from('app_config' as any) as any)
+      .upsert({
+        key: 'published_quizzes',
+        value: JSON.stringify(quizzes),
+      })
+      .then(({ error }: any) => {
+        if (error) console.warn('Supabase cloud sync notice:', error.message);
+      });
+  } catch (err) {
+    console.warn('Cloud sync error:', err);
+  }
+}
+
 export function savePublishedQuiz(quiz: PublishedQuiz): void {
   try {
     const existing = getPublishedQuizzes();
     const filtered = existing.filter((q) => q.id !== quiz.id && q.quizCode.toUpperCase() !== quiz.quizCode.toUpperCase());
     const updated = [quiz, ...filtered];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    syncPublishedQuizzesToCloud(updated);
   } catch (err) {
     console.error('Failed to save published quiz:', err);
   }
@@ -55,6 +97,7 @@ export function deletePublishedQuiz(id: string): void {
     const existing = getPublishedQuizzes();
     const updated = existing.filter((q) => q.id !== id);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    syncPublishedQuizzesToCloud(updated);
   } catch (err) {
     console.error('Failed to delete published quiz:', err);
   }
@@ -68,6 +111,7 @@ export function toggleQuizActiveStatus(id: string): PublishedQuiz | null {
     target.isActive = !target.isActive;
     target.updatedAt = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+    syncPublishedQuizzesToCloud(existing);
     return target;
   } catch (err) {
     console.error('Failed to toggle quiz status:', err);
@@ -116,5 +160,15 @@ export function createDraftFromTest(
     isActive: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    // Game mode defaults
+    quizMode: 'exam',
+    enablePowerUps: true,
+    enableStreaks: true,
+    enableFunSounds: true,
+    enableMemes: true,
+    pointsPerQuestion: 1000,
+    questionTimerSeconds: 20,
+    shuffleQuestions: true,
+    shuffleOptions: true,
   };
 }

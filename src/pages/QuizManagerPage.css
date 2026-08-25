@@ -866,3 +866,215 @@
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-elevated);
 }
+
+/* ─── Quizizz Game Mode Card Enhancements ───────────────────────────────────── */
+.qm-pill-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.qm-mode-badge {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+}
+
+.qm-mode-badge--game {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(236, 72, 153, 0.2));
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  color: #a78bfa;
+}
+
+.qm-mode-badge--exam {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: var(--color-primary-500);
+}
+
+.qm-quiz-card--game {
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.qm-quiz-card--game:hover {
+  border-color: rgba(139, 92, 246, 0.6);
+  box-shadow: 0 10px 30px rgba(139, 92, 246, 0.15);
+}
+
+.qm-btn-game-host {
+  background: linear-gradient(135deg, #8b5cf6, #ec4899) !important;
+  box-shadow: 0 4px 16px rgba(139, 92, 246, 0.35) !important;
+}
+
+.qm-btn-game-host:hover {
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+/* ─── Mode Selector Grid in Publish Modal ────────────────────────────────────── */
+.qm-mode-selector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+@media (max-width: 600px) {
+  .qm-mode-selector-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.qm-mode-card {
+  background: var(--color-surface-elevated);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.qm-mode-card:hover {
+  border-color: var(--color-primary-500);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.qm-mode-card--selected {
+  border-color: var(--color-primary-500);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.qm-mode-card--game-sel {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.qm-mode-icon {
+  font-size: 1.6rem;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.qm-mode-info strong {
+  display: block;
+  font-size: 0.9375rem;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+
+.qm-mode-info p {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* ─── Game Settings Panel ────────────────────────────────────────────────────── */
+.qm-game-settings-panel {
+  background: rgba(139, 92, 246, 0.05);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.qm-btn-quizizz-top {
+  background: linear-gradient(135deg, #8b5cf6, #ec4899) !important;
+  box-shadow: 0 4px 16px rgba(139, 92, 246, 0.35) !important;
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+.qm-btn-quizizz-top:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.5) !important;
+}
+
+.qm-card-format-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+  background: var(--color-surface-sunken);
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.qm-format-lbl {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.05em;
+  margin-right: 2px;
+}
+
+.qm-format-chip {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qm-format-chip:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+}
+
+.qm-format-chip--active-exam {
+  background: var(--color-surface-elevated) !important;
+  border-color: var(--color-border) !important;
+  color: var(--color-primary-500) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.qm-format-chip--active-game {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(236, 72, 153, 0.2)) !important;
+  border-color: rgba(139, 92, 246, 0.5) !important;
+  color: #a78bfa !important;
+  box-shadow: 0 1px 4px rgba(139, 92, 246, 0.3);
+}
+
+.qm-dual-launch-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.qm-dual-launch-row .qm-btn-testrun {
+  flex: 1;
+}
+
+.qm-btn-solo-game {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.qm-btn-solo-game:hover {
+  background: rgba(139, 92, 246, 0.3);
+  color: #ffffff;
+  border-color: #8b5cf6;
+}
+
+

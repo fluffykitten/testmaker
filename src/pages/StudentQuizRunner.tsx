@@ -7,6 +7,8 @@ import {
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
+import { gradeDeterministicAnswer } from '../services/deterministicGradingService';
+import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import { ExamMathText } from '../components/ExamMathText';
 import './StudentQuizRunner.css';
 
@@ -15,6 +17,7 @@ interface StudentQuizRunnerProps {
   initialQuestions?: Question[];
   initialHeaderConfig?: ExamHeaderConfig;
   onExit?: () => void;
+  onSwitchToGameMode?: () => void;
 }
 
 interface ViolationRecord {
@@ -23,11 +26,16 @@ interface ViolationRecord {
   detail: string;
 }
 
+const QUICK_CHEM_SYMBOLS = [
+  '→', '⇌', 'Δ', '°C', 'mol/dm³', 'g/cm³', 'kJ/mol', '(s)', '(l)', '(g)', '(aq)', '⁺', '⁻', '²', '³', '⁴'
+];
+
 export function StudentQuizRunner({
   testIdOrCode,
   initialQuestions,
   initialHeaderConfig,
   onExit,
+  onSwitchToGameMode,
 }: StudentQuizRunnerProps) {
   // Test Data State
   const [loading, setLoading] = useState(!initialQuestions);
@@ -36,22 +44,39 @@ export function StudentQuizRunner({
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig | undefined>(initialHeaderConfig);
   const [questions, setQuestions] = useState<Question[]>(initialQuestions || []);
 
+  // Session Persistence Key (per exam code)
+  const sessionKey = `exam_sess_${testIdOrCode || 'testrun'}`;
+  const getSavedExamState = () => {
+    try {
+      const raw = sessionStorage.getItem(sessionKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+  const savedExam = useRef(getSavedExamState()).current;
+
   // Candidate Info
-  const [candidateName, setCandidateName] = useState(() => `Candidate ${Math.floor(1000 + Math.random() * 9000)}`);
-  const [startTime, setStartTime] = useState<number>(Date.now());
+  const [candidateName, setCandidateName] = useState<string>(() => savedExam?.candidateName || `Candidate ${Math.floor(1000 + Math.random() * 9000)}`);
+  const [startTime, setStartTime] = useState<number>(() => savedExam?.startTime || Date.now());
 
   // Exam Progress State
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string | number>>({});
-  const [flaggedIndices, setFlaggedIndices] = useState<Set<number>>(new Set());
-  const [isExamMode, setIsExamMode] = useState(true); // true = Strict Timed Exam, false = Practice Mode
-  const [hasStarted, setHasStarted] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(45 * 60);
+  const [currentIndex, setCurrentIndex] = useState<number>(() => savedExam?.currentIndex || 0);
+  const [answers, setAnswers] = useState<Record<string | number, string | number>>(() => savedExam?.answers || {});
+  const [flaggedIndices, setFlaggedIndices] = useState<Set<number>>(() => new Set(savedExam?.flaggedIndices || []));
+  const [isExamMode, setIsExamMode] = useState<boolean>(() => savedExam?.isExamMode ?? true); // true = Strict Timed Exam, false = Practice Mode
+  const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
+  const [isSubmitted, setIsSubmitted] = useState<boolean>(() => savedExam?.isSubmitted || false);
+  const [timeLeft, setTimeLeft] = useState<number>(() => savedExam?.timeLeft ?? (45 * 60));
+
+  // Grading & AI Evaluation State
+  const [isGrading, setIsGrading] = useState<boolean>(false);
+  const [gradingProgressText, setGradingProgressText] = useState<string>('');
+  const [completedSubmission, setCompletedSubmission] = useState<StudentSubmission | null>(null);
 
   // 🔒 Security & Anti-Cheating State
-  const [securityEnabled, setSecurityEnabled] = useState(true);
-  const [violations, setViolations] = useState<ViolationRecord[]>([]);
+  const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
+  const [violations, setViolations] = useState<ViolationRecord[]>(() => savedExam?.violations || []);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
 
   // Diagram Zoom
@@ -189,97 +214,218 @@ export function StudentQuizRunner({
     };
   }, [hasStarted, isSubmitted, securityEnabled, isExamMode, logViolation]);
 
-  // ─── 4. Submit Handler ───────────────────────────────────────────────────
-  const handleSubmitExam = useCallback(() => {
-    if (!isSubmitted) {
-      setIsSubmitted(true);
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      }
+  // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
+  const handleSubmitExam = useCallback(async () => {
+    if (isSubmitted || isGrading) return;
+    setIsGrading(true);
+    setGradingProgressText('Evaluating answers with Deterministic Matcher & AI Examiner...');
 
-      // Calculate Submission Details & Save to Service
-      try {
-        const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-        const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
-        let earnedMarks = 0;
-        const qResults: QuestionSubmissionResult[] = [];
-        const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
 
-        questions.forEach((q, idx) => {
-          const top = q.topic || 'General';
-          if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
-          const qMarks = q.marks || 1;
-          topicBreakdown[top].totalMarks += qMarks;
+    try {
+      const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+      const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+      let earnedMarks = 0;
+      const qResults: QuestionSubmissionResult[] = [];
+      const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
 
-          let isCorrect = false;
-          let qEarned = 0;
+      for (let idx = 0; idx < questions.length; idx++) {
+        const q = questions[idx];
+        const top = q.topic || 'General';
+        if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+        const qMarks = q.marks || 1;
+        topicBreakdown[top].totalMarks += qMarks;
+
+        let isCorrect = false;
+        let qEarned = 0;
+        let aiFeedback: string | undefined;
+        let missingPoints: string[] | undefined;
+        let criteriaBreakdown: Array<{ point: string; achieved: boolean; examinerNote?: string }> | undefined;
+        let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+        const subResults: any[] = [];
+
+        // Case A: Multiple Choice Question
+        if (q.options && q.options.length > 0) {
+          gradingMethod = 'mcq';
           const userAns = answers[idx];
-
-          if (q.options && q.options.length > 0) {
-            const correctIdx = (q as any).correct_option !== undefined ? (q as any).correct_option : 0;
-            if (userAns !== undefined && userAns === correctIdx) {
-              isCorrect = true;
-              qEarned = qMarks;
-            }
-          } else if (userAns && String(userAns).trim().length > 0) {
+          const correctIdx = (q as any).correct_option !== undefined ? (q as any).correct_option : 0;
+          if (userAns !== undefined && Number(userAns) === correctIdx) {
             isCorrect = true;
             qEarned = qMarks;
           }
+        }
+        // Case B: Multi-Part Structured Question
+        else if (q.sub_questions && q.sub_questions.length > 0) {
+          let totalSubEarned = 0;
+          for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
+            const sq = q.sub_questions[sIdx];
+            const subKey = `${idx}_${sIdx}`;
+            const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+            const subMarks = sq.marks || 1;
 
-          earnedMarks += qEarned;
-          topicBreakdown[top].earnedMarks += qEarned;
+            // Fast deterministic evaluation first
+            const det = gradeDeterministicAnswer(subAns, q, sIdx);
+            if (det.isHandled) {
+              totalSubEarned += det.earnedMarks;
+              subResults.push({
+                subId: sq.sub_id,
+                studentAnswer: subAns,
+                earnedMarks: det.earnedMarks,
+                maxMarks: subMarks,
+                isCorrect: det.isCorrect,
+                feedback: det.feedback,
+              });
+            } else {
+              // Descriptive sub-part -> evaluate with Gemini AI Examiner
+              setGradingProgressText(`AI Examiner evaluating Q${idx + 1}(${sq.sub_id})...`);
+              const aiRes = await evaluateAnswerWithGemini(q, sIdx, String(subAns));
+              totalSubEarned += aiRes.earnedMarks;
+              gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+              subResults.push({
+                subId: sq.sub_id,
+                studentAnswer: subAns,
+                earnedMarks: aiRes.earnedMarks,
+                maxMarks: subMarks,
+                isCorrect: aiRes.isCorrect,
+                feedback: aiRes.feedback,
+                criteria: aiRes.criteriaResults,
+              });
+            }
+          }
 
-          qResults.push({
-            questionId: q.id,
-            questionNumber: idx + 1,
-            topic: top,
-            maxMarks: qMarks,
-            earnedMarks: qEarned,
-            isCorrect,
-            studentAnswer: userAns !== undefined ? userAns : '',
-            correctAnswer: typeof q.mark_scheme === 'string'
-              ? q.mark_scheme
-              : typeof q.mark_scheme === 'object' && q.mark_scheme !== null
-              ? (q.mark_scheme as any).answer_text || (q.mark_scheme as any).steps?.join('; ') || ''
-              : (q.options ? q.options[0] : undefined),
-            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
-          });
+          qEarned = Math.min(totalSubEarned, qMarks);
+          isCorrect = qEarned === qMarks;
+        }
+        // Case C: Standalone Structured / Short Answer Question
+        else {
+          const userAns = answers[idx] ?? '';
+          const det = gradeDeterministicAnswer(userAns, q);
+          if (det.isHandled) {
+            qEarned = det.earnedMarks;
+            isCorrect = det.isCorrect;
+            aiFeedback = det.feedback;
+            gradingMethod = 'deterministic';
+          } else {
+            setGradingProgressText(`AI Examiner evaluating Question ${idx + 1}...`);
+            const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
+            qEarned = aiRes.earnedMarks;
+            isCorrect = aiRes.isCorrect;
+            aiFeedback = aiRes.feedback;
+            missingPoints = aiRes.missingKeyPoints;
+            criteriaBreakdown = aiRes.criteriaResults;
+            gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+          }
+        }
+
+        earnedMarks += qEarned;
+        topicBreakdown[top].earnedMarks += qEarned;
+
+        qResults.push({
+          questionId: q.id,
+          questionNumber: idx + 1,
+          topic: top,
+          maxMarks: qMarks,
+          earnedMarks: qEarned,
+          isCorrect,
+          studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
+          correctAnswer: typeof q.mark_scheme === 'string'
+            ? q.mark_scheme
+            : Array.isArray(q.mark_scheme?.marking_points)
+            ? q.mark_scheme.marking_points.join('; ')
+            : (q.options ? q.options[0] : undefined),
+          misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+          aiFeedback,
+          missingPoints,
+          criteriaBreakdown,
+          gradingMethod,
+          subQuestionResults: subResults.length > 0 ? subResults : undefined,
         });
+      }
 
-        Object.keys(topicBreakdown).forEach((top) => {
-          const item = topicBreakdown[top];
-          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
-        });
+      Object.keys(topicBreakdown).forEach((top) => {
+        const item = topicBreakdown[top];
+        item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+      });
 
-        const submission: StudentSubmission = {
-          id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          quizId: testIdOrCode || 'direct_quiz',
-          quizCode: testIdOrCode || 'EXAM',
-          quizTitle: title,
-          subject: headerConfig?.subject || 'Chemistry',
-          studentName: candidateName.trim() || 'Candidate',
-          submittedAt: new Date().toISOString(),
-          durationSeconds: durationSec,
-          score: earnedMarks,
-          totalMarks,
-          percentage: totalMarks > 0 ? (earnedMarks / totalMarks) * 100 : 100,
-          violationsCount: violations.length,
-          proctoringLogs: violations.map((v, i) => ({
-            timestamp: v.timestamp,
-            event: v.detail,
-            strike: i + 1,
-            severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
-          })),
-          questionResults: qResults,
-          topicBreakdown,
-        };
+      const submission: StudentSubmission = {
+        id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        quizId: testIdOrCode || 'direct_quiz',
+        quizCode: testIdOrCode || 'EXAM',
+        quizTitle: title,
+        subject: headerConfig?.subject || 'Chemistry',
+        studentName: candidateName.trim() || 'Candidate',
+        submittedAt: new Date().toISOString(),
+        durationSeconds: durationSec,
+        score: earnedMarks,
+        totalMarks,
+        percentage: totalMarks > 0 ? Math.round((earnedMarks / totalMarks) * 100) : 100,
+        violationsCount: violations.length,
+        proctoringLogs: violations.map((v, i) => ({
+          timestamp: v.timestamp,
+          event: v.detail,
+          strike: i + 1,
+          severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+        })),
+        questionResults: qResults,
+        topicBreakdown,
+      };
 
-        saveQuizSubmission(submission);
-      } catch (err) {
-        console.error('Failed to save student submission:', err);
+      saveQuizSubmission(submission);
+      setCompletedSubmission(submission);
+
+      try {
+        sessionStorage.removeItem(sessionKey);
+      } catch {}
+
+      setIsSubmitted(true);
+    } catch (err) {
+      console.error('Failed to grade student submission:', err);
+      setIsSubmitted(true);
+    } finally {
+      setIsGrading(false);
+    }
+  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, title, headerConfig, candidateName, violations, sessionKey]);
+
+  // Auto-persist exam state to sessionStorage across page refreshes
+  useEffect(() => {
+    if (hasStarted && !isSubmitted) {
+      try {
+        sessionStorage.setItem(
+          sessionKey,
+          JSON.stringify({
+            candidateName,
+            startTime,
+            currentIndex,
+            answers,
+            flaggedIndices: Array.from(flaggedIndices),
+            isExamMode,
+            hasStarted,
+            isSubmitted,
+            timeLeft,
+            securityEnabled,
+            violations,
+          })
+        );
+      } catch (e) {
+        console.warn('Exam state save error:', e);
       }
     }
-  }, [isSubmitted, startTime, questions, answers, testIdOrCode, title, headerConfig, candidateName, violations]);
+  }, [
+    sessionKey,
+    candidateName,
+    startTime,
+    currentIndex,
+    answers,
+    flaggedIndices,
+    isExamMode,
+    hasStarted,
+    isSubmitted,
+    timeLeft,
+    securityEnabled,
+    violations,
+  ]);
 
   // ─── 5. Countdown Timer ───────────────────────────────────────────────────
   useEffect(() => {
@@ -332,6 +478,19 @@ export function StudentQuizRunner({
     setAnswers((prev) => ({ ...prev, [currentIndex]: val }));
   };
 
+  const handleSubAnswerChange = (subKey: string, val: string) => {
+    if (isSubmitted) return;
+    setAnswers((prev) => ({ ...prev, [subKey]: val }));
+  };
+
+  const handleInsertSymbol = (targetKey: string | number, symbol: string) => {
+    if (isSubmitted) return;
+    setAnswers((prev) => {
+      const currentVal = String(prev[targetKey] || '');
+      return { ...prev, [targetKey]: currentVal + symbol };
+    });
+  };
+
   const handleToggleFlag = () => {
     setFlaggedIndices((prev) => {
       const next = new Set(prev);
@@ -341,8 +500,19 @@ export function StudentQuizRunner({
     });
   };
 
-  // ─── 7. Scoring & Analytics ────────────────────────────────────────────────
+  // ─── 8. Scoring & Analytics ────────────────────────────────────────────────
   const calculateResults = () => {
+    if (completedSubmission) {
+      const earned = completedSubmission.score;
+      const total = completedSubmission.totalMarks;
+      const pct = completedSubmission.percentage;
+      const topicStats: Record<string, { earned: number; total: number }> = {};
+      Object.entries(completedSubmission.topicBreakdown).forEach(([k, v]) => {
+        topicStats[k] = { earned: v.earnedMarks, total: v.totalMarks };
+      });
+      return { mcqEarned: earned, mcqTotal: total, percentage: pct, topicStats, questionResults: completedSubmission.questionResults };
+    }
+
     let mcqEarned = 0;
     let mcqTotal = 0;
     const topicStats: Record<string, { earned: number; total: number }> = {};
@@ -351,23 +521,19 @@ export function StudentQuizRunner({
       const topic = q.topic || 'General';
       if (!topicStats[topic]) topicStats[topic] = { earned: 0, total: 0 };
       topicStats[topic].total += q.marks || 1;
+      mcqTotal += q.marks || 1;
 
-      if (q.options && q.options.length > 0) {
-        mcqTotal += q.marks || 1;
-        // In practice/exam, answer is recorded
-        if (answers[idx] !== undefined) {
-          // Assume option selected gets marks in student practice review
-          mcqEarned += q.marks || 1;
-          topicStats[topic].earned += q.marks || 1;
-        }
+      if (answers[idx] !== undefined) {
+        mcqEarned += q.marks || 1;
+        topicStats[topic].earned += q.marks || 1;
       }
     });
 
     const percentage = mcqTotal > 0 ? Math.round((mcqEarned / mcqTotal) * 100) : 100;
-    return { mcqEarned, mcqTotal, percentage, topicStats };
+    return { mcqEarned, mcqTotal, percentage, topicStats, questionResults: [] };
   };
 
-  // ─── Clean MCQ Option Text & Stem ─────────────────────────────────────────
+          // ─── Clean MCQ Option Text & Stem ─────────────────────────────────────────
   const cleanOptionText = (text: string, oIdx: number) => {
     if (!text) return '';
     const letter = String.fromCharCode(65 + oIdx);
@@ -396,13 +562,23 @@ export function StudentQuizRunner({
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // ─── Loading / Error Screens ──────────────────────────────────────────────
+  // ─── Loading / Grading / Error Screens ─────────────────────────────────────
   if (loading) {
     return (
       <div className="student-quiz-loading-screen">
         <div className="student-quiz-spinner" />
         <h2>Loading Assessment…</h2>
         <p>Fetching questions and formulas</p>
+      </div>
+    );
+  }
+
+  if (isGrading) {
+    return (
+      <div className="student-quiz-loading-screen animate-fade-in">
+        <div className="student-quiz-spinner" style={{ borderTopColor: '#8b5cf6' }} />
+        <h2>Evaluating Assessment Results...</h2>
+        <p>{gradingProgressText || 'Analyzing responses with Deterministic Matcher & AI Examiner'}</p>
       </div>
     );
   }
@@ -451,10 +627,17 @@ export function StudentQuizRunner({
               </div>
             </div>
             <div className="lobby-rule-item">
-              <span className="rule-icon">📝</span>
+              <span className="rule-icon">🤖</span>
               <div>
-                <strong>Format</strong>
-                <p>KaTeX Math formulas & scientific diagrams</p>
+                <strong>Marking System</strong>
+                <p>Fast-Matcher & AI Examiner active</p>
+              </div>
+            </div>
+            <div className="lobby-rule-item">
+              <span className="rule-icon">📊</span>
+              <div>
+                <strong>Instant Diagnostic</strong>
+                <p>Topic mastery & criteria review</p>
               </div>
             </div>
           </div>
@@ -513,6 +696,50 @@ export function StudentQuizRunner({
             </label>
           </div>
 
+          {/* Quick Switch to Quizizz Game Mode Banner */}
+          {onSwitchToGameMode && (
+            <div
+              style={{
+                background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(236, 72, 153, 0.15))',
+                border: '1.5px solid rgba(139, 92, 246, 0.4)',
+                borderRadius: 'var(--radius-lg)',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                marginTop: '16px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '1.5rem' }}>🎮</span>
+                <div>
+                  <strong style={{ fontSize: '0.875rem', color: 'var(--color-text-primary)', display: 'block' }}>
+                    Prefer a gamified Quizizz challenge?
+                  </strong>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                    Play with 4 colored cards, audio effects, power-ups, and streaks!
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '0.8125rem',
+                  padding: '8px 14px',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={onSwitchToGameMode}
+              >
+                🎮 Switch to Quizizz Mode
+              </button>
+            </div>
+          )}
+
           <div className="student-lobby-actions">
             {onExit && (
               <button type="button" className="sq-btn sq-btn-secondary" onClick={onExit}>
@@ -551,7 +778,7 @@ export function StudentQuizRunner({
               </div>
               <div className="stat-row">
                 <span>Questions Attempted:</span>
-                <strong>{Object.keys(answers).length} / {questions.length}</strong>
+                <strong>{Object.keys(answers).length} of {questions.length}</strong>
               </div>
               <div className="stat-row">
                 <span>Integrity Violations:</span>
@@ -598,43 +825,161 @@ export function StudentQuizRunner({
             </div>
           )}
 
-          {/* Solutions & Walkthrough Preview */}
+          {/* Solutions & Detailed Diagnostic Walkthrough */}
           <div className="results-solutions-box">
-            <h3 className="results-section-heading">🔑 Model Solutions & Examiner Guidance</h3>
+            <h3 className="results-section-heading">🔑 Question-by-Question Marking & AI Examiner Review</h3>
             <div className="solutions-list">
-              {questions.map((q, idx) => (
-                <div key={idx} className="solution-item-card">
-                  <div className="sol-card-header">
-                    <strong>Question {idx + 1}</strong>
-                    <span>[{q.marks || 1} mark{q.marks !== 1 ? 's' : ''}]</span>
-                  </div>
-                  <div className="sol-stem">
-                    <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
-                  </div>
-                  <div className="sol-points">
-                    <strong>Model Answer:</strong>
-                    <ExamMathText
-                      content={
-                        typeof q.mark_scheme === 'string'
-                          ? q.mark_scheme
-                          : Array.isArray(q.mark_scheme?.marking_points)
-                          ? q.mark_scheme.marking_points.join('; ')
-                          : 'Credit valid scientific derivation'
-                      }
-                    />
-                  </div>
-                  {q.mark_scheme?.guidance && q.mark_scheme.guidance.length > 0 && (
-                    <div className="sol-guidance">
-                      💡 <strong>Examiner Guidance:</strong> <ExamMathText content={q.mark_scheme.guidance.join('; ')} />
+              {questions.map((q, idx) => {
+                const qRes = results.questionResults.find((r) => r.questionNumber === idx + 1);
+                const earnedM = qRes?.earnedMarks ?? (answers[idx] !== undefined ? q.marks || 1 : 0);
+                const maxM = q.marks || 1;
+                const isFullCredit = earnedM === maxM;
+
+                return (
+                  <div key={idx} className="solution-item-card">
+                    <div className="sol-card-header">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <strong>Question {idx + 1}</strong>
+                        {qRes?.gradingMethod && (
+                          <span className="sq-grading-method-tag">
+                            {qRes.gradingMethod === 'mcq'
+                              ? '🔘 MCQ'
+                              : qRes.gradingMethod === 'deterministic'
+                              ? '⚡ Fast-Match'
+                              : '🤖 AI Examiner'}
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className="sq-score-badge"
+                        style={{
+                          background: isFullCredit ? 'rgba(34, 197, 94, 0.15)' : earnedM > 0 ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                          color: isFullCredit ? '#22c55e' : earnedM > 0 ? '#eab308' : '#ef4444',
+                          fontWeight: 800,
+                          padding: '4px 10px',
+                          borderRadius: '999px',
+                          fontSize: '0.8125rem',
+                        }}
+                      >
+                        {isFullCredit ? '✓ ' : earnedM > 0 ? '⚠️ ' : '✗ '}
+                        {earnedM} / {maxM} Mark{maxM !== 1 ? 's' : ''}
+                      </span>
                     </div>
-                  )}
-                  {q.mark_scheme?.common_misconceptions && q.mark_scheme.common_misconceptions.length > 0 && (
-                    <div className="sol-traps">
-                      ⚠️ <strong>Common Pitfall:</strong> <ExamMathText content={q.mark_scheme.common_misconceptions.join('; ')} />
+
+                    <div className="sol-stem">
+                      <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
                     </div>
-                  )}
-                </div>
-              ))}
+
+                    {/* Sub-Questions Results Breakdown if present */}
+                    {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
+                      <div className="sol-sub-results-list" style={{ margin: '10px 0', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {qRes.subQuestionResults.map((sub, sIdx) => (
+                          <div
+                            key={sIdx}
+                            style={{
+                              background: 'var(--color-surface-sunken)',
+                              padding: '8px 12px',
+                              borderRadius: 'var(--radius-md)',
+                              border: '1px solid var(--color-border)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <strong>Part ({sub.subId})</strong>
+                              <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
+                                {sub.earnedMarks} / {sub.maxMarks} marks
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                              Your Answer: <strong style={{ color: 'var(--color-text-primary)' }}>{String(sub.studentAnswer || '(blank)')}</strong>
+                            </div>
+                            {sub.feedback && (
+                              <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
+                                {sub.feedback}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Point-by-Point Criteria Breakdown */}
+                    {qRes?.criteriaBreakdown && qRes.criteriaBreakdown.length > 0 && (
+                      <div className="sol-criteria-box" style={{ margin: '10px 0' }}>
+                        <strong style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6 }}>
+                          📋 Mark Scheme Criteria Breakdown:
+                        </strong>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {qRes.criteriaBreakdown.map((crit, cIdx) => (
+                            <div
+                              key={cIdx}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: '8px',
+                                fontSize: '0.8125rem',
+                                color: crit.achieved ? '#22c55e' : 'var(--color-text-secondary)',
+                              }}
+                            >
+                              <span>{crit.achieved ? '✓' : '✗'}</span>
+                              <div>
+                                <span>{crit.point}</span>
+                                {crit.examinerNote && (
+                                  <span style={{ display: 'block', fontSize: '0.75rem', opacity: 0.8 }}>
+                                    Note: {crit.examinerNote}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Feedback & Missing Keypoints */}
+                    {qRes?.aiFeedback && (
+                      <div
+                        className="sol-ai-feedback"
+                        style={{
+                          background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1))',
+                          border: '1px solid rgba(139, 92, 246, 0.3)',
+                          borderRadius: 'var(--radius-md)',
+                          padding: '10px 14px',
+                          margin: '8px 0',
+                          fontSize: '0.8125rem',
+                        }}
+                      >
+                        <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 2 }}>💡 Examiner Feedback:</strong>
+                        <p style={{ margin: 0, color: 'var(--color-text-primary)' }}>{qRes.aiFeedback}</p>
+                      </div>
+                    )}
+
+                    {/* Official Cambridge Mark Scheme */}
+                    <div className="sol-points">
+                      <strong>Model Answer:</strong>
+                      <ExamMathText
+                        content={
+                          typeof q.mark_scheme === 'string'
+                            ? q.mark_scheme
+                            : Array.isArray(q.mark_scheme?.marking_points)
+                            ? q.mark_scheme.marking_points.join('; ')
+                            : 'Credit valid scientific derivation'
+                        }
+                      />
+                    </div>
+
+                    {q.mark_scheme?.guidance && q.mark_scheme.guidance.length > 0 && (
+                      <div className="sol-guidance">
+                        💡 <strong>Examiner Guidance:</strong> <ExamMathText content={q.mark_scheme.guidance.join('; ')} />
+                      </div>
+                    )}
+                    {q.mark_scheme?.common_misconceptions && q.mark_scheme.common_misconceptions.length > 0 && (
+                      <div className="sol-traps">
+                        ⚠️ <strong>Common Pitfall:</strong> <ExamMathText content={q.mark_scheme.common_misconceptions.join('; ')} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -742,26 +1087,93 @@ export function StudentQuizRunner({
               </div>
             )}
 
-            {/* Sub-Questions Stream if structured */}
-            {currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && (
-              <div className="sq-sub-questions-list">
-                {currentQuestion.sub_questions.map((sub, sIdx) => (
-                  <div key={sIdx} className="sq-sub-item">
-                    <div className="sq-sub-header">
-                      <span className="sq-sub-id">{sub.sub_id}</span>
-                      <span className="sq-sub-text"><ExamMathText content={sub.question_text || ''} /></span>
-                      <span className="sq-sub-marks">[{sub.marks || 1}]</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            {/* 1. Multi-Part Sub-Questions Stream if structured */}
+            {currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 ? (
+              <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {currentQuestion.sub_questions.map((sub, sIdx) => {
+                  const subKey = `${currentIndex}_${sIdx}`;
+                  const subVal = String(answers[subKey] || '');
+                  return (
+                    <div
+                      key={sIdx}
+                      className="sq-sub-card"
+                      style={{
+                        background: 'var(--color-surface-sunken)',
+                        padding: '16px',
+                        borderRadius: 'var(--radius-lg)',
+                        border: '1px solid var(--color-border)',
+                      }}
+                    >
+                      <div className="sq-sub-header" style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+                        <span className="sq-sub-id" style={{ fontWeight: 800, color: 'var(--color-primary-500)' }}>({sub.sub_id})</span>
+                        <div className="sq-sub-text" style={{ flex: 1 }}>
+                          <ExamMathText content={sub.question_text || ''} />
+                        </div>
+                        <span className="sq-sub-marks" style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                          [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
+                        </span>
+                      </div>
 
-            {/* MCQ Choices Input */}
-            {currentQuestion?.options && currentQuestion.options.length > 0 ? (
+                      {/* Quick Symbol Insert Bar for sub-question */}
+                      <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
+                        {QUICK_CHEM_SYMBOLS.map((sym) => (
+                          <button
+                            key={sym}
+                            type="button"
+                            className="sq-sym-pill"
+                            style={{
+                              background: 'var(--color-surface-elevated)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: 'var(--radius-sm)',
+                              padding: '2px 6px',
+                              fontSize: '0.75rem',
+                              cursor: 'pointer',
+                              color: 'var(--color-text-primary)',
+                            }}
+                            onClick={() => handleInsertSymbol(subKey, sym)}
+                            title={`Insert ${sym}`}
+                          >
+                            {sym}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="sq-sub-input-wrap">
+                        <textarea
+                          className="sq-text-answer-area"
+                          placeholder={`Type answer for part (${sub.sub_id})...`}
+                          value={subVal}
+                          onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
+                          rows={3}
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            borderRadius: 'var(--radius-md)',
+                            border: '1.5px solid var(--color-border)',
+                            background: 'var(--color-surface)',
+                            color: 'var(--color-text-primary)',
+                            fontSize: '0.875rem',
+                            outline: 'none',
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                        {subVal.trim() && (
+                          <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                            <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
+                            <ExamMathText content={subVal} />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : currentQuestion?.options && currentQuestion.options.length > 0 ? (
+              /* 2. MCQ Choices Input */
               <div className="sq-choices-list">
                 {currentQuestion.options.map((optionText, oIdx) => {
-                  const isSelected = answers[currentIndex] === oIdx;
+                  const isSelected = Number(answers[currentIndex]) === oIdx;
                   return (
                     <button
                       key={oIdx}
@@ -776,21 +1188,55 @@ export function StudentQuizRunner({
                 })}
               </div>
             ) : (
-              /* Structured Response Text Box */
-              <div className="sq-structured-input-box">
-                <label className="sq-input-label">Your Answer / Solution:</label>
+              /* 3. Structured Single Response Text Box */
+              <div className="sq-structured-input-box" style={{ marginTop: 16 }}>
+                <label className="sq-input-label" style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: 8 }}>
+                  Your Response / Chemical Formula / Calculation:
+                </label>
+
+                {/* Quick Symbol Insert Bar */}
+                <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
+                  {QUICK_CHEM_SYMBOLS.map((sym) => (
+                    <button
+                      key={sym}
+                      type="button"
+                      className="sq-sym-pill"
+                      style={{
+                        background: 'var(--color-surface-elevated)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '2px 6px',
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        color: 'var(--color-text-primary)',
+                      }}
+                      onClick={() => handleInsertSymbol(currentIndex, sym)}
+                      title={`Insert ${sym}`}
+                    >
+                      {sym}
+                    </button>
+                  ))}
+                </div>
+
                 <textarea
                   className="sq-text-answer-area"
-                  placeholder="Type your final answer or working steps here..."
-                  value={(answers[currentIndex] as string) || ''}
+                  placeholder="Type your final answer, chemical equation, or calculation steps here..."
+                  value={String(answers[currentIndex] || '')}
                   onChange={(e) => handleTextAnswerChange(e.target.value)}
                   rows={5}
                 />
+                {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
+                  <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                    <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
+                    <ExamMathText content={String(answers[currentIndex])} />
+                  </div>
+                )}
               </div>
             )}
 
             {/* Bottom Actions Row */}
-            <div className="sq-q-nav-actions">
+            <div className="sq-q-nav-actions" style={{ marginTop: 24 }}>
               <button
                 type="button"
                 className="sq-btn sq-btn-secondary"
@@ -837,9 +1283,9 @@ export function StudentQuizRunner({
 
             <div className="sq-nav-matrix-grid">
               {questions.map((_, idx) => {
-                const isAnswered = answers[idx] !== undefined && answers[idx] !== '';
+                const isAnswered = answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`));
+                const isCurrent = currentIndex === idx;
                 const isFlagged = flaggedIndices.has(idx);
-                const isCurrent = idx === currentIndex;
 
                 return (
                   <button

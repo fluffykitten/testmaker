@@ -15,6 +15,20 @@ export interface QuestionSubmissionResult {
   studentAnswer: string | number;
   correctAnswer?: string;
   misconceptions?: string[];
+  // Enhanced Structured & AI grading metadata
+  aiFeedback?: string;
+  missingPoints?: string[];
+  criteriaBreakdown?: Array<{ point: string; achieved: boolean; examinerNote?: string }>;
+  gradingMethod?: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback';
+  subQuestionResults?: Array<{
+    subId: string;
+    studentAnswer: string | number;
+    earnedMarks: number;
+    maxMarks: number;
+    isCorrect: boolean;
+    feedback?: string;
+    criteria?: Array<{ point: string; achieved: boolean }>;
+  }>;
 }
 
 export interface ProctoringViolationEvent {

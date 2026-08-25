@@ -156,7 +156,8 @@ function convertMarkdownTablesToHtml(text: string): string {
   };
 
   for (const line of lines) {
-    const isTableRow = line.trim().startsWith('|') && line.trim().endsWith('|');
+    const trimmed = line.trim();
+    const isTableRow = trimmed.startsWith('|') && trimmed.endsWith('|');
     if (isTableRow) {
       inTable = true;
       tableLines.push(line);
@@ -165,6 +166,48 @@ function convertMarkdownTablesToHtml(text: string): string {
         flushTable();
         inTable = false;
       }
+
+      // Check for Flowchart / Process sequence
+      const boxMatches = trimmed.match(/\[\s*[^\]]+?\s*\]/g);
+      const hasArrows = /(?:→|->|\\rightarrow)/.test(trimmed);
+      if (boxMatches && boxMatches.length >= 2 && hasArrows) {
+        const stages = trimmed.split(/\s*(?:→|->|\\rightarrow)\s*/).map((part) => {
+          const clean = part.replace(/^\[\s*/, '').replace(/\s*\]$/, '').trim();
+          return clean;
+        });
+
+        let flowHtml =
+          '<div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:10px; margin:14px 0; padding:12px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px;">';
+        stages.forEach((stage, sIdx) => {
+          flowHtml += `<div style="display:inline-flex; align-items:center; justify-content:center; min-width:95px; min-height:48px; padding:6px 14px; border:1.5px solid #1f2937; background:white; font-weight:500; text-align:center;">${formatLatexForHtml(stage)}</div>`;
+          if (sIdx < stages.length - 1) {
+            flowHtml += '<span style="font-weight:bold; font-size:16px; color:#4b5563;">→</span>';
+          }
+        });
+        flowHtml += '</div>';
+        result.push(flowHtml);
+        continue;
+      }
+
+      // Check for Tick Box lines
+      const leadingTick = trimmed.match(/^(?:[-*]\s*)?\[\s*([✓xXvV]?)\s*\]\s+(.+)$/);
+      if (leadingTick) {
+        const checked = !!leadingTick[1].trim();
+        result.push(
+          `<div style="display:flex; align-items:center; max-width:360px; margin:4px 0;"><span style="display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border:1.5px solid #111; background:white; margin-right:10px; font-weight:bold; font-size:12px;">${checked ? '✓' : ''}</span><span>${formatLatexForHtml(leadingTick[2].trim())}</span></div>`
+        );
+        continue;
+      }
+
+      const trailingTick = trimmed.match(/^(.+?)\s+\[\s*([✓xXvV]?)\s*\]$/);
+      if (trailingTick) {
+        const checked = !!trailingTick[2].trim();
+        result.push(
+          `<div style="display:flex; justify-content:space-between; align-items:center; max-width:360px; margin:4px 0;"><span>${formatLatexForHtml(trailingTick[1].trim())}</span><span style="display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border:1.5px solid #111; background:white; margin-left:14px; font-weight:bold; font-size:12px;">${checked ? '✓' : ''}</span></div>`
+        );
+        continue;
+      }
+
       result.push(formatLatexForHtml(line));
     }
   }

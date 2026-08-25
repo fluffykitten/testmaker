@@ -20,6 +20,7 @@ interface TestBuilderPageProps {
   onRemoveQuestion: (questionId: string) => void;
   onNavigateToBank: () => void;
   onLaunchTestRun?: (questions: Question[], headerConfig: ExamHeaderConfig) => void;
+  onLaunchGameRun?: (questions: Question[], headerConfig: ExamHeaderConfig) => void;
 }
 
 export function TestBuilderPage({
@@ -27,6 +28,7 @@ export function TestBuilderPage({
   onRemoveQuestion,
   onNavigateToBank,
   onLaunchTestRun,
+  onLaunchGameRun,
 }: TestBuilderPageProps) {
   const [questions, setQuestions] = useState<Question[]>(initialQuestions);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
@@ -342,6 +344,10 @@ export function TestBuilderPage({
         onLaunchTestRun={() => {
           setIsShareModalOpen(false);
           if (onLaunchTestRun) onLaunchTestRun(questions, headerConfig);
+        }}
+        onLaunchGameRun={() => {
+          setIsShareModalOpen(false);
+          if (onLaunchGameRun) onLaunchGameRun(questions, headerConfig);
         }}
       />
 

@@ -93,6 +93,9 @@ export function parseFormattedTextToDocxRuns(
     .replace(/\\le(q)?/g, ' ≤ ')
     .replace(/\\ge(q)?/g, ' ≥ ')
     .replace(/\\infty/g, ' ∞ ')
+    // Checkboxes / Tickboxes
+    .replace(/(?:[-*]\s*)?\[\s*\]/g, '☐ ')
+    .replace(/(?:[-*]\s*)?\[\s*[✓xXvV]\s*\]/g, '☑ ')
     // LaTeX spacing commands: \, \: \; \! \ ~
     .replace(/\\,/g, ' ')
     .replace(/\\:/g, ' ')

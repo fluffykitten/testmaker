@@ -1,11 +1,8 @@
-// ─── Quiz Code & Student Resolution Service ─────────────────────────────────
-// Generates and resolves friendly 6-to-8 character Quiz Codes (e.g., CHEM-101)
-// to fetch test questions and configuration for students without teacher PIN.
-
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
-import { getPublishedQuizzes } from './quizManagerService';
+import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
+import type { PublishedQuiz } from './quizManagerService';
 
 export interface StudentQuizData {
   testId: string;
@@ -19,6 +16,16 @@ export interface StudentQuizData {
   securityEnabled?: boolean;
   maxViolations?: number;
   showInstantSolutions?: boolean;
+  // Game mode fields
+  quizMode?: 'exam' | 'game';
+  enablePowerUps?: boolean;
+  enableStreaks?: boolean;
+  enableFunSounds?: boolean;
+  enableMemes?: boolean;
+  pointsPerQuestion?: number;
+  questionTimerSeconds?: number;
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
 }
 
 const LOCAL_STORAGE_KEY = 'fluffykitten_custom_tests';
@@ -46,37 +53,62 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   const cleanInput = codeOrId.trim().toUpperCase();
   if (!cleanInput) return null;
 
-  // 1. Check Configured Published Quizzes first
+  // 1. Check Configured Published Quizzes in LocalStorage first
+  let published: PublishedQuiz | undefined;
   try {
     const publishedList = getPublishedQuizzes();
-    const published = publishedList.find(
+    published = publishedList.find(
       (p) =>
         p.quizCode.toUpperCase() === cleanInput ||
         p.id.toUpperCase() === cleanInput ||
         p.testId.toUpperCase() === cleanInput
     );
-
-    if (published) {
-      const questions = await fetchQuestionsByIds(published.questionIds || []);
-      return {
-        testId: published.testId,
-        quizCode: published.quizCode,
-        title: published.title,
-        headerConfig: published.headerConfig,
-        questions,
-        totalMarks: published.totalMarks,
-        durationMinutes: published.durationMinutes,
-        isExamMode: published.isExamMode,
-        securityEnabled: published.securityEnabled,
-        maxViolations: published.maxViolations,
-        showInstantSolutions: published.showInstantSolutions,
-      };
-    }
   } catch (err) {
-    console.warn('Published quiz lookup error:', err);
+    console.warn('Local published lookup error:', err);
   }
 
-  // 2. Check LocalStorage tests fallback
+  // 2. If not found locally (e.g., in a Private / Incognito window or different device), fetch from Supabase Cloud
+  if (!published) {
+    try {
+      const cloudQuizzes = await fetchPublishedQuizzesFromSupabase();
+      published = cloudQuizzes.find(
+        (p) =>
+          p.quizCode.toUpperCase() === cleanInput ||
+          p.id.toUpperCase() === cleanInput ||
+          p.testId.toUpperCase() === cleanInput
+      );
+    } catch (err) {
+      console.warn('Cloud published quiz lookup error:', err);
+    }
+  }
+
+  if (published) {
+    const questions = await fetchQuestionsByIds(published.questionIds || []);
+    return {
+      testId: published.testId,
+      quizCode: published.quizCode,
+      title: published.title,
+      headerConfig: published.headerConfig,
+      questions,
+      totalMarks: published.totalMarks,
+      durationMinutes: published.durationMinutes,
+      isExamMode: published.isExamMode,
+      securityEnabled: published.securityEnabled,
+      maxViolations: published.maxViolations,
+      showInstantSolutions: published.showInstantSolutions,
+      quizMode: published.quizMode,
+      enablePowerUps: published.enablePowerUps,
+      enableStreaks: published.enableStreaks,
+      enableFunSounds: published.enableFunSounds,
+      enableMemes: published.enableMemes,
+      pointsPerQuestion: published.pointsPerQuestion,
+      questionTimerSeconds: published.questionTimerSeconds,
+      shuffleQuestions: published.shuffleQuestions,
+      shuffleOptions: published.shuffleOptions,
+    };
+  }
+
+  // 3. Check LocalStorage tests fallback
   try {
     const rawLocal = localStorage.getItem(LOCAL_STORAGE_KEY);
     const localTests: CustomTest[] = rawLocal ? JSON.parse(rawLocal) : [];
@@ -104,7 +136,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     console.warn('Local test resolution error:', err);
   }
 
-  // 2. Query Supabase custom_tests table
+  // 4. Query Supabase custom_tests table
   try {
     // If it looks like a full UUID
     if (cleanInput.length >= 32) {
@@ -156,6 +188,24 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     }
   } catch (err) {
     console.error('Supabase test lookup error:', err);
+  }
+
+  // 5. Live Multiplayer Room Fallback (Connects to Realtime Broadcast Host Session)
+  if (cleanInput.length >= 3) {
+    return {
+      testId: cleanInput,
+      quizCode: cleanInput,
+      title: `${cleanInput} Live Quiz`,
+      questions: [],
+      totalMarks: 0,
+      quizMode: 'game',
+      enablePowerUps: true,
+      enableStreaks: true,
+      enableFunSounds: true,
+      enableMemes: true,
+      pointsPerQuestion: 1000,
+      questionTimerSeconds: 20,
+    };
   }
 
   return null;

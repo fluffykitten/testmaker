@@ -3,6 +3,7 @@
 // Features dynamic model discovery, auto-fallback, and retry.
 
 import type { ExtractionResult, Question, SubQuestion, QuestionStyle } from '../types/database';
+import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -110,26 +111,43 @@ CRITICAL FORMATTING RULES:
    - "year": 4-digit exam year, e.g. 2024, 2025.
    - "paper_number": Specific paper number or variant, e.g. 1, 2, 4, 11, 21, 41, 42, 61.
 2. Group all sub-questions of Question 1, Question 2, Question 3 etc. inside their parent question's sub_questions array. Do not fragment them into separate top-level questions.
-3. Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in dollar signs (e.g. '$'LaTeX'$'). For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}' or '{}^{A}_{Z}\\text{X}'. Never use '_^{40}'.
+3. Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in single dollar signs (e.g. '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$'). NEVER leave bare LaTeX commands like '\\text{Fe}_{2}\\text{O}_{3}' or '\\frac{1}{2}' unenclosed without dollar signs in regular sentence text. For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}' or '{}^{A}_{Z}\\text{X}'. Never use '_^{40}'.
 4. TABLE EXTRACTION (CRITICAL):
-   - Transcribe ALL data tables, experimental results, periodic tables, organic reaction tables, matching tables, and student completion tables into clean, structured Markdown Tables (| Header 1 | Header 2 | ... |\\n|---|---|---|...|) directly inside "question_text" or "sub_questions[].question_text".
+   - Transcribe ALL standard data tables, experimental results, titration data, physical properties tables, organic reaction test tables, and student completion/fill-in tables into clean, structured Markdown Tables (| Header 1 | Header 2 | ... |\\n|---|---|---|...|) directly inside "question_text" or "sub_questions[].question_text".
    - Preserve all row and column headers, values, units (e.g. $g/cm^3$, $^\\circ\\text{C}$), and blank fill-in cells ([       ]).
-   - Do NOT treat tables as image diagrams. Do NOT crop text tables with bounding_box.
-5. DIAGRAMS & GRAPHS:
-    - ONLY set has_diagram=true for actual visual drawings, apparatus setups, graphs/curves, electrical circuit schematics, biological cell illustrations, and reaction diagrams.
-    - If has_diagram=true, include 1-indexed page_number and bounding_box as [ymin, xmin, ymax, xmax] on a 0-1000 normalized scale.
-    - BOUNDING BOX GOLDEN RULE: It is MUCH better to make the bounding box TOO LARGE than too small. A slightly oversized box can be trimmed later, but a cropped-off diagram is useless. When in doubt, EXTEND the box generously.
-    - BOUNDING BOX PADDING: Provide an EXTREMELY generous bounding box with AT LEAST 80 units of margin on ALL 4 sides. The bounding box MUST fully enclose all labels, captions, legends, axes, and apparatus text.
-    - FULL VERTICAL SCAN (CRITICAL): Before setting ymax, visually scan ALL the way down to find the true bottom edge. Set ymax to capture EVERYTHING, then add 80 units of margin below that.
+   - ALWAYS do BOTH for standard data tables: (1) transcribe the table as a Markdown table in question_text AND (2) set has_diagram=true with a bounding_box that crops the original table image from the PDF.
+   - EXCEPTION FOR PERIODIC TABLE OUTLINES / GRIDS: If a question shows a Periodic Table outline or grid labeled as a figure (e.g., "Fig. 1.1 shows part of the Periodic Table" or a grid with Roman numeral groups I to VIII):
+     * Do NOT attempt to transcribe the Periodic Table as a markdown table (the stepped layout and empty groups will distort).
+     * Instead, treat it as a DIAGRAM (Rule 5): set has_diagram=true and provide an accurate bounding_box to crop the Periodic Table figure cleanly.
+5. DIAGRAMS, GRAPHS & PROCESS FLOWCHARTS (CRITICAL):
+    - Set has_diagram=true for visual drawings, apparatus setups, graphs/curves, electrical circuit schematics, biological cell illustrations, reaction/process diagrams, and PERIODIC TABLE OUTLINES/GRIDS (e.g. Fig. 1.1).
+    - PROCESS FLOWCHARTS & FILL-IN BOXES: When a question shows a sequence of stages with boxes and arrows or fill-in boxes (e.g. Fig. 3.1 showing water treatment stages, industrial flowcharts, reaction pathways):
+      a) DIAGRAM CROPPING: Set has_diagram=true and set bounding_box [ymin, xmin, ymax, xmax] to fully enclose the flowchart boxes, arrows, labels, and figure caption (e.g. "Fig. 3.1").
+      b) TEXT TRANSCRIBING: In "question_text", transcribe the flowchart sequence in structured box format:
+         [ sedimentation ] → [ filtration ] → [ use of carbon ] → [ ................................ ]
+         Fig. 3.1
+    - BOUNDING BOX GOLDEN RULE: It is MUCH better to make the bounding box TOO LARGE than too small. A slightly oversized box can be trimmed later, but a cropped-off diagram is useless. When in doubt, EXTEND the box generously with AT LEAST 80 units of margin on ALL 4 sides.
+    - FULL VERTICAL SCAN: Before setting ymax, visually scan ALL the way down to find the true bottom edge and figure caption. Set ymax to capture EVERYTHING.
     - STOP AT NEXT QUESTION BOUNDARY: Never allow ymax to overshoot into the next question.
-6. question_style must be one of: "Structured", "Multiple Choice", "Calculation", "Short Answer".
-7. estimated_difficulty must be one of: "Easy", "Medium", "Hard".
-8. Keep full question text — do not omit sub-questions.
-9. If a question has no sub-parts (like an MCQ in Paper 1 or Paper 2), set "sub_questions": [] and put options in "options".
-10. In LaTeX formulas, always escape backslashes properly in JSON strings (use \\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge).
+6. TICK BOX & CHECKBOX QUESTIONS (CRITICAL):
+    - When a structured sub-question asks students to "Tick (✓) one box" or "Tick (✓) two boxes" or choose from a list with checkboxes:
+      a) In "question_text" or "sub_questions[].question_text", preserve the prompt and format all choices with checkbox brackets [ ]:
+         Choose the correct statement that describes the structure and bonding in graphite.
+         Tick (✓) one box.
+         simple covalent molecule [ ]
+         giant ionic [ ]
+         simple ionic [ ]
+         giant covalent [ ]
+      b) Set "options": ["simple covalent molecule", "giant ionic", "simple ionic", "giant covalent"] on that sub-question object.
+      c) In "mark_scheme", state which box is correct (e.g. "giant covalent [1]").
+7. question_style must be one of: "Structured", "Multiple Choice", "Calculation", "Short Answer".
+8. estimated_difficulty must be one of: "Easy", "Medium", "Hard".
+9. Keep full question text — do not omit sub-questions.
+10. If a question has no sub-parts (like an MCQ in Paper 1 or Paper 2), set "sub_questions": [] and put options in "options".
+11. In LaTeX formulas, always escape backslashes properly in JSON strings (use \\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge).
 ${
   includeGuidance
-    ? `11. TEACHER MARKING GUIDANCE & COMMON MISCONCEPTIONS (CRITICAL):
+    ? `12. TEACHER MARKING GUIDANCE & COMMON MISCONCEPTIONS (CRITICAL):
     - For "guidance": Provide 1-3 concrete, high-utility teacher marking notes (e.g. method marks (M1, A1), error carried forward (ecf) rules, acceptable alternative units/notations, required significant figures).
     - For "common_misconceptions": Provide 1-3 specific mistakes, traps, or false intuitions students typically make on this specific question.`
     : ''
@@ -603,6 +621,22 @@ export async function extractQuestionsFromPdf(
   if (!parsed.paper_metadata || !Array.isArray(parsed.questions)) {
     throw new Error('Response missing required paper_metadata or questions array.');
   }
+
+  // Normalize all questions to ensure bare LaTeX formulas outside $ are wrapped in $...$
+  parsed.questions = parsed.questions.map((q) => ({
+    ...q,
+    question_text: ensureInlineMathDelimiters(q.question_text || ''),
+    options: Array.isArray(q.options)
+      ? q.options.map((opt) => (typeof opt === 'string' ? ensureInlineMathDelimiters(opt) : opt))
+      : q.options,
+    sub_questions: Array.isArray(q.sub_questions)
+      ? q.sub_questions.map((sq) => ({
+          ...sq,
+          question_text: ensureInlineMathDelimiters(sq.question_text || ''),
+          mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(sq.mark_scheme) : sq.mark_scheme,
+        }))
+      : q.sub_questions,
+  }));
 
   onProgress?.(`Extracted ${parsed.questions.length} questions successfully using ${usedModel}.`);
   return parsed;

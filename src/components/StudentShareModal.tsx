@@ -18,6 +18,7 @@ interface StudentShareModalProps {
   questions: Question[];
   testId?: string;
   onLaunchTestRun: () => void;
+  onLaunchGameRun?: () => void;
 }
 
 export function StudentShareModal({
@@ -27,6 +28,7 @@ export function StudentShareModal({
   questions,
   testId,
   onLaunchTestRun,
+  onLaunchGameRun,
 }: StudentShareModalProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -109,13 +111,31 @@ export function StudentShareModal({
                 </button>
               </div>
 
-              <button
-                type="button"
-                className="sq-btn sq-btn-primary"
-                onClick={onLaunchTestRun}
-              >
-                ▶️ Test-Run Quiz
-              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="sq-btn sq-btn-primary"
+                  onClick={onLaunchTestRun}
+                  title="Test-run this exam in formal assessment mode"
+                >
+                  📝 Test-Run Exam
+                </button>
+                {onLaunchGameRun && (
+                  <button
+                    type="button"
+                    className="sq-btn"
+                    style={{
+                      background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
+                      color: '#ffffff',
+                      fontWeight: 800,
+                    }}
+                    onClick={onLaunchGameRun}
+                    title="Test-run this quiz in Quizizz Game mode"
+                  >
+                    🎮 Test-Run Quizizz
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="share-link-input-group">

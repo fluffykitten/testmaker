@@ -24,6 +24,7 @@ export interface SubQuestion {
   sub_id: string;           // e.g. "(a)", "(b)(i)"
   question_text: string;    // LaTeX-enriched text
   marks: number;
+  options?: string[] | null;// Optional choices for tick box / multiple-choice sub-questions
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
   guidance?: string;        // Sub-question specific teacher guidance/examiner tip
   common_misconceptions?: string[]; // Sub-question specific common student errors

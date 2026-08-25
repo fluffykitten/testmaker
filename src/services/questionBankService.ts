@@ -266,8 +266,18 @@ export async function fetchQuestions(
     const term = searchQuery.trim();
     const formulaExp = expandFormulaSearch(term);
 
-    if (formulaExp.isFormula && formulaExp.expandedTokens.length > 1) {
-      const orClauses = formulaExp.expandedTokens
+    const tokensToSearch = Array.from(
+      new Set(
+        [term, ...formulaExp.expandedTokens]
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+      )
+    );
+
+    if (tokensToSearch.length > 1) {
+      // Limit to top 20 distinct variations to avoid exceeding PostgREST query length
+      const orClauses = tokensToSearch
+        .slice(0, 20)
         .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`)
         .join(',');
       query = query.or(orClauses);

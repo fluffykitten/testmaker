@@ -12,19 +12,23 @@ import { SavedTestsPage } from './pages/SavedTestsPage';
 import { QuizManagerPage } from './pages/QuizManagerPage';
 import { PortalLandingPage } from './pages/PortalLandingPage';
 import { StudentQuizRunner } from './pages/StudentQuizRunner';
+import { GameQuizRunner } from './pages/GameQuizRunner';
+import { GameHostController } from './pages/GameHostController';
+import { resolveStudentQuiz } from './services/quizCodeService';
+import type { PublishedQuiz } from './services/quizManagerService';
 import { supabase } from './lib/supabase';
 import type { Question } from './types/database';
 import type { ExamHeaderConfig } from './services/testBuilderService';
 import './App.css';
 
 export type Page = 'home' | 'bank' | 'builder' | 'saved' | 'quizzes' | 'upload';
-export type AppMode = 'portal' | 'teacher' | 'student_quiz';
+export type AppMode = 'portal' | 'teacher' | 'student_quiz' | 'game_host';
 
 function App() {
   const [appMode, setAppMode] = useState<AppMode>(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('quiz') || params.get('code')) return 'student_quiz';
-    return 'teacher';
+    return 'portal';
   });
 
   const [activeQuizCode, setActiveQuizCode] = useState<string>(() => {
@@ -34,6 +38,11 @@ function App() {
 
   const [testRunQuestions, setTestRunQuestions] = useState<Question[] | undefined>();
   const [testRunHeaderConfig, setTestRunHeaderConfig] = useState<ExamHeaderConfig | undefined>();
+  const [testRunInitialMode, setTestRunInitialMode] = useState<'exam' | 'game'>('exam');
+
+  // Live Game Host State
+  const [activeGameHostQuiz, setActiveGameHostQuiz] = useState<PublishedQuiz | null>(null);
+  const [activeGameHostQuestions, setActiveGameHostQuestions] = useState<Question[]>([]);
 
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [selectedQuestions, setSelectedQuestions] = useState<Map<string, Question>>(new Map());
@@ -91,6 +100,7 @@ function App() {
       <PortalLandingPage
         onJoinQuiz={(code) => {
           setActiveQuizCode(code);
+          setTestRunInitialMode('exam');
           setAppMode('student_quiz');
         }}
         onEnterTeacherSuite={() => setAppMode('teacher')}
@@ -98,18 +108,34 @@ function App() {
     );
   }
 
-  // ─── Route 2: Student Interactive Quiz Runner (No Teacher PIN required) ─────
+  // ─── Route 2: Student Interactive Quiz Runner (Automatic Exam vs Game Mode) ───
   if (appMode === 'student_quiz') {
     return (
-      <StudentQuizRunner
-        testIdOrCode={activeQuizCode}
+      <StudentQuizDispatcher
+        codeOrId={activeQuizCode}
         initialQuestions={testRunQuestions}
         initialHeaderConfig={testRunHeaderConfig}
+        initialMode={testRunInitialMode}
         onExit={() => {
           setAppMode('portal');
           setTestRunQuestions(undefined);
           setTestRunHeaderConfig(undefined);
           window.history.replaceState({}, '', window.location.pathname);
+        }}
+      />
+    );
+  }
+
+  // ─── Route 3: Teacher Game Host Session (Multiplayer Dashboard) ─────────────
+  if (appMode === 'game_host' && activeGameHostQuiz) {
+    return (
+      <GameHostController
+        quiz={activeGameHostQuiz}
+        questions={activeGameHostQuestions}
+        onExit={() => {
+          setAppMode('teacher');
+          setActiveGameHostQuiz(null);
+          setActiveGameHostQuestions([]);
         }}
       />
     );
@@ -254,6 +280,13 @@ function App() {
               onLaunchTestRun={(questions, headerConfig) => {
                 setTestRunQuestions(questions);
                 setTestRunHeaderConfig(headerConfig);
+                setTestRunInitialMode('exam');
+                setAppMode('student_quiz');
+              }}
+              onLaunchGameRun={(questions, headerConfig) => {
+                setTestRunQuestions(questions);
+                setTestRunHeaderConfig(headerConfig);
+                setTestRunInitialMode('game');
                 setAppMode('student_quiz');
               }}
             />
@@ -271,6 +304,11 @@ function App() {
                 setTestRunQuestions(questions);
                 setTestRunHeaderConfig(headerConfig);
                 setAppMode('student_quiz');
+              }}
+              onLaunchGameHost={(quiz, questions) => {
+                setActiveGameHostQuiz(quiz);
+                setActiveGameHostQuestions(questions);
+                setAppMode('game_host');
               }}
               onNavigateToBuilder={() => setCurrentPage('builder')}
               onNavigateToSaved={() => setCurrentPage('saved')}
@@ -608,5 +646,113 @@ function FeatureCard({ icon, title, description, accent }: FeatureCardProps) {
   );
 }
 
+// ─── Student Quiz Dispatcher (Routes between Formal Exam and Quizizz Game) ───
+
+interface StudentQuizDispatcherProps {
+  codeOrId?: string;
+  initialQuestions?: Question[];
+  initialHeaderConfig?: ExamHeaderConfig;
+  initialMode?: 'exam' | 'game';
+  onExit: () => void;
+}
+
+function StudentQuizDispatcher({
+  codeOrId,
+  initialQuestions,
+  initialHeaderConfig,
+  initialMode = 'exam',
+  onExit,
+}: StudentQuizDispatcherProps) {
+  const [resolvedMode, setResolvedMode] = useState<'exam' | 'game' | 'loading'>('loading');
+  const [gameConfig, setGameConfig] = useState<any>(null);
+
+  useEffect(() => {
+    // If questions were passed directly (e.g. test-run from builder)
+    if (!codeOrId && initialQuestions) {
+      setResolvedMode(initialMode || 'exam');
+      return;
+    }
+
+    if (!codeOrId) {
+      setResolvedMode(initialMode || 'exam');
+      return;
+    }
+
+    let isMounted = true;
+    resolveStudentQuiz(codeOrId)
+      .then((data) => {
+        if (!isMounted) return;
+        if (data?.quizMode === 'game') {
+          setGameConfig(data);
+          setResolvedMode('game');
+        } else {
+          setResolvedMode('exam');
+        }
+      })
+      .catch(() => {
+        if (isMounted) setResolvedMode('exam');
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [codeOrId, initialQuestions, initialMode]);
+
+  if (resolvedMode === 'loading') {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#0f172a',
+          color: '#f8fafc',
+          fontFamily: 'sans-serif',
+        }}
+      >
+        <div style={{ textAlign: 'center' }}>
+          <div
+            style={{
+              width: '40px',
+              height: '40px',
+              border: '3px solid rgba(255,255,255,0.1)',
+              borderTopColor: '#8b5cf6',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              margin: '0 auto 1rem',
+            }}
+          />
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Connecting to Assessment...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (resolvedMode === 'game') {
+    return (
+      <GameQuizRunner
+        testIdOrCode={codeOrId}
+        initialQuestions={initialQuestions}
+        initialHeaderConfig={initialHeaderConfig}
+        initialGameConfig={gameConfig}
+        onExit={onExit}
+      />
+    );
+  }
+
+  return (
+    <StudentQuizRunner
+      testIdOrCode={codeOrId}
+      initialQuestions={initialQuestions}
+      initialHeaderConfig={initialHeaderConfig}
+      onExit={onExit}
+      onSwitchToGameMode={() => setResolvedMode('game')}
+    />
+  );
+}
+
 export default App;
+
+
 
