@@ -79,6 +79,8 @@ export function StudentQuizRunner({
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
   const [violations, setViolations] = useState<ViolationRecord[]>(() => savedExam?.violations || []);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
+  const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
 
   // Diagram Zoom
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
@@ -138,35 +140,37 @@ export function StudentQuizRunner({
   // ─── 2. Violation Logger ───────────────────────────────────────────────────
   const logViolation = useCallback(
     (type: ViolationRecord['type'], detail: string) => {
-      if (!hasStarted || isSubmitted || !securityEnabled) return;
+      if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
       const now = new Date().toLocaleTimeString();
       const rec: ViolationRecord = { type, timestamp: now, detail };
       setViolations((prev) => [...prev, rec]);
       setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${now})`);
     },
-    [hasStarted, isSubmitted, securityEnabled]
+    [hasStarted, isSubmitted, isGrading, securityEnabled]
   );
 
   // ─── 3. Anti-Cheating Event Listeners ──────────────────────────────────────
   useEffect(() => {
-    if (!hasStarted || isSubmitted || !securityEnabled) return;
+    if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
 
     // A. Tab switch / Visibility change
     const handleVisibilityChange = () => {
-      if (document.hidden) {
+      if (document.hidden && !isSubmittingRef.current && !isSubmitted) {
         logViolation('tab_switch', 'Switched away from exam tab or minimized window');
       }
     };
 
     // B. Window Blur (e.g. Alt+Tab or clicking outside)
     const handleWindowBlur = () => {
-      logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
+      if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
+        logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
+      }
     };
 
     // C. Fullscreen change
     const handleFullscreenChange = () => {
       const isFull = !!document.fullscreenElement;
-      if (!isFull && hasStarted && !isSubmitted) {
+      if (!isFull && hasStarted && !isSubmitted && !isGrading && !isSubmittingRef.current) {
         logViolation('fullscreen_exit', 'Exited fullscreen secure exam view');
       }
     };
@@ -197,8 +201,10 @@ export function StudentQuizRunner({
 
     // E. Prevent accidental unload/reload
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = 'You have an active exam in progress. Are you sure you want to leave?';
+      if (!isSubmittingRef.current && !isSubmitted) {
+        e.preventDefault();
+        e.returnValue = 'You have an active exam in progress. Are you sure you want to leave?';
+      }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -214,11 +220,13 @@ export function StudentQuizRunner({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [hasStarted, isSubmitted, securityEnabled, isExamMode, logViolation]);
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, logViolation]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {
-    if (isSubmitted || isGrading) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setShowSubmitModal(false);
     setIsGrading(true);
     setGradingProgressText('Evaluating answers with Deterministic Matcher & AI Examiner...');
 
@@ -1126,11 +1134,7 @@ export function StudentQuizRunner({
           <button
             type="button"
             className="sq-btn sq-btn-finish"
-            onClick={() => {
-              if (confirm('Are you sure you want to finish and submit your assessment?')) {
-                handleSubmitExam();
-              }
-            }}
+            onClick={() => setShowSubmitModal(true)}
           >
             Finish & Submit
           </button>
@@ -1358,9 +1362,7 @@ export function StudentQuizRunner({
                   if (currentIndex < questions.length - 1) {
                     setCurrentIndex((prev) => prev + 1);
                   } else {
-                    if (confirm('You reached the final question. Would you like to submit your assessment?')) {
-                      handleSubmitExam();
-                    }
+                    setShowSubmitModal(true);
                   }
                 }}
               >
@@ -1408,6 +1410,99 @@ export function StudentQuizRunner({
           </div>
         </aside>
       </main>
+
+      {/* In-App Submit Confirmation Modal (Preserves Window Focus & Fullscreen) */}
+      {showSubmitModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            background: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={() => setShowSubmitModal(false)}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface, #1e293b)',
+              border: '1.5px solid var(--color-border, rgba(255, 255, 255, 0.15))',
+              borderRadius: '20px',
+              maxWidth: '440px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              textAlign: 'center',
+              color: 'var(--color-text-primary, #ffffff)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📝</div>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: '0 0 8px' }}>
+              Submit Examination?
+            </h3>
+            <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary, #94a3b8)', margin: '0 0 16px' }}>
+              Are you ready to submit your exam? Your responses will be evaluated against the mark scheme.
+            </p>
+
+            {/* Answered vs Unanswered summary */}
+            {(() => {
+              const answeredCount = questions.filter((_, idx) =>
+                answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`))
+              ).length;
+              const unanswered = questions.length - answeredCount;
+              return (
+                <div
+                  style={{
+                    background: unanswered > 0 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                    border: `1px solid ${unanswered > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                    borderRadius: '12px',
+                    padding: '10px 14px',
+                    marginBottom: '20px',
+                    fontSize: '0.8125rem',
+                    display: 'flex',
+                    justifyContent: 'space-around',
+                  }}
+                >
+                  <div>
+                    <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Answered:</span>{' '}
+                    <strong style={{ color: '#10b981' }}>{answeredCount}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--color-text-secondary, #94a3b8)' }}>Unanswered:</span>{' '}
+                    <strong style={{ color: unanswered > 0 ? '#ef4444' : '#10b981' }}>{unanswered}</strong>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="sq-btn sq-btn-secondary"
+                style={{ flex: 1, padding: '10px 16px', fontWeight: 700 }}
+                onClick={() => setShowSubmitModal(false)}
+              >
+                Continue Exam
+              </button>
+              <button
+                type="button"
+                className="sq-btn sq-btn-finish"
+                style={{ flex: 1, padding: '10px 16px', fontWeight: 800 }}
+                onClick={() => {
+                  handleSubmitExam();
+                }}
+              >
+                🚀 Confirm & Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Zoom Modal */}
       {zoomedImage && (
