@@ -3,7 +3,7 @@
 // using deterministic and AI rules, and saves results to the central gradebook.
 
 import * as XLSX from 'xlsx';
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from './fileExportBridge';
 import type { Question, SubQuestion } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import {
@@ -312,7 +312,7 @@ export function exportOfflineGradingTemplateExcel(
   const cleanTitle = (testTitle || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
   const fileName = `${cleanTitle}_Offline_Grading_Template.xlsx`;
   const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  saveAs(new Blob([wbout], { type: 'application/octet-stream' }), fileName);
+  exportFileUniversal(new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
 // ─── 4. Parse Uploaded Excel File ──────────────────────────────────────────────

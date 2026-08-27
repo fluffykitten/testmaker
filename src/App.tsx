@@ -19,6 +19,7 @@ import type { PublishedQuiz } from './services/quizManagerService';
 import { supabase } from './lib/supabase';
 import type { Question } from './types/database';
 import type { ExamHeaderConfig } from './services/testBuilderService';
+import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import './App.css';
 
 export type Page = 'home' | 'bank' | 'builder' | 'saved' | 'quizzes' | 'upload';
@@ -48,6 +49,9 @@ function App() {
   const [selectedQuestions, setSelectedQuestions] = useState<Map<string, Question>>(new Map());
   const [tutorialRestartSignal, setTutorialRestartSignal] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Mobile lifecycle & hardware back-button integration
+  useMobileLifecycle();
 
   // Initialize and apply user appearance preferences
   useEffect(() => {

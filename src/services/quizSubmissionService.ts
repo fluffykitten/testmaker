@@ -3,7 +3,7 @@
 // Supports Excel (.xlsx) exports for individual candidates and class-wide gradebooks.
 
 import * as XLSX from 'xlsx';
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from './fileExportBridge';
 import { supabase } from '../lib/supabase';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
@@ -667,7 +667,7 @@ export function exportAllSubmissionsExcel(
   const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
   const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const filename = `${quizTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}_${quizCode}_results.xlsx`;
-  saveAs(blob, filename);
+  exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
 /**
@@ -739,5 +739,5 @@ export function exportSingleSubmissionExcel(submission: StudentSubmission): void
   const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const safeName = submission.studentName.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
   const filename = `${safeName}_${submission.quizCode}_report.xlsx`;
-  saveAs(blob, filename);
+  exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }

@@ -22,7 +22,7 @@ import {
   TabStopPosition,
   LeaderType,
 } from 'docx';
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import type { ExportLayoutOptions } from '../types/exportTemplates';
@@ -1117,7 +1117,7 @@ export async function exportStudentPaperDocx(
 
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam_Paper').replace(/[^a-zA-Z0-9_-]/g, '_');
-  saveAs(blob, `${safeTitle}_Student_Paper.docx`);
+  await exportFileUniversal(blob, `${safeTitle}_Student_Paper.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }
 
 /**
@@ -1267,7 +1267,7 @@ export async function exportAnswerBookletDocx(
 
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
-  saveAs(blob, `${safeTitle}_Answer_Booklet.docx`);
+  await exportFileUniversal(blob, `${safeTitle}_Answer_Booklet.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }
 
 /**
@@ -1578,7 +1578,7 @@ export async function exportTeacherMarkSchemeDocx(
 
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam_Solutions').replace(/[^a-zA-Z0-9_-]/g, '_');
-  saveAs(blob, `${safeTitle}_Comprehensive_MarkScheme.docx`);
+  await exportFileUniversal(blob, `${safeTitle}_Comprehensive_MarkScheme.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }
 
 /**
@@ -1772,5 +1772,5 @@ export async function exportMcqAnswerSheetDocx(
 
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
-  saveAs(blob, `${safeTitle}_Multiple_Choice_Answer_Sheet.docx`);
+  await exportFileUniversal(blob, `${safeTitle}_Multiple_Choice_Answer_Sheet.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }

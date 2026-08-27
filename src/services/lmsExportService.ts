@@ -1,7 +1,7 @@
 // ─── LMS & Digital Assessment Exporter Service ──────────────────────────────
 // Generates industry-standard exports for Google Forms, Canvas, Moodle, Kahoot, and Quizizz.
 
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 
@@ -99,7 +99,7 @@ export function exportCanvasMoodleQtiXml(
 </assessmentTest>`;
 
   const blob = new Blob([qtiXml], { type: 'application/xml;charset=utf-8' });
-  saveAs(blob, `${safeTitle}_QTI_Canvas_Moodle.xml`);
+  exportFileUniversal(blob, `${safeTitle}_QTI_Canvas_Moodle.xml`, 'application/xml');
 }
 
 /**
@@ -137,7 +137,7 @@ export function exportGoogleFormsQuiz(
 
   const csvContent = rows.join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  saveAs(blob, `${safeTitle}_Google_Forms_Import.csv`);
+  exportFileUniversal(blob, `${safeTitle}_Google_Forms_Import.csv`, 'text/csv');
 }
 
 /**
@@ -169,7 +169,7 @@ export function exportKahootQuizizzCsv(
 
   const csvContent = rows.join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  saveAs(blob, `${safeTitle}_Kahoot_Quizizz.csv`);
+  exportFileUniversal(blob, `${safeTitle}_Kahoot_Quizizz.csv`, 'text/csv');
 }
 
 function escapeXml(unsafe: string): string {

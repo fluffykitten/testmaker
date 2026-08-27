@@ -439,7 +439,15 @@ export function StudentQuizRunner({
       }
     };
 
-    // E. Prevent accidental unload/reload
+    // E. Native Mobile App Minimize / Background Event
+    const handleMobileProctor = (e: Event) => {
+      const customEvt = e as CustomEvent<{ reason?: string }>;
+      if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
+        logViolation('window_blur', customEvt.detail?.reason || 'Mobile app minimized or switched');
+      }
+    };
+
+    // F. Prevent accidental unload/reload
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isSubmittingRef.current && !isSubmitted) {
         e.preventDefault();
@@ -449,6 +457,7 @@ export function StudentQuizRunner({
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('mobile-proctor-violation', handleMobileProctor);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -456,6 +465,7 @@ export function StudentQuizRunner({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('beforeunload', handleBeforeUnload);

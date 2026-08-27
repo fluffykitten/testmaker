@@ -112,6 +112,23 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 npm run build
 ```
 
+### 7. Native Mobile Apps (Android & iOS)
+This project is packaged with **Capacitor** for **1:1 feature parity** across Web, Android, and iOS.
+
+```bash
+# Build web assets and sync to native Android and iOS folders
+npm run mobile:build
+
+# Open the project in Android Studio (Windows, Mac, Linux)
+npm run mobile:android
+
+# Open the project in Xcode (macOS)
+npm run mobile:ios
+```
+- **Android APK**: In Android Studio, go to `Build > Build Bundle(s) / APK(s) > Build APK(s)`.
+- **Google Play Store**: Generate a signed `.aab` bundle using `Build > Generate Signed Bundle / APK`.
+- **iOS App**: Open in Xcode, select your signing team, and archive for TestFlight / App Store Connect.
+
 ---
 
 ## 📄 License

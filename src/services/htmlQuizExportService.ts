@@ -2,7 +2,7 @@
 // Bundles the entire exam into a single, self-contained interactive .html file
 // that students can open in any browser offline without internet or server access.
 
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
@@ -269,5 +269,5 @@ export function exportOfflineInteractiveHtmlQuiz(
 </html>`;
 
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  saveAs(blob, `${safeTitle}_Interactive_Offline.html`);
+  exportFileUniversal(blob, `${safeTitle}_Interactive_Offline.html`, 'text/html');
 }

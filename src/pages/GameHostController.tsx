@@ -40,7 +40,7 @@ import {
 } from '../lib/gameSoundEngine';
 import { ExamMathText } from '../components/ExamMathText';
 import * as XLSX from 'xlsx';
-import { saveAs } from 'file-saver';
+import { exportFileUniversal } from '../services/fileExportBridge';
 import './GameHostController.css';
 
 interface GameHostControllerProps {
@@ -330,7 +330,7 @@ export function GameHostController({ quiz, questions: initialQuestions, onExit }
     XLSX.utils.book_append_sheet(wb, ws, 'Game Leaderboard');
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    saveAs(blob, `${quiz.quizCode}_multiplayer_results.xlsx`);
+    exportFileUniversal(blob, `${quiz.quizCode}_multiplayer_results.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   };
 
   const handleToggleAudio = () => {
