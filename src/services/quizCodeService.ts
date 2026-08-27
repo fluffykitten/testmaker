@@ -14,6 +14,8 @@ export interface StudentQuizData {
   durationMinutes?: number;
   isExamMode?: boolean;
   securityEnabled?: boolean;
+  requireTeacherUnlock?: boolean;
+  teacherPin?: string;
   maxViolations?: number;
   showInstantSolutions?: boolean;
   // Game mode fields
@@ -94,6 +96,8 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       durationMinutes: published.durationMinutes,
       isExamMode: published.isExamMode,
       securityEnabled: published.securityEnabled,
+      requireTeacherUnlock: published.requireTeacherUnlock,
+      teacherPin: published.teacherPin,
       maxViolations: published.maxViolations,
       showInstantSolutions: published.showInstantSolutions,
       quizMode: published.quizMode,
@@ -214,7 +218,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
 /**
  * Fetches question rows by an array of IDs from Supabase
  */
-async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
+export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
   if (!ids || ids.length === 0) return [];
   try {
     const { data, error } = await supabase

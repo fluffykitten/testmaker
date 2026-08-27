@@ -296,6 +296,7 @@ function App() {
               onLoadTestIntoBuilder={handleLoadTestIntoBuilder}
               onNavigateToBuilder={() => setCurrentPage('builder')}
               onNavigateToBank={() => setCurrentPage('bank')}
+              onNavigateToQuizzes={() => setCurrentPage('quizzes')}
             />
           )}
           {currentPage === 'quizzes' && (

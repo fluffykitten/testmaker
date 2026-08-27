@@ -4,6 +4,7 @@
 // 2. Individual Candidate Performance, Sub-Question Script, & AI Marking Report
 
 import type { StudentSubmission } from './quizSubmissionService';
+import { formatProctorTimestamp, formatCandidateAnswer } from './quizSubmissionService';
 import { formatLatexForHtml } from './pdfExportService';
 
 /**
@@ -713,6 +714,13 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
           </span>
         </div>
 
+        <!-- Question Prompt / Stem if available -->
+        ${q.questionText ? `
+          <div style="margin: 8px 0 10px 0; color: #1e293b; font-size: 9pt; line-height: 1.45; font-weight: 500; background: #f8fafc; border-left: 3px solid #6366f1; padding: 6px 10px; border-radius: 0 6px 6px 0;">
+            ${formatLatexForHtml(q.questionText)}
+          </div>
+        ` : ''}
+
         <!-- Sub Questions Breakdown if available -->
         ${q.subQuestionResults && q.subQuestionResults.length > 0 ? `
           <div style="margin: 6px 0;">
@@ -726,9 +734,14 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
                       ${sub.earnedMarks} / ${sub.maxMarks} mark${sub.maxMarks !== 1 ? 's' : ''}
                     </span>
                   </div>
+                  ${sub.questionText ? `
+                    <div style="font-size: 8.5pt; color: #334155; margin-bottom: 4px;">
+                      ${formatLatexForHtml(sub.questionText)}
+                    </div>
+                  ` : ''}
                   <div class="sub-ans-row">
                     <span style="color: #64748b;">Candidate Answer:</span>
-                    <strong>${formatLatexForHtml(String(sub.studentAnswer || '(No response)'))}</strong>
+                    <strong style="color: #0f172a;">${formatLatexForHtml(formatCandidateAnswer(sub.studentAnswer))}</strong>
                   </div>
                   ${sub.feedback ? `
                     <div class="sub-feedback">
@@ -743,7 +756,7 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
           <!-- Standalone Question Answer -->
           <div style="margin: 6px 0; font-size: 8.5pt;">
             <span style="color: #64748b;">Candidate Answer:</span>
-            <strong>${formatLatexForHtml(String(q.studentAnswer || '(No response)'))}</strong>
+            <strong style="color: #0f172a;">${formatLatexForHtml(formatCandidateAnswer(q.studentAnswer, q.options, q.gradingMethod))}</strong>
           </div>
         `}
 
@@ -773,7 +786,7 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
         <!-- Official Model Answer -->
         ${q.correctAnswer ? `
           <div class="model-ans-box">
-            <strong>Model Mark Scheme:</strong> ${formatLatexForHtml(q.correctAnswer)}
+            <strong>Official Mark Scheme:</strong> ${formatLatexForHtml(formatCandidateAnswer(q.correctAnswer, q.options, q.gradingMethod))}
           </div>
         ` : ''}
       </div>
@@ -794,7 +807,7 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
       <tbody>
         ${submission.proctoringLogs.map((p) => `
           <tr>
-            <td style="color: #64748b;">${p.timestamp}</td>
+            <td style="color: #64748b;">${formatProctorTimestamp(p.timestamp)}</td>
             <td style="text-align: center; font-weight: 800; color: #ea580c;">Strike ${p.strike}</td>
             <td>${p.event}</td>
           </tr>

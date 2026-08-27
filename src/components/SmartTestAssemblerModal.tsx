@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question, Syllabus } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import {
@@ -301,10 +302,12 @@ export const SmartTestAssemblerModal: React.FC<SmartTestAssemblerModalProps> = (
     onClose();
   };
 
+  const backdropDismiss = useBackdropDismiss(onClose);
+
   if (!isOpen) return null;
 
   return createPortal(
-    <div className="assembler-backdrop animate-fade-in" onClick={onClose}>
+    <div className="assembler-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="assembler-modal animate-scale-up"
         onClick={(e) => e.stopPropagation()}

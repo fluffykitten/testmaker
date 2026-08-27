@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { generateQuestionVariant, type VariantMode } from '../lib/gemini';
@@ -171,10 +172,12 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     onClose();
   };
 
+  const backdropDismiss = useBackdropDismiss(onClose);
+
   if (!isOpen || !question) return null;
 
   return createPortal(
-    <div className="variant-modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="variant-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="variant-modal-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}

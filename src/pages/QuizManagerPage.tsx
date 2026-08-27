@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import {
   fetchCustomTestsWithMetadata,
@@ -16,6 +17,7 @@ import {
 } from '../services/quizManagerService';
 import { getSubmissionsForQuiz } from '../services/quizSubmissionService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
+import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
@@ -46,10 +48,19 @@ export function QuizManagerPage({
   const [selectedTestId, setSelectedTestId] = useState<string>('');
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
+  const [copiedPinId, setCopiedPinId] = useState<string | null>(null);
+  const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
   // Results Modal State
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
+
+  // Offline Grading State
+  const [offlineGradingData, setOfflineGradingData] = useState<{
+    headerConfig: ExamHeaderConfig;
+    questions: Question[];
+  } | null>(null);
+  const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
   useEffect(() => {
@@ -131,6 +142,45 @@ export function QuizManagerPage({
     setIsConfigModalOpen(true);
   };
 
+  const handleOpenOfflineGrader = () => {
+    if (savedTests.length === 0) {
+      alert('You have no saved tests yet. Please build and save a test first before grading offline students.');
+      onNavigateToBuilder();
+      return;
+    }
+    if (savedTests.length === 1) {
+      handleLaunchOfflineGraderForTest(savedTests[0].id);
+    } else {
+      setIsSelectOfflineTestOpen(true);
+    }
+  };
+
+  const handleLaunchOfflineGraderForTest = async (testId: string) => {
+    setIsSelectOfflineTestOpen(false);
+    try {
+      const resolved = await fetchCustomTestWithQuestions(testId);
+      const testMeta = savedTests.find((t) => t.id === testId);
+      if (resolved && resolved.questions.length > 0) {
+        setOfflineGradingData({
+          headerConfig: {
+            title: testMeta?.title || 'Offline Exam Assessment',
+            schoolName: '',
+            subject: testMeta?.primarySubject || 'General Assessment',
+            subjectCode: '',
+            durationMinutes: Math.round((testMeta?.total_marks || 20) * 1.25),
+            instructions: 'Answer all questions.',
+            additionalMaterials: '',
+          },
+          questions: resolved.questions,
+        });
+      } else {
+        alert('This saved test has no questions to grade.');
+      }
+    } catch (err: any) {
+      alert(`Failed to load test questions: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
   const handleSelectSavedTest = (testId: string) => {
     setSelectedTestId(testId);
     const selected = savedTests.find((t) => t.id === testId);
@@ -169,11 +219,13 @@ export function QuizManagerPage({
 
     const cleanSubject = activeQuizDraft.subject?.trim() || 'Chemistry';
 
+    const isExam = activeQuizDraft.isExamMode ?? true;
     const updated: PublishedQuiz = {
       ...activeQuizDraft,
       quizCode: cleanCode,
       subject: cleanSubject,
       quizMode: activeQuizDraft.quizMode || 'exam',
+      showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
       updatedAt: new Date().toISOString(),
     };
 
@@ -211,6 +263,12 @@ export function QuizManagerPage({
     setTimeout(() => setCopiedLinkId(null), 2000);
   };
 
+  const handleCopyPin = (pin: string, id: string) => {
+    navigator.clipboard.writeText(pin);
+    setCopiedPinId(id);
+    setTimeout(() => setCopiedPinId(null), 2000);
+  };
+
   const handleRunQuizSimulation = async (quiz: PublishedQuiz) => {
     const res = await fetchCustomTestWithQuestions(quiz.testId);
     const questions = res?.questions || [];
@@ -240,7 +298,11 @@ export function QuizManagerPage({
           <div className="qm-card-title-group">
             <div className="qm-pill-row">
               <span className="qm-subject-pill">{quiz.subject || 'Chemistry'}</span>
-              {isGame ? (
+              {quiz.quizCode.startsWith('OFFLINE') || (quiz as any).isOffline ? (
+                <span className="qm-mode-badge" style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #bbf7d0' }}>
+                  📄 OFFLINE PAPER EXAM
+                </span>
+              ) : isGame ? (
                 <span className="qm-mode-badge qm-mode-badge--game">🎮 QUIZIZZ GAME</span>
               ) : (
                 <span className="qm-mode-badge qm-mode-badge--exam">📝 FORMAL EXAM</span>
@@ -328,6 +390,19 @@ export function QuizManagerPage({
               <span className={`qm-pill ${quiz.securityEnabled ? 'qm-pill--security' : ''}`}>
                 {quiz.securityEnabled ? '🔒 Anti-Cheating ON' : '🔓 Open Browser'}
               </span>
+              {quiz.securityEnabled && (quiz.requireTeacherUnlock ?? true) && (
+                <span className="qm-pill qm-pill--pin" title="PIN required to unlock student screen on violation">
+                  🔑 PIN: <strong>{quiz.teacherPin || '1234'}</strong>
+                  <button
+                    type="button"
+                    className="qm-btn-copy-pin"
+                    onClick={() => handleCopyPin(quiz.teacherPin || '1234', quiz.id)}
+                    title="Copy Teacher PIN"
+                  >
+                    {copiedPinId === quiz.id ? '✓ Copied' : '📋'}
+                  </button>
+                </span>
+              )}
               {quiz.showInstantSolutions && (
                 <span className="qm-pill">💡 Instant Solutions</span>
               )}
@@ -425,6 +500,8 @@ export function QuizManagerPage({
     );
   };
 
+  const configModalDismiss = useBackdropDismiss(() => setIsConfigModalOpen(false));
+
   return (
     <div className="qm-root animate-fade-in">
       <div className="qm-container">
@@ -439,6 +516,15 @@ export function QuizManagerPage({
           </div>
 
           <div className="qm-top-actions">
+            <button
+              type="button"
+              className="qm-btn qm-btn-secondary qm-btn-header"
+              onClick={handleOpenOfflineGrader}
+              title="Grade offline paper exam via Excel or Rapid Grid"
+              style={{ background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0', fontWeight: 700 }}
+            >
+              📊 Grade Offline Exam
+            </button>
             <button
               type="button"
               className="qm-btn qm-btn-primary qm-btn-header qm-btn-quizizz-top"
@@ -644,7 +730,7 @@ export function QuizManagerPage({
 
       {/* ─── Create & Configure Quiz Modal ────────────────────────────────────── */}
       {isConfigModalOpen && activeQuizDraft && (
-        <div className="qm-modal-backdrop animate-fade-in" onClick={() => setIsConfigModalOpen(false)}>
+        <div className="qm-modal-backdrop animate-fade-in" {...configModalDismiss}>
           <div className="qm-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
             <div className="qm-modal-header">
               <div>
@@ -932,12 +1018,14 @@ export function QuizManagerPage({
                       <select
                         className="qm-form-select"
                         value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const isExam = e.target.value === 'exam';
                           setActiveQuizDraft({
                             ...activeQuizDraft,
-                            isExamMode: e.target.value === 'exam',
-                          })
-                        }
+                            isExamMode: isExam,
+                            showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? true),
+                          });
+                        }}
                       >
                         <option value="exam">⏱️ Timed Exam Mode</option>
                         <option value="practice">💡 Self-Paced Practice</option>
@@ -969,31 +1057,124 @@ export function QuizManagerPage({
                     </div>
 
                     {activeQuizDraft.securityEnabled && (
-                      <div className="qm-sec-subrules">
-                        <div className="sec-rule-item">✓ Mandatory Fullscreen prompt on start</div>
-                        <div className="sec-rule-item">✓ Real-time Alt+Tab and window blur strikes</div>
-                        <div className="sec-rule-item">✓ Disabled Right-Click, F12 inspect, and Copy/Paste</div>
-                        <div className="sec-rule-item">✓ Timestamped Proctoring Audit Trail on teacher results</div>
-                      </div>
+                      <>
+                        <div className="qm-sec-subrules">
+                          <div className="sec-rule-item">✓ Mandatory Fullscreen prompt on start</div>
+                          <div className="sec-rule-item">✓ Real-time Alt+Tab and window blur strikes</div>
+                          <div className="sec-rule-item">✓ Disabled Right-Click, F12 inspect, and Copy/Paste</div>
+                          <div className="sec-rule-item">✓ Timestamped Proctoring Audit Trail on teacher results</div>
+                        </div>
+
+                        {/* Teacher Lock & PIN Configuration */}
+                        <div className="qm-pin-config-box">
+                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.requireTeacherUnlock ?? true}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  requireTeacherUnlock: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>🚨 Freeze & Lock Exam on Violation (Requires Teacher PIN to Resume)</span>
+                          </label>
+
+                          {(activeQuizDraft.requireTeacherUnlock ?? true) && (
+                            <div className="qm-pin-input-group animate-fade-in">
+                              <div className="qm-pin-field-wrap">
+                                <label className="qm-form-label" style={{ fontSize: '0.8125rem' }}>
+                                  🔑 Teacher / Invigilator Unlock PIN:
+                                </label>
+                                <div className="qm-pin-inputs-row">
+                                  <input
+                                    type={showDraftPin ? 'text' : 'password'}
+                                    className="qm-form-input qm-pin-input"
+                                    value={activeQuizDraft.teacherPin ?? '1234'}
+                                    onChange={(e) =>
+                                      setActiveQuizDraft({
+                                        ...activeQuizDraft,
+                                        teacherPin: e.target.value,
+                                      })
+                                    }
+                                    placeholder="e.g. 1234 or PROCTOR"
+                                    maxLength={20}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="qm-btn qm-btn-secondary qm-btn-pin-action"
+                                    onClick={() => setShowDraftPin(!showDraftPin)}
+                                    title={showDraftPin ? 'Hide PIN' : 'Show PIN'}
+                                  >
+                                    {showDraftPin ? '🙈 Hide' : '👁️ Show'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="qm-btn qm-btn-secondary qm-btn-pin-action"
+                                    onClick={() => {
+                                      const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
+                                      setActiveQuizDraft({
+                                        ...activeQuizDraft,
+                                        teacherPin: randomPin,
+                                      });
+                                    }}
+                                    title="Generate a random 4-digit PIN"
+                                  >
+                                    🎲 Randomize PIN
+                                  </button>
+                                </div>
+                              </div>
+                              <p className="qm-pin-hint">
+                                💡 When a student switches tabs, presses Alt+Tab, or exits fullscreen, the exam freezes. You or an invigilator must enter this PIN on their screen to unlock it.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
 
-                  {/* Show Instant Solutions */}
-                  <div className="qm-checkbox-row">
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.showInstantSolutions}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            showInstantSolutions: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
-                    </label>
-                  </div>
+                  {/* Model Solutions & Results Release Policy */}
+                  {activeQuizDraft.isExamMode ? (
+                    <div
+                      style={{
+                        background: 'rgba(59, 130, 246, 0.08)',
+                        border: '1px solid rgba(59, 130, 246, 0.25)',
+                        borderRadius: '10px',
+                        padding: '12px 16px',
+                        fontSize: '0.8125rem',
+                        color: '#93c5fd',
+                        display: 'flex',
+                        gap: '10px',
+                        alignItems: 'flex-start',
+                      }}
+                    >
+                      <span style={{ fontSize: '1.25rem' }}>🔒</span>
+                      <div>
+                        <strong style={{ color: '#bfdbfe', display: 'block', marginBottom: '2px' }}>
+                          Model Solutions Withheld During Exam (Deferred Grading)
+                        </strong>
+                        In Timed Exam Mode, model solutions, mark schemes, and scores are never revealed on submission. Students receive an official confirmation receipt with a 3-digit PIN, and results are only released when you evaluate and publish them from the gradebook.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="qm-checkbox-row">
+                      <label className="qm-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.showInstantSolutions}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              showInstantSolutions: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
+                      </label>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -1016,6 +1197,87 @@ export function QuizManagerPage({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Offline Exam Test Selection Modal */}
+      {isSelectOfflineTestOpen && (
+        <div className="qm-modal-backdrop animate-fade-in" onClick={() => setIsSelectOfflineTestOpen(false)}>
+          <div
+            className="qm-modal-card animate-scale-up"
+            style={{ maxWidth: '550px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="qm-modal-header">
+              <div className="qm-modal-title-group">
+                <span className="qm-modal-icon">📊</span>
+                <div>
+                  <h2 className="qm-modal-title">Select Exam to Grade Offline</h2>
+                  <p className="qm-modal-subtitle">Choose which saved assessment you want to grade students for</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="qm-modal-close"
+                onClick={() => setIsSelectOfflineTestOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="qm-modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {savedTests.map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={() => handleLaunchOfflineGraderForTest(t.id)}
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid #e2e8f0',
+                      background: '#f8fafc',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.borderColor = '#2563eb';
+                      (e.currentTarget as HTMLElement).style.background = '#eff6ff';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.borderColor = '#e2e8f0';
+                      (e.currentTarget as HTMLElement).style.background = '#f8fafc';
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, color: '#0f172a' }}>{t.title || 'Untitled Assessment'}</div>
+                      <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                        {t.primarySubject || 'General'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#2563eb' }}>Select →</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Offline Grading Modal */}
+      {offlineGradingData && (
+        <OfflineGradingModal
+          isOpen={true}
+          onClose={() => setOfflineGradingData(null)}
+          headerConfig={offlineGradingData.headerConfig}
+          questions={offlineGradingData.questions}
+          onViewInGradebook={(quiz) => {
+            setOfflineGradingData(null);
+            loadData();
+            setSelectedQuizForResults(quiz);
+          }}
+        />
       )}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { enrichQuestionWithGuidance } from '../lib/gemini';
@@ -30,6 +31,7 @@ export function QuestionDetailModal({
   const [activeQuestion, setActiveQuestion] = useState<Question | null>(initialQuestion);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   useEffect(() => {
     setActiveQuestion(initialQuestion);
@@ -100,7 +102,7 @@ export function QuestionDetailModal({
   );
 
   return createPortal(
-    <div className="modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="modal-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}
@@ -119,6 +121,21 @@ export function QuestionDetailModal({
             {question.question_style && (
               <span className="q-badge q-badge--style">
                 {question.question_style}
+              </span>
+            )}
+            {(question.resource_ref || question.diagram_source === 'insert') && (
+              <span
+                className="q-badge"
+                style={{
+                  background: 'rgba(14, 165, 233, 0.12)',
+                  color: '#0284c7',
+                  border: '1px solid rgba(14, 165, 233, 0.3)',
+                  fontWeight: 700,
+                  fontSize: '0.75rem',
+                }}
+                title="Referenced from Cambridge Insert Booklet"
+              >
+                📖 {question.resource_ref || 'Insert Resource'}
               </span>
             )}
             {hasInsights && (

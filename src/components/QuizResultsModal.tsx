@@ -1,15 +1,24 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import {
   getSubmissionsForQuiz,
+  fetchSubmissionsFromSupabase,
+  setQuizSubmissionsStatus,
   deleteSubmission,
   clearSubmissionsForQuiz,
   updateSubmission,
   exportAllSubmissionsExcel,
   exportSingleSubmissionExcel,
+  formatProctorTimestamp,
+  formatSubmissionDateTime,
+  cleanMcqOptionContent,
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
+import { fetchQuestionsByIds } from '../services/quizCodeService';
+import { evaluateAnswerWithGemini } from '../services/aiGradingService';
+import { gradeDeterministicAnswer, resolveMcqCorrectOptionIndex } from '../services/deterministicGradingService';
 import {
   exportClassQuizReportPdf,
   exportIndividualStudentReportPdf,
@@ -36,8 +45,234 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [editMarksInput, setEditMarksInput] = useState<number>(0);
   const [editTeacherNote, setEditTeacherNote] = useState<string>('');
 
+  // Batch AI Examiner & Release State
+  const [isBatchGrading, setIsBatchGrading] = useState<boolean>(false);
+  const [gradingProgress, setGradingProgress] = useState<{ current: number; total: number; text: string }>({
+    current: 0,
+    total: 0,
+    text: '',
+  });
+
   const refreshSubmissions = () => {
-    setSubmissions(getSubmissionsForQuiz(quiz.id, quiz.quizCode));
+    fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode).then((subs) => {
+      setSubmissions(subs);
+    });
+  };
+
+  useEffect(() => {
+    refreshSubmissions();
+  }, [quiz.id, quiz.quizCode]);
+
+  const unanalyzedCount = useMemo(() => {
+    return submissions.filter((s) => s.status === 'submitted' || !s.status).length;
+  }, [submissions]);
+
+  const isAllReleased = useMemo(() => {
+    return submissions.length > 0 && submissions.every((s) => s.status === 'published');
+  }, [submissions]);
+
+  const handleToggleRelease = async () => {
+    const nextStatus = isAllReleased ? 'graded' : 'published';
+    const confirmed = confirm(
+      isAllReleased
+        ? 'Hide results from students? Candidates will not be able to view their scores on the portal.'
+        : 'Release results to students? Candidates can now enter their quiz code and name on the portal to view their marked paper and download their PDF reports.'
+    );
+    if (!confirmed) return;
+
+    await setQuizSubmissionsStatus(quiz.id, quiz.quizCode, nextStatus);
+    refreshSubmissions();
+  };
+
+  const handleRunBatchAI = async () => {
+    const targets = submissions.filter((s) => s.status === 'submitted' || !s.status);
+    if (targets.length === 0) {
+      alert('All student submissions have already been analyzed.');
+      return;
+    }
+
+    setIsBatchGrading(true);
+    setGradingProgress({ current: 0, total: targets.length, text: 'Fetching exam questions...' });
+
+    try {
+      const questions = await fetchQuestionsByIds(quiz.questionIds || []);
+      if (!questions || questions.length === 0) {
+        alert('Could not load questions for this test.');
+        setIsBatchGrading(false);
+        return;
+      }
+
+      for (let sIdx = 0; sIdx < targets.length; sIdx++) {
+        const sub = targets[sIdx];
+        setGradingProgress({
+          current: sIdx + 1,
+          total: targets.length,
+          text: `Analyzing candidate: ${sub.studentName} (${sIdx + 1} of ${targets.length})...`,
+        });
+
+        const rawAnswers = sub.rawAnswers || {};
+        let earnedMarks = 0;
+        const qResults: QuestionSubmissionResult[] = [];
+        const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+
+        for (let idx = 0; idx < questions.length; idx++) {
+          const q = questions[idx];
+          const top = q.topic || 'General';
+          if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+          const qMarks = q.marks || 1;
+          topicBreakdown[top].totalMarks += qMarks;
+
+          let isCorrect = false;
+          let qEarned = 0;
+          let aiFeedback: string | undefined;
+          let missingPoints: string[] | undefined;
+          let criteriaBreakdown: Array<{ point: string; achieved: boolean; examinerNote?: string }> | undefined;
+          let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+          const subResults: any[] = [];
+
+          // Case A: MCQ
+          if (q.options && q.options.length > 0) {
+            gradingMethod = 'mcq';
+            const userAns = rawAnswers[idx];
+            const correctIdx = resolveMcqCorrectOptionIndex(q);
+            const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
+            const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
+              ? userAns.trim().toUpperCase().charCodeAt(0) - 65
+              : -1;
+
+            if (userNum === correctIdx || userLetter === correctIdx) {
+              isCorrect = true;
+              qEarned = qMarks;
+            }
+          }
+          // Case B: Sub-questions
+          else if (q.sub_questions && q.sub_questions.length > 0) {
+            let totalSubEarned = 0;
+            for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
+              const sq = q.sub_questions[sqIdx];
+              const subKey = `${idx}_${sqIdx}`;
+              const subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]) ?? '';
+              const subMarks = sq.marks || 1;
+
+              const det = gradeDeterministicAnswer(subAns, q, sqIdx);
+              if (det.isHandled) {
+                totalSubEarned += det.earnedMarks;
+                subResults.push({
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: det.earnedMarks,
+                  maxMarks: subMarks,
+                  isCorrect: det.isCorrect,
+                  feedback: det.feedback,
+                });
+              } else {
+                setGradingProgress({
+                  current: sIdx + 1,
+                  total: targets.length,
+                  text: `Evaluating ${sub.studentName}: Q${idx + 1}(${sq.sub_id})...`,
+                });
+                const aiRes = await evaluateAnswerWithGemini(q, sqIdx, String(subAns));
+                totalSubEarned += aiRes.earnedMarks;
+                gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+                subResults.push({
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: aiRes.earnedMarks,
+                  maxMarks: subMarks,
+                  isCorrect: aiRes.isCorrect,
+                  feedback: aiRes.feedback,
+                  criteria: aiRes.criteriaResults,
+                });
+                // Throttled delay to respect Gemini rate limits
+                await new Promise((r) => setTimeout(r, 1200));
+              }
+            }
+            qEarned = Math.min(totalSubEarned, qMarks);
+            isCorrect = qEarned === qMarks;
+          }
+          // Case C: Single structured question
+          else {
+            const userAns = rawAnswers[idx] ?? '';
+            const det = gradeDeterministicAnswer(userAns, q);
+            if (det.isHandled) {
+              qEarned = det.earnedMarks;
+              isCorrect = det.isCorrect;
+              aiFeedback = det.feedback;
+              gradingMethod = 'deterministic';
+            } else {
+              setGradingProgress({
+                current: sIdx + 1,
+                total: targets.length,
+                text: `Evaluating ${sub.studentName}: Question ${idx + 1}...`,
+              });
+              const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
+              qEarned = aiRes.earnedMarks;
+              isCorrect = aiRes.isCorrect;
+              aiFeedback = aiRes.feedback;
+              missingPoints = aiRes.missingKeyPoints;
+              criteriaBreakdown = aiRes.criteriaResults;
+              gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+              // Throttled delay to respect Gemini rate limits
+              await new Promise((r) => setTimeout(r, 1200));
+            }
+          }
+
+          earnedMarks += qEarned;
+          topicBreakdown[top].earnedMarks += qEarned;
+
+          qResults.push({
+            questionId: q.id,
+            questionNumber: idx + 1,
+            questionText: q.question_text,
+            options: q.options || undefined,
+            topic: top,
+            maxMarks: qMarks,
+            earnedMarks: qEarned,
+            isCorrect,
+            studentAnswer: rawAnswers[idx] !== undefined ? rawAnswers[idx] : '',
+            correctAnswer: (q.options && q.options.length > 0)
+              ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
+              : typeof q.mark_scheme === 'string'
+              ? q.mark_scheme
+              : Array.isArray(q.mark_scheme?.marking_points)
+              ? q.mark_scheme.marking_points.join('; ')
+              : undefined,
+            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+            aiFeedback,
+            missingPoints,
+            criteriaBreakdown,
+            gradingMethod,
+            subQuestionResults: subResults.length > 0 ? subResults : undefined,
+          });
+        }
+
+        Object.keys(topicBreakdown).forEach((top) => {
+          const item = topicBreakdown[top];
+          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+        });
+
+        const updatedSub: StudentSubmission = {
+          ...sub,
+          score: earnedMarks,
+          totalMarks: quiz.totalMarks || sub.totalMarks,
+          percentage: (quiz.totalMarks || sub.totalMarks) > 0 ? Math.round((earnedMarks / (quiz.totalMarks || sub.totalMarks)) * 100) : 100,
+          questionResults: qResults,
+          topicBreakdown,
+          status: 'graded',
+        };
+
+        updateSubmission(updatedSub);
+      }
+
+      refreshSubmissions();
+    } catch (err) {
+      console.error('Batch grading error:', err);
+      alert('An error occurred during batch grading. Please check your network and Gemini API key.');
+    } finally {
+      setIsBatchGrading(false);
+    }
   };
 
   // ─── Unique Classes ─────────────────────────────────────────────────────────
@@ -164,8 +399,10 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setEditingQuestionId(null);
   };
 
+  const backdropDismiss = useBackdropDismiss(onClose);
+
   return (
-    <div className="qrm-backdrop animate-fade-in" onClick={onClose}>
+    <div className="qrm-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="qrm-modal animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="qrm-header">
@@ -216,6 +453,162 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             </button>
           </div>
         </div>
+
+        {/* Examiner Batch Grading & Results Release Action Bar */}
+        <div
+          style={{
+            background: '#131d31',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            padding: '12px 24px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '16px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            {unanalyzedCount > 0 ? (
+              <span
+                style={{
+                  background: 'rgba(234, 179, 8, 0.15)',
+                  color: '#facc15',
+                  border: '1px solid rgba(234, 179, 8, 0.3)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                ⏳ {unanalyzedCount} Submission{unanalyzedCount !== 1 ? 's' : ''} Awaiting AI Analysis
+              </span>
+            ) : submissions.length > 0 ? (
+              <span
+                style={{
+                  background: 'rgba(34, 197, 94, 0.15)',
+                  color: '#4ade80',
+                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                ✅ All Submissions Graded
+              </span>
+            ) : null}
+
+            {submissions.length > 0 && (
+              <span
+                style={{
+                  background: isAllReleased ? 'rgba(34, 197, 94, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                  color: isAllReleased ? '#4ade80' : '#cbd5e1',
+                  border: `1px solid ${isAllReleased ? 'rgba(34, 197, 94, 0.3)' : 'rgba(148, 163, 184, 0.3)'}`,
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                {isAllReleased ? '📢 Results Released to Students' : '🔒 Results Hidden from Students'}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {unanalyzedCount > 0 && (
+              <button
+                type="button"
+                className="qrm-btn"
+                style={{
+                  background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '0.8125rem',
+                  padding: '7px 16px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  cursor: isBatchGrading ? 'not-allowed' : 'pointer',
+                  opacity: isBatchGrading ? 0.7 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 4px 12px rgba(139, 92, 246, 0.3)',
+                }}
+                onClick={handleRunBatchAI}
+                disabled={isBatchGrading}
+              >
+                {isBatchGrading ? '⏳ Evaluating Class...' : '🤖 Run Batch AI Analysis'}
+              </button>
+            )}
+
+            {submissions.length > 0 && (
+              <button
+                type="button"
+                className="qrm-btn"
+                style={{
+                  background: isAllReleased ? '#334155' : (unanalyzedCount > 0 && !isAllReleased) ? '#1e293b' : 'linear-gradient(135deg, #16a34a, #15803d)',
+                  color: '#ffffff',
+                  fontWeight: 700,
+                  fontSize: '0.8125rem',
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  cursor: (unanalyzedCount > 0 && !isAllReleased) ? 'not-allowed' : 'pointer',
+                  opacity: (unanalyzedCount > 0 && !isAllReleased) ? 0.5 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+                onClick={handleToggleRelease}
+                disabled={unanalyzedCount > 0 && !isAllReleased}
+                title={unanalyzedCount > 0 && !isAllReleased ? 'Run Batch AI Analysis first before releasing results' : undefined}
+              >
+                {isAllReleased ? '🔒 Hide Marks' : '📢 Release Results to Students'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Live Batch Grading Progress Bar */}
+        {isBatchGrading && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.15))',
+              borderBottom: '1px solid rgba(139, 92, 246, 0.3)',
+              padding: '12px 24px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '6px' }}>
+              <span style={{ fontWeight: 700, color: '#c4b5fd' }}>
+                🤖 {gradingProgress.text}
+              </span>
+              <span style={{ fontWeight: 800, color: '#f8fafc' }}>
+                {gradingProgress.current} / {gradingProgress.total} Candidates
+              </span>
+            </div>
+            <div style={{ height: '6px', background: 'rgba(0, 0, 0, 0.3)', borderRadius: '3px', overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${gradingProgress.total > 0 ? (gradingProgress.current / gradingProgress.total) * 100 : 0}%`,
+                  height: '100%',
+                  background: 'linear-gradient(90deg, #8b5cf6, #3b82f6)',
+                  borderRadius: '3px',
+                  transition: 'width 0.4s ease',
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Analytics KPI Ribbon */}
         <div className="qrm-kpi-ribbon">
@@ -354,20 +747,59 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                               {sub.candidateNumber && (
                                 <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>#{sub.candidateNumber}</span>
                               )}
+                              {sub.resultPin && (
+                                <span
+                                  style={{
+                                    fontFamily: 'monospace',
+                                    background: 'rgba(234, 179, 8, 0.15)',
+                                    color: '#facc15',
+                                    padding: '1px 5px',
+                                    borderRadius: '4px',
+                                    fontWeight: 700,
+                                  }}
+                                  title="Candidate 3-digit Personal Access PIN"
+                                >
+                                  PIN: {sub.resultPin}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
 
-                        <div className="qrm-sc-score-badge">
-                          <span className={`score-tag ${percent >= 70 ? 'high' : percent >= 40 ? 'med' : 'low'}`}>
-                            {sub.score} / {sub.totalMarks} ({percent}%)
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                          <div className="qrm-sc-score-badge">
+                            <span className={`score-tag ${percent >= 70 ? 'high' : percent >= 40 ? 'med' : 'low'}`}>
+                              {sub.score} / {sub.totalMarks} ({percent}%)
+                            </span>
+                          </div>
+                          <span
+                            style={{
+                              fontSize: '0.6875rem',
+                              fontWeight: 700,
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background:
+                                sub.status === 'published'
+                                  ? 'rgba(34, 197, 94, 0.2)'
+                                  : sub.status === 'graded'
+                                  ? 'rgba(59, 130, 246, 0.2)'
+                                  : 'rgba(234, 179, 8, 0.2)',
+                              color:
+                                sub.status === 'published'
+                                  ? '#4ade80'
+                                  : sub.status === 'graded'
+                                  ? '#60a5fa'
+                                  : '#facc15',
+                            }}
+                          >
+                            {sub.status === 'published' ? '📢 Released' : sub.status === 'graded' ? '📝 Graded' : '⏳ Awaiting AI'}
                           </span>
                         </div>
                       </div>
 
                       <div className="qrm-sc-bottom">
                         <span className="qrm-sc-time">
-                          🕒 {Math.floor(sub.durationSeconds / 60)}m {sub.durationSeconds % 60}s • {new Date(sub.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          🕒 {Math.floor(sub.durationSeconds / 60)}m {sub.durationSeconds % 60}s • {formatProctorTimestamp(sub.submittedAt)}
                         </span>
 
                         <span className={`qrm-sc-integrity ${isClean ? 'clean' : 'flagged'}`}>
@@ -418,7 +850,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       )}
                     </div>
                     <p>
-                      Submitted on {new Date(selectedSubmission.submittedAt).toLocaleString()} • Duration: {Math.floor(selectedSubmission.durationSeconds / 60)}m {selectedSubmission.durationSeconds % 60}s
+                      Submitted on {formatSubmissionDateTime(selectedSubmission.submittedAt)} • Duration: {Math.floor(selectedSubmission.durationSeconds / 60)}m {selectedSubmission.durationSeconds % 60}s
                     </p>
                   </div>
 
@@ -494,7 +926,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         <div key={idx} className="proctor-log-item">
                           <span className="log-strike-tag">Strike {log.strike}</span>
                           <span className="log-time">
-                            {new Date(log.timestamp).toLocaleTimeString()}
+                            {formatProctorTimestamp(log.timestamp)}
                           </span>
                           <span className="log-event">{log.event}</span>
                         </div>

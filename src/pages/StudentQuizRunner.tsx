@@ -1,18 +1,25 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz } from '../services/quizCodeService';
 import {
   saveQuizSubmission,
+  saveQuizSubmissionCloud,
+  saveDeviceReceipt,
+  generateResultPin,
+  formatProctorTimestamp,
+  cleanMcqOptionContent,
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
-import { gradeDeterministicAnswer } from '../services/deterministicGradingService';
+import { gradeDeterministicAnswer, resolveMcqCorrectOptionIndex } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
+import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -206,6 +213,7 @@ export function StudentQuizRunner({
   // Reference & Tool Drawers
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
   const [showCalculator, setShowCalculator] = useState<boolean>(false);
+  const [showResourceBooklet, setShowResourceBooklet] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
 
   // Grading & AI Evaluation State
@@ -215,6 +223,14 @@ export function StudentQuizRunner({
 
   // 🔒 Security & Anti-Cheating State
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
+  const [requireTeacherUnlock, setRequireTeacherUnlock] = useState<boolean>(() => savedExam?.requireTeacherUnlock ?? true);
+  const [teacherPin, setTeacherPin] = useState<string>(() => savedExam?.teacherPin || '1234');
+  const [isLockedByProctor, setIsLockedByProctor] = useState<boolean>(() => savedExam?.isLockedByProctor || false);
+  const [lockReason, setLockReason] = useState<string>(() => savedExam?.lockReason || '');
+  const [lockTime, setLockTime] = useState<string>(() => savedExam?.lockTime || '');
+  const [pinInput, setPinInput] = useState<string>('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
   const [violations, setViolations] = useState<ViolationRecord[]>(() => savedExam?.violations || []);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
@@ -222,8 +238,11 @@ export function StudentQuizRunner({
 
   // Diagram Zoom
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+  const [hasCopiedPin, setHasCopiedPin] = useState<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
+  const zoomModalDismiss = useBackdropDismiss(() => setZoomedImage(null));
 
   // Accurate Sub-Questions and Answered Items Counting
   const quizStats = useMemo(() => {
@@ -295,6 +314,12 @@ export function StudentQuizRunner({
           if (data.securityEnabled !== undefined) {
             setSecurityEnabled(data.securityEnabled);
           }
+          if (data.requireTeacherUnlock !== undefined) {
+            setRequireTeacherUnlock(data.requireTeacherUnlock);
+          }
+          if (data.teacherPin) {
+            setTeacherPin(data.teacherPin);
+          }
           setIsTeacherLocked(true);
         }
       } catch (err: any) {
@@ -307,17 +332,62 @@ export function StudentQuizRunner({
     load();
   }, [testIdOrCode, initialQuestions, initialHeaderConfig]);
 
-  // ─── 2. Violation Logger ───────────────────────────────────────────────────
+  // ─── 2. Violation Logger & Invigilator Lock Gate ─────────────────────────
   const logViolation = useCallback(
     (type: ViolationRecord['type'], detail: string) => {
       if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
-      const now = new Date().toLocaleTimeString();
-      const rec: ViolationRecord = { type, timestamp: now, detail };
+      const nowIso = new Date().toISOString();
+      const rec: ViolationRecord = { type, timestamp: nowIso, detail };
       setViolations((prev) => [...prev, rec]);
-      setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${now})`);
+
+      if (requireTeacherUnlock && isExamMode) {
+        setIsLockedByProctor(true);
+        setLockReason(detail);
+        setLockTime(nowIso);
+        setPinError(null);
+        setPinInput('');
+      } else {
+        setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${formatProctorTimestamp(nowIso)})`);
+      }
     },
-    [hasStarted, isSubmitted, isGrading, securityEnabled]
+    [hasStarted, isSubmitted, isGrading, securityEnabled, requireTeacherUnlock, isExamMode]
   );
+
+  const handleUnlockWithPin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const entered = pinInput.trim();
+    const expected = (teacherPin || '1234').trim();
+
+    if (!entered) {
+      setPinError('Please enter the Teacher / Proctor PIN.');
+      return;
+    }
+
+    if (entered.toUpperCase() === expected.toUpperCase()) {
+      setIsUnlocking(true);
+      setTimeout(async () => {
+        setIsLockedByProctor(false);
+        setLockReason('');
+        setLockTime('');
+        setPinInput('');
+        setPinError(null);
+        setIsUnlocking(false);
+        setSecurityAlert('✅ Exam unlocked by invigilator. Please remain focused in fullscreen.');
+        setTimeout(() => setSecurityAlert(null), 5000);
+
+        // Re-enter Fullscreen on unlock
+        try {
+          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+          }
+        } catch (err) {
+          console.warn('Fullscreen resume notice:', err);
+        }
+      }, 350);
+    } else {
+      setPinError('❌ Incorrect Teacher PIN. Please have the exam invigilator verify and re-enter.');
+    }
+  };
 
   // ─── 3. Anti-Cheating Event Listeners ──────────────────────────────────────
   useEffect(() => {
@@ -398,11 +468,179 @@ export function StudentQuizRunner({
     isSubmittingRef.current = true;
     setShowSubmitModal(false);
     setIsGrading(true);
-    setGradingProgressText('Evaluating answers with Deterministic Matcher & AI Examiner...');
 
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
+
+    // ── Formal Exam Mode: Fast Deferred Submit Pipeline ──
+    // Saves raw responses to Supabase immediately with zero AI rate-limit delays.
+    if (isExamMode) {
+      setGradingProgressText('Submitting examination responses to examiner...');
+      try {
+        const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+        const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+        let earnedMarks = 0;
+        const qResults: QuestionSubmissionResult[] = [];
+        const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+
+        for (let idx = 0; idx < questions.length; idx++) {
+          const q = questions[idx];
+          const top = q.topic || 'General';
+          if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+          const qMarks = q.marks || 1;
+          topicBreakdown[top].totalMarks += qMarks;
+
+          let isCorrect = false;
+          let qEarned = 0;
+          let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+          const subResults: any[] = [];
+
+          // Fast deterministic evaluation for MCQs
+          if (q.options && q.options.length > 0) {
+            gradingMethod = 'mcq';
+            const userAns = answers[idx];
+            const correctIdx = resolveMcqCorrectOptionIndex(q);
+            const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
+            const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
+              ? userAns.trim().toUpperCase().charCodeAt(0) - 65
+              : -1;
+
+            if (userNum === correctIdx || userLetter === correctIdx) {
+              isCorrect = true;
+              qEarned = qMarks;
+            }
+          } else if (q.sub_questions && q.sub_questions.length > 0) {
+            let totalSubEarned = 0;
+            for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
+              const sq = q.sub_questions[sIdx];
+              const subKey = `${idx}_${sIdx}`;
+              const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              const subMarks = sq.marks || 1;
+
+              const det = gradeDeterministicAnswer(subAns, q, sIdx);
+              if (det.isHandled) {
+                totalSubEarned += det.earnedMarks;
+                subResults.push({
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: det.earnedMarks,
+                  maxMarks: subMarks,
+                  isCorrect: det.isCorrect,
+                  feedback: det.feedback,
+                });
+              } else {
+                subResults.push({
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: 0,
+                  maxMarks: subMarks,
+                  isCorrect: false,
+                  feedback: 'Awaiting examiner AI evaluation',
+                });
+              }
+            }
+            qEarned = Math.min(totalSubEarned, qMarks);
+            isCorrect = qEarned === qMarks;
+          } else {
+            const userAns = answers[idx] ?? '';
+            const det = gradeDeterministicAnswer(userAns, q);
+            if (det.isHandled) {
+              qEarned = det.earnedMarks;
+              isCorrect = det.isCorrect;
+              gradingMethod = 'deterministic';
+            }
+          }
+
+          earnedMarks += qEarned;
+          topicBreakdown[top].earnedMarks += qEarned;
+
+          qResults.push({
+            questionId: q.id,
+            questionNumber: idx + 1,
+            questionText: q.question_text,
+            options: q.options || undefined,
+            topic: top,
+            maxMarks: qMarks,
+            earnedMarks: qEarned,
+            isCorrect,
+            studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
+            correctAnswer: (q.options && q.options.length > 0)
+              ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
+              : typeof q.mark_scheme === 'string'
+              ? q.mark_scheme
+              : Array.isArray(q.mark_scheme?.marking_points)
+              ? q.mark_scheme.marking_points.join('; ')
+              : undefined,
+            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+            gradingMethod,
+            subQuestionResults: subResults.length > 0 ? subResults : undefined,
+          });
+        }
+
+        Object.keys(topicBreakdown).forEach((top) => {
+          const item = topicBreakdown[top];
+          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+        });
+
+        const submission: StudentSubmission = {
+          id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          quizId: testIdOrCode || 'direct_quiz',
+          quizCode: (testIdOrCode || 'EXAM').toUpperCase(),
+          quizTitle: title,
+          subject: headerConfig?.subject || 'Chemistry',
+          studentName: candidateName.trim() || 'Candidate',
+          studentClass: candidateClass.trim() || 'General',
+          candidateNumber: candidateNumber.trim() || undefined,
+          submittedAt: new Date().toISOString(),
+          durationSeconds: durationSec,
+          score: earnedMarks,
+          totalMarks,
+          percentage: totalMarks > 0 ? Math.round((earnedMarks / totalMarks) * 100) : 100,
+          violationsCount: violations.length,
+          proctoringLogs: violations.map((v, i) => ({
+            timestamp: v.timestamp,
+            event: v.detail,
+            strike: i + 1,
+            severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+          })),
+          rawAnswers: { ...answers },
+          questionResults: qResults,
+          topicBreakdown,
+          status: 'submitted',
+          resultPin: generateResultPin(),
+        };
+
+        await saveQuizSubmissionCloud(submission);
+        saveDeviceReceipt({
+          quizCode: (testIdOrCode || 'EXAM').toUpperCase(),
+          quizTitle: title,
+          studentName: candidateName.trim() || 'Candidate',
+          candidateNumber: candidateNumber.trim() || undefined,
+          submittedAt: submission.submittedAt,
+          resultPin: submission.resultPin,
+        });
+
+        setCompletedSubmission(submission);
+
+        try {
+          sessionStorage.removeItem(sessionKey);
+        } catch {}
+
+        setIsSubmitted(true);
+      } catch (err) {
+        console.error('Failed to submit exam:', err);
+        setIsSubmitted(true);
+      } finally {
+        setIsGrading(false);
+      }
+      return;
+    }
+
+    // ── Practice Mode: Immediate Client AI Pipeline ──
+    setGradingProgressText('Evaluating answers with Deterministic Matcher & AI Examiner...');
 
     try {
       const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
@@ -430,8 +668,13 @@ export function StudentQuizRunner({
         if (q.options && q.options.length > 0) {
           gradingMethod = 'mcq';
           const userAns = answers[idx];
-          const correctIdx = (q as any).correct_option !== undefined ? (q as any).correct_option : 0;
-          if (userAns !== undefined && Number(userAns) === correctIdx) {
+          const correctIdx = resolveMcqCorrectOptionIndex(q);
+          const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
+          const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
+            ? userAns.trim().toUpperCase().charCodeAt(0) - 65
+            : -1;
+
+          if (userNum === correctIdx || userLetter === correctIdx) {
             isCorrect = true;
             qEarned = qMarks;
           }
@@ -505,16 +748,20 @@ export function StudentQuizRunner({
         qResults.push({
           questionId: q.id,
           questionNumber: idx + 1,
+          questionText: q.question_text,
+          options: q.options || undefined,
           topic: top,
           maxMarks: qMarks,
           earnedMarks: qEarned,
           isCorrect,
           studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
-          correctAnswer: typeof q.mark_scheme === 'string'
+          correctAnswer: (q.options && q.options.length > 0)
+            ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
+            : typeof q.mark_scheme === 'string'
             ? q.mark_scheme
             : Array.isArray(q.mark_scheme?.marking_points)
             ? q.mark_scheme.marking_points.join('; ')
-            : (q.options ? q.options[0] : undefined),
+            : undefined,
           misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
           aiFeedback,
           missingPoints,
@@ -589,6 +836,11 @@ export function StudentQuizRunner({
             isSubmitted,
             timeLeft,
             securityEnabled,
+            requireTeacherUnlock,
+            teacherPin,
+            isLockedByProctor,
+            lockReason,
+            lockTime,
             violations,
           })
         );
@@ -610,6 +862,11 @@ export function StudentQuizRunner({
     isSubmitted,
     timeLeft,
     securityEnabled,
+    requireTeacherUnlock,
+    teacherPin,
+    isLockedByProctor,
+    lockReason,
+    lockTime,
     violations,
   ]);
 
@@ -727,13 +984,9 @@ export function StudentQuizRunner({
     return { mcqEarned, mcqTotal, percentage, topicStats, questionResults: [] };
   };
 
-          // ─── Clean MCQ Option Text & Stem ─────────────────────────────────────────
+  // ─── Clean MCQ Option Text & Stem ─────────────────────────────────────────
   const cleanOptionText = (text: string, oIdx: number) => {
-    if (!text) return '';
-    const letter = String.fromCharCode(65 + oIdx);
-    return text
-      .replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '')
-      .trim();
+    return cleanMcqOptionContent(text, oIdx);
   };
 
   const cleanQuestionStem = (stem: string, options?: string[] | null) => {
@@ -1098,6 +1351,228 @@ export function StudentQuizRunner({
 
   // ─── Final Score & Solutions Review Screen ─────────────────────────────────
   if (isSubmitted) {
+    // In Formal Exam Mode, do not show scores/solutions until released by teacher
+    if (completedSubmission?.status === 'submitted') {
+      const durationMin = Math.floor((completedSubmission.durationSeconds || 0) / 60);
+      const durationSec = (completedSubmission.durationSeconds || 0) % 60;
+      return (
+        <div className="student-results-wrap animate-fade-in">
+          <div className="student-results-card" style={{ maxWidth: '680px', margin: '0 auto', textAlign: 'center' }}>
+            <div
+              style={{
+                width: '72px',
+                height: '72px',
+                borderRadius: '50%',
+                background: 'rgba(34, 197, 94, 0.15)',
+                border: '2px solid rgba(34, 197, 94, 0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '2.5rem',
+                margin: '0 auto 16px',
+              }}
+            >
+              🛡️
+            </div>
+            <div className="results-badge" style={{ background: '#16a34a', color: '#fff' }}>EXAMINATION CONFIRMED</div>
+            <h1 className="results-title" style={{ marginTop: '8px' }}>Exam Submitted Successfully 🎉</h1>
+            <p className="results-sub" style={{ color: 'var(--color-text-secondary)' }}>
+              {title} • Official Candidate Receipt
+            </p>
+
+            <div
+              style={{
+                background: 'var(--color-surface-sunken, #f8fafc)',
+                border: '1.5px solid var(--color-border, #e2e8f0)',
+                borderRadius: '14px',
+                padding: '20px 24px',
+                margin: '20px 0',
+                textAlign: 'left',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                gap: '16px',
+              }}
+            >
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Candidate Name</span>
+                <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--color-text-primary, #0f172a)', marginTop: '2px' }}>{candidateName || 'Candidate'}</div>
+              </div>
+              {candidateNumber && (
+                <div>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Candidate / Seat #</span>
+                  <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--color-text-primary, #0f172a)', marginTop: '2px' }}>{candidateNumber}</div>
+                </div>
+              )}
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Class / Section</span>
+                <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--color-text-primary, #0f172a)', marginTop: '2px' }}>{candidateClass || 'General'}</div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Time Submitted</span>
+                <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--color-text-primary, #0f172a)', marginTop: '2px' }}>
+                  {new Date(completedSubmission.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Exam Duration</span>
+                <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--color-text-primary, #0f172a)', marginTop: '2px' }}>
+                  {durationMin}m {durationSec}s
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)', textTransform: 'uppercase', fontWeight: 700 }}>Proctoring Status</span>
+                <div style={{ fontWeight: 800, fontSize: '0.95rem', color: violations.length === 0 ? '#16a34a' : '#d97706', marginTop: '2px' }}>
+                  {violations.length === 0 ? 'Clean (0 Strikes) ✅' : `${violations.length} Warning(s) Logged ⚠️`}
+                </div>
+              </div>
+            </div>
+
+            {/* Personal Access PIN Card — High-contrast security ticket */}
+            {completedSubmission.resultPin && (
+              <div
+                style={{
+                  background: '#0f172a',
+                  border: '2px solid #f59e0b',
+                  borderRadius: '16px',
+                  padding: '24px',
+                  margin: '20px 0',
+                  textAlign: 'center',
+                  boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 0 20px rgba(245, 158, 11, 0.2)',
+                  color: '#ffffff',
+                }}
+              >
+                <div style={{ fontSize: '0.8125rem', color: '#fbbf24', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.08em', marginBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                  <span>🔐</span> YOUR PERSONAL ACCESS PIN
+                </div>
+
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(245, 158, 11, 0.12)',
+                    border: '2px dashed #f59e0b',
+                    borderRadius: '12px',
+                    padding: '8px 24px 8px 34px',
+                    margin: '6px 0 14px',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '3.25rem',
+                      fontWeight: 900,
+                      fontFamily: 'monospace',
+                      letterSpacing: '0.28em',
+                      color: '#ffffff',
+                      textShadow: '0 2px 14px rgba(245, 158, 11, 0.5)',
+                      lineHeight: 1.1,
+                    }}
+                  >
+                    {completedSubmission.resultPin}
+                  </span>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (completedSubmission?.resultPin) {
+                        navigator.clipboard?.writeText(completedSubmission.resultPin);
+                        setHasCopiedPin(true);
+                        setTimeout(() => setHasCopiedPin(false), 2500);
+                      }
+                    }}
+                    style={{
+                      background: hasCopiedPin ? '#16a34a' : 'rgba(255, 255, 255, 0.12)',
+                      border: '1px solid rgba(255, 255, 255, 0.25)',
+                      color: '#ffffff',
+                      padding: '6px 14px',
+                      borderRadius: '8px',
+                      fontSize: '0.8125rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    {hasCopiedPin ? '✅ PIN Copied to Clipboard!' : '📋 Copy PIN'}
+                  </button>
+                </div>
+
+                <div style={{ fontSize: '0.875rem', color: '#cbd5e1', lineHeight: '1.5', maxWidth: '520px', margin: '0 auto' }}>
+                  ⚠️ <strong style={{ color: '#fbbf24' }}>Important:</strong> Please write down or screenshot this 3-digit PIN. You will need it together with your name to view your marked paper and examiner notes when results are released.
+                </div>
+              </div>
+            )}
+
+            {/* Examiner Evaluation Card — High-contrast alert */}
+            <div
+              style={{
+                background: 'rgba(37, 99, 235, 0.07)',
+                border: '1.5px solid rgba(37, 99, 235, 0.25)',
+                borderRadius: '14px',
+                padding: '18px 20px',
+                margin: '20px 0',
+                textAlign: 'left',
+                display: 'flex',
+                gap: '14px',
+                alignItems: 'flex-start',
+              }}
+            >
+              <span style={{ fontSize: '1.75rem', lineHeight: 1 }}>ℹ️</span>
+              <div style={{ fontSize: '0.875rem', lineHeight: '1.6', color: 'var(--color-text-primary, #0f172a)' }}>
+                <strong style={{ fontSize: '0.95rem', display: 'block', marginBottom: '4px', color: 'var(--color-text-primary, #1e3a8a)' }}>
+                  Examiner Evaluation in Progress
+                </strong>
+                <span style={{ color: 'var(--color-text-secondary, #334155)', display: 'block', marginBottom: '10px' }}>
+                  Your responses have been securely recorded and synced to the examiner's database. In accordance with formal exam standards, marks, model solutions, and Cambridge advice will be released after teacher review.
+                </span>
+                <div
+                  style={{
+                    background: 'rgba(37, 99, 235, 0.1)',
+                    border: '1px solid rgba(37, 99, 235, 0.2)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    color: '#1d4ed8',
+                    fontWeight: 700,
+                    fontSize: '0.8125rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>🔑</span>
+                  <span>
+                    When results are published, enter Exam Code <strong>({testIdOrCode || 'EXAM'})</strong> on the portal to view your marked paper and download your official PDF report.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '24px' }}>
+              {onExit && (
+                <button
+                  type="button"
+                  className="sq-btn sq-btn-primary"
+                  style={{
+                    padding: '12px 32px',
+                    fontSize: '1rem',
+                    fontWeight: 700,
+                    borderRadius: '10px',
+                  }}
+                  onClick={onExit}
+                >
+                  ← Return to Portal
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     const results = calculateResults();
     return (
       <div className="student-results-wrap animate-fade-in">
@@ -1158,7 +1633,7 @@ export function StudentQuizRunner({
               <div className="proctoring-list">
                 {violations.map((v, i) => (
                   <div key={i} className="proctoring-item">
-                    <span className="proctoring-time">{v.timestamp}</span>
+                    <span className="proctoring-time">{formatProctorTimestamp(v.timestamp)}</span>
                     <span className="proctoring-detail">{v.detail}</span>
                   </div>
                 ))}
@@ -1448,6 +1923,7 @@ export function StudentQuizRunner({
     );
   }
 
+
   // ─── Active Quiz Runner Screen ─────────────────────────────────────────────
   return (
     <div
@@ -1463,8 +1939,31 @@ export function StudentQuizRunner({
         </div>
 
         <div className="sq-runner-header-right">
-          {/* Interactive Exam Reference Tools: Periodic Table & Scientific Calculator */}
+          {/* Interactive Exam Reference Tools: Periodic Table, Scientific Calculator, Resource Booklet */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              className="sq-btn"
+              style={{
+                background: 'rgba(16, 185, 129, 0.15)',
+                color: '#34d399',
+                border: '1px solid rgba(16, 185, 129, 0.35)',
+                borderRadius: '8px',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                padding: '6px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: 'pointer',
+              }}
+              onClick={() => setShowResourceBooklet(true)}
+              title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
+            >
+              <span>📖</span>
+              <span>Resource Booklet</span>
+            </button>
+
             <button
               type="button"
               className="sq-btn"
@@ -1610,6 +2109,35 @@ export function StudentQuizRunner({
               <ExamMathText content={cleanQuestionStem(currentQuestion?.question_text || '', currentQuestion?.options)} />
             </div>
 
+            {/* Insert / Resource Booklet Trigger Button */}
+            {(currentQuestion?.resource_ref || currentQuestion?.diagram_source === 'insert') && (
+              <div style={{ margin: '8px 0 12px' }}>
+                <button
+                  type="button"
+                  className="sq-btn"
+                  style={{
+                    background: 'rgba(14, 165, 233, 0.12)',
+                    color: '#0284c7',
+                    border: '1px solid rgba(14, 165, 233, 0.35)',
+                    borderRadius: '8px',
+                    fontSize: '0.8125rem',
+                    fontWeight: 700,
+                    padding: '6px 14px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setShowResourceBooklet(true)}
+                  title="Open Resource Booklet to view maps, photos, or diagrams referenced in this question"
+                >
+                  <span>📖</span>
+                  <span>Open {currentQuestion.resource_ref || 'Figure / Map'} in Resource Booklet</span>
+                  <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>↗</span>
+                </button>
+              </div>
+            )}
+
             {/* Diagram Image if available */}
             {currentQuestion?.diagram_url && (
               <div className="sq-q-diagram-wrap">
@@ -1649,6 +2177,20 @@ export function StudentQuizRunner({
                           [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
                         </span>
                       </div>
+
+                      {/* Sub-Question Diagram (if specifically attached to this sub-part) */}
+                      {sub.diagram_url && (
+                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px' }}>
+                          <img
+                            src={sub.diagram_url}
+                            alt={`Diagram for ${sub.sub_id}`}
+                            className="sq-q-diagram-img"
+                            style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
+                            onClick={() => setZoomedImage(sub.diagram_url || null)}
+                            title="Click to zoom diagram"
+                          />
+                        </div>
+                      )}
 
                       {/* Quick Symbol Insert Bar for sub-question */}
                       <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
@@ -1860,7 +2402,7 @@ export function StudentQuizRunner({
             justifyContent: 'center',
             padding: '16px',
           }}
-          onClick={() => setShowSubmitModal(false)}
+          {...submitModalDismiss}
         >
           <div
             style={{
@@ -1933,8 +2475,8 @@ export function StudentQuizRunner({
 
       {/* Zoom Modal */}
       {zoomedImage && (
-        <div className="sq-zoom-modal-backdrop" onClick={() => setZoomedImage(null)}>
-          <div className="sq-zoom-modal-content">
+        <div className="sq-zoom-modal-backdrop" {...zoomModalDismiss}>
+          <div className="sq-zoom-modal-content" onClick={(e) => e.stopPropagation()}>
             <img src={zoomedImage} alt="Zoomed diagram" className="sq-zoomed-img" />
             <button className="sq-zoom-close-btn" onClick={() => setZoomedImage(null)}>✕ Close</button>
           </div>
@@ -1952,6 +2494,99 @@ export function StudentQuizRunner({
         isOpen={showCalculator}
         onClose={() => setShowCalculator(false)}
       />
+
+      {/* Cambridge Insert / Resource Booklet Drawer */}
+      <ResourceBookletDrawer
+        isOpen={showResourceBooklet}
+        onClose={() => setShowResourceBooklet(false)}
+        questions={questions}
+        activeResourceRef={currentQuestion?.resource_ref}
+        subject={headerConfig?.subject || 'Geography'}
+        title={`${title} — Resource Booklet`}
+      />
+
+      {/* 🚨 Fullscreen Exam Lockdown Overlay (Requires Teacher / Invigilator PIN) */}
+      {isLockedByProctor && hasStarted && !isSubmitted && (
+        <div className="sq-lockdown-overlay animate-fade-in">
+          <div className="sq-lockdown-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
+            <div className="sq-lockdown-icon-wrap">
+              <span className="sq-lockdown-pulse-ring" />
+              <span className="sq-lockdown-icon">🚨</span>
+            </div>
+
+            <h2 className="sq-lockdown-title">EXAMINATION LOCKED</h2>
+            <p className="sq-lockdown-subtitle">
+              An unauthorized action was detected. This assessment has been temporarily locked to maintain exam integrity.
+            </p>
+
+            {/* Incident Details Card */}
+            <div className="sq-lockdown-details-box">
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Violation Event:</span>
+                <span className="sq-ld-val text-danger">{lockReason || 'Exam window lost focus / Alt+Tab'}</span>
+              </div>
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Detected At:</span>
+                <span className="sq-ld-val">{formatProctorTimestamp(lockTime || new Date().toISOString())}</span>
+              </div>
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Integrity Strikes:</span>
+                <span className="sq-ld-val" style={{ color: '#ea580c', fontWeight: 800 }}>
+                  Strike {violations.length} recorded
+                </span>
+              </div>
+              {isExamMode && (
+                <div className="sq-lockdown-row">
+                  <span className="sq-ld-lbl">Remaining Time:</span>
+                  <span className="sq-ld-val" style={{ fontFamily: 'monospace', fontWeight: 800 }}>
+                    ⏱️ {formatTimer(timeLeft)}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Invigilator PIN Input Form */}
+            <form className="sq-lockdown-form" onSubmit={handleUnlockWithPin}>
+              <div className="sq-ld-form-header">
+                <span className="sq-ld-key-icon">🔑</span>
+                <span>Proctor / Teacher Unlock Gate</span>
+              </div>
+              <p className="sq-ld-form-desc">
+                Please raise your hand and notify your teacher or invigilator to enter the authorization PIN.
+              </p>
+
+              <div className="sq-ld-input-row">
+                <input
+                  type="password"
+                  className={`sq-ld-pin-input ${pinError ? 'sq-ld-input--error animate-shake' : ''}`}
+                  value={pinInput}
+                  onChange={(e) => {
+                    setPinInput(e.target.value);
+                    if (pinError) setPinError(null);
+                  }}
+                  placeholder="Enter Teacher PIN"
+                  maxLength={20}
+                  autoFocus
+                  disabled={isUnlocking}
+                />
+                <button
+                  type="submit"
+                  className="sq-btn sq-ld-unlock-btn"
+                  disabled={isUnlocking || !pinInput.trim()}
+                >
+                  {isUnlocking ? 'Unlocking...' : '🔓 Unlock Exam'}
+                </button>
+              </div>
+
+              {pinError && (
+                <div className="sq-ld-error-msg animate-fade-in">
+                  {pinError}
+                </div>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

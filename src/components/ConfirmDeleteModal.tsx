@@ -1,3 +1,4 @@
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import './ConfirmDeleteModal.css';
 
 interface ConfirmDeleteModalProps {
@@ -19,10 +20,12 @@ export function ConfirmDeleteModal({
   onConfirm,
   onCancel,
 }: ConfirmDeleteModalProps) {
+  const backdropDismiss = useBackdropDismiss(onCancel);
+
   if (!isOpen) return null;
 
   return (
-    <div className="confirm-overlay" onClick={onCancel}>
+    <div className="confirm-overlay" {...backdropDismiss}>
       <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
         <div className="confirm-icon-wrap">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

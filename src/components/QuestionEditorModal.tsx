@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question, Syllabus, QuestionStyle, QuestionDifficulty, SubQuestion } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { updateQuestion, createQuestion, fetchSyllabuses } from '../services/questionBankService';
@@ -410,8 +411,10 @@ export function QuestionEditorModal({
     }
   };
 
+  const backdropDismiss = useBackdropDismiss(onClose);
+
   return createPortal(
-    <div className="q-editor-backdrop animate-fade-in" onClick={onClose}>
+    <div className="q-editor-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="q-editor-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}

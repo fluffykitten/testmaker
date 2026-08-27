@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { renderPeriodicTableHtml } from '../services/periodicTableService';
 import './PeriodicTableDrawer.css';
 
@@ -8,12 +9,14 @@ interface PeriodicTableDrawerProps {
 }
 
 export const PeriodicTableDrawer: React.FC<PeriodicTableDrawerProps> = ({ isOpen, onClose }) => {
+  const backdropDismiss = useBackdropDismiss(onClose);
+
   if (!isOpen) return null;
 
   const periodicTableHtml = renderPeriodicTableHtml({ rotated: false });
 
   return (
-    <div className="pt-drawer-backdrop animate-fade-in" onClick={onClose}>
+    <div className="pt-drawer-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="pt-drawer-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
         <div className="pt-drawer-header">

@@ -5,14 +5,70 @@
 import type { ExtractionResult, Question, SubQuestion, QuestionStyle } from '../types/database';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+/**
+ * Collects and deduplicates all available Gemini API keys from environment variables.
+ * Supports:
+ * - VITE_GEMINI_API_KEYS (comma or space separated list of keys)
+ * - VITE_GEMINI_API_KEY (primary key)
+ * - VITE_GEMINI_API_KEY_2, VITE_GEMINI_API_KEY_3... (secondary/additional keys)
+ */
+export function getGeminiApiKeys(): string[] {
+  const keys: string[] = [];
+
+  const rawList = import.meta.env.VITE_GEMINI_API_KEYS;
+  if (typeof rawList === 'string') {
+    rawList
+      .split(/[,;\s]+/)
+      .map((k) => k.trim())
+      .filter((k) => k.length > 5 && !k.includes('your-gemini-api-key'))
+      .forEach((k) => keys.push(k));
+  }
+
+  const primary = import.meta.env.VITE_GEMINI_API_KEY;
+  if (typeof primary === 'string' && primary.trim().length > 5 && !primary.includes('your-gemini-api-key')) {
+    keys.push(primary.trim());
+  }
+
+  const secondary = import.meta.env.VITE_GEMINI_API_KEY_2;
+  if (typeof secondary === 'string' && secondary.trim().length > 5 && !secondary.includes('your-gemini-api-key')) {
+    keys.push(secondary.trim());
+  }
+
+  const tertiary = import.meta.env.VITE_GEMINI_API_KEY_3;
+  if (typeof tertiary === 'string' && tertiary.trim().length > 5 && !tertiary.includes('your-gemini-api-key')) {
+    keys.push(tertiary.trim());
+  }
+
+  // Deduplicate preserving order
+  const uniqueKeys = Array.from(new Set(keys));
+  return uniqueKeys;
+}
 
 /**
- * Builds the extraction prompt sent alongside each PDF.
- * When includeGuidance is true, instructs Gemini to generate rich teacher marking guidance
- * and common student misconceptions/traps.
+ * Returns a specific API key by index (round-robin / deterministic chunk sharding).
  */
-export function getExtractionPrompt(includeGuidance: boolean = true): string {
+export function getApiKeyForChunk(chunkIndex: number = 0): string {
+  const pool = getGeminiApiKeys();
+  if (pool.length === 0) {
+    return import.meta.env.VITE_GEMINI_API_KEY || '';
+  }
+  return pool[chunkIndex % pool.length];
+}
+
+/**
+ * Checks whether 2 or more distinct API keys are configured for parallel turbo extraction.
+ */
+export function hasMultipleApiKeys(): boolean {
+  return getGeminiApiKeys().length >= 2;
+}
+
+export type SubjectDomain = 'stem' | 'humanities';
+
+/**
+ * Builds the specialized STEM (Sciences, Math, Technology) extraction prompt.
+ * Focuses on LaTeX math, chemical formulas ($CaCO_3$, equations), nuclide notation, titration tables, and circuit schematics.
+ */
+export function getStemExtractionPrompt(includeGuidance: boolean = true): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -31,7 +87,8 @@ export function getExtractionPrompt(includeGuidance: boolean = true): string {
           "common_misconceptions": ["Students often forget to square the denominator"]`
     : '';
 
-  return `You are an expert educational assessment parser. Analyze the attached exam past paper PDF page(s) and any mark scheme content.
+  return `You are an expert educational assessment parser specializing in STEM (Chemistry, Physics, Biology, Mathematics, and Computer Science).
+Analyze the attached exam past paper PDF page(s) and any mark scheme content.
 
 Extract every numbered question (e.g., Question 1, Question 2, Question 3) as a structured JSON object. 
 
@@ -52,7 +109,8 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
     "subject_code": "0620",
     "year": 2023,
     "series": "May/June",
-    "paper_number": 41
+    "paper_number": 41,
+    "has_insert_booklet": false
   },
   "questions": [
     {
@@ -69,6 +127,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "topic": "States of Matter",
       "sub_topic": "Rates of Reaction",
       "has_diagram": true,
+      "diagram_source": "qp",
       "bounding_box": [150, 45, 420, 550],
       "options": null,
       "sub_questions": [
@@ -92,6 +151,12 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         },
         {
           "sub_id": "(c)",
+          "question_text": "Complete the table to show the formula and physical state of each compound at r.t.p.\\n\\n| Compound Name | Formula | State at r.t.p. |\\n|---|---|---|\\n| Methane | $CH_4$ | gas |\\n| Calcium carbonate | $CaCO_3$ | solid |\\n| Sodium chloride | [       ] | [       ] |",
+          "marks": 2,
+          "mark_scheme": "$NaCl$ [1]; solid [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(d)",
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
           "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\ge E_a$ [1]"${subGuidanceSnippet}
@@ -101,98 +166,508 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         "marking_points": ["See sub-question breakdown [7]"],
         "acceptable_answers": []${guidanceSchemaSnippet}
       }
+    },
+    {
+      "question_number": "2",
+      "parent_question_id": "Q2",
+      "page_number": 1,
+      "year": 2023,
+      "series": "May/June",
+      "paper_number": 11,
+      "question_text": "Which particle has the same electronic structure as an argon atom?",
+      "question_style": "Multiple Choice",
+      "total_marks": 1,
+      "estimated_difficulty": "Easy",
+      "topic": "Atomic Structure",
+      "sub_topic": "Electronic Configuration",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": ["A $Na^+$", "B $Mg^{2+}$", "C $Cl^-$", "D $K$"],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["C [1]"],
+        "acceptable_answers": ["C"]${guidanceSchemaSnippet}
+      }
     }
   ]
 }
 
 CRITICAL FORMATTING RULES:
-1. Identify the exact paper provenance in paper_metadata and each question:
-   - "series": Examination series/month, e.g., "Oct/Nov", "May/June", "Feb/March", "Winter", "Summer", or "Specimen".
-   - "year": 4-digit exam year, e.g. 2024, 2025.
-   - "paper_number": Specific paper number or variant, e.g. 1, 2, 4, 11, 21, 41, 42, 61.
-2. Group all sub-questions of Question 1, Question 2, Question 3 etc. inside their parent question's sub_questions array. Do not fragment them into separate top-level questions.
-3. Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in single dollar signs (e.g. '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$'). NEVER leave bare LaTeX commands like '\\text{Fe}_{2}\\text{O}_{3}' or '\\frac{1}{2}' unenclosed without dollar signs in regular sentence text. For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}' or '{}^{A}_{Z}\\text{X}'. Never use '_^{40}'.
-4. TABLE EXTRACTION (CRITICAL):
-   - Transcribe ALL standard data tables, experimental results, titration data, physical properties tables, organic reaction test tables, and student completion/fill-in tables into clean, structured Markdown Tables (| Header 1 | Header 2 | ... |\\n|---|---|---|...|) directly inside "question_text" or "sub_questions[].question_text".
-   - Preserve all row and column headers, values, units (e.g. $g/cm^3$, $^\\circ\\text{C}$), and blank fill-in cells ([       ]).
-   - ALWAYS do BOTH for standard data tables: (1) transcribe the table as a Markdown table in question_text AND (2) set has_diagram=true with a bounding_box that crops the original table image from the PDF.
-   - EXCEPTION FOR PERIODIC TABLE OUTLINES / GRIDS: If a question shows a Periodic Table outline or grid labeled as a figure (e.g., "Fig. 1.1 shows part of the Periodic Table" or a grid with Roman numeral groups I to VIII):
-     * Do NOT attempt to transcribe the Periodic Table as a markdown table (the stepped layout and empty groups will distort).
-     * Instead, treat it as a DIAGRAM (Rule 5): set has_diagram=true and provide an accurate bounding_box to crop the Periodic Table figure cleanly.
-5. DIAGRAMS, GRAPHS & PROCESS FLOWCHARTS (CRITICAL):
-    - Set has_diagram=true for visual drawings, apparatus setups, graphs/curves, electrical circuit schematics, biological cell illustrations, reaction/process diagrams, and PERIODIC TABLE OUTLINES/GRIDS (e.g. Fig. 1.1).
-    - PROCESS FLOWCHARTS & FILL-IN BOXES: When a question shows a sequence of stages with boxes and arrows or fill-in boxes (e.g. Fig. 3.1 showing water treatment stages, industrial flowcharts, reaction pathways):
-      a) DIAGRAM CROPPING: Set has_diagram=true and set bounding_box [ymin, xmin, ymax, xmax] to fully enclose the flowchart boxes, arrows, labels, and figure caption (e.g. "Fig. 3.1").
-      b) TEXT TRANSCRIBING: In "question_text", transcribe the flowchart sequence in structured box format:
-         [ sedimentation ] → [ filtration ] → [ use of carbon ] → [ ................................ ]
-         Fig. 3.1
-    - BOUNDING BOX GOLDEN RULE: It is MUCH better to make the bounding box TOO LARGE than too small. A slightly oversized box can be trimmed later, but a cropped-off diagram is useless. When in doubt, EXTEND the box generously with AT LEAST 80 units of margin on ALL 4 sides.
-    - FULL VERTICAL SCAN: Before setting ymax, visually scan ALL the way down to find the true bottom edge and figure caption. Set ymax to capture EVERYTHING.
-    - STOP AT NEXT QUESTION BOUNDARY: Never allow ymax to overshoot into the next question.
-6. TICK BOX & CHECKBOX QUESTIONS (CRITICAL):
-    - When a structured sub-question asks students to "Tick (✓) one box" or "Tick (✓) two boxes" or choose from a list with checkboxes:
-      a) In "question_text" or "sub_questions[].question_text", preserve the prompt and format all choices with checkbox brackets [ ]:
-         Choose the correct statement that describes the structure and bonding in graphite.
-         Tick (✓) one box.
-         simple covalent molecule [ ]
-         giant ionic [ ]
-         simple ionic [ ]
-         giant covalent [ ]
-      b) Set "options": ["simple covalent molecule", "giant ionic", "simple ionic", "giant covalent"] on that sub-question object.
-      c) In "mark_scheme", state which box is correct (e.g. "giant covalent [1]").
-7. question_style must be one of: "Structured", "Multiple Choice", "Calculation", "Short Answer".
-8. estimated_difficulty must be one of: "Easy", "Medium", "Hard".
-9. Keep full question text — do not omit sub-questions.
-10. If a question has no sub-parts (like an MCQ in Paper 1 or Paper 2), set "sub_questions": [] and put options in "options".
-11. In LaTeX formulas, always escape backslashes properly in JSON strings (use \\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge).
-${
-  includeGuidance
-    ? `12. TEACHER MARKING GUIDANCE & COMMON MISCONCEPTIONS (CRITICAL):
-    - For "guidance": Provide 1-3 concrete, high-utility teacher marking notes (e.g. method marks (M1, A1), error carried forward (ecf) rules, acceptable alternative units/notations, required significant figures).
-    - For "common_misconceptions": Provide 1-3 specific mistakes, traps, or false intuitions students typically make on this specific question.`
-    : ''
-}`;
+1. MANDATORY TABLE TRANSCRIPTION IN SUB-QUESTIONS & MAIN QUESTIONS (TOP PRIORITY):
+   - Whenever ANY sub-question (e.g. (a), (b)(i), (c)) or main question contains or refers to a data table, experimental observations, titration readings, physical properties matrix, or student fill-in completion grid:
+     a) You MUST transcribe the COMPLETE Markdown Table (| Header 1 | Header 2 | ... |\\n|---|---|...|\\n| Row 1 | Val 1 | ... |) directly in that sub_question's "question_text" field.
+     b) ABSOLUTELY NEVER omit the table or replace it with placeholder text.
+     c) Preserve ALL column headers, row labels, units (e.g. $g/cm^3$, $^\\circ\\text{C}$, $s$, $cm^3$, $kJ/mol$, $bpm$, $arbitrary units$), given values, and blank fill-in cells represented as '[       ]'.
+2. BIOLOGY SPECIALIZED PATTERNS (CRITICAL):
+   - DICHOTOMOUS KEYS & MULTI-SPECIMEN COLLAGES (e.g. Fig. 1.1 showing species A–F on one page, and Key table on the next page):
+     * Crop the specimen collage (all specimens A to F together with the Fig title) as the diagram on that question/sub-question.
+     * Transcribe the complete Dichotomous Key table in "question_text" with input blanks '[ ]' for student answers.
+   - MATCHING DRAWINGS & BOXES (e.g. Draw lines from specimen boxes to group names):
+     * Capture the entire matching layout (left boxes and right target boxes) in the bounding box so the visual task is 100% complete.
+   - BIOLOGY GRAPHS WITH LEGENDS/KEYS (e.g. Enzyme pH activity curves with Key for Enzyme A & B, population growth curves):
+     * Ensure bounding boxes generously capture the graph curve, axis titles, units, AND the Legend/Key box below or beside the axes.
+   - ANATOMICAL / CELL DIAGRAMS (e.g. Animal/plant cell with organelle pointers H, J, K, L, M, or reflex arc neurone pointers S, R, T):
+     * Crop the full diagram including all pointer lines and letter labels.
+   - MCQ COMPARISON TABLES (e.g. Row A, B, C, D with multiple columns for cell types, food tests, diffusion factors):
+     * Transcribe the complete comparison table in "question_text" and set options: ["A", "B", "C", "D"] (or full row descriptors).
+   - NUMBERED STATEMENTS IN MCQS (e.g. Statements 1, 2, 3, 4 followed by "Which statements are correct?"):
+     * Keep statements 1, 2, 3, 4 in "question_text" before the options ["A 1 and 3", "B 1 and 4", ...].
+   - FILL-IN-THE-BLANK SENTENCES:
+     * Transcribe completion statements with clear blank lines (e.g. 'Organisms are classified into groups by the .......................................... that they share.') and mark brackets [ ].
+3. Group all sub-questions inside their parent question's sub_questions array. Do not fragment them into separate top-level questions.
+4. CHEMICAL FORMULAS, WORD EQUATIONS & MATH:
+   - Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
+   - For Biology word equations and reaction paths, use arrows: '$glucose \\rightarrow alcohol + carbon dioxide$' or '$carbon dioxide + water \\rightarrow glucose + oxygen$'.
+   - For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}'.
+5. Identify paper provenance: series, year, paper_number.
+6. DIAGRAMS, GRAPHS & SCHEMATICS:
+   - Set has_diagram=true for drawings, apparatus setups, circuit schematics, cell illustrations, graphs, and reaction flowcharts.
+   - Set diagram_source="qp".
+   - Set bounding_box [ymin, xmin, ymax, xmax] (0-1000 scale) generously with at least 80 units margin on all sides.
+7. TICK BOX QUESTIONS:
+   - If a question asks to "Tick (✓) the conclusions/boxes", format choices as [ ] and put options array on that question/sub-question.
+8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
+`;
+}
+
+/**
+ * Builds the specialized Humanities & Social Sciences (Geography, History, Economics, Env Mgmt, English) prompt.
+ * Enforces cross-referencing of Insert / Resource Booklets, mapping "Fig. 1.1 in the Insert", "Photograph A", "Table 2.1",
+ * and generating a structured insert_resources catalog.
+ */
+export function getHumanitiesExtractionPrompt(hasInsert: boolean = true, includeGuidance: boolean = true): string {
+  const guidanceSchemaSnippet = includeGuidance
+    ? `,
+      "guidance": [
+        "Examiner tip: award marks for specific geographical / historical terminology (e.g. hydraulic action, lateral erosion, push/pull factors, treaty clauses)",
+        "Allow equivalent valid regional examples or case study statistics"
+      ],
+      "common_misconceptions": [
+        "Common error: confusing weather with climate, or confounding rural-urban migration causes with consequences",
+        "Students often describe features without referring to evidence from the resource/map"
+      ]`
+    : '';
+
+  const subGuidanceSnippet = includeGuidance
+    ? `,
+          "guidance": "Examiner tip: 1 mark for identification from Fig. 1.1, 1 mark for explanation",
+          "common_misconceptions": ["Candidates frequently quote data without units"]`
+    : '';
+
+  const insertSchemaRule = hasInsert
+    ? `
+DIAGRAMS, MAPS & INSERT PLACEMENT RULES (CRITICAL — READ CAREFULLY):
+1. TOP-LEVEL QUESTION STEM & INSERT PLACEMENT (BEFORE SUB-QUESTIONS):
+   - In Cambridge structured papers (e.g. Geography Paper 1), Question 1 begins with a Part (a) introductory stem referencing an Insert figure (e.g. "1 (a) Study Fig. 1.1 (Insert), showing...").
+   - Place this introductory stem in the parent Question's "question_text".
+   - Set "has_diagram": true, "diagram_source": "insert", "resource_ref": "Fig. 1.1", "insert_page_number": <page in insert>, "bounding_box": [<ymin>, <xmin>, <ymax>, <xmax>].
+   - The sub-questions (a)(i), (a)(ii), (a)(iii), (a)(iv) that follow MUST NOT duplicate the insert or diagram! Set "has_diagram": false, "diagram_url": null, "diagram_source": null, "resource_ref": null on those sub-questions.
+
+2. SUBSEQUENT PARTS INTRODUCING IN-PAPER OR INSERT FIGURES (e.g. Part (b)):
+   - When Part (b) introduces a new figure (e.g. "(b) Study Fig. 1.2, a graph showing..." in Question Paper OR "(b) Study Figs. 2.2, 2.3 and 2.4 (Insert)..." in Insert Booklet):
+     - Place the Part (b) intro text on the first sub-question of that section (e.g. "(b)(i)").
+     - Set "has_diagram": true ON THAT SUB-QUESTION!
+     - If the figure is in the Question Paper: set "diagram_source": "qp", "resource_ref": "Fig. 1.2", "page_number": <page in QP>, "bounding_box": [<ymin>, <xmin>, <ymax>, <xmax> in QP].
+     - If the figure is in the Insert Booklet: set "diagram_source": "insert", "resource_ref": "Figs. 2.2, 2.3 and 2.4", "insert_page_number": <page in Insert>, "bounding_box": [<ymin>, <xmin>, <ymax>, <xmax> in Insert].
+     - Subsequent sub-questions (e.g. (b)(ii), (c)) DO NOT duplicate the diagram!
+
+3. MULTIPLE FIGURES / PHOTOGRAPHS IN INSERT (e.g. Figs 2.2, 2.3, 2.4 or Fig 3.1 & 3.2):
+   - Always extract bounding box for the visual content on that Insert page.
+   - For Part (a) figures, set on parent question. For Part (b) figures, set on sub-question (b)(i).
+
+4. IN-LINE TABLES & TICK-BOX GRIDS:
+   - When a question contains a comparison table (e.g. Question 2(a)(iii) settlement service table) or tick table (e.g. Question 3(a)(ii)), format it cleanly as a Markdown Table inside "question_text".
+
+5. EXTENDED CASE STUDY QUESTIONS (e.g. Part (c)):
+   - Transcribe full prompts (e.g. "(c) For a named country you have studied, describe a policy used to influence its population growth rate.") as sub_id "(c)".
+
+6. ROOT "insert_resources" CATALOG:
+   - Extract an array listing all unique resource items in the Insert Booklet:
+   "insert_resources": [
+     {
+       "id": "Fig. 1.1",
+       "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
+       "page_number": 2,
+       "target_questions": ["1(a)"]
+     },
+     {
+       "id": "Fig. 2.1",
+       "title": "A map showing information about settlements in Extremadura, Spain",
+       "page_number": 3,
+       "target_questions": ["2(a)"]
+     },
+     {
+       "id": "Figs. 2.2, 2.3 and 2.4",
+       "title": "Photographs showing settlements with different functions",
+       "page_number": 4,
+       "target_questions": ["2(b)"]
+     }
+   ]`
+    : `
+FIGURES & MAPS IN QUESTION PAPER:
+If figures, diagrams, maps, climate graphs, or sketches are embedded in the Question Paper:
+- For Part (a) figures: set "has_diagram": true, "diagram_source": "qp", "page_number": <page in QP>, "bounding_box": [ymin, xmin, ymax, xmax] on the parent question.
+- For Part (b) figures: set "has_diagram": true, "diagram_source": "qp", "page_number": <page in QP>, "bounding_box": [ymin, xmin, ymax, xmax] on sub-question (b)(i).
+- Do NOT duplicate the diagram onto every sub-question; place it before the sub-questions or on the specific part stem.`;
+
+  return `You are an expert educational assessment parser specializing in Cambridge IGCSE, GCSE, and International A-Level Geography (0460, 0976, 2217), History (0470, 0977), Economics (0455), Environmental Management (0680), Sociology, and English.
+Analyze the attached exam Question Paper PDF${hasInsert ? ', Insert / Resource Booklet PDF,' : ''} and any mark scheme content.
+
+Extract every numbered question (e.g., Question 1, Question 2, Question 3...) as a structured JSON object.
+
+CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS:
+Do NOT split sub-parts (a)(i), (a)(ii), (b)(i), (b)(ii), (c) into separate top-level questions! 
+Group all sub-parts belonging to Question 1 under a SINGLE Question 1 container object with:
+- "question_number": "1"
+- "question_text": The main stem / introductory context placed BEFORE sub-questions (e.g. "1 (a) Study Fig. 1.1 (Insert), showing average annual population growth rates between 1950 and 2100 (estimated).")
+- "has_diagram": true if there is a figure, photograph, map, or chart for this question stem
+- "diagram_source": "insert" (if figure is in the Insert Booklet) OR "qp" (if figure is in the Question Paper)
+- "resource_ref": Figure/Photo reference (e.g. "Fig. 1.1", "Photograph A", "Fig. 2.1")
+- "total_marks": Sum of all sub-question marks (e.g. 25 marks)
+- "sub_questions": An array containing all sub-parts [(a)(i), (a)(ii), (a)(iii), (a)(iv), (b)(i), (b)(ii), (c)] with their respective text, marks, and mark schemes!
+
+${insertSchemaRule}
+
+Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
+
+{
+  "paper_metadata": {
+    "subject": "Geography",
+    "subject_code": "0460",
+    "year": 2025,
+    "series": "Oct/Nov",
+    "paper_number": 11,
+    "has_insert_booklet": ${hasInsert ? 'true' : 'false'}
+  },
+  ${hasInsert ? `"insert_resources": [
+    {
+      "id": "Fig. 1.1",
+      "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
+      "page_number": 2,
+      "target_questions": ["1(a)"]
+    },
+    {
+      "id": "Fig. 2.1",
+      "title": "A map showing information about settlements in Extremadura, Spain",
+      "page_number": 3,
+      "target_questions": ["2(a)"]
+    },
+    {
+      "id": "Figs. 2.2, 2.3 and 2.4",
+      "title": "Photographs showing settlements with different functions",
+      "page_number": 4,
+      "target_questions": ["2(b)"]
+    }
+  ],` : ''}
+  "questions": [
+    {
+      "question_number": "1",
+      "parent_question_id": "Q1",
+      "page_number": 2,
+      "year": 2025,
+      "series": "Oct/Nov",
+      "paper_number": 11,
+      "question_text": "1 (a) Study Fig. 1.1 (Insert), showing average annual population growth rates between 1950 and 2100 (estimated).",
+      "question_style": "Structured",
+      "total_marks": 25,
+      "estimated_difficulty": "Medium",
+      "topic": "Population and Settlement",
+      "sub_topic": "Population Dynamics",
+      "has_diagram": true,
+      "diagram_source": ${hasInsert ? '"insert"' : '"qp"'},
+      "resource_ref": "Fig. 1.1",
+      "insert_page_number": ${hasInsert ? '2' : 'null'},
+      "bounding_box": [115, 60, 580, 930],
+      "options": null,
+      "sub_questions": [
+        {
+          "sub_id": "(a)(i)",
+          "question_text": "Identify the average annual population growth rate of the USA.",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "0–0.9% [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(ii)",
+          "question_text": "Put the following four countries in rank order according to their average annual population growth rates:\\nAngola, Australia, China, Peru\\n\\nhighest: ...\\n...\\n...\\nlowest: ...",
+          "marks": 2,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Angola, Peru, Australia, China [2] (All in correct order = 2 marks, 2 or 3 correct = 1 mark)"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(iii)",
+          "question_text": "Describe the distribution of countries where the population is decreasing.",
+          "marks": 3,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Unevenly distributed [1]; clustered [1]; mainly in Northern hemisphere / north of Equator [1]; Northern Asia [1]; Eastern Europe [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(iv)",
+          "question_text": "Explain why there has been a reduction in population growth rates in some countries.",
+          "marks": 4,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Reduction in birth rates [1]; reduced infant mortality [1]; increased death rates [1]; government anti-natal policy [1]; greater access to contraception [1]; female emancipation / careers [1]; later marriage age [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)(i)",
+          "question_text": "(b) Study Fig. 1.2, a graph showing information about the population of MEDCs and LEDCs between 2015 and 2040 (estimated).\\n\\n(i) Compare the expected changes in the total population of MEDCs and LEDCs between 2015 and 2040. You should refer to years and use statistics in your answer.",
+          "marks": 3,
+          "has_diagram": true,
+          "diagram_url": null,
+          "diagram_source": "qp",
+          "resource_ref": "Fig. 1.2",
+          "page_number": 3,
+          "insert_page_number": null,
+          "bounding_box": [115, 360, 430, 785],
+          "mark_scheme": "MEDC remains similar [1]; LEDC increases [1]; Stats: MEDC 1300 million every year but LEDC starts at 2190-2200 million in 2015 and expected to be 4000 million in 2040 [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)(ii)",
+          "question_text": "Describe the problems experienced in countries as a result of high rates of population growth.",
+          "marks": 5,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Difficult to find housing / squatter settlements [1]; spread of disease [1]; lack of employment / poverty [1]; pressure on health services / education [1]; traffic congestion [1]; water/air pollution [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(c)",
+          "question_text": "For a named country you have studied, describe a policy used to influence its population growth rate.",
+          "marks": 7,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Level 1 (1-3 marks): Limited detail describing population policy.\\nLevel 2 (4-6 marks): Developed statements explaining how policy influences growth rate.\\nLevel 3 (7 marks): Named example with place-specific details and developed points."${subGuidanceSnippet}
+        }
+      ],
+      "mark_scheme": {
+        "marking_points": ["See sub-question breakdown [25]"],
+        "acceptable_answers": []${guidanceSchemaSnippet}
+      }
+    },
+    {
+      "question_number": "2",
+      "parent_question_id": "Q2",
+      "page_number": 6,
+      "year": 2025,
+      "series": "Oct/Nov",
+      "paper_number": 11,
+      "question_text": "2 (a) Study Fig. 2.1 (Insert), a map showing information about settlements in Extremadura, a region of Spain (an MEDC in Europe).",
+      "question_style": "Structured",
+      "total_marks": 25,
+      "estimated_difficulty": "Medium",
+      "topic": "Population and Settlement",
+      "sub_topic": "Settlement and Service Provision",
+      "has_diagram": true,
+      "diagram_source": ${hasInsert ? '"insert"' : '"qp"'},
+      "resource_ref": "Fig. 2.1",
+      "insert_page_number": ${hasInsert ? '3' : 'null'},
+      "bounding_box": [100, 150, 680, 850],
+      "options": null,
+      "sub_questions": [
+        {
+          "sub_id": "(a)(i)",
+          "question_text": "How many settlements with a population of over 20000 are there in the Extremadura region?",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "7 [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(ii)",
+          "question_text": "Using Fig. 2.1 only, describe the hierarchy of settlements in the Extremadura region.",
+          "marks": 2,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Numbers of settlements decrease as population size increases [1]; exception at top with more over 20000 than 10000-19999 [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(iii)",
+          "question_text": "Use the following words to fill in the table to show likely differences in service provision in the settlements labelled X and Y in Fig. 2.1:\\n*convenience, few, high, low, many, specialist*\\n\\n| | settlement X | settlement Y |\\n| :--- | :--- | :--- |\\n| **amount of services** | | |\\n| **order of services** | | |\\n| **type of services** | | |",
+          "marks": 3,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "settlement X: few, low, convenience [1.5]; settlement Y: many, high, specialist [1.5]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(iv)",
+          "question_text": "Explain why the sphere of influence of settlement Z is likely to be large.",
+          "marks": 4,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Many / variety of goods sold [1]; high order services / specialist goods [1]; people travel a long way [1]; good transport / road access [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)(i)",
+          "question_text": "(b) Study Figs. 2.2, 2.3 and 2.4 (Insert), photographs showing settlements with different functions.\\n\\n(i) Using evidence from Figs. 2.2, 2.3 and 2.4 only, identify the functions of each settlement.\\n\\nChoose your answers from the following list:\\n*commercial, cultural, industrial, mining, port, tourism*\\n\\n- Fig. 2.2: ...\\n- Fig. 2.3: ...\\n- Fig. 2.4: ...",
+          "marks": 3,
+          "has_diagram": true,
+          "diagram_url": null,
+          "diagram_source": ${hasInsert ? '"insert"' : '"qp"'},
+          "resource_ref": "Figs. 2.2, 2.3 and 2.4",
+          "insert_page_number": ${hasInsert ? '4' : 'null'},
+          "page_number": ${hasInsert ? 'null' : '7'},
+          "bounding_box": [120, 150, 850, 850],
+          "mark_scheme": "Fig. 2.2 = port [1]; Fig. 2.3 = industrial [1]; Fig. 2.4 = commercial [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)(ii)",
+          "question_text": "Describe and explain the service provision in tourist resorts.",
+          "marks": 5,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Hotels / accommodation [1]; restaurants / cafes [1]; transport / taxis / train station [1]; entertainment / museums [1]; souvenir shops [1]; tourist info [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(c)",
+          "question_text": "For a named settlement, state its main function and explain why it has this function.",
+          "marks": 7,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Level 1 (1-3 marks): Simple statements explaining settlement function.\\nLevel 2 (4-6 marks): Developed statements explaining reasons for function.\\nLevel 3 (7 marks): Named example with place-specific detail."${subGuidanceSnippet}
+        }
+      ],
+      "mark_scheme": {
+        "marking_points": ["See sub-question breakdown [25]"],
+        "acceptable_answers": []${guidanceSchemaSnippet}
+      }
+    }
+  ]
+}
+
+CRITICAL FORMATTING RULES:
+1. INSERT & DIAGRAM PLACEMENT:
+   - Place the primary figure (e.g. Fig. 1.1 or Fig. 2.1 in Insert) at the Question stem BEFORE the sub-questions.
+   - Do NOT duplicate the diagram on sub-questions (a)(i), (a)(ii), (a)(iii), (a)(iv).
+   - If Part (b) introduces a new figure (e.g. Fig. 1.2 in Question Paper OR Figs. 2.2, 2.3, 2.4 in Insert), set has_diagram=true, diagram_source, bounding_box, page_number/insert_page_number on sub-question (b)(i).
+2. DATA TABLES & FIELDWORK GRIDS:
+   - When a question includes a data table or fill-in table (e.g. Question 2(a)(iii) settlement table), format the complete Markdown Table in question_text.
+3. Group all sub-questions of Question 1, Question 2, etc. inside their parent question's sub_questions array.
+4. EXTENDED CASE STUDY RESPONSE:
+   - Transcribe full case study prompts (e.g. "(c) For a named country you have studied...").
+5. BOUNDING BOXES FOR MAPS & PHOTOGRAPHS:
+   - Make bounding boxes generous around the entire photograph, map, key/legend, and figure caption.
+6. In JSON strings, escape quotes and backslashes properly.
+`;
+}
+
+/**
+ * Main prompt dispatcher based on subject domain and insert configuration.
+ */
+export function getExtractionPrompt(
+  includeGuidance: boolean = true,
+  domain: SubjectDomain = 'stem',
+  hasInsert: boolean = false
+): string {
+  if (domain === 'humanities') {
+    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance);
+  }
+  return getStemExtractionPrompt(includeGuidance);
 }
 
 /**
  * Repairs unescaped LaTeX backslashes and control characters in LLM JSON output.
+ * Ensures LaTeX commands like \text, \frac, \times, \rightarrow, \theta, \beta, \Delta
+ * are NEVER corrupted into JSON control characters like \t (tab), \f (formfeed), \r (CR), \b (backspace).
  */
-function sanitizeJsonString(input: string): string {
+export function sanitizeJsonString(input: string): string {
   let result = '';
   let inString = false;
-  let escaped = false;
 
   for (let i = 0; i < input.length; i++) {
     const char = input[i];
 
-    if (escaped) {
-      result += char;
-      escaped = false;
-      continue;
-    }
-
-    if (char === '\\') {
-      const next = input[i + 1];
-      // In JSON, only \" and \\ are universally safe escapes.
-      // If backslash is followed by an alphabet character (e.g. \text, \frac, \times, \rightarrow, \Delta, \begin),
-      // it is a LaTeX command and must be double-escaped as \\.
-      if (next === '"' || next === '\\' || next === '/') {
-        result += char;
-        escaped = true;
-      } else if (next === 'n' && (input[i + 2] === ' ' || input[i + 2] === '\n' || input[i + 2] === '"' || !input[i + 2])) {
-        // Genuine newline escape \n
-        result += char;
-        escaped = true;
-      } else {
-        // LaTeX backslash (e.g. \text, \times, \Delta, \frac, \cdot, \rightarrow) -> escape as \\
-        result += '\\\\';
-      }
-      continue;
-    }
-
     if (char === '"') {
-      inString = !inString;
+      // Check if this quote is escaped
+      let backslashCount = 0;
+      let j = i - 1;
+      while (j >= 0 && input[j] === '\\') {
+        backslashCount++;
+        j--;
+      }
+      if (backslashCount % 2 === 0) {
+        inString = !inString;
+      }
       result += char;
+      continue;
+    }
+
+    if (inString && char === '\\') {
+      const nextChar = input[i + 1];
+      const afterNext = input[i + 2];
+
+      // 1. Double backslash \\ already escaped -> keep as \\
+      if (nextChar === '\\') {
+        result += '\\\\';
+        i++; // skip next backslash
+        continue;
+      }
+
+      // 2. Standard JSON quote escape \"
+      if (nextChar === '"') {
+        result += '\\"';
+        i++;
+        continue;
+      }
+
+      // 3. Standard JSON slash escape \/
+      if (nextChar === '/') {
+        result += '\\/';
+        i++;
+        continue;
+      }
+
+      // 4. Check for genuine JSON newline \n vs LaTeX commands starting with n (\nu, \nabla, \neq)
+      if (nextChar === 'n' && (!afterNext || !/[a-zA-Z]/.test(afterNext))) {
+        result += '\\n';
+        i++;
+        continue;
+      }
+
+      // 5. Check for genuine JSON tab \t vs LaTeX commands starting with t (\text, \times, \theta, \to, \tan, \tau)
+      if (nextChar === 't' && (!afterNext || !/[a-zA-Z]/.test(afterNext))) {
+        result += '\\t';
+        i++;
+        continue;
+      }
+
+      // 6. Check for genuine JSON carriage return \r vs LaTeX (\rightarrow, \right, \rho)
+      if (nextChar === 'r' && (!afterNext || !/[a-zA-Z]/.test(afterNext))) {
+        result += '\\r';
+        i++;
+        continue;
+      }
+
+      // 7. All other backslashes followed by letters or LaTeX symbols (\text, \frac, \times, \Delta, etc.)
+      // MUST be double-escaped as \\ so JSON.parse preserves the backslash in memory.
+      result += '\\\\';
       continue;
     }
 
@@ -388,6 +863,30 @@ function extractQuestionsArrayFallback(text: string): { paper_metadata?: any; qu
   return null;
 }
 
+/**
+ * Normalizes and removes common LLM extraction glitches like "extCH4", "ext{CH4}",
+ * and raw control characters from accidental \t / \r / \f JSON parses.
+ */
+export function cleanExtAndLatexArtifacts(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+
+  return text
+    // Replace tab-corrupted \text, \times, \theta, \rightarrow, \frac
+    .replace(/\t+ext(?=\{|\s*[A-Za-z0-9])/g, '\\text')
+    .replace(/\t+imes\b/g, '\\times')
+    .replace(/\t+heta\b/g, '\\theta')
+    .replace(/\r+ightarrow\b/g, '\\rightarrow')
+    .replace(/\r+ightleftharpoons\b/g, '\\rightleftharpoons')
+    .replace(/\f+rac\b/g, '\\frac')
+    .replace(/[\b]+eta\b/g, '\\beta')
+    // Remove "ext" prefix accidentally added in front of chemical formulas (e.g. extCH4, extCO2, extH2O, extCaCO3, extHCl)
+    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
+    // Remove "ext{...}" (e.g. ext{CH}_4 -> CH_4 or ext{CaCO_3} -> CaCO_3)
+    .replace(/\bext\{([^{}]+)\}/g, '$1')
+    // Remove \text{...} wrapping pure chemical formulas inside math, like $\text{CH}_4$ -> $CH_4$
+    .replace(/\\text\{([A-Z][a-z]?(?:\d+|[a-z])?(?:[A-Z][a-z]?(?:\d+|[a-z])?)*)\}/g, '$1');
+}
+
 export function parseRobustJson<T = any>(rawText: string): T {
   let cleaned = rawText.trim();
   if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
@@ -395,9 +894,10 @@ export function parseRobustJson<T = any>(rawText: string): T {
   if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
   cleaned = cleaned.trim();
 
-  // Attempt 1: Standard parse
+  // Attempt 1: Pre-sanitized LaTeX backslashes & valid JSON parse (protects \text from turning into tab)
   try {
-    return JSON.parse(cleaned);
+    const sanitized = sanitizeJsonString(cleaned);
+    return JSON.parse(sanitized);
   } catch {}
 
   // Attempt 2: Sanitized control chars + LaTeX backslashes + trailing commas
@@ -432,18 +932,33 @@ export function parseRobustJson<T = any>(rawText: string): T {
     return fallback as unknown as T;
   }
 
+  // Attempt 7: Raw standard parse fallback
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
   throw new Error(
     `Failed to parse Gemini response as JSON.\n\nRaw output snippet:\n${cleaned.slice(0, 500)}`
   );
 }
 
+let cachedDiscoveredModels: string[] | null = null;
+
 /**
  * Dynamically queries Google AI Studio API for all available models that support generateContent.
+ * Caches results in memory to avoid 1.5-2.5s network latency on every upload.
  */
-async function discoverAvailableModels(): Promise<string[]> {
+async function discoverAvailableModels(targetApiKey?: string): Promise<string[]> {
+  if (cachedDiscoveredModels && cachedDiscoveredModels.length > 0) {
+    return cachedDiscoveredModels;
+  }
+
+  const keyToUse = targetApiKey || getApiKeyForChunk(0);
+  if (!keyToUse) return ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite'];
+
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${keyToUse}`
     );
     if (res.ok) {
       const data = await res.json();
@@ -453,16 +968,30 @@ async function discoverAvailableModels(): Promise<string[]> {
             m.supportedGenerationMethods?.includes('generateContent')
           )
           .map((m: any) => m.name.replace(/^models\//, ''))
-          .filter((name: string) => name.toLowerCase().includes('gemini'));
+          .filter(
+            (name: string) =>
+              name.toLowerCase().includes('gemini') &&
+              !name.includes('flash-latest') && // Exclude legacy aliases that hang on v1beta
+              !name.includes('flash-lite-latest')
+          );
 
-        // Prioritize flash models, then pro
+        // Prioritize active, ultra-fast vision Flash models (Gemini 3.5 Flash Lite -> Gemini 3.1 Flash Lite -> Gemini 3.6 Flash -> Gemini 3.5 Flash)
         models.sort((a: string, b: string) => {
-          const aFlash = a.includes('flash') ? 1 : 0;
-          const bFlash = b.includes('flash') ? 1 : 0;
-          return bFlash - aFlash;
+          const score = (m: string) => {
+            if (m === 'gemini-3.5-flash-lite') return 20;
+            if (m === 'gemini-3.1-flash-lite') return 18;
+            if (m === 'gemini-3.6-flash') return 16;
+            if (m === 'gemini-3.7-flash') return 14;
+            if (m === 'gemini-3.5-flash') return 10;
+            if (m.includes('flash-lite')) return 8;
+            if (m.includes('flash')) return 6;
+            return 1;
+          };
+          return score(b) - score(a);
         });
 
         if (models.length > 0) {
+          cachedDiscoveredModels = models;
           return models;
         }
       }
@@ -471,94 +1000,144 @@ async function discoverAvailableModels(): Promise<string[]> {
     console.warn('Failed to dynamically discover models:', err);
   }
 
-  // Static fallback list if discovery fails
-  return [
-    'gemini-1.5-flash',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-pro',
-    'gemini-1.5-pro-latest',
-    'gemini-2.0-flash',
-    'gemini-2.5-flash',
+  // Static fallback list with verified ultra-fast models
+  const staticFallbacks = [
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
   ];
+  cachedDiscoveredModels = staticFallbacks;
+  return staticFallbacks;
 }
 
 /**
- * Helper to call a specific Gemini model endpoint with a custom prompt
+ * Helper to call a specific Gemini model endpoint with a custom prompt, target API key, and timeout.
+ * Accepts optional markSchemeBase64 and insertBase64 (for Geography / Humanities insert booklets).
+ * Supports automatic key failover if a 429 / 503 limit is encountered!
  */
 async function callGeminiModel(
   modelName: string,
   pdfBase64: string,
   markSchemeBase64?: string,
-  promptText: string = getExtractionPrompt(true)
+  insertBase64?: string,
+  promptText: string = getStemExtractionPrompt(true),
+  targetApiKey?: string
 ): Promise<Response> {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-  
-  const parts: any[] = [
-    { text: promptText },
-    {
-      inlineData: {
-        mimeType: 'application/pdf',
-        data: pdfBase64,
-      },
-    },
-  ];
+  const keyPool = getGeminiApiKeys();
+  const primaryKey = targetApiKey || keyPool[0] || import.meta.env.VITE_GEMINI_API_KEY || '';
 
-  if (markSchemeBase64) {
-    parts.push({
-      inlineData: {
-        mimeType: 'application/pdf',
-        data: markSchemeBase64,
+  // Order candidate keys starting with primaryKey, followed by others in the pool
+  const candidateKeys = [primaryKey, ...keyPool.filter((k) => k !== primaryKey)].filter(Boolean);
+
+  let lastRes: Response | null = null;
+  let lastErr: any = null;
+
+  for (const currentKey of candidateKeys) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${currentKey}`;
+
+    const parts: any[] = [
+      { text: promptText },
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: pdfBase64,
+        },
       },
-    });
+    ];
+
+    if (insertBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: insertBase64,
+        },
+      });
+    }
+
+    if (markSchemeBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: markSchemeBase64,
+        },
+      });
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s timeout per model attempt
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.0,
+            maxOutputTokens: 16384,
+          },
+        }),
+      });
+      clearTimeout(timeoutId);
+
+      // If success or a non-quota client error (400/404), return immediately
+      if (res.ok || (res.status !== 429 && res.status !== 503)) {
+        return res;
+      }
+
+      lastRes = res;
+      console.warn(`[Gemini] Key ending in ...${currentKey.slice(-6)} hit status ${res.status} on ${modelName}. Trying alternate key if available.`);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastErr = err;
+      console.warn(`[Gemini] Key ending in ...${currentKey.slice(-6)} encountered error on ${modelName}:`, err);
+    }
   }
 
-  return fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts,
-        },
-      ],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.1,
-        maxOutputTokens: 16384,
-      },
-    }),
-  });
+  if (lastRes) return lastRes;
+  if (lastErr) throw lastErr;
+  throw new Error(`All candidate API keys failed for model ${modelName}.`);
 }
 
 export interface ExtractionOptions {
   includeGuidance?: boolean;
+  domain?: SubjectDomain;
+  hasInsertBooklet?: boolean;
+  apiKey?: string;
 }
 
 /**
- * Sends a PDF file to Gemini for structured extraction with automated model discovery and fallback.
- * Accepts optional mark scheme PDF base64 to pair official mark schemes with 100% fidelity.
+ * Sends PDF files to Gemini for structured extraction with automated model discovery, key pooling, and fallback.
+ * Accepts optional mark scheme PDF base64 and insert booklet PDF base64.
  * Returns parsed question data matching our ExtractionResult schema.
  */
 export async function extractQuestionsFromPdf(
   pdfBase64: string,
   markSchemeBase64?: string,
+  insertBase64?: string,
   onProgress?: (status: string) => void,
-  options: ExtractionOptions = { includeGuidance: true }
+  options: ExtractionOptions = { includeGuidance: true, domain: 'stem' }
 ): Promise<ExtractionResult> {
-  if (!GEMINI_API_KEY) {
+  const activeKey = options.apiKey || getApiKeyForChunk(0);
+  if (!activeKey) {
     throw new Error(
       'Missing VITE_GEMINI_API_KEY in .env.local. ' +
       'Get your API key from https://aistudio.google.com/apikey'
     );
   }
 
-  const promptText = getExtractionPrompt(options.includeGuidance !== false);
+  const domain = options.domain || 'stem';
+  const hasInsert = Boolean(insertBase64 || options.hasInsertBooklet);
+  const promptText = getExtractionPrompt(options.includeGuidance !== false, domain, hasInsert);
 
   onProgress?.('Discovering available Gemini models…');
 
   // If user configured a specific model, try it first
   const userConfiguredModel = import.meta.env.VITE_GEMINI_MODEL;
-  const discoveredModels = await discoverAvailableModels();
+  const discoveredModels = await discoverAvailableModels(activeKey);
 
   const candidateModels = Array.from(
     new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])
@@ -571,7 +1150,7 @@ export async function extractQuestionsFromPdf(
   for (const model of candidateModels) {
     onProgress?.(`Contacting Gemini AI (${model})…`);
     try {
-      response = await callGeminiModel(model, pdfBase64, markSchemeBase64, promptText);
+      response = await callGeminiModel(model, pdfBase64, markSchemeBase64, insertBase64, promptText, activeKey);
 
       if (response.ok) {
         usedModel = model;
@@ -587,10 +1166,9 @@ export async function extractQuestionsFromPdf(
         continue;
       }
 
-      // If overloaded (503 / 429), wait 2s and try next model
+      // If overloaded (503 / 429), immediately notify and try next candidate model
       if (response.status === 503 || response.status === 429) {
-        onProgress?.(`Model ${model} is busy, trying alternate model…`);
-        await new Promise((r) => setTimeout(r, 2000));
+        onProgress?.(`Model ${model} is busy (status ${response.status}), switching to next model…`);
         continue;
       }
 
@@ -622,18 +1200,20 @@ export async function extractQuestionsFromPdf(
     throw new Error('Response missing required paper_metadata or questions array.');
   }
 
-  // Normalize all questions to ensure bare LaTeX formulas outside $ are wrapped in $...$
+  // Normalize all questions to clean ext artifacts and ensure bare LaTeX formulas outside $ are wrapped in $...$
   parsed.questions = parsed.questions.map((q) => ({
     ...q,
-    question_text: ensureInlineMathDelimiters(q.question_text || ''),
+    diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : q.has_diagram ? 'qp' : null),
+    question_text: ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(q.question_text || '')),
     options: Array.isArray(q.options)
-      ? q.options.map((opt) => (typeof opt === 'string' ? ensureInlineMathDelimiters(opt) : opt))
+      ? q.options.map((opt) => (typeof opt === 'string' ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt)) : opt))
       : q.options,
     sub_questions: Array.isArray(q.sub_questions)
       ? q.sub_questions.map((sq) => ({
           ...sq,
-          question_text: ensureInlineMathDelimiters(sq.question_text || ''),
-          mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(sq.mark_scheme) : sq.mark_scheme,
+          diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
+          question_text: ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
+          mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
         }))
       : q.sub_questions,
   }));
@@ -653,7 +1233,8 @@ export async function enrichQuestionWithGuidance(
   common_misconceptions: string[];
   sub_questions?: SubQuestion[];
 }> {
-  if (!GEMINI_API_KEY) {
+  const activeKey = getApiKeyForChunk(0);
+  if (!activeKey) {
     throw new Error(
       'Missing VITE_GEMINI_API_KEY in .env.local. ' +
       'Get your API key from https://aistudio.google.com/apikey'
@@ -661,7 +1242,7 @@ export async function enrichQuestionWithGuidance(
   }
 
   const userConfiguredModel = import.meta.env.VITE_GEMINI_MODEL;
-  const discoveredModels = await discoverAvailableModels();
+  const discoveredModels = await discoverAvailableModels(activeKey);
   const candidateModels = Array.from(
     new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])
   );
@@ -689,8 +1270,8 @@ Return strictly valid JSON with this schema (no markdown formatting, no commenta
   "sub_questions": [
     {
       "sub_id": "(a)",
-      "guidance": "Specific guidance for sub-part",
-      "common_misconceptions": ["Specific trap for sub-part"]
+      "guidance": "Examiner guidance for sub-question",
+      "common_misconceptions": ["Student misconception for sub-question"]
     }
   ]
 }`;
@@ -699,7 +1280,7 @@ Return strictly valid JSON with this schema (no markdown formatting, no commenta
   let lastError = '';
 
   for (const model of candidateModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`;
     try {
       response = await fetch(endpoint, {
         method: 'POST',
@@ -779,16 +1360,18 @@ export interface GenerateVariantOptions {
 }
 
 /**
- * Generates an AI-powered variant / twin of an existing exam question.
- * Supports parallel twins, scaffolding foundation versions, challenging extensions,
- * and format conversions with complete mark schemes and examiner guidance.
+ * Generates an educational variant of an existing question using Gemini.
  */
 export async function generateQuestionVariant(
   original: Question,
   options: GenerateVariantOptions
 ): Promise<Partial<Question>> {
-  if (!GEMINI_API_KEY) {
-    throw new Error('Gemini API key is not configured. Please set VITE_GEMINI_API_KEY.');
+  const activeKey = getApiKeyForChunk(0);
+  if (!activeKey) {
+    throw new Error(
+      'Missing VITE_GEMINI_API_KEY in .env.local. ' +
+      'Get your API key from https://aistudio.google.com/apikey'
+    );
   }
 
   let modeInstruction = '';
@@ -855,47 +1438,27 @@ REQUIREMENTS:
 {
   "question_text": "The main question stem or context",
   "question_style": "${options.mode === 'mcq' ? 'Multiple Choice' : options.mode === 'structured' ? 'Structured' : original.question_style || 'Structured'}",
+  "marks": ${options.mode === 'mcq' ? 1 : original.marks || 4},
   "difficulty": "${options.mode === 'scaffold' ? 'Easy' : options.mode === 'extension' ? 'Hard' : original.difficulty || 'Medium'}",
-  "marks": ${options.mode === 'mcq' ? 1 : Math.max(Number(original.marks) || 1, options.mode === 'structured' ? 4 : 1)},
   "topic": "${original.topic}",
-  "sub_topic": ${original.sub_topic ? JSON.stringify(original.sub_topic) : 'null'},
+  "sub_topic": "${original.sub_topic || ''}",
   "options": ${options.mode === 'mcq' ? '["A. ...", "B. ...", "C. ...", "D. ..."]' : 'null'},
-  "sub_questions": ${options.mode === 'mcq' ? '[]' : `[
-    {
-      "sub_id": "(a)",
-      "question_text": "First sub-part text in $LaTeX$",
-      "marks": 1,
-      "mark_scheme": "Answer in $LaTeX$ [1]",
-      "guidance": "Examiner guidance note",
-      "common_misconceptions": ["Common mistake"]
-    },
-    {
-      "sub_id": "(b)",
-      "question_text": "Second sub-part text in $LaTeX$",
-      "marks": 2,
-      "mark_scheme": "Method [1]; final answer [1]",
-      "guidance": "Allow ecf",
-      "common_misconceptions": ["Calculation error"]
-    }
-  ]`},
+  "sub_questions": ${options.mode === 'mcq' ? '[]' : '[{"sub_id": "(a)", "question_text": "...", "marks": 2, "mark_scheme": "Mark point [2]"}]'},
   "mark_scheme": {
-    "marking_points": [
-      "Point 1 with mark allocation [1]",
-      "Point 2 [1]"
-    ],
-    "acceptable_answers": ["Alternative answer 1"],
+    "marking_points": ["Mark point [1]"],
+    "acceptable_answers": ["Alternative answer"],
     "guidance": ["Examiner tip 1"],
     "common_misconceptions": ["Misconception 1"]
   }
-}`;
+} `;
 
-  const availableModels = await discoverAvailableModels();
+  const availableModels = await discoverAvailableModels(activeKey);
   let response: Response | null = null;
   let lastError = '';
 
   for (const modelName of availableModels) {
     try {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
       response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -2,7 +2,7 @@
 
 .student-runner-root {
   min-height: 100vh;
-  background: var(--color-bg);
+  background: var(--color-surface, #0f172a);
   color: var(--color-text-primary);
   display: flex;
   flex-direction: column;
@@ -916,3 +916,185 @@
   font-size: 3rem;
   margin-bottom: 12px;
 }
+
+/* ─── 🚨 Fullscreen Exam Lockdown Modal (PIN Gate) ───────────────────────── */
+.sq-lockdown-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  user-select: none;
+}
+
+.sq-lockdown-card {
+  background: #0f172a;
+  border: 2px solid rgba(239, 68, 68, 0.6);
+  box-shadow: 0 0 50px rgba(239, 68, 68, 0.35), 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+  border-radius: 24px;
+  max-width: 520px;
+  width: 100%;
+  padding: 32px 28px;
+  text-align: center;
+  color: #ffffff;
+  position: relative;
+  overflow: hidden;
+}
+
+.sq-lockdown-icon-wrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sq-lockdown-pulse-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.25);
+  animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.sq-lockdown-icon {
+  position: relative;
+  font-size: 2.75rem;
+}
+
+.sq-lockdown-title {
+  font-size: 1.5rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #ef4444;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.sq-lockdown-subtitle {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.sq-lockdown-details-box {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 14px;
+  padding: 14px 18px;
+  margin-bottom: 22px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sq-lockdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8125rem;
+}
+
+.sq-ld-lbl {
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.sq-ld-val {
+  color: #f1f5f9;
+  font-weight: 700;
+}
+
+.sq-lockdown-form {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+
+.sq-ld-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  color: #38bdf8;
+  margin-bottom: 4px;
+}
+
+.sq-ld-form-desc {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin: 0 0 14px;
+}
+
+.sq-ld-input-row {
+  display: flex;
+  gap: 10px;
+}
+
+.sq-ld-pin-input {
+  flex: 1;
+  background: #090d16;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #ffffff;
+  font-size: 1rem;
+  font-family: var(--font-mono, monospace);
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-align: center;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.sq-ld-pin-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
+}
+
+.sq-ld-input--error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25) !important;
+}
+
+.sq-ld-unlock-btn {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-weight: 800;
+  font-size: 0.875rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.sq-ld-unlock-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #38bdf8, #0284c7);
+  transform: translateY(-1px);
+}
+
+.sq-ld-unlock-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sq-ld-error-msg {
+  margin-top: 10px;
+  font-size: 0.8125rem;
+  color: #f87171;
+  font-weight: 700;
+}
+

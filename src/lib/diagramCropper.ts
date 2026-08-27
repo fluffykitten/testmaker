@@ -543,12 +543,27 @@ export interface QuestionWithDiagram {
   question_number: string;
   has_diagram: boolean;
   page_number?: number;
+  diagram_source?: 'qp' | 'insert' | null;
+  resource_ref?: string | null;
+  insert_page_number?: number | null;
   bounding_box?: [number, number, number, number] | any | null;
+  sub_questions?: Array<{
+    sub_id: string;
+    has_diagram?: boolean;
+    diagram_url?: string | null;
+    diagram_source?: 'qp' | 'insert' | null;
+    resource_ref?: string | null;
+    page_number?: number | null;
+    insert_page_number?: number | null;
+    bounding_box?: [number, number, number, number] | any | null;
+  }>;
 }
 
 export interface DiagramCropItem {
   blob: Blob;
   localUrl: string;
+  sourceDoc?: 'qp' | 'insert';
+  pageNumber?: number;
 }
 
 /**
@@ -587,9 +602,9 @@ export async function uploadDiagramsToStorage(
     current++;
     onProgress?.(`Uploading diagram ${current}/${total} to permanent storage…`);
     const safeName = `${paperInfo.subject_code}_${paperInfo.year}_p${paperInfo.paper_number}_${qNum.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
-    const publicUrl = await uploadToStorage(item.blob, safeName);
-    if (publicUrl) {
-      publicUrls.set(qNum, publicUrl);
+    const storageUrl = await uploadToStorage(item.blob, safeName);
+    if (storageUrl) {
+      publicUrls.set(qNum, storageUrl);
     }
   }
 
@@ -597,79 +612,103 @@ export async function uploadDiagramsToStorage(
 }
 
 /**
- * Processes all diagram-bearing questions from an extraction result purely in-memory:
- * 1. Loads the PDF document
+ * Processes all diagram-bearing questions and sub-questions from an extraction result purely in-memory:
+ * 1. Loads the Question Paper PDF (and optional Insert Booklet PDF)
  * 2. Renders the target PDF page(s) at 4x resolution
  * 3. Handles multi-page stitching for diagrams near page boundaries
  * 4. Crops the bounding box region with generous padding + smart edge expansion
  * 5. Creates local Object URLs for instant, zero-upload UI preview
  * 
- * ZERO files are uploaded to Supabase Storage during this stage!
+ * Supports multi-document extraction where figures reside in either QP or the Insert Booklet!
  */
 export async function cropDiagramsLocally(
   pdfFile: File,
   questions: QuestionWithDiagram[],
-  onProgress?: (status: string) => void
+  onProgress?: (status: string) => void,
+  insertFile?: File | null
 ): Promise<Map<string, DiagramCropItem>> {
   const diagramQuestions = questions.filter((q) => q.has_diagram);
+  const totalSubDiagramCount = questions.reduce(
+    (acc, q) =>
+      acc + (q.sub_questions?.filter((sub) => sub.has_diagram || sub.bounding_box || sub.diagram_source)?.length || 0),
+    0
+  );
 
-  if (diagramQuestions.length === 0) {
+  if (diagramQuestions.length === 0 && totalSubDiagramCount === 0) {
     onProgress?.('No diagrams detected.');
     return new Map();
   }
 
-  onProgress?.(`Processing ${diagramQuestions.length} diagram(s) at high resolution…`);
+  onProgress?.(`Processing ${diagramQuestions.length + totalSubDiagramCount} diagram(s) at high resolution…`);
 
   const results = new Map<string, DiagramCropItem>();
 
   try {
-    const pdfBytes = await pdfFile.arrayBuffer();
-    const pdfDocument = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+    // 1. Load Question Paper PDF
+    const qpBytes = await pdfFile.arrayBuffer();
+    const qpDoc = await pdfjsLib.getDocument({ data: qpBytes }).promise;
 
-    // Cache rendered pages (at 4x resolution)
-    const pageCache = new Map<number, HTMLCanvasElement>();
-    // Cache stitched page pairs for cross-boundary diagrams
+    // 2. Load Insert Booklet PDF (if provided)
+    let insertDoc: pdfjsLib.PDFDocumentProxy | null = null;
+    if (insertFile) {
+      try {
+        const insertBytes = await insertFile.arrayBuffer();
+        insertDoc = await pdfjsLib.getDocument({ data: insertBytes }).promise;
+      } catch (iErr) {
+        console.warn('Failed to load Insert Booklet PDF for cropping:', iErr);
+      }
+    }
+
+    // Cache rendered pages per document (at 4x resolution)
+    const qpPageCache = new Map<number, HTMLCanvasElement>();
+    const insertPageCache = new Map<number, HTMLCanvasElement>();
     const stitchCache = new Map<string, HTMLCanvasElement>();
 
+    // 1. Crop Parent Question Diagrams
     for (let i = 0; i < diagramQuestions.length; i++) {
       const q = diagramQuestions[i];
       try {
-        const targetPage = q.page_number && q.page_number > 0
-          ? q.page_number
-          : 1;
+        // Determine whether this figure resides in the Insert Booklet or QP
+        const isFromInsert = q.diagram_source === 'insert' && insertDoc !== null;
+        const targetDoc = isFromInsert ? insertDoc! : qpDoc;
+        const pageCache = isFromInsert ? insertPageCache : qpPageCache;
+        const sourceLabel = isFromInsert ? 'Insert Booklet' : 'Question Paper';
 
-        // Render the primary page
-        if (!pageCache.has(targetPage)) {
-          onProgress?.(`Rendering PDF page ${targetPage} at ${RENDER_SCALE}x resolution…`);
-          const canvas = await renderPdfPage(pdfDocument, targetPage);
-          pageCache.set(targetPage, canvas);
+        const targetPage = isFromInsert
+          ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : (q.page_number || 1))
+          : (q.page_number && q.page_number > 0 ? q.page_number : 1);
+
+        const safePageNumber = Math.max(1, Math.min(targetDoc.numPages, targetPage));
+
+        // Render target page if not already cached
+        if (!pageCache.has(safePageNumber)) {
+          onProgress?.(`Rendering ${sourceLabel} page ${safePageNumber} at ${RENDER_SCALE}x resolution…`);
+          const canvas = await renderPdfPage(targetDoc, safePageNumber);
+          pageCache.set(safePageNumber, canvas);
         }
 
         const normalizedBox = normalizeBoundingBox(q.bounding_box);
         const [, , ymax] = normalizedBox;
 
-        // ─── Multi-page stitching ──────────────────────────────────────
-        // If the diagram's bottom edge is near the page boundary AND there's
-        // a next page, stitch both pages vertically to capture cross-boundary content.
+        // Multi-page stitching if near bottom boundary
         const needsStitch =
           ymax >= (1000 - PAGE_BOUNDARY_THRESHOLD) &&
-          targetPage < pdfDocument.numPages;
+          safePageNumber < targetDoc.numPages;
 
         let sourceCanvas: HTMLCanvasElement;
 
         if (needsStitch) {
-          const stitchKey = `${targetPage}-${targetPage + 1}`;
+          const stitchKey = `${isFromInsert ? 'ins' : 'qp'}_${safePageNumber}-${safePageNumber + 1}`;
           if (!stitchCache.has(stitchKey)) {
-            onProgress?.(`Stitching pages ${targetPage}–${targetPage + 1} for cross-boundary diagram…`);
+            onProgress?.(`Stitching ${sourceLabel} pages ${safePageNumber}–${safePageNumber + 1}…`);
 
-            // Render next page
-            const nextPage = targetPage + 1;
+            const nextPage = safePageNumber + 1;
             if (!pageCache.has(nextPage)) {
-              const nextCanvas = await renderPdfPage(pdfDocument, nextPage);
+              const nextCanvas = await renderPdfPage(targetDoc, nextPage);
               pageCache.set(nextPage, nextCanvas);
             }
 
-            const topCanvas = pageCache.get(targetPage)!;
+            const topCanvas = pageCache.get(safePageNumber)!;
             const bottomCanvas = pageCache.get(nextPage)!;
             const stitched = stitchCanvasesVertically(topCanvas, bottomCanvas);
             stitchCache.set(stitchKey, stitched);
@@ -677,29 +716,91 @@ export async function cropDiagramsLocally(
 
           sourceCanvas = stitchCache.get(stitchKey)!;
 
-          // Adjust bounding box for stitched canvas
-          const topPageCanvas = pageCache.get(targetPage)!;
+          const topPageCanvas = pageCache.get(safePageNumber)!;
           const stitchedHeight = sourceCanvas.height;
           const topPageFraction = topPageCanvas.height / stitchedHeight;
 
           normalizedBox[0] = normalizedBox[0] * topPageFraction;
           normalizedBox[2] = Math.min(1000, normalizedBox[2] * topPageFraction + 150 * (1 - topPageFraction));
         } else {
-          sourceCanvas = pageCache.get(targetPage)!;
+          sourceCanvas = pageCache.get(safePageNumber)!;
         }
 
-        onProgress?.(`Cropping diagram for Q${q.question_number}…`);
+        onProgress?.(`Cropping diagram for Q${q.question_number} (${sourceLabel})…`);
         const blob = await cropFromCanvas(sourceCanvas, normalizedBox);
 
-        // Create local object URL for instant UI preview (zero network / storage)
+        // Create local object URL for instant UI preview
         const localUrl = URL.createObjectURL(blob);
-        results.set(q.question_number, { blob, localUrl });
+        const cropItem: DiagramCropItem = {
+          blob,
+          localUrl,
+          sourceDoc: isFromInsert ? 'insert' : 'qp',
+          pageNumber: safePageNumber,
+        };
+
+        // Set parent diagram crop item
+        results.set(q.question_number, cropItem);
       } catch (cropErr) {
         console.warn(`Failed to crop diagram for Q${q.question_number}:`, cropErr);
       }
     }
 
-    onProgress?.(`Prepared ${results.size}/${diagramQuestions.length} diagrams locally.`);
+    // 2. Crop Sub-Question Specific Diagrams (e.g. Q1 (b)(i) Fig. 1.2 in QP, Q2 (b)(i) Figs 2.2-2.4 in Insert)
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      if (!q.sub_questions || q.sub_questions.length === 0) continue;
+
+      for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
+        const sub = q.sub_questions[sIdx];
+        const hasSubDiagram = Boolean(
+          sub.has_diagram ||
+          (sub.bounding_box && Array.isArray(sub.bounding_box) && sub.bounding_box.length >= 4) ||
+          (sub.diagram_source !== null && sub.diagram_source !== undefined)
+        );
+
+        if (!hasSubDiagram) continue;
+
+        try {
+          const isFromInsert = sub.diagram_source === 'insert' && insertDoc !== null;
+          const targetDoc = isFromInsert ? insertDoc! : qpDoc;
+          const pageCache = isFromInsert ? insertPageCache : qpPageCache;
+          const sourceLabel = isFromInsert ? 'Insert Booklet' : 'Question Paper';
+
+          const targetPage = isFromInsert
+            ? (sub.insert_page_number && sub.insert_page_number > 0 ? sub.insert_page_number : 1)
+            : (sub.page_number && sub.page_number > 0 ? sub.page_number : (q.page_number || 1));
+
+          const safePageNumber = Math.max(1, Math.min(targetDoc.numPages, targetPage));
+
+          if (!pageCache.has(safePageNumber)) {
+            onProgress?.(`Rendering ${sourceLabel} page ${safePageNumber} at ${RENDER_SCALE}x resolution…`);
+            const canvas = await renderPdfPage(targetDoc, safePageNumber);
+            pageCache.set(safePageNumber, canvas);
+          }
+
+          const normalizedBox = normalizeBoundingBox(sub.bounding_box);
+          const sourceCanvas = pageCache.get(safePageNumber)!;
+
+          onProgress?.(`Cropping sub-diagram for Q${q.question_number} ${sub.sub_id} (${sourceLabel})…`);
+          const blob = await cropFromCanvas(sourceCanvas, normalizedBox);
+          const localUrl = URL.createObjectURL(blob);
+          const subCropItem: DiagramCropItem = {
+            blob,
+            localUrl,
+            sourceDoc: isFromInsert ? 'insert' : 'qp',
+            pageNumber: safePageNumber,
+          };
+
+          const subKey = `${q.question_number}_sub_${sIdx}`;
+          results.set(subKey, subCropItem);
+          sub.diagram_url = localUrl;
+        } catch (subCropErr) {
+          console.warn(`Failed to crop diagram for Q${q.question_number} sub ${sIdx}:`, subCropErr);
+        }
+      }
+    }
+
+    onProgress?.(`Prepared ${results.size} diagram asset(s) locally.`);
   } catch (pdfErr) {
     console.error('Failed to load PDF for diagram cropping:', pdfErr);
   }
@@ -740,7 +841,8 @@ export async function renderPdfPageToCanvas(
 ): Promise<HTMLCanvasElement> {
   const data = pdfSource instanceof File ? await pdfSource.arrayBuffer() : pdfSource;
   const pdfDocument = await pdfjsLib.getDocument({ data }).promise;
-  return renderPdfPage(pdfDocument, pageNumber, scale);
+  const safePage = Math.max(1, Math.min(pdfDocument.numPages, pageNumber || 1));
+  return renderPdfPage(pdfDocument, safePage, scale);
 }
 
 /**

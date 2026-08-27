@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { generateQuizCode } from '../services/quizCodeService';
@@ -32,6 +33,7 @@ export function StudentShareModal({
 }: StudentShareModalProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
 
@@ -61,7 +63,7 @@ export function StudentShareModal({
   };
 
   return createPortal(
-    <div className="share-modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="share-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="share-modal-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}

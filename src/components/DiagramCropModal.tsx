@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   renderPdfPageToCanvas,
   getPdfPageCount,
@@ -12,14 +13,19 @@ export interface DiagramCropResult {
   localUrl: string;
   boundingBox: [number, number, number, number];
   pageNumber: number;
+  sourceDoc?: 'qp' | 'insert';
 }
 
 interface DiagramCropModalProps {
   isOpen: boolean;
   pdfFile?: File | null;
+  insertFile?: File | null;
+  initialSourceType?: 'qp' | 'insert';
   imageSrc?: string | null;
   initialBoundingBox?: [number, number, number, number] | null;
   initialPageNumber?: number;
+  initialQpPageNumber?: number;
+  initialInsertPageNumber?: number;
   questionNumber?: string;
   onClose: () => void;
   onSaveCrop: (result: DiagramCropResult) => void;
@@ -30,17 +36,28 @@ type HandleType = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'move';
 export function DiagramCropModal({
   isOpen,
   pdfFile: initialPdfFile,
+  insertFile,
+  initialSourceType = 'qp',
   imageSrc: initialImageSrc,
   initialBoundingBox,
   initialPageNumber = 1,
+  initialQpPageNumber = 1,
+  initialInsertPageNumber = 1,
   questionNumber = '1',
   onClose,
   onSaveCrop,
 }: DiagramCropModalProps) {
-  const [activePdfFile, setActivePdfFile] = useState<File | null>(initialPdfFile || null);
+  const [activeSourceType, setActiveSourceType] = useState<'qp' | 'insert'>(initialSourceType);
+  const [activePdfFile, setActivePdfFile] = useState<File | null>(() => {
+    if (initialSourceType === 'insert' && insertFile) return insertFile;
+    return initialPdfFile || null;
+  });
   const [activeImageSrc, setActiveImageSrc] = useState<string | null>(initialImageSrc || null);
 
-  const [currentPage, setCurrentPage] = useState(initialPageNumber);
+  const [currentPage, setCurrentPage] = useState(() => {
+    if (initialSourceType === 'insert') return initialInsertPageNumber || initialPageNumber || 1;
+    return initialQpPageNumber || initialPageNumber || 1;
+  });
   const [totalPages, setTotalPages] = useState(1);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -70,9 +87,16 @@ export function DiagramCropModal({
   // Sync props when opening or switching question
   useEffect(() => {
     if (!isOpen) return;
-    setActivePdfFile(initialPdfFile || null);
+    const targetSource = (initialSourceType === 'insert' && insertFile) ? 'insert' : 'qp';
+    setActiveSourceType(targetSource);
+    const targetPdf = targetSource === 'insert' ? (insertFile || null) : (initialPdfFile || null);
+    setActivePdfFile(targetPdf);
     setActiveImageSrc(initialImageSrc || null);
-    setCurrentPage(initialPageNumber || 1);
+    
+    const targetPage = targetSource === 'insert'
+      ? (initialInsertPageNumber || initialPageNumber || 1)
+      : (initialQpPageNumber || initialPageNumber || 1);
+    setCurrentPage(targetPage);
 
     if (initialBoundingBox && Array.isArray(initialBoundingBox) && initialBoundingBox.length >= 4) {
       const [y1, x1, y2, x2] = initialBoundingBox.map(Number);
@@ -85,7 +109,17 @@ export function DiagramCropModal({
     } else {
       setBox([150, 50, 600, 950]);
     }
-  }, [isOpen, initialPdfFile, initialImageSrc, initialPageNumber, initialBoundingBox]);
+  }, [
+    isOpen,
+    initialPdfFile,
+    insertFile,
+    initialSourceType,
+    initialImageSrc,
+    initialPageNumber,
+    initialQpPageNumber,
+    initialInsertPageNumber,
+    initialBoundingBox,
+  ]);
 
   // Read PDF total page count
   useEffect(() => {
@@ -371,9 +405,12 @@ export function DiagramCropModal({
       localUrl: previewUrl,
       boundingBox: box,
       pageNumber: currentPage,
+      sourceDoc: activeSourceType,
     });
     onClose();
   };
+
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
 
@@ -385,7 +422,7 @@ export function DiagramCropModal({
   const hasSource = !!(activePdfFile || activeImageSrc || sourceImgUrl);
 
   return createPortal(
-    <div className="crop-modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="crop-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="crop-modal-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}
@@ -416,6 +453,44 @@ export function DiagramCropModal({
 
         {/* ─── Controls Toolbar ───────────────────────────────────────────── */}
         <div className="crop-modal-toolbar">
+          {/* Document Source Switcher (QP vs Insert Booklet) */}
+          {insertFile && initialPdfFile && (
+            <div className="crop-toolbar-group" style={{ background: 'rgba(255, 255, 255, 0.05)', padding: '2px', borderRadius: '8px' }}>
+              <button
+                type="button"
+                className="crop-btn-tool"
+                style={{
+                  background: activeSourceType === 'qp' ? '#6366f1' : 'transparent',
+                  color: activeSourceType === 'qp' ? '#ffffff' : 'inherit',
+                  fontWeight: 700,
+                }}
+                onClick={() => {
+                  setActiveSourceType('qp');
+                  setActivePdfFile(initialPdfFile);
+                  setCurrentPage(initialQpPageNumber || 1);
+                }}
+              >
+                📄 Question Paper
+              </button>
+              <button
+                type="button"
+                className="crop-btn-tool"
+                style={{
+                  background: activeSourceType === 'insert' ? '#0ea5e9' : 'transparent',
+                  color: activeSourceType === 'insert' ? '#ffffff' : 'inherit',
+                  fontWeight: 700,
+                }}
+                onClick={() => {
+                  setActiveSourceType('insert');
+                  setActivePdfFile(insertFile);
+                  setCurrentPage(initialInsertPageNumber || 1);
+                }}
+              >
+                📖 Insert Booklet
+              </button>
+            </div>
+          )}
+
           {/* Page Selector (for PDFs) */}
           {activePdfFile && totalPages > 1 && (
             <div className="crop-toolbar-group">
@@ -425,17 +500,38 @@ export function DiagramCropModal({
                 className="crop-btn-page"
                 disabled={currentPage <= 1 || isLoadingContent}
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                title="Previous page"
               >
                 ◀
               </button>
-              <span className="crop-page-indicator">
-                {currentPage} / {totalPages}
-              </span>
+              <select
+                className="crop-page-select"
+                value={currentPage}
+                disabled={isLoadingContent}
+                onChange={(e) => setCurrentPage(Number(e.target.value) || 1)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  color: '#ffffff',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  borderRadius: '6px',
+                  padding: '2px 8px',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                }}
+              >
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                  <option key={p} value={p} style={{ background: '#1e293b', color: '#ffffff' }}>
+                    Page {p} of {totalPages}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 className="crop-btn-page"
                 disabled={currentPage >= totalPages || isLoadingContent}
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                title="Next page"
               >
                 ▶
               </button>

@@ -19,6 +19,8 @@ export interface PublishedQuiz {
   durationMinutes: number;
   isExamMode: boolean;                   // Enforce timer and submit gate
   securityEnabled: boolean;              // Anti-cheating fullscreen / tab lock
+  requireTeacherUnlock?: boolean;        // Require invigilator PIN to unlock on tab/blur violation
+  teacherPin?: string;                   // Configurable teacher/invigilator unlock PIN (e.g. "1234")
   maxViolations: number;                 // Auto-submit after N tab violations
   showInstantSolutions: boolean;         // Show step-by-step breakdown on submit
   isActive: boolean;                     // Open for student submissions
@@ -155,8 +157,10 @@ export function createDraftFromTest(
     durationMinutes: header?.durationMinutes || 45,
     isExamMode: true,
     securityEnabled: true,
+    requireTeacherUnlock: true,
+    teacherPin: '1234',
     maxViolations: 3,
-    showInstantSolutions: true,
+    showInstantSolutions: false,
     isActive: true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

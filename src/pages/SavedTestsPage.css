@@ -496,6 +496,20 @@
   color: white;
 }
 
+.saved-card-btn--grade {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #059669;
+  font-weight: 700;
+  text-align: center;
+}
+
+.saved-card-btn--grade:hover:not(:disabled) {
+  background: #059669;
+  border-color: #059669;
+  color: white;
+}
+
 .saved-card-btn--delete {
   background: transparent;
   border-color: var(--color-border);

@@ -146,11 +146,14 @@ export function parseFormattedTextToDocxRuns(
     .replace(/<sub>(.*?)<\/sub>/gi, '_{$1}')
     .replace(/<sup>(.*?)<\/sup>/gi, '^{$1}')
     // Nuclide / Isotope notation: _^{40}_{20}W or {}^{40}_{20}W -> ^{40}_{20}W
-    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '^{$1}_{$2}')
-    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '^{$2}_{$1}')
-    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '^{$1}_{$2}')
-    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '^{$2}_{$1}')
-    .replace(/_?\^\{([^{}]+)\}/g, '^{$1}')
+    .replace(/(?:\{\}\s*)?(?:_\^|\^)\{([^{}]+)\}\s*_\{([^{}]+)\}/g, '^{$1}_{$2}')
+    .replace(/(?:\{\}\s*)?_\{([^{}]+)\}\s*\^\{([^{}]+)\}/g, '^{$2}_{$1}')
+    .replace(/(?:\{\}\s*)?(?:_\^|\^)([0-9a-zA-Z]+)\s*_([0-9a-zA-Z]+)/g, '^{$1}_{$2}')
+    .replace(/(?:\{\}\s*)?_([0-9a-zA-Z]+)\s*\^([0-9a-zA-Z]+)/g, '^{$2}_{$1}')
+    .replace(/\\prescript\{([^{}]+)\}\{([^{}]+)\}/g, '^{$1}_{$2}')
+    .replace(/(?:\{\}\s*)?_?\^\{([^{}]+)\}/g, '^{$1}')
+    // Remove any remaining orphan empty braces {}
+    .replace(/\{\}/g, '')
     // Clean percentage escaping
     .replace(/\\%/g, '%')
     // Remove outer LaTeX math delimiters while keeping content

@@ -36,10 +36,16 @@ export function UploadPage() {
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [uploadedQpFile, setUploadedQpFile] = useState<File | null>(null);
+  const [uploadedInsertFile, setUploadedInsertFile] = useState<File | null>(null);
 
-  const selectedFilesRef = useRef<{ qpFile: File | null; msFile: File | null }>({
+  const selectedFilesRef = useRef<{
+    qpFile: File | null;
+    msFile: File | null;
+    insertFile: File | null;
+  }>({
     qpFile: null,
     msFile: null,
+    insertFile: null,
   });
 
   const isProcessing = ['uploading', 'extracting', 'cropping-diagrams'].includes(pipelineState.stage);
@@ -50,17 +56,20 @@ export function UploadPage() {
     async (
       qpFile: File,
       msFile: File | null,
-      options: { includeGuidance: boolean } = { includeGuidance: true }
+      insertFile: File | null,
+      options: { includeGuidance: boolean; domain: 'stem' | 'humanities' } = { includeGuidance: true, domain: 'stem' }
     ) => {
       setSavedCount(null);
       setExtractionResult(null);
       setUploadedQpFile(qpFile);
-      selectedFilesRef.current = { qpFile, msFile };
+      setUploadedInsertFile(insertFile);
+      selectedFilesRef.current = { qpFile, msFile, insertFile };
 
       try {
         const { result, diagramData: data, previewUrls: urls } = await runExtractionPipeline(
           qpFile,
           msFile,
+          insertFile,
           setPipelineState,
           options
         );
@@ -76,8 +85,9 @@ export function UploadPage() {
 
   // ─── Handle Save to Database (Uploads storage files on confirm) ──────────
 
-  const handleConfirmSave = useCallback(async () => {
-    if (!extractionResult) return;
+  const handleConfirmSave = useCallback(async (customResult?: ExtractionResult) => {
+    const resultToSave = customResult || extractionResult;
+    if (!resultToSave) return;
 
     setIsSaving(true);
     setPipelineState((prev) => ({
@@ -89,17 +99,18 @@ export function UploadPage() {
 
     try {
       const count = await saveExtractedQuestions(
-        extractionResult,
+        resultToSave,
         diagramData,
         selectedFilesRef.current.qpFile,
-        selectedFilesRef.current.msFile
+        selectedFilesRef.current.msFile,
+        selectedFilesRef.current.insertFile
       );
       setSavedCount(count);
       setPipelineState({
         stage: 'complete',
         message: `Successfully saved ${count} questions!`,
         progress: 100,
-        result: extractionResult,
+        result: resultToSave,
         error: null,
       });
     } catch (err) {
@@ -107,7 +118,7 @@ export function UploadPage() {
         stage: 'error',
         message: err instanceof Error ? err.message : 'Save failed',
         progress: 0,
-        result: extractionResult,
+        result: resultToSave,
         error: err instanceof Error ? err.message : 'Unknown save error',
       });
     } finally {
@@ -132,7 +143,9 @@ export function UploadPage() {
     setDiagramData(new Map());
     setPreviewUrls(new Map());
     setSavedCount(null);
-    selectedFilesRef.current = { qpFile: null, msFile: null };
+    setUploadedQpFile(null);
+    setUploadedInsertFile(null);
+    selectedFilesRef.current = { qpFile: null, msFile: null, insertFile: null };
   }, [diagramData]);
 
   // ─── Render ──────────────────────────────────────────────────────────────
@@ -187,6 +200,7 @@ export function UploadPage() {
             result={extractionResult || pipelineState.result!}
             diagramUrls={previewUrls}
             pdfFile={uploadedQpFile || selectedFilesRef.current.qpFile}
+            insertFile={uploadedInsertFile || selectedFilesRef.current.insertFile}
             onUpdateDiagram={(qNum, item) => {
               setDiagramData((prev) => {
                 const next = new Map(prev);

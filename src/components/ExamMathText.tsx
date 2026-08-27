@@ -45,8 +45,21 @@ export function toUnicodeSuperscripts(str: string): string {
 export function autoFormatChemistryAndMath(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
-  // 1. Normalize reaction arrows
+  // 0. Clean corrupted LLM prefixes (e.g. extCH4, extCO2, extH2O, extCaCO3, extHCl, extNaCl) and control char tabs
   let res = text
+    .replace(/\t+ext(?=\{|\s*[A-Za-z0-9])/g, '\\text')
+    .replace(/\t+imes\b/g, '\\times')
+    .replace(/\t+heta\b/g, '\\theta')
+    .replace(/\r+ightarrow\b/g, '\\rightarrow')
+    .replace(/\r+ightleftharpoons\b/g, '\\rightleftharpoons')
+    .replace(/\f+rac\b/g, '\\frac')
+    .replace(/[\b]+eta\b/g, '\\beta')
+    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
+    .replace(/\bext\{([^{}]+)\}/g, '$1')
+    .replace(/\bext\s+([A-Z][a-z]?\d*)/g, '$1');
+
+  // 1. Normalize reaction arrows
+  res = res
     .replace(/\s*(?:-->|->|\\rightarrow)\s*/g, ' → ')
     .replace(/\s*(?:<->|<=>|\\rightleftharpoons)\s*/g, ' ⇌ ')
     .replace(/\s*(?:<-|\\leftarrow)\s*/g, ' ← ');
@@ -152,8 +165,6 @@ export function ensureInlineMathDelimiters(text: string): string {
 export function normalizeLatexString(raw: string): string {
   if (!raw) return '';
   return raw
-    // Clean up escaped percentage \% -> %
-    .replace(/\\%/g, '%')
     // LaTeX spacing commands: \, \: \; \! \ ~
     .replace(/\\,/g, ' ')
     .replace(/\\:/g, ' ')
@@ -178,6 +189,10 @@ export function normalizeLatexString(raw: string): string {
     .replace(/\^\\circ/g, '°')
     .replace(/\\degree\b/g, '°')
     .replace(/\\circ\b/g, '°')
+    // Clean ext artifacts inside LaTeX strings
+    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
+    .replace(/\bext\{([^{}]+)\}/g, '$1')
+    .replace(/\\text\{([A-Z][a-z]?(?:\d+|[a-z])?(?:[A-Z][a-z]?(?:\d+|[a-z])?)*)\}/g, '$1')
     // Normalize malformed isotope notation like _^{40}_{20}W or _^{40} or _{20}^{40}W -> {}^{40}_{20}W
     .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
     .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
@@ -217,7 +232,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
   let str = typeof snippet === 'string' ? snippet : String(snippet);
 
   // Normalize string and ensure only embedded formulas/LaTeX are wrapped in $...$
-  str = ensureInlineMathDelimiters(normalizeLatexString(str));
+  str = ensureInlineMathDelimiters(str);
 
   // Split by block math $$...$$ and inline math $...$
   const tokens = str.split(/(\$\$[\s\S]*?\$\$|\$(?!\$)[^$\n]+?\$)/g);
@@ -227,7 +242,9 @@ function renderMathSnippet(snippet: any): React.ReactNode {
 
     // Block Math: $$ ... $$
     if (token.startsWith('$$') && token.endsWith('$$') && token.length >= 4) {
-      const math = normalizeLatexString(token.slice(2, -2).trim());
+      const rawMath = token.slice(2, -2).trim();
+      // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
+      const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
         const html = katex.renderToString(math, {
           ...KATEX_OPTIONS,
@@ -251,7 +268,9 @@ function renderMathSnippet(snippet: any): React.ReactNode {
 
     // Inline Math: $ ... $
     if (token.startsWith('$') && token.endsWith('$') && token.length >= 2) {
-      const math = normalizeLatexString(token.slice(1, -1).trim());
+      const rawMath = token.slice(1, -1).trim();
+      // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
+      const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
         const html = katex.renderToString(math, {
           ...KATEX_OPTIONS,
@@ -358,16 +377,38 @@ export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className =
   // Normalize string: convert literal '\n' string to actual newline
   const normalized = strContent.replace(/\\n/g, '\n');
 
-  // Split by markdown table patterns (lines beginning with |)
+  // Split by markdown table patterns
   const lines = normalized.split('\n');
   const blocks: { type: 'text' | 'table'; lines: string[] }[] = [];
   let currentBlock: { type: 'text' | 'table'; lines: string[] } | null = null;
 
+  const isTableLine = (line: string): boolean => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    // Standard markdown table row starting with pipe
+    if (trimmed.startsWith('|')) return true;
+    // Line with at least two pipe delimiters or separator syntax
+    const pipeCount = (trimmed.match(/\|/g) || []).length;
+    const isSep = /^[-:\s|]{3,}$/.test(trimmed) && pipeCount >= 1;
+    return pipeCount >= 2 || isSep;
+  };
+
+  const isSeparatorRow = (line: string): boolean => {
+    const clean = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+    const cells = clean.split('|').map((c) => c.trim());
+    return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c) || /^[-:\s]+$/.test(c));
+  };
+
+  const parseTableRowCells = (rowStr: string): string[] => {
+    let clean = rowStr.trim();
+    if (clean.startsWith('|')) clean = clean.slice(1);
+    if (clean.endsWith('|')) clean = clean.slice(0, -1);
+    return clean.split('|').map((c) => c.trim());
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const isTableLine = line.trim().startsWith('|') && line.trim().endsWith('|');
-
-    if (isTableLine) {
+    if (isTableLine(line)) {
       if (!currentBlock || currentBlock.type !== 'table') {
         if (currentBlock) blocks.push(currentBlock);
         currentBlock = { type: 'table', lines: [line] };
@@ -392,21 +433,12 @@ export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className =
           // Parse Markdown Table
           const rawRows = block.lines
             .map((l) => l.trim())
-            .filter((l) => l.length > 0 && !/^\|[-:\s|]+\|$/.test(l)); // Filter out separator rows like |---|---|
+            .filter((l) => l.length > 0 && !isSeparatorRow(l));
 
           if (rawRows.length === 0) return null;
 
-          const headerCells = rawRows[0]
-            .slice(1, -1)
-            .split('|')
-            .map((c) => c.trim());
-
-          const bodyRows = rawRows.slice(1).map((rowStr) =>
-            rowStr
-              .slice(1, -1)
-              .split('|')
-              .map((c) => c.trim())
-          );
+          const headerCells = parseTableRowCells(rawRows[0]);
+          const bodyRows = rawRows.slice(1).map(parseTableRowCells);
 
           return (
             <div key={bIdx} className="exam-table-container">

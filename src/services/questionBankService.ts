@@ -70,20 +70,23 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
   const topicMap = new Map<string, Set<string>>();
 
   data.forEach((row: any) => {
-    if (row.topic) {
-      if (!topicMap.has(row.topic)) {
-        topicMap.set(row.topic, new Set());
+    if (row.topic && row.topic.trim()) {
+      const trimmedTopic = row.topic.trim();
+      if (!topicMap.has(trimmedTopic)) {
+        topicMap.set(trimmedTopic, new Set());
       }
-      if (row.sub_topic) {
-        topicMap.get(row.topic)!.add(row.sub_topic);
+      if (row.sub_topic && row.sub_topic.trim()) {
+        topicMap.get(trimmedTopic)!.add(row.sub_topic.trim());
       }
     }
   });
 
-  return Array.from(topicMap.entries()).map(([topic, subTopicsSet]) => ({
-    topic,
-    subTopics: Array.from(subTopicsSet),
-  }));
+  return Array.from(topicMap.entries())
+    .map(([topic, subTopicsSet]) => ({
+      topic,
+      subTopics: Array.from(subTopicsSet).sort(),
+    }))
+    .sort((a, b) => a.topic.localeCompare(b.topic));
 }
 
 export interface SubjectTopicSummary {

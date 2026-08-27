@@ -99,7 +99,6 @@
 }
 
 .sc-btn {
-  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   padding: 12px 0;
   font-size: 0.95rem;
@@ -108,71 +107,92 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.1s ease;
+  transition: all 0.12s ease;
   user-select: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .sc-btn:active {
-  transform: scale(0.95);
+  transform: scale(0.94);
 }
 
+/* Scientific Function Keys: Crisp Dark Navy with Bright Sky Blue / White */
 .sc-btn--fn {
-  background: rgba(139, 92, 246, 0.22) !important;
-  color: #d8b4fe !important;
+  background: #0f172a !important;
+  color: #38bdf8 !important;
   font-size: 0.85rem;
+  font-weight: 700;
+  border: 1px solid #334155 !important;
 }
 .sc-btn--fn:hover {
-  background: rgba(139, 92, 246, 0.35) !important;
+  background: #1e293b !important;
   color: #ffffff !important;
+  border-color: #38bdf8 !important;
 }
 
+/* Numeric Keys: Clean Slate Gray with Bold White */
 .sc-btn--num {
   background: #334155 !important;
   color: #ffffff !important;
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   font-weight: 800;
+  border: 1px solid #475569 !important;
 }
 .sc-btn--num:hover {
   background: #475569 !important;
   color: #38bdf8 !important;
+  border-color: #64748b !important;
 }
 
+/* Arithmetic Operator Keys: Distinct Navy with Cyan Text */
 .sc-btn--op {
-  background: rgba(56, 189, 248, 0.22) !important;
+  background: #1e293b !important;
+  color: #0284c7 !important;
+  background-color: #0c4a6e !important;
   color: #38bdf8 !important;
-  font-size: 1.15rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  border: 1px solid #0284c7 !important;
 }
 .sc-btn--op:hover {
-  background: rgba(56, 189, 248, 0.35) !important;
+  background: #0284c7 !important;
   color: #ffffff !important;
 }
 
+/* Delete Key: Amber Orange */
 .sc-btn--del {
-  background: rgba(249, 115, 22, 0.25) !important;
-  color: #fb923c !important;
+  background: #c2410c !important;
+  color: #ffffff !important;
   font-size: 0.85rem;
+  font-weight: 800;
+  border: 1px solid #ea580c !important;
 }
 .sc-btn--del:hover {
-  background: rgba(249, 115, 22, 0.38) !important;
-  color: #ffffff !important;
+  background: #ea580c !important;
 }
 
+/* All Clear Key: Red */
 .sc-btn--ac {
-  background: rgba(239, 68, 68, 0.25) !important;
-  color: #f87171 !important;
+  background: #b91c1c !important;
+  color: #ffffff !important;
   font-size: 0.85rem;
+  font-weight: 800;
+  border: 1px solid #dc2626 !important;
 }
 .sc-btn--ac:hover {
-  background: rgba(239, 68, 68, 0.38) !important;
-  color: #ffffff !important;
+  background: #dc2626 !important;
 }
 
+/* Equals Key: Emerald Green */
 .sc-btn--eq {
-  background: linear-gradient(135deg, #10b981, #059669) !important;
+  background: #059669 !important;
   color: #ffffff !important;
-  font-size: 1.25rem;
+  font-size: 1.3rem;
+  font-weight: 800;
+  border: 1px solid #10b981 !important;
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
 }
 .sc-btn--eq:hover {
-  filter: brightness(1.15);
+  background: #10b981 !important;
+  filter: brightness(1.1);
 }

@@ -7,6 +7,7 @@ import {
   type CustomTestWithDetails,
 } from '../services/testBuilderService';
 import { ExportModal } from '../components/ExportModal';
+import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import type { Question } from '../types/database';
 import './SavedTestsPage.css';
 
@@ -14,12 +15,14 @@ interface SavedTestsPageProps {
   onLoadTestIntoBuilder: (questions: Question[]) => void;
   onNavigateToBuilder: () => void;
   onNavigateToBank: () => void;
+  onNavigateToQuizzes?: () => void;
 }
 
 export function SavedTestsPage({
   onLoadTestIntoBuilder,
   onNavigateToBuilder,
   onNavigateToBank,
+  onNavigateToQuizzes,
 }: SavedTestsPageProps) {
   const [tests, setTests] = useState<CustomTestWithDetails[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -36,6 +39,11 @@ export function SavedTestsPage({
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [exportData, setExportData] = useState<{
+    headerConfig: ExamHeaderConfig;
+    questions: Question[];
+  } | null>(null);
+
+  const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
   } | null>(null);
@@ -96,6 +104,33 @@ export function SavedTestsPage({
       }
     } catch (err: any) {
       alert(`Failed to prepare export: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setLoadingTestId(null);
+    }
+  };
+
+  const handleGradeOffline = async (test: CustomTestWithDetails) => {
+    setLoadingTestId(test.id);
+    try {
+      const resolved = await fetchCustomTestWithQuestions(test.id);
+      if (resolved && resolved.questions.length > 0) {
+        setOfflineGradingData({
+          headerConfig: {
+            title: test.title || 'Offline Exam Assessment',
+            schoolName: '',
+            subject: test.primarySubject || 'General Assessment',
+            subjectCode: '',
+            durationMinutes: Math.round((test.total_marks || 20) * 1.25),
+            instructions: 'Answer all questions.',
+            additionalMaterials: '',
+          },
+          questions: resolved.questions,
+        });
+      } else {
+        alert('This saved test has no questions to grade.');
+      }
+    } catch (err: any) {
+      alert(`Failed to prepare offline grading: ${err?.message || 'Unknown error'}`);
     } finally {
       setLoadingTestId(null);
     }
@@ -480,6 +515,16 @@ export function SavedTestsPage({
 
                             <button
                               type="button"
+                              className="saved-card-btn saved-card-btn--grade"
+                              onClick={() => handleGradeOffline(test)}
+                              disabled={loadingTestId === test.id}
+                              title="Grade offline paper exam via Excel or Rapid Grid"
+                            >
+                              📊 Grade Offline
+                            </button>
+
+                            <button
+                              type="button"
                               className="saved-card-btn saved-card-btn--delete"
                               onClick={() => handleDeleteTest(test.id)}
                               disabled={deletingId === test.id}
@@ -506,6 +551,20 @@ export function SavedTestsPage({
           onClose={() => setExportData(null)}
           headerConfig={exportData.headerConfig}
           questions={exportData.questions}
+        />
+      )}
+
+      {/* Offline Grading Modal */}
+      {offlineGradingData && (
+        <OfflineGradingModal
+          isOpen={true}
+          onClose={() => setOfflineGradingData(null)}
+          headerConfig={offlineGradingData.headerConfig}
+          questions={offlineGradingData.questions}
+          onViewInGradebook={() => {
+            setOfflineGradingData(null);
+            if (onNavigateToQuizzes) onNavigateToQuizzes();
+          }}
         />
       )}
     </div>

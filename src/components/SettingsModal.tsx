@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   type AppSettings,
   type ThemeMode,
@@ -41,6 +42,7 @@ export function SettingsModal({
   onLockApp,
 }: SettingsModalProps) {
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
 
@@ -56,7 +58,7 @@ export function SettingsModal({
   };
 
   return (
-    <div className="settings-overlay" onClick={onClose}>
+    <div className="settings-overlay" {...backdropDismiss}>
       <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
         {/* ─── Header ───────────────────────────────────────────────────────── */}
         <div className="settings-header">

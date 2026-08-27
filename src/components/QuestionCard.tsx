@@ -149,6 +149,22 @@ export function QuestionCard({
               {question.question_style}
             </span>
           )}
+
+          {(question.resource_ref || question.diagram_source === 'insert') && (
+            <span
+              className="q-badge"
+              style={{
+                background: 'rgba(14, 165, 233, 0.12)',
+                color: '#0284c7',
+                border: '1px solid rgba(14, 165, 233, 0.3)',
+                fontWeight: 700,
+                fontSize: '0.75rem',
+              }}
+              title="Referenced from Cambridge Insert Booklet"
+            >
+              📖 {question.resource_ref || 'Insert Resource'}
+            </span>
+          )}
         </div>
 
         <div className="q-card-header-right">
@@ -250,6 +266,19 @@ export function QuestionCard({
                   </div>
                   <span className="q-sub-marks">[{sub.marks}]</span>
                 </div>
+
+                {/* Sub-question diagram preview */}
+                {sub.diagram_url && (
+                  <div className="q-sub-diagram-container">
+                    <img
+                      src={sub.diagram_url}
+                      alt={`Diagram for ${sub.sub_id}`}
+                      className="q-sub-diagram-img"
+                      onClick={() => onViewDetails?.(question)}
+                      title={`Click to view diagram for ${sub.sub_id}`}
+                    />
+                  </div>
+                )}
 
                 {/* Sub-question mark scheme */}
                 {sub.mark_scheme && showMarkScheme && (

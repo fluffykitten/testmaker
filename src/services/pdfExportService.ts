@@ -16,7 +16,9 @@ import { autoFormatChemistryAndMath } from '../components/ExamMathText';
  */
 export function formatLatexForHtml(text: string): string {
   if (!text) return '';
-  const chemFormatted = autoFormatChemistryAndMath(text);
+  // 1. Unescape literal '\n' sequences from database/JSON strings
+  const unescaped = text.replace(/\\n/g, '\n');
+  const chemFormatted = autoFormatChemistryAndMath(unescaped);
   return chemFormatted
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
@@ -79,24 +81,33 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\\mathrm\{(.*?)\}/g, '$1')
     .replace(/\\mathbf\{(.*?)\}/g, '$1')
     .replace(/\\mathit\{(.*?)\}/g, '$1')
+    .replace(/\\ce\{([^{}]+)\}/g, '$1')
     .replace(/\\quad/g, '   ')
     .replace(/\\qquad/g, '      ')
     // Remove outer LaTeX math delimiters while keeping content
     .replace(/\$\$(.*?)\$\$/g, '$1')
     .replace(/\$(.*?)\$/g, '$1')
     .replace(/\\\[(.*?)\\\]/g, '$1')
-    // Nuclide / Isotope notation: _^{40}_{20}W or {}^{40}_{20}W or ^{40}_{20}W
-    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '<sup>$1</sup><sub>$2</sub>')
-    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '<sup>$2</sup><sub>$1</sub>')
-    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '<sup>$1</sup><sub>$2</sub>')
-    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '<sup>$2</sup><sub>$1</sub>')
+    .replace(/\\\((.*?)\\\)/g, '$1')
+    // 1. Nuclide / Isotope notation: {}^{40}_{20}W or _{20}^{40}W or \prescript{40}{20}W -> vertically stacked
+    .replace(/(?:\{\}\s*)?(?:_\^|\^)\{([^{}]+)\}\s*_\{([^{}]+)\}/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$1</span><span>$2</span></span>')
+    .replace(/(?:\{\}\s*)?_\{([^{}]+)\}\s*\^\{([^{}]+)\}/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$2</span><span>$1</span></span>')
+    .replace(/(?:\{\}\s*)?(?:_\^|\^)([0-9a-zA-Z]+)\s*_([0-9a-zA-Z]+)/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$1</span><span>$2</span></span>')
+    .replace(/(?:\{\}\s*)?_([0-9a-zA-Z]+)\s*\^([0-9a-zA-Z]+)/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$2</span><span>$1</span></span>')
+    .replace(/\\prescript\{([^{}]+)\}\{([^{}]+)\}/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$1</span><span>$2</span></span>')
+    // 2. Remove any remaining orphan empty braces {}
+    .replace(/\{\}/g, '')
     // Clean percentage escaping
     .replace(/\\%/g, '%')
     // Subscripts & Superscripts to HTML tags
     .replace(/_{([^{}]*)}/g, '<sub>$1</sub>')
     .replace(/\^{([^{}]*)}/g, '<sup>$1</sup>')
     .replace(/([a-zA-Z0-9)\]])_([0-9a-zA-Z+\-*]+)/g, '$1<sub>$2</sub>')
-    .replace(/\^([0-9a-zA-Z+\-*]+)/g, '<sup>$1</sup>');
+    .replace(/\^([0-9a-zA-Z+\-*]+)/g, '<sup>$1</sup>')
+    // Convert newlines to HTML line breaks so multi-line text and numbered statements render cleanly
+    .replace(/\r\n/g, '\n')
+    .replace(/\n\s*\n/g, '<br /><br />')
+    .replace(/\n/g, '<br />');
 }
 
 /**
@@ -762,12 +773,16 @@ export function openInsertBookletPrintWindow(
       .map((q, idx) => {
         const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
         const hasTable = q.question_text && q.question_text.includes('|');
-        if (!diagramUrl && !hasTable) return '';
+        if (!diagramUrl && !hasTable && !q.resource_ref) return '';
+
+        const refHeader = q.resource_ref 
+          ? `${q.resource_ref} — Resource for Question ${q.question_number || idx + 1}`
+          : `Resource for Question ${q.question_number || idx + 1}`;
 
         return `
           <div class="resource-item">
-            <div class="resource-title">Resource for Question ${idx + 1} (${q.topic || 'Source Material'})</div>
-            ${diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${diagramUrl}" alt="Resource Diagram ${idx + 1}" style="max-width: 90%; max-height: 320px; object-fit: contain;" /></div>` : ''}
+            <div class="resource-title">${refHeader} ${q.topic ? `(${q.topic})` : ''}</div>
+            ${diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${diagramUrl}" alt="${refHeader}" style="max-width: 90%; max-height: 380px; object-fit: contain;" /></div>` : ''}
             ${hasTable ? `<div style="margin-top: 10px;">${convertMarkdownTablesToHtml(q.question_text)}</div>` : ''}
           </div>
         `;

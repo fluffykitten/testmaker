@@ -20,11 +20,26 @@ export interface MarkScheme {
   common_misconceptions?: string[];   // Common student errors & conceptual traps
 }
 
+export interface InsertResourceItem {
+  id: string;               // e.g. "Fig. 1.1", "Photograph A", "Table 2.1"
+  title: string;            // e.g. "Settlement map of Area X" or "Synoptic weather chart"
+  page_number: number;
+  diagram_url?: string | null;
+  text_content?: string | null;
+  target_questions?: string[]; // e.g. ["1(a)", "1(b)"]
+}
+
 export interface SubQuestion {
   sub_id: string;           // e.g. "(a)", "(b)(i)"
   question_text: string;    // LaTeX-enriched text
   marks: number;
+  has_diagram?: boolean;    // Sub-question has diagram/figure
   diagram_url?: string | null; // Optional sub-question diagram image URL
+  diagram_source?: 'qp' | 'insert' | null; // Indicates whether the visual is from QP or Insert Booklet
+  resource_ref?: string | null; // e.g. "Fig. 1.2", "Figs. 2.2, 2.3 and 2.4", "Photograph A"
+  page_number?: number | null;  // QP page number if diagram is from Question Paper
+  insert_page_number?: number | null; // Insert booklet page number if from Insert Booklet
+  bounding_box?: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options?: string[] | null;// Optional choices for tick box / multiple-choice sub-questions
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
   guidance?: string;        // Sub-question specific teacher guidance/examiner tip
@@ -55,6 +70,9 @@ export interface Question {
   difficulty: QuestionDifficulty | null;
   marks: number;
   diagram_url: string | null;       // Supabase Storage public URL
+  diagram_source?: 'qp' | 'insert' | null; // Source document for diagram
+  resource_ref?: string | null;     // Reference to Insert figure/photo (e.g. "Fig. 1.1")
+  insert_page_number?: number | null;
   options?: string[] | null;        // Multiple choice options [A, B, C, D]
   sub_questions: SubQuestion[];     // JSONB array of nested parts
   mark_scheme: MarkScheme | null;   // JSONB marking structure
@@ -85,6 +103,7 @@ export interface PaperMetadata {
   year: number;
   series: string;
   paper_number: number;
+  has_insert_booklet?: boolean;
 }
 
 export interface ExtractedQuestion {
@@ -101,6 +120,9 @@ export interface ExtractedQuestion {
   topic: string;
   sub_topic: string | null;
   has_diagram: boolean;
+  diagram_source?: 'qp' | 'insert' | null;
+  resource_ref?: string | null;
+  insert_page_number?: number | null;
   bounding_box: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options: string[] | null;
   sub_questions?: SubQuestion[];
@@ -110,6 +132,7 @@ export interface ExtractedQuestion {
 export interface ExtractionResult {
   paper_metadata: PaperMetadata;
   questions: ExtractedQuestion[];
+  insert_resources?: InsertResourceItem[];
 }
 
 // ─── Supabase Typed Client Helper ──────────────────────────────────────────────

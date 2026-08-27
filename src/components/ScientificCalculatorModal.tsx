@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import './ScientificCalculatorModal.css';
 
 interface ScientificCalculatorModalProps {
@@ -10,6 +11,7 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
   isOpen,
   onClose,
 }) => {
+  const backdropDismiss = useBackdropDismiss(onClose);
   const [expression, setExpression] = useState<string>('');
   const [result, setResult] = useState<string>('0');
   const [lastAnswer, setLastAnswer] = useState<string>('0');
@@ -125,7 +127,7 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
   if (!isOpen) return null;
 
   return (
-    <div className="sc-modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="sc-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="sc-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="sc-header">

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import {
@@ -22,6 +23,7 @@ import {
   type ExamLayoutTemplate,
   type ExportLayoutOptions,
 } from '../types/exportTemplates';
+import { exportOfflineGradingTemplateExcel } from '../services/offlineGradingService';
 import { DEFAULT_SCHOOL_LOGO } from '../assets/logoConstants';
 import './ExportModal.css';
 
@@ -67,6 +69,7 @@ export function ExportModal({
 
   const [isExporting, setIsExporting] = useState(false);
   const [activeTask, setActiveTask] = useState<string | null>(null);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
 
@@ -183,8 +186,18 @@ export function ExportModal({
     openMcqAnswerSheetPrintWindow(headerConfig, questions, layoutOptions);
   };
 
+  // 9. Export Offline Excel Grading Template
+  const handleExportOfflineTemplate = () => {
+    try {
+      exportOfflineGradingTemplateExcel(headerConfig, questions);
+    } catch (err) {
+      console.error('Failed to export offline template:', err);
+      alert('Failed to generate offline grading template.');
+    }
+  };
+
   return createPortal(
-    <div className="export-modal-backdrop animate-fade-in" onClick={onClose}>
+    <div className="export-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className="export-modal-card animate-scale-up"
         onClick={(e) => e.stopPropagation()}
@@ -751,6 +764,28 @@ export function ExportModal({
                     Print PDF
                   </button>
                 </div>
+              </div>
+
+              {/* Card 6: Offline Excel Grading Template */}
+              <div className="export-card" onClick={handleExportOfflineTemplate}>
+                <div className="export-card-icon-wrap" style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' }}>
+                  📊
+                </div>
+                <div className="export-card-content">
+                  <div className="export-card-header-row">
+                    <h3 className="export-card-name">Offline Excel Grading Template</h3>
+                    <span className="export-badge" style={{ background: '#dcfce7', color: '#15803d' }}>Excel (.xlsx)</span>
+                  </div>
+                  <p className="export-card-desc">
+                    Ready-to-use spreadsheet with question columns, answer key, and mark scheme for rapid offline grading and auto-evaluation.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="export-card-action-btn"
+                >
+                  Download Excel (.xlsx)
+                </button>
               </div>
 
               {/* Chemistry Only: Periodic Table Card */}

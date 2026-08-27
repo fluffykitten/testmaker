@@ -86,22 +86,31 @@ export function QuestionBankPage({
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionToast, setActionToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
-  // Load initial syllabuses and topics
+  // Load syllabuses on mount
   useEffect(() => {
-    async function loadMetadata() {
+    async function loadSyllabuses() {
       try {
-        const [sList, tList] = await Promise.all([
-          fetchSyllabuses(),
-          fetchTopics(),
-        ]);
+        const sList = await fetchSyllabuses();
         setSyllabuses(sList);
-        setTopics(tList);
       } catch (err: any) {
-        console.error('Error loading metadata:', err);
+        console.error('Error loading syllabuses:', err);
       }
     }
-    loadMetadata();
+    loadSyllabuses();
   }, []);
+
+  // Fetch topics dynamically whenever the selected syllabus/subject filter changes
+  useEffect(() => {
+    async function loadTopics() {
+      try {
+        const tList = await fetchTopics(filters.syllabusId);
+        setTopics(tList);
+      } catch (err: any) {
+        console.error('Error loading topics for subject/syllabus:', err);
+      }
+    }
+    loadTopics();
+  }, [filters.syllabusId]);
 
   // Fetch questions whenever filters change
   const loadQuestions = useCallback(async () => {

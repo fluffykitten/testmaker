@@ -1,0 +1,598 @@
+/* ─── Offline Grading Modal Styling ────────────────────────────────────────── */
+
+.og-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.og-card {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(226, 232, 240, 0.8);
+  width: 96vw;
+  max-width: 1560px;
+  height: 92vh;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: ogScaleUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.2s ease, height 0.2s ease, max-width 0.2s ease;
+}
+
+.og-card--maximized {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+}
+
+@keyframes ogScaleUp {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Modal Header */
+.og-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.og-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.og-icon {
+  font-size: 1.75rem;
+  background: #eff6ff;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid #bfdbfe;
+}
+
+.og-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+}
+
+.og-subtitle {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin: 0.2rem 0 0 0;
+}
+
+.og-close-btn {
+  background: #f1f5f9;
+  border: none;
+  font-size: 1.25rem;
+  color: #64748b;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.og-close-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+/* Tab Navigation */
+.og-tabs {
+  display: flex;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 0 1.75rem;
+  gap: 1rem;
+}
+
+.og-tab {
+  padding: 0.875rem 1rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.15s ease;
+}
+
+.og-tab:hover {
+  color: #2563eb;
+}
+
+.og-tab--active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+}
+
+.og-tab-badge {
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 700;
+}
+
+/* Modal Body */
+.og-body {
+  padding: 1.5rem 1.75rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ─── Upload Tab Layout ─── */
+.og-upload-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 768px) {
+  .og-upload-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.og-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.og-panel-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 0.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.og-panel-desc {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin: 0 0 1.25rem 0;
+  line-height: 1.5;
+}
+
+.og-download-card {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.og-download-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.og-spec-tag {
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.og-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.og-btn--primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.og-btn--primary:hover {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.og-btn--success {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.og-btn--success:hover {
+  background: #15803d;
+  transform: translateY(-1px);
+}
+
+.og-btn--secondary {
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+.og-btn--secondary:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+/* Drag and drop zone */
+.og-dropzone {
+  background: #ffffff;
+  border: 2px dashed #94a3b8;
+  border-radius: 12px;
+  padding: 2.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex: 1;
+}
+
+.og-dropzone:hover,
+.og-dropzone--active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.og-dropzone-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.og-dropzone-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 0.25rem 0;
+}
+
+.og-dropzone-hint {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin: 0;
+}
+
+/* ─── In-App Rapid Grader Grid ─── */
+.og-grid-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.og-grid-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.og-table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  min-height: 480px;
+  max-height: calc(88vh - 200px);
+  flex: 1;
+  background: #ffffff;
+}
+
+.og-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+  text-align: left;
+}
+
+.og-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+  padding: 0.75rem 0.875rem;
+  border-bottom: 1px solid #cbd5e1;
+  border-right: 1px solid #f1f5f9;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.og-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #f1f5f9;
+  border-right: 1px solid #f8fafc;
+  background: #ffffff;
+}
+
+.og-table tr:hover td {
+  background: #f8fafc;
+}
+
+/* Sticky frozen columns for Candidate Name and # */
+.og-col-sticky-action {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: #f8fafc !important;
+  text-align: center;
+  width: 55px;
+  min-width: 55px;
+}
+
+th.og-col-sticky-action {
+  z-index: 15 !important;
+  background: #f1f5f9 !important;
+}
+
+.og-col-sticky-name {
+  position: sticky;
+  left: 55px;
+  z-index: 5;
+  background: #ffffff !important;
+  box-shadow: 2px 0 6px -2px rgba(0, 0, 0, 0.08);
+  min-width: 180px;
+}
+
+th.og-col-sticky-name {
+  z-index: 15 !important;
+  background: #f1f5f9 !important;
+  box-shadow: 2px 0 6px -2px rgba(0, 0, 0, 0.08);
+}
+
+.og-row-del-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.og-row-del-btn:hover {
+  color: #ef4444;
+  background: #fee2e2;
+}
+
+.og-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.og-header-icon-btn {
+  background: #f1f5f9;
+  border: none;
+  font-size: 1.1rem;
+  color: #64748b;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.og-header-icon-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.og-cell-input {
+  width: 100%;
+  min-width: 90px;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.og-cell-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+/* ─── Verification & Review Results View ─── */
+.og-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.875rem;
+  margin-bottom: 1.25rem;
+}
+
+.og-stat-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.og-stat-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.og-stat-val {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin-top: 0.25rem;
+}
+
+/* Question Score Badges in table */
+.og-mark-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.og-mark-badge:hover {
+  transform: scale(1.06);
+}
+
+.og-mark-badge--full {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.og-mark-badge--partial {
+  background: #fef9c3;
+  color: #a16207;
+  border: 1px solid #fef08a;
+}
+
+.og-mark-badge--zero {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.og-grade-pill {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 9999px;
+  font-weight: 800;
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+/* Modal Footer */
+.og-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.125rem 1.75rem;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.og-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.og-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Success Card View */
+.og-success-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.og-success-icon {
+  font-size: 3.5rem;
+  margin-bottom: 1rem;
+}
+
+.og-success-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 0.5rem 0;
+}
+
+.og-success-desc {
+  font-size: 0.9375rem;
+  color: #64748b;
+  max-width: 500px;
+  line-height: 1.6;
+  margin: 0 0 1.75rem 0;
+}
+
+.og-success-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}

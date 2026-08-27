@@ -168,6 +168,12 @@
   caret-color: #818cf8;
 }
 
+.pin-digit-input[type="password"] {
+  -webkit-text-security: disc;
+  font-family: caption, sans-serif;
+  letter-spacing: 0;
+}
+
 .pin-digit-input:focus {
   border-color: #818cf8;
   background: rgba(99, 102, 241, 0.1);
@@ -182,6 +188,41 @@
 .pin-digit-input.pin-digit--error {
   border-color: #f43f5e;
   background: rgba(244, 63, 94, 0.08);
+}
+
+/* Visibility toggle button */
+.pin-mask-toggle-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: -10px;
+  margin-bottom: 16px;
+}
+
+.pin-mask-toggle-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 180ms ease;
+  user-select: none;
+}
+
+.pin-mask-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.pin-mask-toggle-btn:active {
+  transform: translateY(0);
 }
 
 /* ─── Error Message ─────────────────────────────────────────────────────────── */

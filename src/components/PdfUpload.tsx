@@ -1,35 +1,43 @@
 import { useCallback, useState, useRef } from 'react';
 import { getSavedSettings } from '../lib/settings';
+import { getGeminiApiKeys, type SubjectDomain } from '../lib/gemini';
 import './PdfUpload.css';
 
 interface PdfUploadProps {
   onFilesSelected: (
     questionPaper: File,
     markScheme: File | null,
-    options: { includeGuidance: boolean }
+    insertFile: File | null,
+    options: { includeGuidance: boolean; domain: SubjectDomain }
   ) => void;
   isProcessing: boolean;
 }
 
 /**
- * Dual-slot upload component:
- * 1. Question Paper PDF (Required)
- * 2. Mark Scheme PDF (Optional - auto-generates if omitted)
- * 3. AI Teacher Guidance & Misconceptions Toggle (Optional, enabled by default)
+ * Subject-Aware Multi-Document Upload Component:
+ * - Tab 1: 🔬 STEM & Sciences (Physics, Chemistry, Biology, Math) -> QP + Mark Scheme
+ * - Tab 2: 🌍 Humanities & Languages (Geography, History, Economics, English) -> QP + Mark Scheme + Insert / Resource Booklet
+ * - AI Teacher Guidance & Misconceptions Toggle
  */
 export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
+  const [domain, setDomain] = useState<SubjectDomain>('stem');
+
   const [qpDragOver, setQpDragOver] = useState(false);
   const [msDragOver, setMsDragOver] = useState(false);
+  const [insertDragOver, setInsertDragOver] = useState(false);
 
   const [qpFile, setQpFile] = useState<File | null>(null);
   const [msFile, setMsFile] = useState<File | null>(null);
+  const [insertFile, setInsertFile] = useState<File | null>(null);
+
   const [includeGuidance, setIncludeGuidance] = useState<boolean>(() => {
-    return getSavedSettings().defaultAiGuidanceEnabled ?? true;
+    return getSavedSettings().defaultAiGuidanceEnabled ?? false;
   });
   const [error, setError] = useState<string | null>(null);
 
   const qpInputRef = useRef<HTMLInputElement>(null);
   const msInputRef = useRef<HTMLInputElement>(null);
+  const insertInputRef = useRef<HTMLInputElement>(null);
 
   const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
@@ -75,14 +83,70 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
     }
   };
 
+  // Insert Booklet Handlers
+  const handleInsertDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setInsertDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      const err = validateFile(file);
+      if (err) setError(err);
+      else {
+        setError(null);
+        setInsertFile(file);
+      }
+    }
+  };
+
   const handleExtract = () => {
     if (qpFile) {
-      onFilesSelected(qpFile, msFile, { includeGuidance });
+      onFilesSelected(qpFile, msFile, domain === 'humanities' ? insertFile : null, {
+        includeGuidance,
+        domain,
+      });
     }
   };
 
   return (
     <div className="upload-container">
+      {/* ─── Subject Domain Mode Switcher Tabs ───────────────────────────── */}
+      <div className="upload-tabs-container">
+        <button
+          type="button"
+          className={`upload-tab ${domain === 'stem' ? 'upload-tab--active' : ''}`}
+          onClick={() => setDomain('stem')}
+        >
+          <span className="upload-tab-icon">🔬</span>
+          <div className="upload-tab-text">
+            <span className="upload-tab-title">STEM & Sciences</span>
+            <span className="upload-tab-desc">Physics, Chemistry, Biology, Math, CS</span>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          className={`upload-tab ${domain === 'humanities' ? 'upload-tab--active' : ''}`}
+          onClick={() => setDomain('humanities')}
+        >
+          <span className="upload-tab-icon">🌍</span>
+          <div className="upload-tab-text">
+            <span className="upload-tab-title">Humanities & Languages</span>
+            <span className="upload-tab-desc">Geography, History, Economics, English</span>
+          </div>
+          <span className="upload-tab-badge">Insert Support</span>
+        </button>
+      </div>
+
+      {domain === 'humanities' && (
+        <div className="upload-humanities-hint animate-fade-in">
+          <span className="upload-hint-icon">💡</span>
+          <span>
+            <strong>Geography & Humanities Mode:</strong> Supports separate Cambridge IGCSE / O-Level / A-Level <strong>Insert & Resource Booklets</strong> (0460, 0470, 0455, 0680). Figures and maps in the insert are automatically extracted and cross-referenced with their questions.
+          </span>
+        </div>
+      )}
+
       {/* ─── Question Paper Drop Zone (Required) ─────────────────────────── */}
       <div className="upload-section">
         <div className="upload-section-header">
@@ -131,7 +195,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
               <div className="file-preview-icon">📄</div>
               <div className="file-preview-info">
                 <p className="file-preview-name">{qpFile.name}</p>
-                <p className="file-preview-size">{(qpFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                <p className="file-preview-size">{(qpFile.size / 1024 / 1024).toFixed(2)} MB • Main Question Paper</p>
               </div>
               <button
                 type="button"
@@ -149,10 +213,79 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         </div>
       </div>
 
+      {/* ─── Insert / Resource Booklet Drop Zone (Humanities Mode Only) ─────── */}
+      {domain === 'humanities' && (
+        <div className="upload-section animate-fade-in">
+          <div className="upload-section-header">
+            <span className="upload-section-title">2. Insert / Resource Booklet PDF</span>
+            <span className="upload-badge upload-badge--optional">Recommended for Geography/History</span>
+          </div>
+
+          <div
+            className={`drop-zone drop-zone--insert ${insertDragOver ? 'drop-zone--active' : ''} ${
+              insertFile ? 'drop-zone--has-file' : ''
+            }`}
+            onDrop={handleInsertDrop}
+            onDragOver={(e) => { e.preventDefault(); setInsertDragOver(true); }}
+            onDragLeave={() => setInsertDragOver(false)}
+            onClick={() => !insertFile && insertInputRef.current?.click()}
+          >
+            <input
+              ref={insertInputRef}
+              type="file"
+              accept="application/pdf"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const err = validateFile(file);
+                  if (err) setError(err);
+                  else { setError(null); setInsertFile(file); }
+                }
+              }}
+              className="drop-zone-input"
+              id="insert-upload-input"
+            />
+
+            {!insertFile ? (
+              <div className="drop-zone-content">
+                <div className="drop-zone-icon" style={{ color: '#0ea5e9' }}>📖</div>
+                <p className="drop-zone-title-sm" style={{ color: '#0284c7' }}>
+                  + Add Insert / Resource Booklet PDF (Optional)
+                </p>
+                <p className="drop-zone-hint">
+                  Attach Cambridge Insert containing maps, aerial photos, figures, and case studies (e.g. Fig 1.1, Photograph A).
+                </p>
+              </div>
+            ) : (
+              <div className="file-preview">
+                <div className="file-preview-icon">🗺️</div>
+                <div className="file-preview-info">
+                  <p className="file-preview-name">{insertFile.name}</p>
+                  <p className="file-preview-size">{(insertFile.size / 1024 / 1024).toFixed(2)} MB • Resource Booklet / Insert</p>
+                </div>
+                <button
+                  type="button"
+                  className="file-preview-remove"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setInsertFile(null);
+                    if (insertInputRef.current) insertInputRef.current.value = '';
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ─── Mark Scheme Drop Zone (Optional) ────────────────────────────── */}
       <div className="upload-section">
         <div className="upload-section-header">
-          <span className="upload-section-title">2. Official Mark Scheme PDF</span>
+          <span className="upload-section-title">
+            {domain === 'humanities' ? '3. Official Mark Scheme PDF' : '2. Official Mark Scheme PDF'}
+          </span>
           <span className="upload-badge upload-badge--optional">Optional (Auto-solved if omitted)</span>
         </div>
 
@@ -213,17 +346,19 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         </div>
       </div>
 
-      {/* ─── AI Teacher Guidance Toggle (Optional Feature) ───────────────── */}
+      {/* ─── AI Teacher Guidance Toggle ──────────────────────────────────── */}
       <div className="upload-ai-options-card">
         <label className="upload-toggle-label" htmlFor="ai-guidance-toggle">
           <div className="upload-toggle-info">
             <div className="upload-toggle-heading">
               <span className="upload-toggle-icon">✨</span>
-              <span className="upload-toggle-title">AI Teacher Marking Insights</span>
-              <span className="upload-badge upload-badge--new">Enhanced</span>
+              <span className="upload-toggle-title">AI Teacher Guidance & Misconceptions</span>
+              <span className="upload-badge upload-badge--new">{includeGuidance ? 'Deep Mode (~20s)' : '⚡ Fast Mode (~5s)'}</span>
             </div>
             <p className="upload-toggle-desc">
-              Auto-generates examiner tips, method marks (M1, A1), error carried forward (ecf) rules, and common student misconceptions for each question.
+              {includeGuidance
+                ? 'Deep Mode: Auto-generates detailed examiner marking tips, method marks, and common student errors for each question (~20s).'
+                : '⚡ Fast Mode (Default): Extracts questions, tables, and answers in ~5 seconds. Guidance can still be generated on-demand later.'}
             </p>
           </div>
 
@@ -239,6 +374,59 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
           </div>
         </label>
       </div>
+
+      {/* ─── API Key Engine Status Indicator ─────────────────────────────── */}
+      {(() => {
+        const apiKeys = getGeminiApiKeys();
+        const isMultiKey = apiKeys.length >= 2;
+        return (
+          <div
+            className="upload-engine-status animate-fade-in"
+            style={{
+              marginBottom: '16px',
+              padding: '10px 16px',
+              borderRadius: '10px',
+              background: isMultiKey
+                ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(6, 182, 212, 0.1))'
+                : 'rgba(255, 255, 255, 0.03)',
+              border: `1px solid ${isMultiKey ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.07)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              fontSize: '0.82rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '1.1rem' }}>{isMultiKey ? '⚡' : '🔑'}</span>
+              <span style={{ color: '#cbd5e1' }}>
+                {isMultiKey ? (
+                  <>
+                    <strong style={{ color: '#10b981' }}>Dual-Key Turbo Mode Active:</strong> Extracting with {apiKeys.length} Google AI accounts concurrently (50:50 parallel split for 2× speed).
+                  </>
+                ) : (
+                  <>
+                    <strong style={{ color: '#94a3b8' }}>Standard Mode (1 Key):</strong> Add <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: '4px', color: '#38bdf8' }}>VITE_GEMINI_API_KEY_2</code> in <code style={{ color: '#e2e8f0' }}>.env.local</code> for 2× parallel speed.
+                  </>
+                )}
+              </span>
+            </div>
+            <span
+              style={{
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: isMultiKey ? '#10b981' : 'rgba(255, 255, 255, 0.08)',
+                color: isMultiKey ? '#ffffff' : '#94a3b8',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {apiKeys.length} {apiKeys.length === 1 ? 'Key' : 'Keys'} Connected
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Error Message */}
       {error && (
@@ -258,7 +446,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
           {isProcessing ? (
             <>
               <span className="extract-btn-spinner" />
-              Analyzing with AI…
+              Analyzing {domain === 'humanities' ? 'Humanities Paper' : 'STEM Paper'} with AI…
             </>
           ) : (
             <>
@@ -266,7 +454,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                 <path d="M10 2L10 14M6 10l4 4 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M3 15v2a2 2 0 002 2h10a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              Extract Questions {includeGuidance ? 'with Teacher Insights' : ''} {msFile ? '(Using Official Mark Scheme)' : '(Auto-Solved)'}
+              Extract {domain === 'humanities' ? 'Geography / Humanities' : 'STEM'} Questions {insertFile ? '(with Insert Resources)' : ''} {msFile ? '(Using Mark Scheme)' : '(Auto-Solved)'}
             </>
           )}
         </button>

@@ -441,10 +441,92 @@ export function extractAcceptableAnswers(question: Question, subIndex?: number):
 
   // Check simple options (for MCQ / Single choice)
   if (question.options && question.options.length > 0) {
-    result.push(question.options[0]);
+    const cIdx = resolveMcqCorrectOptionIndex(question, subIndex);
+    result.push(question.options[cIdx]);
+    result.push(String.fromCharCode(65 + cIdx));
   }
 
   return Array.from(new Set(result.map((s) => s.trim()).filter(Boolean)));
+}
+
+/**
+ * Resolves the correct 0-based option index (0 = A, 1 = B, 2 = C, 3 = D) for an MCQ question.
+ * Robustly parses Cambridge mark scheme formats such as "C [1]", "B", "[A]", "Option D",
+ * as well as comparing mark scheme text against option text.
+ */
+export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: number): number {
+  const options = (subIndex !== undefined && question.sub_questions?.[subIndex]?.options)
+    ? question.sub_questions[subIndex].options
+    : question.options;
+
+  if (!options || options.length === 0) return 0;
+
+  // 1. Direct property check
+  const directProp = (question as any).correct_option;
+  if (directProp !== undefined && directProp !== null) {
+    if (typeof directProp === 'number' && directProp >= 0 && directProp < options.length) {
+      return directProp;
+    }
+    const num = Number(directProp);
+    if (!isNaN(num) && num >= 0 && num < options.length) {
+      return num;
+    }
+    const str = String(directProp).trim().toUpperCase();
+    if (str.length === 1 && str >= 'A' && str <= 'Z') {
+      const idx = str.charCodeAt(0) - 65;
+      if (idx < options.length) return idx;
+    }
+  }
+
+  // 2. Extract mark scheme candidates
+  const candidates: string[] = [];
+  if (subIndex !== undefined && question.sub_questions?.[subIndex]) {
+    const sq = question.sub_questions[subIndex];
+    if (sq.mark_scheme) candidates.push(sq.mark_scheme);
+  }
+  if (question.mark_scheme) {
+    if (typeof question.mark_scheme === 'string') {
+      candidates.push(question.mark_scheme);
+    } else {
+      if (question.mark_scheme.acceptable_answers) {
+        candidates.push(...question.mark_scheme.acceptable_answers);
+      }
+      if (question.mark_scheme.marking_points) {
+        candidates.push(...question.mark_scheme.marking_points);
+      }
+    }
+  }
+
+  // 3. Match letter (A, B, C, D) from mark scheme strings
+  for (const cand of candidates) {
+    if (!cand) continue;
+    const clean = String(cand).trim();
+
+    // Match patterns like "C", "C [1]", "[C]", "(C)", "Option C", "C 1", "C\n1"
+    const match = clean.match(/(?:^|[\s\[\(]|Option\s*)([A-D])(?:[\s\]\)]*\[\d+\]|[\s\]\)\.]|$)/i);
+    if (match && match[1]) {
+      const letter = match[1].toUpperCase();
+      const idx = letter.charCodeAt(0) - 65;
+      if (idx >= 0 && idx < options.length) {
+        return idx;
+      }
+    }
+  }
+
+  // 4. Match full option text against mark scheme text
+  for (let oIdx = 0; oIdx < options.length; oIdx++) {
+    const optText = options[oIdx].replace(/^[A-Da-d][\.\)\s:]+/, '').trim().toLowerCase();
+    if (optText.length >= 3) {
+      for (const cand of candidates) {
+        const cleanCand = String(cand).toLowerCase();
+        if (cleanCand.includes(optText) || optText.includes(cleanCand)) {
+          return oIdx;
+        }
+      }
+    }
+  }
+
+  return 0;
 }
 
 /**
@@ -471,6 +553,34 @@ export function gradeDeterministicAnswer(
   }
 
   const rawAnswerStr = String(studentAnswer).trim();
+
+  // A0. Check Multiple Choice Question (MCQ) Deterministic Evaluation
+  const options = (subIndex !== undefined && question.sub_questions?.[subIndex]?.options)
+    ? question.sub_questions[subIndex].options
+    : question.options;
+
+  if (options && options.length > 0) {
+    const correctIdx = resolveMcqCorrectOptionIndex(question, subIndex);
+    const userNum = Number(rawAnswerStr);
+    const userLetter = rawAnswerStr.length === 1 ? rawAnswerStr.toUpperCase().charCodeAt(0) - 65 : -1;
+    const isCorrect = userNum === correctIdx || userLetter === correctIdx;
+    const correctLetter = String.fromCharCode(65 + correctIdx);
+    const correctOptionText = options[correctIdx] || `Option ${correctLetter}`;
+
+    return {
+      isHandled: true,
+      earnedMarks: isCorrect ? maxMarks : 0,
+      maxMarks,
+      isCorrect,
+      matchType: 'mcq',
+      feedback: isCorrect
+        ? `✓ Correct choice: Option ${correctLetter}`
+        : `✗ Selected ${userNum >= 0 && userNum < 26 ? `Option ${String.fromCharCode(65 + userNum)}` : rawAnswerStr}, correct answer is Option ${correctLetter} (${correctOptionText})`,
+      matchedCriteria: [`Option ${correctLetter}`],
+      acceptedAnswers: [`Option ${correctLetter}`, correctOptionText],
+    };
+  }
+
   const acceptableList = extractAcceptableAnswers(question, subIndex);
 
   if (acceptableList.length === 0) {
