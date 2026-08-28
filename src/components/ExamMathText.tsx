@@ -96,11 +96,77 @@ export function autoFormatChemistryAndMath(text: string): string {
   return res;
 }
 
+export const CURRENCY_USD_PLACEHOLDER = '\uE000';
+
+const COMMON_ENGLISH_WORDS_REGEX =
+  /\b(and|or|the|is|was|were|are|to|for|from|with|in|of|each|per|costs?|prices?|spent|paid|total|change|save|saved|buy|bought|sell|sold|she|he|they|it|a|an|if|then|when|what|which|how|much|many)\b/i;
+
+export function protectCurrencySymbols(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+  // Match currency like $15, $25.50, $1,000, $0.99 where $ is directly followed by digit
+  return text.replace(
+    /(?<=^|[\s(.,;:!?\[{"'/\-])\$(\d+(?:,\d{3})*(?:\.\d+)?)(?=[^$\w]|$)/g,
+    (match, num, offset, fullStr) => {
+      const afterIndex = offset + match.length;
+      const remaining = fullStr.slice(afterIndex);
+
+      // If immediately followed by $, e.g. $25$, it's an explicit math block for the number
+      if (remaining.startsWith('$')) {
+        return match;
+      }
+
+      const nextDollar = remaining.indexOf('$');
+      // If no closing $ exists on the remainder of the line/string, it's definitely currency!
+      if (nextDollar === -1) {
+        return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+      }
+
+      const between = remaining.slice(0, nextDollar);
+
+      // If between this and the next $ there is a newline, they don't pair as inline math anyway
+      if (between.includes('\n')) {
+        return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+      }
+
+      // If the text between contains English sentence words, this is currency
+      if (COMMON_ENGLISH_WORDS_REGEX.test(between)) {
+        return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+      }
+
+      // If between contains punctuation that ends sentences/clauses (. ? ! ; ,) followed by whitespace
+      if (/[.?!;,]\s+/.test(between)) {
+        return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+      }
+
+      // If between contains math operators (=, +, -, \times, \div, etc.) or LaTeX commands, it's math!
+      if (/[=+\-*/\\^_{}]/.test(between) || /\b(times|cdot|frac|sqrt|pm|approx)\b/.test(between)) {
+        return match; // Keep as math
+      }
+
+      // If nothing between except spaces/words, it's not valid math
+      return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+    }
+  );
+}
+
+export function restoreCurrencySymbols(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+  return text.replace(new RegExp(CURRENCY_USD_PLACEHOLDER, 'g'), '$');
+}
+
 export function ensureInlineMathDelimiters(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
+  // Standardize LaTeX delimiters: \[...\] -> $$...$$, \(...\) -> $...$
+  let normalized = text
+    .replace(/\\\[([\s\S]*?)\\\]/g, '$$$$1$$')
+    .replace(/\\\(([\s\S]*?)\\\)/g, '$$$1$$');
+
+  // 0. Protect monetary currency signs ($15, $25.50) from acting as math delimiters
+  normalized = protectCurrencySymbols(normalized);
+
   // 1. Auto-format chemistry formulas & reaction arrows in raw text
-  let normalized = autoFormatChemistryAndMath(text);
+  normalized = autoFormatChemistryAndMath(normalized);
 
   // 2. Normalize common temperature/degree symbols and isotopes
   normalized = normalized
@@ -119,7 +185,6 @@ export function ensureInlineMathDelimiters(text: string): string {
     .replace(/\^\{\\circ\}/g, '°')
     .replace(/\^\\circ/g, '°')
     .replace(/\\degree\b/g, '°')
-    .replace(/\\circ\b/g, '°')
     // Normalize isotope notation: _^{40}_{20}W or _{20}^{40}W -> {}^{40}_{20}W
     .replace(/(?:\{\})?_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
     .replace(/(?:\{\})?_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
@@ -159,7 +224,8 @@ export function ensureInlineMathDelimiters(text: string): string {
     });
   });
 
-  return transformedParts.join('');
+  // Always restore currency symbols before returning so external callers (Gemini, HTML export) get clean strings
+  return restoreCurrencySymbols(transformedParts.join(''));
 }
 
 export function normalizeLatexString(raw: string): string {
@@ -188,11 +254,9 @@ export function normalizeLatexString(raw: string): string {
     .replace(/\^\{\\circ\}/g, '°')
     .replace(/\^\\circ/g, '°')
     .replace(/\\degree\b/g, '°')
-    .replace(/\\circ\b/g, '°')
     // Clean ext artifacts inside LaTeX strings
     .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
     .replace(/\bext\{([^{}]+)\}/g, '$1')
-    .replace(/\\text\{([A-Z][a-z]?(?:\d+|[a-z])?(?:[A-Z][a-z]?(?:\d+|[a-z])?)*)\}/g, '$1')
     // Normalize malformed isotope notation like _^{40}_{20}W or _^{40} or _{20}^{40}W -> {}^{40}_{20}W
     .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
     .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
@@ -206,7 +270,7 @@ export function normalizeLatexString(raw: string): string {
 
 function renderTextWithSubSuper(text: string): React.ReactNode {
   if (!text) return null;
-  const clean = text.replace(/\\%/g, '%');
+  const clean = restoreCurrencySymbols(text).replace(/\\%/g, '%');
 
   // Check for subscript/superscript patterns like Fe_3O_4 or H_2SO_4 or 10^5
   if (!/([a-zA-Z0-9)\]])(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d+|\^[a-zA-Z+-])/.test(clean)) {
@@ -231,8 +295,16 @@ function renderMathSnippet(snippet: any): React.ReactNode {
   if (!snippet) return null;
   let str = typeof snippet === 'string' ? snippet : String(snippet);
 
-  // Normalize string and ensure only embedded formulas/LaTeX are wrapped in $...$
+  // Normalize LaTeX delimiters first
+  str = str
+    .replace(/\\\[([\s\S]*?)\\\]/g, '$$$$1$$')
+    .replace(/\\\(([\s\S]*?)\\\)/g, '$$$1$$');
+
+  // Ensure formulas are wrapped in $...$
   str = ensureInlineMathDelimiters(str);
+
+  // Temporarily protect currency so delimiter split doesn't pair $15 and $25
+  str = protectCurrencySymbols(str);
 
   // Split by block math $$...$$ and inline math $...$
   const tokens = str.split(/(\$\$[\s\S]*?\$\$|\$(?!\$)[^$\n]+?\$)/g);
@@ -242,7 +314,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
 
     // Block Math: $$ ... $$
     if (token.startsWith('$$') && token.endsWith('$$') && token.length >= 4) {
-      const rawMath = token.slice(2, -2).trim();
+      const rawMath = restoreCurrencySymbols(token.slice(2, -2).trim());
       // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
       const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
@@ -260,7 +332,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       } catch {
         return (
           <span key={idx} className="exam-math-block exam-math-fallback">
-            {token}
+            {restoreCurrencySymbols(token)}
           </span>
         );
       }
@@ -268,7 +340,14 @@ function renderMathSnippet(snippet: any): React.ReactNode {
 
     // Inline Math: $ ... $
     if (token.startsWith('$') && token.endsWith('$') && token.length >= 2) {
-      const rawMath = token.slice(1, -1).trim();
+      const rawMath = restoreCurrencySymbols(token.slice(1, -1).trim());
+
+      // Safeguard: If text inside $...$ has multiple plain English words and no LaTeX macros, treat as plain text
+      const hasEnglishSentenceWords = /\b(and|the|is|was|were|are|to|for|from|with|in|of|or|each|per|costs?|prices?)\b/i.test(rawMath);
+      if (hasEnglishSentenceWords && !/\\(frac|text|mathrm|mathbf|times|sqrt|cdot|rightarrow|delta|Delta|circ)\b/i.test(rawMath)) {
+        return <React.Fragment key={idx}>{renderTextWithSubSuper(restoreCurrencySymbols(token))}</React.Fragment>;
+      }
+
       // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
       const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
@@ -286,15 +365,16 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       } catch {
         return (
           <span key={idx} className="exam-math-inline exam-math-fallback">
-            {token}
+            {restoreCurrencySymbols(token)}
           </span>
         );
       }
     }
 
     // Parse Markdown Bold (**text**) in text snippets
-    if (token.includes('**')) {
-      const boldParts = token.split(/(\*\*.*?\*\*)/g);
+    const restoredToken = restoreCurrencySymbols(token);
+    if (restoredToken.includes('**')) {
+      const boldParts = restoredToken.split(/(\*\*.*?\*\*)/g);
       return (
         <React.Fragment key={idx}>
           {boldParts.map((bp, bpi) => {
@@ -307,7 +387,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       );
     }
 
-    return <React.Fragment key={idx}>{renderTextWithSubSuper(token)}</React.Fragment>;
+    return <React.Fragment key={idx}>{renderTextWithSubSuper(restoredToken)}</React.Fragment>;
   });
 }
 
@@ -430,6 +510,23 @@ export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className =
     <div className={`exam-math-wrapper ${className}`}>
       {blocks.map((block, bIdx) => {
         if (block.type === 'table') {
+          // Check if this is a genuine markdown table (must have a separator row or all lines starting with pipe and at least 2 rows)
+          const hasSep = block.lines.some(isSeparatorRow);
+          const allPipeStart = block.lines.every((l) => l.trim().startsWith('|'));
+          if (!hasSep && (!allPipeStart || block.lines.length < 2)) {
+            // Not a real table (e.g. math with absolute values |x| or conditional probability P(A|B)), render as text
+            return (
+              <div key={bIdx} className="exam-text-block">
+                {block.lines.map((line, li) => (
+                  <React.Fragment key={li}>
+                    {renderMathSnippet(line)}
+                    {li < block.lines.length - 1 && <br />}
+                  </React.Fragment>
+                ))}
+              </div>
+            );
+          }
+
           // Parse Markdown Table
           const rawRows = block.lines
             .map((l) => l.trim())

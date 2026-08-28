@@ -70,6 +70,57 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* ─── Template Selector ─────────────────────────────────────────────────── */
+
+.header-template-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  flex-wrap: wrap;
+}
+
+.header-template-label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.header-template-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.header-template-btn {
+  padding: 6px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.header-template-btn:hover {
+  border-color: var(--color-primary-400);
+  color: var(--color-primary-600);
+}
+
+.header-template-btn--active {
+  background: var(--color-primary-600);
+  border-color: var(--color-primary-600);
+  color: #fff !important;
+}
+
+.header-editor-form {
   border-top: 1px solid var(--color-surface-sunken);
 }
 

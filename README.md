@@ -1,6 +1,6 @@
 # 🐱 fluffykitten's test maker
 
-An intelligent, AI-powered examination authoring studio and interactive student assessment platform. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, build customized Cambridge-grade exam papers, host live gamified quiz arenas, conduct proctored assessments, and generate printable cohort diagnostic reports.
+An intelligent, AI-powered examination authoring studio and interactive student assessment platform. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, build customized Cambridge-grade exam papers, host live gamified quiz arenas, conduct proctored assessments, evaluate offline paper exams with automated Excel grading, and generate 1-page printable student diagnostic reports.
 
 Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 
@@ -24,7 +24,8 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
   - Available as an upright landscape reference drawer with interactive zoom and pan during digital exams, as well as an exportable print sheet.
 - **🗺️ Social Science & Humanities Insert Booklets**:
   - Standalone Resource Insert generation for Geography, History, Sociology, Economics, and Business Studies.
-  - Extracts case studies, figures, maps, and data tables into a dedicated reference drawer and printable insert.
+  - Automatic figure and table renumbering across assembled multi-question exam papers.
+  - Export Resource Booklets to both **Microsoft Word (`.docx`)** and printable **PDF** formats with authentic Cambridge layouts.
 - **📄 Multi-Format High-Fidelity Exports**:
   - **Microsoft Word (`.docx`)**: Native mathematical formulas, sub/superscripts, Cambridge headers, and mark scheme tables.
   - **Camera-Ready PDF**: Printable student test papers, mark schemes, and MCQ bubble answer sheets with ~8mm handwriting lines.
@@ -39,27 +40,36 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 - **In-App Student Tooling**:
   - Integrated Cambridge Periodic Table drawer, on-screen Scientific Calculator (trig, roots, powers, parentheses), and Resource Booklet drawers.
 
-### 📊 4. Intelligent Grading, AI Examiner & Cohort Analytics
-- **Deterministic MCQ & Formula Grading**: Automatic scoring for multiple choice and normalized chemical/mathematical equations.
-- **AI Examiner Review**: Detailed step-by-step model answer breakdown cards with criteria fulfillment, misconception feedback, and automated KaTeX formula formatting.
-- **Teacher Remarking & Custom Feedback**: Teachers can adjust scores, override grading, and write personalized feedback for each question or sub-question.
-- **Print-Optimized PDF Reports**:
-  - **Class Cohort Analytics PDF**: Score distributions, average completion duration, question difficulty rankings, and topic mastery heatmaps.
-  - **Individual Student Diagnostic Reports**: Sub-question breakdowns, earned vs max marks, student responses, and structured model answers.
-- **Digital Confirmation Receipts**: Students receive instant exam receipts with unique 3-digit access PINs for secure, private paper retrieval.
+### 📝 4. Offline Exam Grading & Batch Excel Workflow
+- **Custom Excel Mark-Entry Templates**:
+  - Generates bespoke multi-sheet Excel templates matching the exact questions, sub-questions, and official mark schemes of any assembled exam.
+- **Deterministic Auto-Grading & Header Mapping**:
+  - Robust column mapping with word-boundary matching and duplicate collision prevention.
+  - Automatic MCQ answer normalization (handles `D`, `Option D`, `(D)`, or option text) evaluated against official Cambridge mark keys.
+- **Central Gradebook Integration**:
+  - Saves offline scored exam results directly into the assessment hub for permanent record-keeping, item analysis, and report generation.
 
-### 🚪 5. Streamlined Portal Landing Page & Security
-- **Top-Aligned Portal Layout**: Students and teachers can jump directly into their respective portals right above the fold without unnecessary scrolling.
-- **Hardware-Accelerated Smooth Scrolling**: Zero-friction document scrolling with GPU-optimized ambient gradients.
-- **Masked Administrator PIN Gate**: Clean 6-digit access PIN entry with automatic masking and an optional show/hide toggle for privacy.
-- **Subject & Topic Question Bank**: Browse, organize, search, and assemble customized tests across subjects and topics in seconds.
+### 📊 5. 3-Tier Diagnostic Reports & Personalized Feedback
+- **🎓 1-Page Student Performance & Improvement Report**:
+  - Compact, single A4 page printable report designed to give directly to students.
+  - Displays total score, percentage, question-by-question candidate response vs official mark scheme, and topic mastery bars.
+  - **Personalized Diagnostic & Improvement Plan**: Highlights *What Went Well*, *Priority Focus Areas*, *Targeted Next Steps*, and encouraging teacher guidance.
+  - **Ink-Saving Clean Design**: High-contrast, ink-friendly layout with no heavy background fills.
+  - **Review Signatures**: Designated signature areas for **Subject Teacher** and **Parent / Guardian** acknowledgment.
+- **🌟 Prestige Grade Tier-List Color Hierarchy**:
+  - Distinct rarity color scheme: **A\*** (Legendary Gold), **A** (Epic Emerald), **B** (Rare Sapphire), **C** (Uncommon Amethyst), **D** (Bronze), **E** (Ruby Coral), **U** (Shadow Slate).
+- **🏫 Class-by-Class & Cohort Summary Reports**:
+  - Filterable by class/section (`10-A`, `10-B`, or All Classes).
+  - Cohort KPI ribbons (class average, highest/lowest scores, pass rates), grade band distributions, topic mastery bars, and student rankings.
+- **📥 Master Excel Gradebook**:
+  - Multi-tab workbook with student rosters, question-level item analysis, accuracy percentages, and average earned marks.
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS / Vanilla CSS Design System
-- **Math & Chemistry**: KaTeX, Custom Formula & Ion Parser
+- **Frontend**: React 19, TypeScript, Vite, Vanilla CSS Design System
+- **Math & Chemistry**: KaTeX, Custom Formula & Chemical Ion Parser
 - **PDF Engine**: PDF.js with high-resolution offscreen canvas rendering & `pdf-lib`
 - **Audio Engine**: Web Audio API Synthesizer (`gameSoundEngine.ts`)
 - **AI Backend**: Google Gemini Multimodal APIs (Flash & Pro with dynamic discovery)

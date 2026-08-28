@@ -9,6 +9,7 @@ import {
 } from '../services/testBuilderService';
 import {
   getPublishedQuizzes,
+  loadAndSyncPublishedQuizzes,
   savePublishedQuiz,
   deletePublishedQuiz,
   toggleQuizActiveStatus,
@@ -23,8 +24,9 @@ import './QuizManagerPage.css';
 interface QuizManagerPageProps {
   onLaunchTestRun: (questions: Question[], headerConfig?: ExamHeaderConfig) => void;
   onLaunchGameHost?: (quiz: PublishedQuiz, questions: Question[]) => void;
-  onNavigateToBuilder: () => void;
-  onNavigateToSaved: () => void;
+  onNavigateToBuilder?: () => void;
+  onNavigateToSaved?: () => void;
+  onNavigateToBank?: () => void;
 }
 
 export function QuizManagerPage({
@@ -32,30 +34,25 @@ export function QuizManagerPage({
   onLaunchGameHost,
   onNavigateToBuilder,
   onNavigateToSaved,
+  onNavigateToBank: _onNavigateToBank,
 }: QuizManagerPageProps) {
   const [quizzes, setQuizzes] = useState<PublishedQuiz[]>([]);
   const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // Subject Filtering & Search
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isGroupedBySubject, setIsGroupedBySubject] = useState<boolean>(true);
-
-  // Modal State
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
-  const [selectedTestId, setSelectedTestId] = useState<string>('');
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
   const [copiedPinId, setCopiedPinId] = useState<string | null>(null);
-  const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
+  const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
+  const [isGroupedBySubject, setIsGroupedBySubject] = useState<boolean>(false);
+  const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
 
-  // Results Modal State
+  // Modal states
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
-
-  // Offline Grading State
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
@@ -69,19 +66,28 @@ export function QuizManagerPage({
 
   async function loadData() {
     setLoading(true);
-    try {
-      const pubList = getPublishedQuizzes();
-      // Sanitize any older published quizzes that fell back to generic "Assessment"
-      const sanitized = pubList.map((q) => {
+    const sanitize = (list: PublishedQuiz[]) =>
+      list.map((q) => {
         if (!q.subject || q.subject.toLowerCase() === 'assessment') {
           return { ...q, subject: 'Chemistry' };
         }
         return q;
       });
-      setQuizzes(sanitized);
 
+    try {
+      // 1. Immediately show cached local quizzes (instant render, no blank flash)
+      const pubList = getPublishedQuizzes();
+      if (pubList.length > 0) {
+        setQuizzes(sanitize(pubList));
+      }
+
+      // 2. Fetch custom tests
       const tests = await fetchCustomTestsWithMetadata();
       setSavedTests(tests);
+
+      // 3. Asynchronously load and sync quizzes from Supabase cloud
+      const synced = await loadAndSyncPublishedQuizzes();
+      setQuizzes(sanitize(synced));
     } catch (err) {
       console.error('Error loading quiz manager data:', err);
     } finally {
@@ -130,7 +136,7 @@ export function QuizManagerPage({
   const handleOpenCreateModal = (initialMode: 'exam' | 'game' = 'exam') => {
     if (savedTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before creating an interactive quiz.');
-      onNavigateToBuilder();
+      onNavigateToBuilder?.();
       return;
     }
 
@@ -145,7 +151,7 @@ export function QuizManagerPage({
   const handleOpenOfflineGrader = () => {
     if (savedTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before grading offline students.');
-      onNavigateToBuilder();
+      onNavigateToBuilder?.();
       return;
     }
     if (savedTests.length === 1) {
@@ -199,17 +205,17 @@ export function QuizManagerPage({
     setIsConfigModalOpen(true);
   };
 
-  const handleQuickSetMode = (quizId: string, mode: 'exam' | 'game') => {
+  const handleQuickSetMode = async (quizId: string, mode: 'exam' | 'game') => {
     const target = quizzes.find((q) => q.id === quizId);
     if (!target) return;
     const updated = { ...target, quizMode: mode, updatedAt: new Date().toISOString() };
-    savePublishedQuiz(updated);
-    setQuizzes(getPublishedQuizzes());
+    const saved = await savePublishedQuiz(updated);
+    setQuizzes(saved);
     setSaveSuccessMsg(`Switched "${updated.title}" to ${mode === 'game' ? '🎮 Quizizz Game Mode' : '📝 Formal Exam Mode'}!`);
     setTimeout(() => setSaveSuccessMsg(null), 3000);
   };
 
-  const handleSaveQuizConfig = () => {
+  const handleSaveQuizConfig = async () => {
     if (!activeQuizDraft) return;
     const cleanCode = activeQuizDraft.quizCode.trim().toUpperCase();
     if (!cleanCode) {
@@ -229,8 +235,8 @@ export function QuizManagerPage({
       updatedAt: new Date().toISOString(),
     };
 
-    savePublishedQuiz(updated);
-    setQuizzes(getPublishedQuizzes());
+    const saved = await savePublishedQuiz(updated);
+    setQuizzes(saved);
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
     setSaveSuccessMsg(`✨ Quiz "${updated.title}" configured with Code [${updated.quizCode}]!`);
@@ -238,15 +244,15 @@ export function QuizManagerPage({
   };
 
   // ─── 5. Action Handlers ─────────────────────────────────────────────────────
-  const handleDeleteQuiz = (id: string) => {
+  const handleDeleteQuiz = async (id: string) => {
     if (confirm('Are you sure you want to unpublish and delete this interactive quiz?')) {
-      deletePublishedQuiz(id);
-      setQuizzes(getPublishedQuizzes());
+      const remaining = await deletePublishedQuiz(id);
+      setQuizzes(remaining);
     }
   };
 
-  const handleToggleActive = (id: string) => {
-    toggleQuizActiveStatus(id);
+  const handleToggleActive = async (id: string) => {
+    await toggleQuizActiveStatus(id);
     setQuizzes(getPublishedQuizzes());
   };
 
@@ -620,7 +626,7 @@ export function QuizManagerPage({
               <button
                 type="button"
                 className={`qm-group-toggle-btn ${isGroupedBySubject ? 'qm-group-toggle-btn--active' : ''}`}
-                onClick={() => setIsGroupedBySubject((v) => !v)}
+                onClick={() => setIsGroupedBySubject((v: boolean) => !v)}
                 title="Toggle grouping by subject sections"
               >
                 {isGroupedBySubject ? '📁 Grouped by Subject' : '📄 Flat List'}
@@ -752,7 +758,7 @@ export function QuizManagerPage({
                 <label className="qm-form-label">Select Source Test from Saved Exams:</label>
                 <select
                   className="qm-form-select"
-                  value={selectedTestId}
+                  value={selectedTestId || ''}
                   onChange={(e) => handleSelectSavedTest(e.target.value)}
                 >
                   {savedTests.map((t) => (

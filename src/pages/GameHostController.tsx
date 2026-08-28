@@ -56,8 +56,9 @@ export function GameHostController({ quiz, questions: initialQuestions, onExit }
   const playableItems: GamePlayableItem[] = useMemo(() => {
     return flattenQuizQuestionsForGame(initialQuestions, {
       shuffleQuestions: quiz.shuffleQuestions ?? false,
+      shuffleOptions: quiz.shuffleOptions ?? false,
     });
-  }, [initialQuestions, quiz.shuffleQuestions]);
+  }, [initialQuestions, quiz.shuffleQuestions, quiz.shuffleOptions]);
 
   const [timerSeconds, setTimerSeconds] = useState<number>(quiz.questionTimerSeconds ?? 20);
 

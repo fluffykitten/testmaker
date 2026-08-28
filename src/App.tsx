@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { PinGate } from './components/PinGate';
 import { OnboardingTutorial } from './components/OnboardingTutorial';
 import { ConnectionStatus } from './components/ConnectionStatus';
@@ -46,7 +46,20 @@ function App() {
   const [activeGameHostQuestions, setActiveGameHostQuestions] = useState<Question[]>([]);
 
   const [currentPage, setCurrentPage] = useState<Page>('home');
-  const [selectedQuestions, setSelectedQuestions] = useState<Map<string, Question>>(new Map());
+  const [selectedQuestions, setSelectedQuestions] = useState<Map<string, Question>>(() => {
+    try {
+      const saved = sessionStorage.getItem('testmaker_selected_questions');
+      if (saved) {
+        const parsed: Question[] = JSON.parse(saved);
+        const map = new Map<string, Question>();
+        parsed.forEach((q) => map.set(q.id, q));
+        return map;
+      }
+    } catch {
+      // ignore
+    }
+    return new Map();
+  });
   const [tutorialRestartSignal, setTutorialRestartSignal] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -57,6 +70,18 @@ function App() {
   useEffect(() => {
     applySettings(getSavedSettings());
   }, []);
+
+  // Sync selected questions to sessionStorage
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        'testmaker_selected_questions',
+        JSON.stringify(Array.from(selectedQuestions.values()))
+      );
+    } catch {
+      // ignore
+    }
+  }, [selectedQuestions]);
 
   const handleToggleSelectQuestion = (question: Question) => {
     setSelectedQuestions((prev) => {
@@ -77,6 +102,31 @@ function App() {
       return next;
     });
   };
+
+  const handleRemoveQuestionsFromTest = (questionIds: string[]) => {
+    setSelectedQuestions((prev) => {
+      const next = new Map(prev);
+      questionIds.forEach((id) => next.delete(id));
+      return next;
+    });
+  };
+
+  const handleUpdateTestQuestions = useCallback((newQuestions: Question[]) => {
+    setSelectedQuestions((prev) => {
+      const prevKeys = Array.from(prev.keys());
+      const newKeys = newQuestions.map((q) => q.id);
+      if (
+        prevKeys.length === newKeys.length &&
+        prevKeys.every((k, i) => k === newKeys[i]) &&
+        Array.from(prev.values()).every((q, i) => q === newQuestions[i])
+      ) {
+        return prev;
+      }
+      const map = new Map<string, Question>();
+      newQuestions.forEach((q) => map.set(q.id, q));
+      return map;
+    });
+  }, []);
 
   const handleClearSelection = () => {
     setSelectedQuestions(new Map());
@@ -272,6 +322,7 @@ function App() {
               selectedQuestionIds={selectedIds}
               onToggleSelectQuestion={handleToggleSelectQuestion}
               onClearSelection={handleClearSelection}
+              onRemoveQuestionsFromTest={handleRemoveQuestionsFromTest}
               onNavigateToUpload={() => setCurrentPage('upload')}
               onNavigateToBuilder={() => setCurrentPage('builder')}
             />
@@ -280,6 +331,7 @@ function App() {
             <TestBuilderPage
               initialQuestions={questionsList}
               onRemoveQuestion={handleRemoveQuestionFromTest}
+              onUpdateQuestions={handleUpdateTestQuestions}
               onNavigateToBank={() => setCurrentPage('bank')}
               onLaunchTestRun={(questions, headerConfig) => {
                 setTestRunQuestions(questions);
@@ -370,8 +422,29 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
         const savedTestsRaw = localStorage.getItem('testmaker_saved_tests');
         const savedTestsCount = savedTestsRaw ? JSON.parse(savedTestsRaw).length : 0;
 
+        let quizzesCount = 0;
         const quizzesRaw = localStorage.getItem('fluffykitten_published_quizzes');
-        const quizzesCount = quizzesRaw ? JSON.parse(quizzesRaw).length : 0;
+        if (quizzesRaw) {
+          try {
+            quizzesCount = JSON.parse(quizzesRaw).length;
+          } catch {
+            quizzesCount = 0;
+          }
+        }
+        if (quizzesCount === 0) {
+          try {
+            const { data: cloudCfg } = await (supabase.from('app_config' as any) as any)
+              .select('value')
+              .eq('key', 'published_quizzes')
+              .maybeSingle();
+            if (cloudCfg?.value) {
+              const parsed = JSON.parse(cloudCfg.value);
+              if (Array.isArray(parsed)) quizzesCount = parsed.length;
+            }
+          } catch {
+            // ignore fallback error
+          }
+        }
 
         const bookmarksRaw = localStorage.getItem('fluffykitten_bookmarked_questions');
         const bookmarksCount = bookmarksRaw ? JSON.parse(bookmarksRaw).length : 0;

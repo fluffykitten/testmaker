@@ -3,7 +3,11 @@
 // interactive game rounds for Quizizz mode with deterministic fast-grading.
 
 import type { Question, SubQuestion } from '../types/database';
-import { gradeDeterministicAnswer } from './deterministicGradingService';
+import {
+  gradeDeterministicAnswer,
+  resolveMcqCorrectOptionIndex,
+  extractAcceptableAnswers,
+} from './deterministicGradingService';
 
 export interface GamePlayableItem {
   id: string;
@@ -24,58 +28,110 @@ export interface GamePlayableItem {
 }
 
 /**
- * Extracts correct MCQ index from mark schemes or options
+ * Extracts correct MCQ index from mark schemes or options using robust parser
  */
-function deriveCorrectOptionIndex(q: Question, sq?: SubQuestion): number {
-  const options = sq?.options || q.options || [];
-  if (options.length === 0) return 0;
-
-  const ms = sq?.mark_scheme || q.mark_scheme;
-  if (!ms) return 0;
-
-  if (typeof ms === 'string') {
-    const match = ms.trim().match(/^[\[\(]?([A-Da-d])[\]\)]?$/);
-    if (match) {
-      const idx = match[1].toUpperCase().charCodeAt(0) - 65;
-      if (idx >= 0 && idx < options.length) return idx;
-    }
-  } else if (typeof ms === 'object' && ms !== null) {
-    const pts = ms.marking_points || [];
-    for (const pt of pts) {
-      const match = pt.trim().match(/^[\[\(]?([A-Da-d])[\]\)]?$/);
-      if (match) {
-        const idx = match[1].toUpperCase().charCodeAt(0) - 65;
-        if (idx >= 0 && idx < options.length) return idx;
-      }
-    }
-  }
-
-  return 0;
+export function deriveCorrectOptionIndex(q: Question, _sq?: SubQuestion, sIdx?: number): number {
+  return resolveMcqCorrectOptionIndex(q, sIdx);
 }
 
 /**
  * Derives a human-readable model answer string
  */
-function deriveCorrectAnswerText(q: Question, sq?: SubQuestion): string {
+function deriveCorrectAnswerText(q: Question, sq?: SubQuestion, sIdx?: number): string {
+  // If this sub-question has multiple choice options
+  if (sq && sq.options && sq.options.length >= 2) {
+    const cIdx = resolveMcqCorrectOptionIndex(q, sIdx);
+    return sq.options[cIdx] || sq.options[0];
+  }
+
+  // If this sub-question has a dedicated mark scheme
   if (sq) {
-    if (sq.mark_scheme) return sq.mark_scheme;
+    if (typeof sq.mark_scheme === 'string' && sq.mark_scheme.trim()) {
+      return sq.mark_scheme.trim();
+    }
+    if (typeof (sq as any).mark_scheme === 'object' && sq.mark_scheme !== null) {
+      const msObj: any = sq.mark_scheme;
+      if (Array.isArray(msObj.marking_points) && msObj.marking_points.length > 0) {
+        return msObj.marking_points.join('; ');
+      }
+      if (Array.isArray(msObj.acceptable_answers) && msObj.acceptable_answers.length > 0) {
+        return msObj.acceptable_answers.join('; ');
+      }
+    }
     if (sq.options && sq.options.length > 0) return sq.options[0];
   }
 
-  if (typeof q.mark_scheme === 'string') return q.mark_scheme;
-  if (typeof q.mark_scheme === 'object' && q.mark_scheme !== null) {
-    if (q.mark_scheme.acceptable_answers && q.mark_scheme.acceptable_answers.length > 0) {
-      return q.mark_scheme.acceptable_answers[0];
-    }
-    if (q.mark_scheme.marking_points && q.mark_scheme.marking_points.length > 0) {
-      return q.mark_scheme.marking_points.join('; ');
-    }
+  // If the parent question is MCQ
+  if (q.options && q.options.length >= 2) {
+    const cIdx = resolveMcqCorrectOptionIndex(q);
+    return q.options[cIdx] || q.options[0];
   }
+
+  // If the parent question has a mark scheme
+  const qMs: any = q.mark_scheme;
+  if (typeof qMs === 'string' && qMs.trim()) {
+    return qMs.trim();
+  }
+  if (typeof qMs === 'object' && qMs !== null) {
+    const pts = (qMs.marking_points || []).filter(
+      (p: string) => !/see sub-question breakdown/i.test(p)
+    );
+    const acc = qMs.acceptable_answers || [];
+    if (acc.length > 0) return acc.join('; ');
+    if (pts.length > 0) return pts.join('; ');
+  }
+
+  // Try extracting acceptable answers from question bank
+  const acceptable = extractAcceptableAnswers(q, sIdx);
+  if (acceptable.length > 0) {
+    return acceptable[0];
+  }
+
   if (q.options && q.options.length > 0) return q.options[0];
   return 'Credit scientifically accurate answer';
 }
 
+import { cleanMcqOptionContent } from './quizSubmissionService';
 import { shuffleArray } from './gameScoreEngine';
+
+/**
+ * Helper to shuffle MCQ options while recalculating the correct option index
+ * and preserving or updating clean option letters (Option A, Option B, etc.)
+ */
+function processMcqOptions(
+  rawOptions: string[],
+  origCorrectIdx: number,
+  shouldShuffle: boolean
+): { options: string[]; correctOptionIndex: number } {
+  if (!shouldShuffle || rawOptions.length < 2) {
+    return { options: rawOptions, correctOptionIndex: origCorrectIdx };
+  }
+
+  // Detect if options have letter prefixes like "A:", "A.", "(A)", "Option A"
+  const hasLetterPrefix = rawOptions.every((opt) =>
+    /^[([]?[A-Da-d][)\]\.:\s-]/i.test(opt.trim())
+  );
+
+  // Pair each option with its original index
+  const indexed = rawOptions.map((opt, idx) => ({
+    originalIdx: idx,
+    cleanedText: cleanMcqOptionContent(opt, idx),
+    rawText: opt,
+  }));
+
+  const shuffled = shuffleArray(indexed);
+  let newCorrectIdx = shuffled.findIndex((item) => item.originalIdx === origCorrectIdx);
+  if (newCorrectIdx === -1) newCorrectIdx = 0;
+
+  const newOptions = shuffled.map((item, newIdx) => {
+    if (hasLetterPrefix) {
+      return `Option ${String.fromCharCode(65 + newIdx)}: ${item.cleanedText}`;
+    }
+    return item.cleanedText || item.rawText;
+  });
+
+  return { options: newOptions, correctOptionIndex: newCorrectIdx };
+}
 
 /**
  * Flattens any mixture of MCQ, structured, and multi-part sub-questions into a linear list of playable game rounds.
@@ -83,7 +139,7 @@ import { shuffleArray } from './gameScoreEngine';
  */
 export function flattenQuizQuestionsForGame(
   questions: Question[],
-  options?: { shuffleQuestions?: boolean }
+  options?: { shuffleQuestions?: boolean; shuffleOptions?: boolean }
 ): GamePlayableItem[] {
   let parentList = [...questions];
 
@@ -110,8 +166,25 @@ export function flattenQuizQuestionsForGame(
       for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
         const sq = q.sub_questions[sIdx];
         const isSqMcq = !!(sq.options && sq.options.length >= 2);
-        const correctOpt = isSqMcq ? deriveCorrectOptionIndex(q, sq) : undefined;
-        const answerText = deriveCorrectAnswerText(q, sq);
+        let sqOptions = (isSqMcq && sq.options) ? sq.options : undefined;
+        let correctOpt: number | undefined = undefined;
+
+        if (isSqMcq && sq.options) {
+          const origCorrectIdx = resolveMcqCorrectOptionIndex(q, sIdx);
+          const processed = processMcqOptions(sq.options, origCorrectIdx, !!options?.shuffleOptions);
+          sqOptions = processed.options;
+          correctOpt = processed.correctOptionIndex;
+        }
+
+        const answerText = isSqMcq && sqOptions && correctOpt !== undefined
+          ? sqOptions[correctOpt]
+          : deriveCorrectAnswerText(q, sq, sIdx);
+        const acceptableAnswers = extractAcceptableAnswers(q, sIdx);
+        if (!acceptableAnswers.includes(answerText)) acceptableAnswers.unshift(answerText);
+        if (isSqMcq && correctOpt !== undefined) {
+          const optLetter = String.fromCharCode(65 + correctOpt);
+          if (!acceptableAnswers.includes(optLetter)) acceptableAnswers.push(optLetter);
+        }
 
         items.push({
           id: `${q.id}_sub_${sq.sub_id || sIdx}`,
@@ -120,12 +193,12 @@ export function flattenQuizQuestionsForGame(
           title: `Question ${qNum}(${sq.sub_id || String.fromCharCode(97 + sIdx)})`,
           contextStem: q.question_text?.trim() ? q.question_text : undefined,
           questionText: sq.question_text || `Part (${sq.sub_id})`,
-          diagramUrl: q.diagram_url || undefined,
+          diagramUrl: sq.diagram_url || q.diagram_url || undefined,
           type: isSqMcq ? 'mcq' : 'structured',
-          options: (isSqMcq && sq.options) ? sq.options : undefined,
+          options: sqOptions,
           correctOptionIndex: correctOpt,
           correctAnswerText: answerText,
-          acceptableAnswers: [answerText],
+          acceptableAnswers,
           marks: sq.marks || 1,
           rawQuestion: q,
           subQuestionIndex: sIdx,
@@ -134,8 +207,15 @@ export function flattenQuizQuestionsForGame(
     }
     // Case 2: Standard MCQ Question
     else if (q.options && q.options.length >= 2) {
-      const correctOpt = deriveCorrectOptionIndex(q);
-      const answerText = q.options[correctOpt] || q.options[0];
+      const origCorrectIdx = resolveMcqCorrectOptionIndex(q);
+      const processed = processMcqOptions(q.options, origCorrectIdx, !!options?.shuffleOptions);
+      const finalOptions = processed.options;
+      const finalCorrectOpt = processed.correctOptionIndex;
+      const answerText = finalOptions[finalCorrectOpt] || finalOptions[0];
+      const acceptableAnswers = extractAcceptableAnswers(q);
+      if (!acceptableAnswers.includes(answerText)) acceptableAnswers.unshift(answerText);
+      const optLetter = String.fromCharCode(65 + finalCorrectOpt);
+      if (!acceptableAnswers.includes(optLetter)) acceptableAnswers.push(optLetter);
 
       items.push({
         id: q.id,
@@ -145,10 +225,10 @@ export function flattenQuizQuestionsForGame(
         questionText: q.question_text || 'Select the correct option:',
         diagramUrl: q.diagram_url || undefined,
         type: 'mcq',
-        options: q.options,
-        correctOptionIndex: correctOpt,
+        options: finalOptions,
+        correctOptionIndex: finalCorrectOpt,
         correctAnswerText: answerText,
-        acceptableAnswers: [answerText],
+        acceptableAnswers,
         marks: q.marks || 1,
         rawQuestion: q,
       });
@@ -156,6 +236,8 @@ export function flattenQuizQuestionsForGame(
     // Case 3: Standalone Structured / Short Answer Question
     else {
       const answerText = deriveCorrectAnswerText(q);
+      const acceptableAnswers = extractAcceptableAnswers(q);
+      if (!acceptableAnswers.includes(answerText)) acceptableAnswers.unshift(answerText);
 
       items.push({
         id: q.id,
@@ -166,7 +248,7 @@ export function flattenQuizQuestionsForGame(
         diagramUrl: q.diagram_url || undefined,
         type: 'structured',
         correctAnswerText: answerText,
-        acceptableAnswers: [answerText],
+        acceptableAnswers,
         marks: q.marks || 1,
         rawQuestion: q,
       });
@@ -214,9 +296,16 @@ export function evaluateGameAnswer(
     };
   }
 
-  // Fallback direct case-insensitive or partial keyword check
-  const isMatch = rawStr.toLowerCase() === item.correctAnswerText.toLowerCase() ||
-    (rawStr.length >= 3 && item.correctAnswerText.toLowerCase().includes(rawStr.toLowerCase()));
+  // Fallback check against all acceptable answers from Question Bank
+  const cleanInput = rawStr.toLowerCase().replace(/\s+/g, '');
+  const isMatch = (item.acceptableAnswers || [item.correctAnswerText]).some((ans) => {
+    const cleanAns = ans.toLowerCase().replace(/\s+/g, '').replace(/\[\d+\]/g, '');
+    return (
+      cleanInput === cleanAns ||
+      (cleanInput.length >= 3 && cleanAns.includes(cleanInput)) ||
+      (cleanAns.length >= 3 && cleanInput.includes(cleanAns))
+    );
+  });
 
   return {
     isCorrect: isMatch,

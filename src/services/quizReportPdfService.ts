@@ -4,20 +4,89 @@
 // 2. Individual Candidate Performance, Sub-Question Script, & AI Marking Report
 
 import type { StudentSubmission } from './quizSubmissionService';
-import { formatProctorTimestamp, formatCandidateAnswer } from './quizSubmissionService';
+import { formatProctorTimestamp, formatCandidateAnswer, formatSubmissionDateTime } from './quizSubmissionService';
 import { formatLatexForHtml } from './pdfExportService';
+import { generateStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
 
 /**
- * Derives Cambridge letter grade from percentage
+ * Derives Cambridge letter grade from percentage with tier list rarity color styling
  */
-function deriveGrade(percentage: number): { grade: string; color: string } {
-  if (percentage >= 90) return { grade: 'A*', color: '#16a34a' };
-  if (percentage >= 80) return { grade: 'A', color: '#22c55e' };
-  if (percentage >= 70) return { grade: 'B', color: '#3b82f6' };
-  if (percentage >= 60) return { grade: 'C', color: '#eab308' };
-  if (percentage >= 50) return { grade: 'D', color: '#f97316' };
-  if (percentage >= 40) return { grade: 'E', color: '#ef4444' };
-  return { grade: 'U', color: '#991b1b' };
+export function deriveGrade(percentage: number): {
+  grade: string;
+  color: string;
+  gradient: string;
+  borderColor: string;
+  textColor: string;
+  tierName: string;
+} {
+  if (percentage >= 90) {
+    return {
+      grade: 'A*',
+      color: '#d97706',
+      gradient: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+      borderColor: '#fbbf24',
+      textColor: '#ffffff',
+      tierName: 'Legendary Gold',
+    };
+  }
+  if (percentage >= 80) {
+    return {
+      grade: 'A',
+      color: '#059669',
+      gradient: 'linear-gradient(135deg, #10b981 0%, #047857 100%)',
+      borderColor: '#34d399',
+      textColor: '#ffffff',
+      tierName: 'Epic Emerald',
+    };
+  }
+  if (percentage >= 70) {
+    return {
+      grade: 'B',
+      color: '#2563eb',
+      gradient: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+      borderColor: '#60a5fa',
+      textColor: '#ffffff',
+      tierName: 'Rare Sapphire',
+    };
+  }
+  if (percentage >= 60) {
+    return {
+      grade: 'C',
+      color: '#7c3aed',
+      gradient: 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)',
+      borderColor: '#a78bfa',
+      textColor: '#ffffff',
+      tierName: 'Uncommon Amethyst',
+    };
+  }
+  if (percentage >= 50) {
+    return {
+      grade: 'D',
+      color: '#ea580c',
+      gradient: 'linear-gradient(135deg, #f97316 0%, #c2410c 100%)',
+      borderColor: '#fb923c',
+      textColor: '#ffffff',
+      tierName: 'Bronze',
+    };
+  }
+  if (percentage >= 40) {
+    return {
+      grade: 'E',
+      color: '#dc2626',
+      gradient: 'linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)',
+      borderColor: '#f87171',
+      textColor: '#ffffff',
+      tierName: 'Ruby Coral',
+    };
+  }
+  return {
+    grade: 'U',
+    color: '#475569',
+    gradient: 'linear-gradient(135deg, #64748b 0%, #334155 100%)',
+    borderColor: '#94a3b8',
+    textColor: '#ffffff',
+    tierName: 'Shadow Slate',
+  };
 }
 
 /**
@@ -34,6 +103,12 @@ export function exportClassQuizReportPdf(
     alert('No student submissions available to generate a class report.');
     return;
   }
+
+  const isOffline =
+    !quiz.quizCode ||
+    quiz.quizCode.toUpperCase().startsWith('OFFLINE') ||
+    submissions.every((s) => s.durationSeconds === 0) ||
+    submissions[0]?.teacherNotes?.toLowerCase().includes('offline');
 
   // Filter by selected class if specified
   const filteredSubmissions = selectedClass === 'all'
@@ -52,6 +127,8 @@ export function exportClassQuizReportPdf(
   const avgPct = (avgScore / totalMarks) * 100;
   const highestScore = Math.max(...filteredSubmissions.map((s) => s.score));
   const lowestScore = Math.min(...filteredSubmissions.map((s) => s.score));
+  const passCount = filteredSubmissions.filter((s) => s.percentage >= 50).length;
+  const passRate = Math.round((passCount / count) * 100);
   const cleanCount = filteredSubmissions.filter((s) => s.violationsCount === 0).length;
   const integrityRate = Math.round((cleanCount / count) * 100);
 
@@ -77,18 +154,6 @@ export function exportClassQuizReportPdf(
     }
   });
 
-  // Class Breakdown Stats if multiple classes exist
-  const classBreakdown: Record<string, { count: number; totalScore: number; avgPct: number }> = {};
-  submissions.forEach((s) => {
-    const cName = s.studentClass || 'General';
-    if (!classBreakdown[cName]) classBreakdown[cName] = { count: 0, totalScore: 0, avgPct: 0 };
-    classBreakdown[cName].count++;
-    classBreakdown[cName].totalScore += s.score;
-  });
-  Object.values(classBreakdown).forEach((item) => {
-    item.avgPct = Math.round(((item.totalScore / (item.count * totalMarks)) * 100));
-  });
-
   // Sort submissions by rank (score desc)
   const rankedSubmissions = [...filteredSubmissions].sort((a, b) => b.score - a.score || a.durationSeconds - b.durationSeconds);
 
@@ -99,9 +164,181 @@ export function exportClassQuizReportPdf(
   <meta charset="UTF-8">
   <title>Class Performance Report - ${quiz.title} (${quiz.quizCode})</title>
   <style>
+    @page { size: A4 portrait; margin: 14mm; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      color: #0f172a;
+      background: #ffffff;
+      margin: 0;
+      padding: 0;
+      font-size: 9pt;
+      line-height: 1.4;
+    }
+    .report-header {
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .report-title-box h1 { font-size: 16pt; font-weight: 800; color: #0f172a; margin: 0 0 4px 0; letter-spacing: -0.5px; }
+    .report-subtitle { font-size: 9pt; color: #475569; font-weight: 600; }
+    .report-badge-box { text-align: right; }
+    .report-code-badge { font-family: monospace; font-size: 11pt; font-weight: 800; background: #0f172a; color: #ffffff; padding: 4px 10px; border-radius: 4px; display: inline-block; margin-bottom: 4px; }
+    .report-date { font-size: 7.5pt; color: #64748b; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(${isOffline ? 4 : 5}, 1fr); gap: 10px; margin-bottom: 16px; }
+    .kpi-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; text-align: center; }
+    .kpi-card-val { font-size: 14pt; font-weight: 800; color: #0f172a; display: block; line-height: 1.2; }
+    .kpi-card-lbl { font-size: 7.5pt; color: #64748b; text-transform: uppercase; font-weight: 700; margin-top: 2px; display: block; }
+    .section-title { font-size: 10pt; font-weight: 800; color: #1e293b; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 8pt; margin-bottom: 16px; }
+    th, td { border: 1px solid #cbd5e1; padding: 5px 8px; text-align: left; }
+    th { background: #f1f5f9; font-weight: 700; color: #1e293b; }
+    .grade-badge { font-weight: 800; padding: 2px 6px; border-radius: 4px; color: #ffffff; display: inline-block; font-size: 7.5pt; }
+    .pct-bar-bg { background: #e2e8f0; border-radius: 4px; height: 6px; width: 100%; overflow: hidden; display: flex; margin-top: 4px; }
+    .pct-bar-fill { height: 100%; background: #3b82f6; }
+    .footer-note { font-size: 7.5pt; color: #94a3b8; text-align: center; margin-top: 24px; }
+    @media print { .no-print { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="report-header">
+    <div class="report-title-box">
+      <h1>📊 Class Assessment Summary Report</h1>
+      <div class="report-subtitle">${quiz.title} • ${quiz.subject || 'General'} ${selectedClass !== 'all' ? `• Class Section: ${selectedClass}` : ''}</div>
+    </div>
+    <div class="report-badge-box">
+      <div class="report-code-badge">CODE: ${quiz.quizCode}</div>
+      <div class="report-date">Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+    </div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card"><span class="kpi-card-val">${count}</span><span class="kpi-card-lbl">Total Students</span></div>
+    <div class="kpi-card"><span class="kpi-card-val">${avgScore.toFixed(1)} / ${totalMarks}</span><span class="kpi-card-lbl">Class Average (${Math.round(avgPct)}%)</span></div>
+    <div class="kpi-card"><span class="kpi-card-val">${highestScore} / ${totalMarks}</span><span class="kpi-card-lbl">Highest Score</span></div>
+    <div class="kpi-card"><span class="kpi-card-val">${lowestScore} / ${totalMarks}</span><span class="kpi-card-lbl">Lowest Score</span></div>
+    ${isOffline ? `
+    <div class="kpi-card">
+      <span class="kpi-card-val" style="color: ${passRate >= 70 ? '#16a34a' : '#ea580c'}">${passRate}%</span>
+      <span class="kpi-card-lbl">Pass Rate (≥50%)</span>
+    </div>
+    ` : `
+    <div class="kpi-card">
+      <span class="kpi-card-val" style="color: ${integrityRate >= 90 ? '#16a34a' : '#ea580c'}">${integrityRate}%</span>
+      <span class="kpi-card-lbl">Integrity (${cleanCount} Clean)</span>
+    </div>
+    `}
+  </div>
+
+  <div class="section-title">📈 Grade Band Distribution</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 14%;">Grade</th>
+        <th style="width: 14%;">A* (≥90%)</th>
+        <th style="width: 14%;">A (80–89%)</th>
+        <th style="width: 14%;">B (70–79%)</th>
+        <th style="width: 14%;">C (60–69%)</th>
+        <th style="width: 14%;">D (50–59%)</th>
+        <th style="width: 16%;">E / U (&lt;50%)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="font-weight: 700;">Students</td>
+        <td style="font-weight: 700; color: #d97706;">${gradeCounts['A*']} (${Math.round((gradeCounts['A*'] / count) * 100)}%)</td>
+        <td style="font-weight: 700; color: #059669;">${gradeCounts['A']} (${Math.round((gradeCounts['A'] / count) * 100)}%)</td>
+        <td style="font-weight: 700; color: #2563eb;">${gradeCounts['B']} (${Math.round((gradeCounts['B'] / count) * 100)}%)</td>
+        <td style="font-weight: 700; color: #7c3aed;">${gradeCounts['C']} (${Math.round((gradeCounts['C'] / count) * 100)}%)</td>
+        <td style="font-weight: 700; color: #ea580c;">${gradeCounts['D']} (${Math.round((gradeCounts['D'] / count) * 100)}%)</td>
+        <td style="font-weight: 700; color: #dc2626;">${gradeCounts['E'] + gradeCounts['U']} (${Math.round(((gradeCounts['E'] + gradeCounts['U']) / count) * 100)}%)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  ${Object.keys(topicStats).length > 0 ? `
+  <div class="section-title">🎯 Syllabus Topic Performance</div>
+  <table>
+    <thead><tr><th>Topic</th><th style="width: 25%;">Avg Mastery (%)</th><th style="width: 20%; text-align: center;">Marks Earned / Total</th></tr></thead>
+    <tbody>
+      ${Object.entries(topicStats).map(([topic, stat]) => {
+        const pct = Math.round((stat.totalEarned / stat.totalAvailable) * 100);
+        return `<tr><td><strong>${topic}</strong></td><td><div style="display: flex; align-items: center; gap: 8px;"><span style="font-weight: 700; width: 35px;">${pct}%</span><div class="pct-bar-bg" style="flex: 1;"><div class="pct-bar-fill" style="width: ${pct}%; background: ${pct >= 75 ? '#16a34a' : pct >= 50 ? '#3b82f6' : '#dc2626'};"></div></div></div></td><td style="text-align: center; color: #64748b;">${stat.totalEarned} / ${stat.totalAvailable}</td></tr>`;
+      }).join('')}
+    </tbody>
+  </table>
+  ` : ''}
+
+  <div class="section-title">📋 Student Roster & Gradebook (${rankedSubmissions.length} Candidates)</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 6%; text-align: center;">Rank</th>
+        <th style="width: 32%;">Candidate / Student Name</th>
+        <th style="width: 18%;">Class / Section</th>
+        <th style="width: 14%; text-align: center;">Cand #</th>
+        <th style="width: 14%; text-align: center;">Score</th>
+        <th style="width: 10%; text-align: center;">%</th>
+        <th style="width: 10%; text-align: center;">Grade</th>
+        ${!isOffline ? `<th style="width: 12%; text-align: center;">Time</th><th style="width: 10%; text-align: center;">Integrity</th>` : ''}
+      </tr>
+    </thead>
+    <tbody>
+      ${rankedSubmissions.map((sub, rIdx) => {
+        const { grade, color } = deriveGrade(sub.percentage);
+        const mins = Math.floor(sub.durationSeconds / 60);
+        const secs = sub.durationSeconds % 60;
+        const isClean = sub.violationsCount === 0;
+        return `<tr><td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td><td><strong>${sub.studentName}</strong></td><td>${sub.studentClass || 'General'}</td><td style="text-align: center; font-family: monospace;">${sub.candidateNumber || '-'}</td><td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td><td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td><td style="text-align: center;"><span class="grade-badge" style="background: ${color};">${grade}</span></td>${!isOffline ? `<td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td><td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">${isClean ? 'Clean (0)' : `⚠️ ${sub.violationsCount}`}</td>` : ''}</tr>`;
+      }).join('')}
+    </tbody>
+  </table>
+  <div class="footer-note">Assessment Code: ${quiz.quizCode} | Generated by fluffykitten's testmaker</div>
+  <script>window.addEventListener('load', () => setTimeout(window.print, 300));</script>
+</body>
+</html>`;
+
+  const printWindow = window.open('', '_blank');
+  if (printWindow) {
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 2. INDIVIDUAL 1-PAGE CANDIDATE FEEDBACK & IMPROVEMENT REPORT (STUDENT COPY)
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+export async function exportStudentFeedbackReportPdf(
+  submission: StudentSubmission,
+  customPlan?: StudentImprovementPlan
+): Promise<void> {
+  if (!submission) return;
+
+  const plan = customPlan || (await generateStudentImprovementPlan(submission));
+  const { grade, color } = deriveGrade(submission.percentage);
+
+  const topicMastery: Array<{ topic: string; earned: number; total: number; pct: number }> = [];
+  if (submission.topicBreakdown) {
+    Object.entries(submission.topicBreakdown).forEach(([topic, d]) => {
+      topicMastery.push({ topic, earned: d.earnedMarks, total: d.totalMarks, pct: Math.round(d.percentage) });
+    });
+  }
+
+  const results = submission.questionResults || [];
+
+  const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Student Performance & Feedback Report - ${submission.studentName}</title>
+  <style>
     @page {
       size: A4 portrait;
-      margin: 14mm 14mm 14mm 14mm;
+      margin: 7mm 8mm 7mm 8mm;
     }
     *, *::before, *::after {
       box-sizing: border-box;
@@ -114,300 +351,395 @@ export function exportClassQuizReportPdf(
       background: #ffffff;
       margin: 0;
       padding: 0;
-      font-size: 9.5pt;
-      line-height: 1.45;
+      font-size: 7.8pt;
+      line-height: 1.32;
     }
-    .report-header {
-      border-bottom: 2.5px solid #1e293b;
-      padding-bottom: 12px;
-      margin-bottom: 16px;
+    .header-card {
+      border: 1.5px solid #0f172a;
+      border-radius: 6px;
+      padding: 6px 12px;
+      margin-bottom: 6px;
+      background: #f8fafc;
       display: flex;
       justify-content: space-between;
-      align-items: flex-end;
+      align-items: center;
     }
-    .report-title-box h1 {
-      font-size: 16pt;
+    .header-title-box h1 {
+      font-size: 11.5pt;
       font-weight: 800;
       color: #0f172a;
-      margin: 0 0 4px 0;
-      letter-spacing: -0.02em;
+      margin: 0 0 2px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
     }
-    .report-subtitle {
-      font-size: 9pt;
+    .header-sub {
+      font-size: 7.8pt;
       color: #475569;
       font-weight: 600;
     }
-    .report-badge-box {
+    .score-grade-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .score-box {
       text-align: right;
     }
-    .report-code-badge {
-      display: inline-block;
-      background: #f1f5f9;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-weight: 800;
-      font-family: monospace;
-      font-size: 11pt;
-      color: #0f172a;
-    }
-    .report-date {
-      font-size: 8pt;
-      color: #64748b;
-      margin-top: 4px;
-    }
-    /* KPI Ribbon */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 10px;
-      margin-bottom: 18px;
-    }
-    .kpi-card {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      padding: 10px;
-      text-align: center;
-    }
-    .kpi-card-val {
+    .score-val {
       font-size: 14pt;
       font-weight: 800;
       color: #0f172a;
-      display: block;
+      line-height: 1;
     }
-    .kpi-card-lbl {
-      font-size: 7.5pt;
-      font-weight: 700;
+    .score-lbl {
+      font-size: 6.8pt;
       color: #64748b;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
       margin-top: 2px;
     }
-    /* Section Headings */
-    .section-title {
-      font-size: 11pt;
+    .grade-badge {
+      background: ${color};
+      color: #ffffff;
+      font-size: 15pt;
+      font-weight: 800;
+      padding: 4px 12px;
+      border-radius: 6px;
+      line-height: 1;
+    }
+    .meta-bar {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1.3fr 1fr;
+      gap: 6px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 4px 8px;
+      margin-bottom: 6px;
+      font-size: 7.2pt;
+    }
+    .meta-item strong {
+      display: block;
+      color: #0f172a;
+      font-size: 7.8pt;
+    }
+    .meta-item span {
+      color: #64748b;
+    }
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.12fr 0.88fr;
+      gap: 6px;
+    }
+    .panel {
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      padding: 5px 7px;
+      background: #ffffff;
+    }
+    .panel-heading {
+      font-size: 7.8pt;
       font-weight: 800;
       color: #1e293b;
-      margin: 16px 0 8px 0;
-      padding-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin: 0 0 4px 0;
+      padding-bottom: 3px;
       border-bottom: 1px solid #e2e8f0;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
     }
-    /* Tables */
-    table {
+    .table-compact {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 16px;
-      font-size: 8.5pt;
+      font-size: 7pt;
     }
-    th {
-      background: #f1f5f9;
-      color: #334155;
-      font-weight: 800;
-      text-align: left;
-      padding: 6px 10px;
-      border: 1px solid #cbd5e1;
-      font-size: 8pt;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    td {
-      padding: 6px 10px;
-      border: 1px solid #e2e8f0;
-      vertical-align: middle;
-    }
-    tr:nth-child(even) td {
+    .table-compact th {
       background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 2px 3px;
+      text-align: left;
+      font-weight: 700;
+      color: #334155;
     }
-    /* Grade Distribution Badges */
-    .grade-badge {
-      display: inline-block;
-      padding: 2px 7px;
-      border-radius: 4px;
+    .table-compact td {
+      border: 1px solid #e2e8f0;
+      padding: 1.8px 3px;
+    }
+    .status-correct {
+      color: #16a34a;
       font-weight: 800;
-      font-size: 8pt;
-      color: #ffffff;
-      text-align: center;
     }
-    /* Progress Bars */
-    .pct-bar-wrap {
-      background: #e2e8f0;
+    .status-incorrect {
+      color: #dc2626;
+      font-weight: 800;
+    }
+    .topic-pill {
+      display: inline-flex;
+      align-items: center;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 3px;
+      padding: 1.5px 5px;
+      font-size: 6.8pt;
+      margin-right: 3px;
+      margin-bottom: 3px;
+      font-weight: 600;
+    }
+    .plan-card {
       border-radius: 4px;
-      height: 8px;
-      overflow: hidden;
+      padding: 3.5px 6px;
+      margin-bottom: 4px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+    }
+    .plan-card--strengths {
+      border-left: 3px solid #16a34a;
+    }
+    .plan-card--weaknesses {
+      border-left: 3px solid #dc2626;
+    }
+    .plan-card--action {
+      border-left: 3px solid #2563eb;
+    }
+    .plan-card-title {
+      font-size: 7.2pt;
+      font-weight: 800;
+      text-transform: uppercase;
+      margin: 0 0 2px 0;
       display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .plan-list {
+      margin: 0;
+      padding-left: 12px;
+      font-size: 6.9pt;
+      line-height: 1.28;
+    }
+    .plan-list li {
+      margin-bottom: 1px;
+    }
+    .encouragement-box {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-left: 3px solid #7c3aed;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 7pt;
+      color: #1e293b;
+      line-height: 1.28;
+      margin-bottom: 4px;
+    }
+    .encouragement-title {
+      font-weight: 800;
+      font-size: 7.2pt;
+      color: #701a75;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .mentor-note {
+      font-size: 6.8pt;
+      color: #475569;
+      font-style: italic;
+      margin-top: 2px;
+      padding-top: 2px;
+      border-top: 1px dashed #cbd5e1;
+    }
+    .sign-bar {
+      display: flex;
+      justify-content: space-between;
       margin-top: 4px;
+      padding-top: 3px;
+      border-top: 1px solid #cbd5e1;
+      font-size: 6.8pt;
+      color: #64748b;
     }
-    .pct-bar-fill {
-      height: 100%;
-      background: #3b82f6;
-    }
-    .page-break {
-      page-break-before: always;
-    }
-    .footer-note {
-      font-size: 7.5pt;
-      color: #94a3b8;
-      text-align: center;
-      margin-top: 24px;
-      padding-top: 8px;
-      border-top: 1px solid #e2e8f0;
+    @media print {
+      .no-print {
+        display: none !important;
+      }
     }
   </style>
 </head>
 <body>
 
-  <!-- Report Header -->
-  <div class="report-header">
-    <div class="report-title-box">
-      <h1>📊 Class Assessment Summary Report</h1>
-      <div class="report-subtitle">
-        ${quiz.title} • ${quiz.subject || 'Chemistry / Science'}
+  <!-- Non-Printing Print Button -->
+  <div class="no-print" style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 6px 14px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+    <div style="font-weight: 700; color: #1e293b; font-size: 11px;">
+      📄 1-Page Student Report Card: ${submission.studentName}
+    </div>
+    <button onclick="window.print()" style="background: #2563eb; color: #ffffff; border: none; padding: 5px 12px; border-radius: 4px; font-weight: 700; font-size: 11px; cursor: pointer;">
+      🖨️ Print Student Copy (1 Page)
+    </button>
+  </div>
+
+  <!-- Header Card -->
+  <div class="header-card">
+    <div class="header-title-box">
+      <h1>🎓 Student Performance & Improvement Report</h1>
+      <div class="header-sub">
+        ${submission.quizTitle} • ${submission.subject || 'General Assessment'}
       </div>
     </div>
-    <div class="report-badge-box">
-      <div class="report-code-badge">CODE: ${quiz.quizCode}</div>
-      <div class="report-date">Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+    <div class="score-grade-wrap">
+      <div class="score-box">
+        <div class="score-val">${submission.score} / ${submission.totalMarks}</div>
+        <div class="score-lbl">Total Score (${Math.round(submission.percentage)}%)</div>
+      </div>
+      <div class="grade-badge">${grade}</div>
     </div>
   </div>
 
-  <!-- KPI Analytics Ribbon -->
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <span class="kpi-card-val">${count}</span>
-      <span class="kpi-card-lbl">Total Students</span>
+  <!-- Candidate Metadata -->
+  <div class="meta-bar">
+    <div class="meta-item">
+      <span>Candidate Name:</span>
+      <strong>${submission.studentName}</strong>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-card-val">${avgScore.toFixed(1)} / ${totalMarks}</span>
-      <span class="kpi-card-lbl">Class Average (${Math.round(avgPct)}%)</span>
+    <div class="meta-item">
+      <span>Class / Section:</span>
+      <strong>${submission.studentClass || 'General'}</strong>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-card-val">${highestScore} / ${totalMarks}</span>
-      <span class="kpi-card-lbl">Highest Score</span>
+    <div class="meta-item">
+      <span>Candidate ID:</span>
+      <strong style="font-family: monospace;">${submission.candidateNumber || '-'}</strong>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-card-val">${lowestScore} / ${totalMarks}</span>
-      <span class="kpi-card-lbl">Lowest Score</span>
+    <div class="meta-item">
+      <span>Total Marks:</span>
+      <strong>${submission.score} / ${submission.totalMarks} (${Math.round(submission.percentage)}%)</strong>
     </div>
-    <div class="kpi-card">
-      <span class="kpi-card-val" style="color: ${integrityRate >= 90 ? '#16a34a' : '#ea580c'}">${integrityRate}%</span>
-      <span class="kpi-card-lbl">Integrity (${cleanCount} Clean)</span>
+    <div class="meta-item">
+      <span>Date:</span>
+      <strong>${formatSubmissionDateTime(submission.submittedAt).split(',')[0]}</strong>
     </div>
   </div>
 
-  <!-- Grade Distribution Breakdown -->
-  <div class="section-title">📈 Grade Band Distribution</div>
-  <table>
-    <thead>
-      <tr>
-        <th style="text-align: center; width: 14%;">A* (90%+)</th>
-        <th style="text-align: center; width: 14%;">A (80–89%)</th>
-        <th style="text-align: center; width: 14%;">B (70–79%)</th>
-        <th style="text-align: center; width: 14%;">C (60–69%)</th>
-        <th style="text-align: center; width: 14%;">D (50–59%)</th>
-        <th style="text-align: center; width: 14%;">E (40–49%)</th>
-        <th style="text-align: center; width: 16%;">U / Ungraded</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #16a34a;">${gradeCounts['A*']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #22c55e;">${gradeCounts['A']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #3b82f6;">${gradeCounts['B']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #ca8a04;">${gradeCounts['C']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #ea580c;">${gradeCounts['D']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #dc2626;">${gradeCounts['E']}</td>
-        <td style="text-align: center; font-weight: 800; font-size: 11pt; color: #991b1b;">${gradeCounts['U']}</td>
-      </tr>
-    </tbody>
-  </table>
+  <!-- 2-Column Split: Left = Answer Matrix & Topics, Right = Improvement Plan & Encouragement -->
+  <div class="main-grid">
+    <!-- Left Column: Student Answers & Topic Breakdown -->
+    <div>
+      <!-- Topic Mastery Strip -->
+      ${topicMastery.length > 0 ? `
+      <div class="panel" style="margin-bottom: 5px;">
+        <div class="panel-heading">🎯 Topic Mastery Summary</div>
+        <div>
+          ${topicMastery.map((tm) => `
+            <div class="topic-pill">
+              <span>${tm.topic}:</span>
+              <strong style="margin-left: 3px; color: ${tm.pct >= 75 ? '#16a34a' : tm.pct >= 50 ? '#2563eb' : '#dc2626'};">${tm.earned}/${tm.total} (${tm.pct}%)</strong>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      ` : ''}
 
-  <!-- Topic-by-Topic Mastery Table -->
-  ${Object.keys(topicStats).length > 0 ? `
-    <div class="section-title">🎯 Syllabus Topic Mastery & Cohort Diagnostic</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Topic Name</th>
-          <th style="width: 25%;">Cohort Mastery</th>
-          <th style="width: 15%; text-align: center;">Class Accuracy</th>
-          <th style="width: 20%; text-align: center;">Performance Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${Object.entries(topicStats).map(([topic, stat]) => {
-          const pct = stat.totalAvailable > 0 ? Math.round((stat.totalEarned / stat.totalAvailable) * 100) : 0;
-          const statusColor = pct >= 75 ? '#16a34a' : pct >= 50 ? '#ca8a04' : '#dc2626';
-          const statusText = pct >= 75 ? 'Strong Mastery' : pct >= 50 ? 'Review Recommended' : 'Critical Focus Area';
-          return `
+      <!-- Detailed Question Matrix -->
+      <div class="panel">
+        <div class="panel-heading">📝 Student Responses & Mark Scheme Key</div>
+        <table class="table-compact">
+          <thead>
             <tr>
-              <td><strong>${topic}</strong></td>
-              <td>
-                <div style="display: flex; justify-content: space-between; font-size: 7.5pt; color: #64748b;">
-                  <span>${stat.totalEarned} / ${stat.totalAvailable} marks</span>
-                  <span>${pct}%</span>
-                </div>
-                <div class="pct-bar-wrap">
-                  <div class="pct-bar-fill" style="width: ${pct}%; background: ${statusColor};"></div>
-                </div>
-              </td>
-              <td style="text-align: center; font-weight: 700; color: ${statusColor};">${pct}%</td>
-              <td style="text-align: center; font-weight: 800; font-size: 7.5pt; color: ${statusColor};">${statusText}</td>
+              <th style="width: 8%; text-align: center;">Q#</th>
+              <th style="width: 30%;">Topic</th>
+              <th style="width: 26%; text-align: center;">Your Answer</th>
+              <th style="width: 24%; text-align: center;">Mark Scheme</th>
+              <th style="width: 12%; text-align: center;">Result</th>
             </tr>
-          `;
-        }).join('')}
-      </tbody>
-    </table>
-  ` : ''}
+          </thead>
+          <tbody>
+            ${results.map((qr, idx) => {
+              const qNum = qr.questionNumber || idx + 1;
+              const isCorrect = qr.isCorrect;
+              const sAns = typeof qr.studentAnswer === 'string' && qr.studentAnswer.length > 18
+                ? qr.studentAnswer.substring(0, 16) + '…'
+                : String(qr.studentAnswer ?? '-');
+              const cAns = typeof qr.correctAnswer === 'string' && qr.correctAnswer.length > 18
+                ? qr.correctAnswer.substring(0, 16) + '…'
+                : String(qr.correctAnswer || (isCorrect ? sAns : 'See key'));
 
-  <!-- Complete Student Roster Table -->
-  <div class="section-title">📋 Student Roster & Gradebook (${rankedSubmissions.length} Candidates)</div>
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 5%; text-align: center;">Rank</th>
-        <th style="width: 25%;">Candidate / Student Name</th>
-        <th style="width: 14%;">Class / Section</th>
-        <th style="width: 10%; text-align: center;">Cand #</th>
-        <th style="width: 12%; text-align: center;">Score</th>
-        <th style="width: 10%; text-align: center;">%</th>
-        <th style="width: 8%; text-align: center;">Grade</th>
-        <th style="width: 12%; text-align: center;">Time</th>
-        <th style="width: 10%; text-align: center;">Integrity</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rankedSubmissions.map((sub, rIdx) => {
-        const { grade, color } = deriveGrade(sub.percentage);
-        const mins = Math.floor(sub.durationSeconds / 60);
-        const secs = sub.durationSeconds % 60;
-        const isClean = sub.violationsCount === 0;
-        return `
-          <tr>
-            <td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td>
-            <td><strong>${sub.studentName}</strong></td>
-            <td><span style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: 600;">${sub.studentClass || 'General'}</span></td>
-            <td style="text-align: center; font-family: monospace; color: #64748b;">${sub.candidateNumber || '-'}</td>
-            <td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td>
-            <td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td>
-            <td style="text-align: center;">
-              <span class="grade-badge" style="background: ${color};">${grade}</span>
-            </td>
-            <td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td>
-            <td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">
-              ${isClean ? 'Clean (0)' : `⚠️ ${sub.violationsCount}`}
-            </td>
-          </tr>
-        `;
-      }).join('')}
-    </tbody>
-  </table>
+              return `
+                <tr>
+                  <td style="text-align: center; font-weight: 700;">Q${qNum}</td>
+                  <td>${qr.topic || 'General'}</td>
+                  <td style="text-align: center;"><span style="font-weight: 600; color: ${isCorrect ? '#16a34a' : '#dc2626'};">${sAns}</span></td>
+                  <td style="text-align: center; color: #475569;">${cAns}</td>
+                  <td style="text-align: center;">
+                    <span class="${isCorrect ? 'status-correct' : 'status-incorrect'}">${isCorrect ? '✓' : '✗'}</span>
+                    <span style="font-size: 6.2pt; color: #64748b;">(${qr.earnedMarks}/${qr.maxMarks})</span>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-  <div class="footer-note">
-    Document generated by fluffykitten's testmaker • Assessment Code: ${quiz.quizCode}
+    <!-- Right Column: Personalized Diagnostics & Action Plan + Encouragement -->
+    <div>
+      <div class="panel">
+        <div class="panel-heading">📋 Personalized Diagnostic & Improvement Plan</div>
+
+        <!-- Encouraging Words Box -->
+        <div class="encouragement-box">
+          <div class="encouragement-title">💖 Words of Encouragement</div>
+          <div>${plan.encouragingWords || 'Great effort on this assessment! Keep practicing and believing in your potential.'}</div>
+          ${plan.teacherSummary ? `<div class="mentor-note"><strong>Examiner Guidance:</strong> ${plan.teacherSummary}</div>` : ''}
+        </div>
+
+        <!-- Strengths -->
+        <div class="plan-card plan-card--strengths">
+          <div class="plan-card-title" style="color: #166534;">🌟 What Went Well</div>
+          <ul class="plan-list" style="color: #14532d;">
+            ${plan.strengths.map((s) => `<li>${s}</li>`).join('')}
+          </ul>
+        </div>
+
+        <!-- Areas for Focus -->
+        ${plan.weaknesses.length > 0 ? `
+        <div class="plan-card plan-card--weaknesses">
+          <div class="plan-card-title" style="color: #991b1b;">⚠️ Priority Focus Areas</div>
+          <ul class="plan-list" style="color: #7f1d1d;">
+            ${plan.weaknesses.map((w) => `<li>${w}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        <!-- Targeted Next Steps -->
+        <div class="plan-card plan-card--action">
+          <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Next Steps</div>
+          <ul class="plan-list" style="color: #1e3a8a;">
+            ${plan.improvementSteps.map((step) => `<li>${step}</li>`).join('')}
+          </ul>
+        </div>
+
+        <!-- Signatures for Subject Teacher and Parents under Improvement Plan -->
+        <div style="margin-top: 6px; padding: 6px 8px; border: 1.5px solid #cbd5e1; border-radius: 5px; background: #ffffff;">
+          <div style="font-weight: 800; font-size: 7.2pt; text-transform: uppercase; margin-bottom: 5px; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+            ✍️ Review Signatures & Acknowledgment
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 6.8pt; color: #334155;">
+            <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+              <span style="font-weight: 700; color: #0f172a;">Subject Teacher Signature:</span>
+              <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+            </div>
+            <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+              <span style="font-weight: 700; color: #0f172a;">Parent / Guardian Signature:</span>
+              <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 6.6pt; color: #64748b;">
+            <div><strong>Date:</strong> ____________________</div>
+            <div><strong>Student Acknowledgment:</strong> ____________________</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -420,24 +752,26 @@ export function exportClassQuizReportPdf(
 </body>
 </html>`;
 
-  // Open print preview window
   const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('Please allow popups to open the PDF report window.');
-    return;
+  if (printWindow) {
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
   }
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
 }
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
- * 2. INDIVIDUAL CANDIDATE PDF REPORT (WITH SUB-QUESTIONS & AI MARKING)
+ * 3. INDIVIDUAL DETAILED SCRIPT REPORT (FULL MULTI-PAGE SCRIPT BREAKDOWN)
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 export function exportIndividualStudentReportPdf(submission: StudentSubmission): void {
   if (!submission) return;
+
+  const isOffline =
+    !submission.quizCode ||
+    submission.quizCode.toUpperCase().startsWith('OFFLINE') ||
+    submission.durationSeconds === 0 ||
+    submission.teacherNotes?.toLowerCase().includes('offline');
 
   const { grade, color } = deriveGrade(submission.percentage);
   const mins = Math.floor(submission.durationSeconds / 60);
@@ -450,228 +784,38 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
   <meta charset="UTF-8">
   <title>Candidate Diagnostic Report - ${submission.studentName}</title>
   <style>
-    @page {
-      size: A4 portrait;
-      margin: 12mm 14mm 12mm 14mm;
-    }
-    *, *::before, *::after {
-      box-sizing: border-box;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
-      margin: 0;
-      padding: 0;
-      font-size: 9pt;
-      line-height: 1.45;
-    }
-    /* Candidate Header Card */
-    .cand-header-card {
-      border: 1.5px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 12px 16px;
-      margin-bottom: 14px;
-      background: #f8fafc;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .cand-name-title h1 {
-      font-size: 15pt;
-      font-weight: 800;
-      color: #0f172a;
-      margin: 0 0 2px 0;
-    }
-    .cand-sub {
-      font-size: 8.5pt;
-      color: #475569;
-      font-weight: 600;
-    }
-    .cand-score-pill {
-      text-align: right;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .cand-score-box {
-      text-align: right;
-    }
-    .cand-score-big {
-      font-size: 16pt;
-      font-weight: 800;
-      color: #0f172a;
-    }
-    .cand-score-lbl {
-      font-size: 7.5pt;
-      color: #64748b;
-      text-transform: uppercase;
-      font-weight: 700;
-    }
-    .cand-grade-tag {
-      background: ${color};
-      color: #ffffff;
-      font-weight: 800;
-      font-size: 18pt;
-      padding: 6px 14px;
-      border-radius: 6px;
-    }
-    /* Metadata Grid */
-    .meta-bar {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 8px;
-      margin-bottom: 14px;
-      background: #f1f5f9;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 8px 12px;
-      font-size: 8pt;
-    }
-    .meta-item strong {
-      display: block;
-      color: #0f172a;
-      font-size: 8.5pt;
-    }
-    .meta-item span {
-      color: #64748b;
-    }
-    /* Section Title */
-    .section-title {
-      font-size: 10.5pt;
-      font-weight: 800;
-      color: #1e293b;
-      margin: 14px 0 8px 0;
-      padding-bottom: 4px;
-      border-bottom: 1.5px solid #e2e8f0;
-    }
-    /* Question Script Card */
-    .q-script-card {
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 10px 14px;
-      margin-bottom: 12px;
-      page-break-inside: avoid;
-      background: #ffffff;
-    }
-    .q-script-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-      border-bottom: 1px solid #f1f5f9;
-      padding-bottom: 4px;
-    }
-    .q-script-title {
-      font-weight: 800;
-      font-size: 9.5pt;
-      color: #0f172a;
-    }
-    .q-topic-tag {
-      font-size: 7.5pt;
-      background: #f1f5f9;
-      color: #475569;
-      padding: 2px 6px;
-      border-radius: 4px;
-      margin-left: 6px;
-      font-weight: 600;
-    }
-    .q-score-badge {
-      font-weight: 800;
-      font-size: 8pt;
-      padding: 2px 8px;
-      border-radius: 4px;
-    }
+    @page { size: A4 portrait; margin: 12mm; }
+    body { font-family: sans-serif; color: #0f172a; font-size: 9pt; line-height: 1.45; }
+    .cand-header-card { border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 14px; background: #f8fafc; display: flex; justify-content: space-between; }
+    .cand-grade-tag { background: ${color}; color: #ffffff; font-weight: 800; font-size: 18pt; padding: 6px 14px; border-radius: 6px; }
+    .meta-bar { display: grid; grid-template-columns: repeat(${isOffline ? 3 : 5}, 1fr); gap: 8px; background: #f1f5f9; border-radius: 6px; padding: 8px; margin-bottom: 14px; font-size: 8pt; }
+    .meta-item strong { display: block; }
+    .section-title { font-size: 10.5pt; font-weight: 800; border-bottom: 1.5px solid #e2e8f0; margin: 14px 0 8px; }
+    .q-script-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
     .score-full { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
     .score-partial { background: rgba(234, 179, 8, 0.15); color: #ca8a04; }
     .score-zero { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
-
-    .q-stem {
-      font-size: 8.5pt;
-      color: #334155;
-      margin-bottom: 8px;
-    }
-
-    /* Sub Questions Stack */
-    .sub-q-box {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 8px 12px;
-      margin-bottom: 6px;
-    }
-    .sub-q-head {
-      display: flex;
-      justify-content: space-between;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-    .sub-ans-row {
-      font-size: 8pt;
-      margin-bottom: 3px;
-    }
-    .sub-feedback {
-      font-size: 7.5pt;
-      color: #64748b;
-      margin-top: 2px;
-      font-style: italic;
-    }
-    /* Model Answer Box */
-    .model-ans-box {
-      background: #f0fdf4;
-      border: 1px solid #bbf7d0;
-      border-radius: 6px;
-      padding: 6px 10px;
-      margin-top: 6px;
-      font-size: 8pt;
-      color: #166534;
-    }
-    .model-ans-box strong {
-      color: #14532d;
-    }
-    /* Criteria List */
-    .criteria-box {
-      margin: 6px 0;
-      font-size: 7.5pt;
-    }
-    .crit-item {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 2px;
-    }
-    .footer-note {
-      font-size: 7.5pt;
-      color: #94a3b8;
-      text-align: center;
-      margin-top: 20px;
-      padding-top: 8px;
-      border-top: 1px solid #e2e8f0;
-    }
+    .model-ans-box { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 6px; margin-top: 6px; font-size: 8pt; }
   </style>
 </head>
 <body>
-
-  <!-- Candidate Header Card -->
   <div class="cand-header-card">
-    <div class="cand-name-title">
-      <h1>👤 ${submission.studentName}</h1>
-      <div class="cand-sub">
-        ${submission.quizTitle} • ${submission.subject || 'Chemistry'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
+    <div>
+      <h1 style="font-size: 15pt; font-weight: 800; margin: 0 0 2px 0;">👤 ${submission.studentName}</h1>
+      <div style="font-size: 8.5pt; color: #475569; font-weight: 600;">
+        ${submission.quizTitle} • ${submission.subject || 'General'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
       </div>
     </div>
-    <div class="cand-score-pill">
-      <div class="cand-score-box">
-        <div class="cand-score-big">${submission.score} / ${submission.totalMarks}</div>
-        <div class="cand-score-lbl">Score (${Math.round(submission.percentage)}%)</div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="text-align: right;">
+        <div style="font-size: 16pt; font-weight: 800;">${submission.score} / ${submission.totalMarks}</div>
+        <div style="font-size: 7.5pt; color: #64748b; font-weight: 700; text-transform: uppercase;">Score (${Math.round(submission.percentage)}%)</div>
       </div>
       <div class="cand-grade-tag">${grade}</div>
     </div>
   </div>
 
-  <!-- Assessment Metadata Grid -->
-  <div class="meta-bar" style="grid-template-columns: repeat(5, 1fr);">
+  <div class="meta-bar">
     <div class="meta-item">
       <span>Class / Section:</span>
       <strong>${submission.studentClass || 'General'}</strong>
@@ -681,9 +825,10 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
       <strong style="font-family: monospace;">${submission.candidateNumber || 'N/A'}</strong>
     </div>
     <div class="meta-item">
-      <span>Access Code:</span>
-      <strong>${submission.quizCode}</strong>
+      <span>Assessment:</span>
+      <strong>${isOffline ? 'Offline Paper Exam' : submission.quizCode}</strong>
     </div>
+    ${!isOffline ? `
     <div class="meta-item">
       <span>Time Taken:</span>
       <strong>${mins}m ${secs}s</strong>
@@ -692,9 +837,9 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
       <span>Exam Integrity:</span>
       <strong style="color: ${isClean ? '#16a34a' : '#ea580c'}">${isClean ? '🟢 0 Strikes (Clean)' : `⚠️ ${submission.violationsCount} Strikes`}</strong>
     </div>
+    ` : ''}
   </div>
 
-  <!-- Detailed Question Script & Marking Breakdown -->
   <div class="section-title">📝 Question-by-Question Script & Examiner Review</div>
 
   ${submission.questionResults.map((q, idx) => {

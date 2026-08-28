@@ -23,6 +23,9 @@ export interface CambridgeCoverDetails {
   mandatoryNotices: string[];
   schoolLogoUrl?: string;
   cambridgeLogoUrl?: string;
+  layoutTemplate?: 'cambridge' | 'standard';
+  schoolName?: string;
+  title?: string;
 }
 
 /**
@@ -144,12 +147,36 @@ export function getCambridgeCoverDetails(
 
   const durationText = formatCambridgeDuration(headerConfig.durationMinutes || (isMcqOnly ? 45 : 75));
   const isScience = /chem|phys|bio|sci/i.test(subjectName);
+  const isChemistrySubject =
+    /chem|0620|0971/i.test(subjectName) ||
+    /chem|0620|0971/i.test(headerConfig.subject || '') ||
+    headerConfig.subjectCode === '0620';
+  const isSocialSubject =
+    /geograph|history|sociolog|econom|business|social|humanit|global/i.test(subjectName) ||
+    /geograph|history|sociolog|econom|business|social|humanit|global/i.test(headerConfig.subject || '') ||
+    headerConfig.subjectCode === '0460';
+  const hasInsert =
+    isSocialSubject ||
+    questions.some(
+      (q) =>
+        q.diagram_source === 'insert' ||
+        Boolean(q.resource_ref) ||
+        (q.sub_questions && q.sub_questions.some((sq) => sq.diagram_source === 'insert' || Boolean(sq.resource_ref)))
+    );
 
   // Instructions & Information
   let instructions: string[] = [];
   let information: string[] = [];
   let mandatoryNotices: string[] = [];
   let additionalMaterials: string[] = [];
+
+  const defaultMaterials = headerConfig.additionalMaterials
+    ? headerConfig.additionalMaterials
+    : hasInsert
+    ? 'An Insert (enclosed)'
+    : isChemistrySubject
+    ? 'Periodic Table (enclosed)'
+    : '';
 
   if (isMcqOnly) {
     mandatoryNotices = ['You must answer on the multiple choice answer sheet.'];
@@ -158,6 +185,9 @@ export function getCambridgeCoverDetails(
       'Soft clean eraser',
       'Soft pencil (type B or HB is recommended)',
     ];
+    if (defaultMaterials) {
+      additionalMaterials.push(defaultMaterials);
+    }
     instructions = [
       `There are ${questionCountWords} questions on this paper. Answer all questions.`,
       'For each question there are four possible answers A, B, C and D. Choose the one you consider correct and record your choice in soft pencil on the multiple choice answer sheet.',
@@ -172,15 +202,18 @@ export function getCambridgeCoverDetails(
       'Each correct answer will score one mark.',
       'Any rough working should be done on this question paper.',
     ];
-    if (isScience) {
+    if (isChemistrySubject) {
       information.push('The Periodic Table is printed in the question paper.');
+    }
+    if (hasInsert) {
+      information.push('The Insert contains additional resources for some questions.');
     }
   } else if (isCombined) {
     // Both Multiple Choice and Theory
     mandatoryNotices = [
       'You must answer on the question paper.',
-      headerConfig.additionalMaterials
-        ? `Additional materials: ${headerConfig.additionalMaterials}`
+      defaultMaterials
+        ? `Additional materials: ${defaultMaterials}`
         : 'No additional materials are needed.',
     ];
     instructions = [
@@ -196,15 +229,18 @@ export function getCambridgeCoverDetails(
       `The total mark for this paper is ${totalMarks}.`,
       'The number of marks for each question or part question is shown in brackets [ ].',
     ];
-    if (isScience) {
+    if (isChemistrySubject) {
       information.push('The Periodic Table is printed in the question paper.');
+    }
+    if (hasInsert) {
+      information.push('The Insert contains additional resources for some questions.');
     }
   } else {
     // Theory only
     mandatoryNotices = [
       'You must answer on the question paper.',
-      headerConfig.additionalMaterials
-        ? `Additional materials: ${headerConfig.additionalMaterials}`
+      defaultMaterials
+        ? `Additional materials: ${defaultMaterials}`
         : 'No additional materials are needed.',
     ];
     instructions = [
@@ -220,8 +256,11 @@ export function getCambridgeCoverDetails(
       `The total mark for this paper is ${totalMarks}.`,
       'The number of marks for each question or part question is shown in brackets [ ].',
     ];
-    if (isScience) {
+    if (isChemistrySubject) {
       information.push('The Periodic Table is printed in the question paper.');
+    }
+    if (hasInsert) {
+      information.push('The Insert contains additional resources for some questions.');
     }
   }
 
@@ -256,7 +295,108 @@ export function getCambridgeCoverDetails(
     information,
     additionalMaterials,
     mandatoryNotices,
+    layoutTemplate: headerConfig.layoutTemplate || 'cambridge',
+    schoolName: headerConfig.schoolName,
+    title: headerConfig.title,
   };
+}
+
+/**
+ * Renders a clean, modern Standard School Assessment Cover Page HTML (Non-Cambridge)
+ */
+export function renderStandardCoverPageHtml(details: CambridgeCoverDetails): string {
+  const schoolLogoSrc = details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
+  const schoolTitle = details.schoolName ? details.schoolName.toUpperCase() : 'ACADEMIC ASSESSMENT';
+  const examTitle = details.title || `${details.subjectName} EXAMINATION`;
+
+  return `
+  <div class="cambridge-cover-page standard-school-cover" style="font-family: Arial, sans-serif;">
+    <!-- School Header -->
+    <div style="text-align: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 2px solid #0f172a;">
+      <div style="display: flex; justify-content: center; align-items: center; gap: 16px; margin-bottom: 10px;">
+        <img src="${schoolLogoSrc}" alt="School Logo" style="height: 54px; max-width: 220px; object-fit: contain; display: block;" />
+      </div>
+      <h1 style="font-size: 22px; font-weight: 800; color: #0f172a; margin: 0 0 6px; letter-spacing: 0.5px; text-transform: uppercase;">
+        ${schoolTitle}
+      </h1>
+      <h2 style="font-size: 17px; font-weight: 700; color: #334155; margin: 0;">
+        ${examTitle}
+      </h2>
+    </div>
+
+    <!-- Student Details Box -->
+    <div style="border: 1.5px solid #0f172a; border-radius: 6px; padding: 14px 18px; margin-bottom: 24px; background: #f8fafc;">
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: baseline;">
+          <span style="font-size: 13px; font-weight: 700; color: #0f172a; min-width: 110px;">STUDENT NAME:</span>
+          <div style="flex: 1; border-bottom: 1.5px solid #0f172a; height: 20px;"></div>
+        </div>
+        <div style="display: flex; align-items: baseline;">
+          <span style="font-size: 13px; font-weight: 700; color: #0f172a; min-width: 80px;">CLASS / SEC:</span>
+          <div style="flex: 1; border-bottom: 1.5px solid #0f172a; height: 20px;"></div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;">
+        <div style="display: flex; align-items: baseline;">
+          <span style="font-size: 13px; font-weight: 700; color: #0f172a; min-width: 50px;">DATE:</span>
+          <div style="flex: 1; border-bottom: 1.5px solid #0f172a; height: 20px;"></div>
+        </div>
+        <div style="display: flex; align-items: baseline;">
+          <span style="font-size: 13px; font-weight: 700; color: #0f172a; min-width: 65px;">ROLL NO:</span>
+          <div style="flex: 1; border-bottom: 1.5px solid #0f172a; height: 20px;"></div>
+        </div>
+        <div style="display: flex; align-items: baseline;">
+          <span style="font-size: 13px; font-weight: 700; color: #0f172a; min-width: 70px;">TEACHER:</span>
+          <div style="flex: 1; border-bottom: 1.5px solid #0f172a; height: 20px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Exam Info Summary Bar -->
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #0f172a; color: #fff; border-radius: 4px; margin-bottom: 24px; font-size: 13px; font-weight: 600;">
+      <span><strong>Subject:</strong> ${details.subjectName}</span>
+      <span><strong>Time Allowed:</strong> ${details.durationText}</span>
+      <span><strong>Maximum Marks:</strong> ${details.totalMarks}</span>
+      <span><strong>Total Questions:</strong> ${details.questionCount}</span>
+    </div>
+
+    <!-- Instructions to Candidates -->
+    <div style="margin-bottom: 24px;">
+      <h3 style="font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #0f172a; margin: 0 0 10px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px;">
+        General Instructions
+      </h3>
+      <ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1e293b;">
+        <li>Write your name, class, and date clearly in the spaces provided at the top of this page.</li>
+        <li>Answer <strong>all</strong> questions carefully.</li>
+        <li>Write your answers neatly in black or dark blue ink. Soft pencil may be used for diagrams or graphs only.</li>
+        ${details.isMcqOnly ? '<li>For multiple-choice questions, choose the ONE best answer and mark your response clearly.</li>' : ''}
+        <li>Read each question thoroughly before answering.</li>
+        <li>Do not open this assessment booklet until instructed to do so by the examiner.</li>
+      </ul>
+    </div>
+
+    <!-- Score Grid Box (For Teacher / Grader) -->
+    <div style="margin-top: 40px; padding: 14px; border: 1.5px dashed #94a3b8; border-radius: 6px; background: #fafafa; display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <span style="font-size: 12px; font-weight: 700; color: #475569; text-transform: uppercase;">FOR EXAMINER / TEACHER USE ONLY:</span>
+        <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Marks checked and verified against answer key</div>
+      </div>
+      <div style="display: flex; gap: 20px;">
+        <div style="text-align: center; border: 1.5px solid #0f172a; border-radius: 4px; padding: 6px 16px; background: #fff; min-width: 90px;">
+          <div style="font-size: 10px; font-weight: 700; color: #475569;">SCORE</div>
+          <div style="font-size: 18px; font-weight: 800; color: #0f172a; margin-top: 2px;">&nbsp;&nbsp;&nbsp;&nbsp; / ${details.totalMarks}</div>
+        </div>
+        <div style="text-align: center; border: 1.5px solid #0f172a; border-radius: 4px; padding: 6px 16px; background: #fff; min-width: 90px;">
+          <div style="font-size: 10px; font-weight: 700; color: #475569;">PERCENTAGE</div>
+          <div style="font-size: 18px; font-weight: 800; color: #0f172a; margin-top: 2px;">&nbsp;&nbsp;&nbsp;&nbsp; %</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Page Break -->
+    <div style="page-break-after: always; break-after: page;"></div>
+  </div>
+  `;
 }
 
 /**
@@ -294,6 +434,10 @@ export function getCambridgeLogoSvg(): string {
  * Renders the clean, authentic Cambridge IGCSE Cover Page HTML
  */
 export function renderCambridgeCoverPageHtml(details: CambridgeCoverDetails): string {
+  if (details.layoutTemplate === 'standard') {
+    return renderStandardCoverPageHtml(details);
+  }
+
   const showCandidateBox = !details.isMcqOnly;
   const schoolLogoSrc = details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
   const cambridgeLogoSrc = details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO;

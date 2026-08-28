@@ -94,18 +94,22 @@ export function formatCandidateAnswer(
 
   const num = Number(str);
   const isNumericIndex = !isNaN(num) && Number.isInteger(num) && num >= 0 && num <= 25;
-  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0) || (isNumericIndex && str.length <= 2);
+  // Numerical answers should only be treated as MCQ option letters if options are provided OR gradingMethod is explicitly 'mcq'
+  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0);
 
   if (isMcq && isNumericIndex) {
-    const letter = String.fromCharCode(65 + num);
-    if (options && options[num]) {
+    if (options && options.length > 0 && num < options.length) {
+      const letter = String.fromCharCode(65 + num);
       const cleanContent = cleanMcqOptionContent(options[num], num);
       return `Option ${letter}: ${cleanContent || options[num]}`;
     }
-    return `Option ${letter}`;
+    if (gradingMethod === 'mcq') {
+      const letter = String.fromCharCode(65 + num);
+      return `Option ${letter}`;
+    }
   }
 
-  // If ans is just a single letter like "A", "B", "C", "D"
+  // If ans is just a single letter like "A", "B", "C", "D" and question has MCQ options
   if (isMcq && str.length === 1 && str >= 'A' && str <= 'Z') {
     const idx = str.charCodeAt(0) - 65;
     if (options && options[idx]) {
@@ -555,37 +559,80 @@ export function exportAllSubmissionsExcel(
 
   const wb = XLSX.utils.book_new();
 
+  const isOffline =
+    !quizCode ||
+    quizCode.toUpperCase().startsWith('OFFLINE') ||
+    submissions.every((s) => s.durationSeconds === 0) ||
+    submissions[0]?.teacherNotes?.toLowerCase().includes('offline');
+
   // ── Sheet 1: Gradebook Summary ──────────────────────────────────────────────
-  const summaryRows = submissions.map((s, idx) => ({
-    'Rank': idx + 1,
-    'Candidate Name': s.studentName,
-    'Class / Section': s.studentClass || 'General',
-    'Candidate #': s.candidateNumber || '-',
-    'Score Earned': s.score,
-    'Total Marks': s.totalMarks || totalMarks,
-    'Percentage': `${Math.round(s.percentage)}%`,
-    'Grade': s.percentage >= 90 ? 'A*' : s.percentage >= 80 ? 'A' : s.percentage >= 70 ? 'B' : s.percentage >= 60 ? 'C' : s.percentage >= 50 ? 'D' : s.percentage >= 40 ? 'E' : 'U',
-    'Time Taken': `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`,
-    'Strikes': s.violationsCount,
-    'Integrity Status': s.violationsCount === 0 ? 'Clean (0 Strikes)' : s.violationsCount >= 3 ? 'Flagged / Disqualified' : `Suspicious (${s.violationsCount} strikes)`,
-    'Date Submitted': formatSubmissionDateTime(s.submittedAt),
-  }));
+  const summaryRows = submissions.map((s, idx) => {
+    const base: Record<string, any> = {
+      'Rank': idx + 1,
+      'Candidate Name': s.studentName,
+      'Class / Section': s.studentClass || 'General',
+      'Candidate #': s.candidateNumber || '-',
+      'Score Earned': s.score,
+      'Total Marks': s.totalMarks || totalMarks,
+      'Percentage': `${Math.round(s.percentage)}%`,
+      'Grade':
+        s.percentage >= 90
+          ? 'A*'
+          : s.percentage >= 80
+          ? 'A'
+          : s.percentage >= 70
+          ? 'B'
+          : s.percentage >= 60
+          ? 'C'
+          : s.percentage >= 50
+          ? 'D'
+          : s.percentage >= 40
+          ? 'E'
+          : 'U',
+    };
+
+    if (!isOffline) {
+      base['Time Taken'] = `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`;
+      base['Strikes'] = s.violationsCount;
+      base['Integrity Status'] =
+        s.violationsCount === 0
+          ? 'Clean (0 Strikes)'
+          : s.violationsCount >= 3
+          ? 'Flagged / Disqualified'
+          : `Suspicious (${s.violationsCount} strikes)`;
+    }
+
+    base['Date Submitted'] = formatSubmissionDateTime(s.submittedAt);
+    return base;
+  });
 
   const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-  wsSummary['!cols'] = [
-    { wch: 6 },
-    { wch: 25 },
-    { wch: 16 },
-    { wch: 14 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 8 },
-    { wch: 14 },
-    { wch: 10 },
-    { wch: 24 },
-    { wch: 22 },
-  ];
+  wsSummary['!cols'] = isOffline
+    ? [
+        { wch: 6 },
+        { wch: 25 },
+        { wch: 16 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 8 },
+        { wch: 22 },
+      ]
+    : [
+        { wch: 6 },
+        { wch: 25 },
+        { wch: 16 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 8 },
+        { wch: 14 },
+        { wch: 10 },
+        { wch: 24 },
+        { wch: 22 },
+      ];
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Gradebook Summary');
 
   // ── Sheet 2: Question Item Analysis ────────────────────────────────────────
@@ -637,31 +684,33 @@ export function exportAllSubmissionsExcel(
   }
 
   // ── Sheet 3: Security & Proctoring Audit Trail ─────────────────────────────
-  const proctorLogs: any[] = [];
-  submissions.forEach((sub) => {
-    if (sub.proctoringLogs && sub.proctoringLogs.length > 0) {
-      sub.proctoringLogs.forEach((log) => {
-        proctorLogs.push({
-          'Candidate Name': sub.studentName,
-          'Strike': `Strike ${log.strike}`,
-          'Timestamp': formatProctorTimestamp(log.timestamp),
-          'Security Event': log.event,
-          'Severity': log.severity.toUpperCase(),
+  if (!isOffline) {
+    const proctorLogs: any[] = [];
+    submissions.forEach((sub) => {
+      if (sub.proctoringLogs && sub.proctoringLogs.length > 0) {
+        sub.proctoringLogs.forEach((log) => {
+          proctorLogs.push({
+            'Candidate Name': sub.studentName,
+            'Strike': `Strike ${log.strike}`,
+            'Timestamp': formatProctorTimestamp(log.timestamp),
+            'Security Event': log.event,
+            'Severity': log.severity.toUpperCase(),
+          });
         });
-      });
-    }
-  });
+      }
+    });
 
-  if (proctorLogs.length > 0) {
-    const wsProctor = XLSX.utils.json_to_sheet(proctorLogs);
-    wsProctor['!cols'] = [
-      { wch: 24 },
-      { wch: 12 },
-      { wch: 16 },
-      { wch: 45 },
-      { wch: 12 },
-    ];
-    XLSX.utils.book_append_sheet(wb, wsProctor, 'Proctoring Audit Log');
+    if (proctorLogs.length > 0) {
+      const wsProctor = XLSX.utils.json_to_sheet(proctorLogs);
+      wsProctor['!cols'] = [
+        { wch: 24 },
+        { wch: 12 },
+        { wch: 16 },
+        { wch: 45 },
+        { wch: 12 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsProctor, 'Proctoring Audit Log');
+    }
   }
 
   const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -676,19 +725,31 @@ export function exportAllSubmissionsExcel(
 export function exportSingleSubmissionExcel(submission: StudentSubmission): void {
   const wb = XLSX.utils.book_new();
 
+  const isOffline =
+    !submission.quizCode ||
+    submission.quizCode.toUpperCase().startsWith('OFFLINE') ||
+    submission.durationSeconds === 0 ||
+    submission.teacherNotes?.toLowerCase().includes('offline');
+
   // ── Sheet 1: Candidate Overview ────────────────────────────────────────────
-  const overviewRows = [
+  const overviewRows: Array<{ Property: string; Value: any }> = [
     { Property: 'Candidate Name', Value: submission.studentName },
     { Property: 'Quiz Title', Value: submission.quizTitle },
-    { Property: 'Subject', Value: submission.subject || 'Chemistry' },
-    { Property: 'Access Code', Value: submission.quizCode },
+    { Property: 'Subject', Value: submission.subject || 'General' },
+    { Property: 'Assessment Mode', Value: isOffline ? 'Offline Paper Exam' : submission.quizCode },
     { Property: 'Score Earned', Value: `${submission.score} / ${submission.totalMarks}` },
     { Property: 'Percentage', Value: `${submission.percentage.toFixed(1)}%` },
-    { Property: 'Time Taken', Value: `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
-    { Property: 'Violation Strikes', Value: submission.violationsCount },
-    { Property: 'Integrity Status', Value: submission.violationsCount === 0 ? 'Clean (0 Strikes)' : 'Flagged' },
-    { Property: 'Submission Date', Value: formatSubmissionDateTime(submission.submittedAt) },
   ];
+
+  if (!isOffline) {
+    overviewRows.push(
+      { Property: 'Time Taken', Value: `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
+      { Property: 'Violation Strikes', Value: submission.violationsCount },
+      { Property: 'Integrity Status', Value: submission.violationsCount === 0 ? 'Clean (0 Strikes)' : 'Flagged' }
+    );
+  }
+
+  overviewRows.push({ Property: 'Submission Date', Value: formatSubmissionDateTime(submission.submittedAt) });
 
   const wsOverview = XLSX.utils.json_to_sheet(overviewRows);
   wsOverview['!cols'] = [{ wch: 20 }, { wch: 40 }];

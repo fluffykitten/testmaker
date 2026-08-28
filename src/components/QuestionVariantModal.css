@@ -656,6 +656,26 @@
   cursor: wait;
 }
 
+.variant-btn--completed {
+  background: rgba(16, 185, 129, 0.18) !important;
+  border: 1px solid rgba(16, 185, 129, 0.5) !important;
+  color: #10b981 !important;
+  box-shadow: none !important;
+}
+
+.variant-success-pill {
+  font-size: 0.775rem;
+  font-weight: 700;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 9999px;
+  padding: 5px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 @media (max-width: 840px) {
   .variant-workspace {
     grid-template-columns: 1fr;

@@ -14,9 +14,14 @@ import {
 } from '../services/offlineGradingService';
 import {
   exportAllSubmissionsExcel,
+  exportSingleSubmissionExcel,
   type StudentSubmission,
 } from '../services/quizSubmissionService';
-import { exportClassQuizReportPdf } from '../services/quizReportPdfService';
+import {
+  exportClassQuizReportPdf,
+  exportIndividualStudentReportPdf,
+  exportStudentFeedbackReportPdf,
+} from '../services/quizReportPdfService';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import './OfflineGradingModal.css';
 
@@ -54,9 +59,27 @@ export function OfflineGradingModal({
     return columns.reduce((s, c) => s + c.maxMarks, 0);
   }, [columns]);
 
-  // Graded Submissions
+  // Graded Submissions & Filtering
   const [gradedSubmissions, setGradedSubmissions] = useState<StudentSubmission[]>([]);
   const [savedQuiz, setSavedQuiz] = useState<PublishedQuiz | null>(null);
+  const [selectedClass, setSelectedClass] = useState<string>('all');
+
+  const availableClasses = useMemo(() => {
+    const classes = new Set<string>();
+    gradedSubmissions.forEach((s) => {
+      if (s.studentClass && s.studentClass.trim()) {
+        classes.add(s.studentClass.trim());
+      }
+    });
+    return ['all', ...Array.from(classes).sort()];
+  }, [gradedSubmissions]);
+
+  const displayedSubmissions = useMemo(() => {
+    if (selectedClass === 'all') return gradedSubmissions;
+    return gradedSubmissions.filter(
+      (s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase()
+    );
+  }, [gradedSubmissions, selectedClass]);
 
   // In-App Rapid Grader Grid State
   const [gridRows, setGridRows] = useState<RawOfflineStudentRow[]>([
@@ -687,30 +710,100 @@ export function OfflineGradingModal({
                 </div>
               )}
 
-              {/* Review Table Header & AI Grading Trigger */}
+              {/* Review Table Header Toolbar & Class Filter */}
               <div
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  marginBottom: '0.75rem',
+                  marginBottom: '0.85rem',
                   flexWrap: 'wrap',
-                  gap: '0.5rem',
+                  gap: '0.75rem',
+                  background: '#f8fafc',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0',
                 }}
               >
-                <div style={{ fontSize: '0.875rem', color: '#475569' }}>
-                  Showing auto-graded results. Click any question badge to override marks.
+                {/* Left: Class Section Filter */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#334155' }}>
+                    🏫 View Class:
+                  </span>
+                  <select
+                    value={selectedClass}
+                    onChange={(e) => setSelectedClass(e.target.value)}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      border: '1.5px solid #cbd5e1',
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      background: '#ffffff',
+                      color: '#0f172a',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {availableClasses.map((c) => (
+                      <option key={c} value={c}>
+                        {c === 'all'
+                          ? `🌐 All Classes (${gradedSubmissions.length})`
+                          : `Class ${c} (${gradedSubmissions.filter((s) => s.studentClass === c).length})`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                <button
-                  type="button"
-                  className="og-btn og-btn--secondary"
-                  style={{ fontSize: '0.8125rem', padding: '0.45rem 0.85rem' }}
-                  onClick={handleBatchAiGrading}
-                  disabled={isProcessing}
-                >
-                  ✨ Run Gemini AI on Descriptive Answers
-                </button>
+                {/* Right: Export Reports & AI Grade Actions */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="og-btn og-btn--secondary"
+                    style={{ fontSize: '0.8125rem', padding: '0.45rem 0.85rem' }}
+                    onClick={() => {
+                      exportClassQuizReportPdf(
+                        {
+                          title: headerConfig.title || 'Offline Exam Assessment',
+                          quizCode: 'OFFLINE',
+                          totalMarks,
+                          subject: headerConfig.subject,
+                        },
+                        gradedSubmissions,
+                        selectedClass
+                      );
+                    }}
+                    title="Generate printable PDF report with grade distribution, topic diagnostics, and student rankings"
+                  >
+                    <span>📄</span> {selectedClass === 'all' ? 'Overall Cohort PDF' : `Class ${selectedClass} PDF`}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="og-btn og-btn--secondary"
+                    style={{ fontSize: '0.8125rem', padding: '0.45rem 0.85rem' }}
+                    onClick={() => {
+                      exportAllSubmissionsExcel(
+                        headerConfig.title || 'Offline Assessment',
+                        'OFFLINE',
+                        totalMarks,
+                        displayedSubmissions
+                      );
+                    }}
+                    title="Export complete Excel gradebook with item-by-item breakdown"
+                  >
+                    <span>📥</span> Excel Gradebook
+                  </button>
+
+                  <button
+                    type="button"
+                    className="og-btn og-btn--secondary"
+                    style={{ fontSize: '0.8125rem', padding: '0.45rem 0.85rem' }}
+                    onClick={handleBatchAiGrading}
+                    disabled={isProcessing}
+                  >
+                    ✨ Run Gemini AI
+                  </button>
+                </div>
               </div>
 
               {/* Graded Candidates Table */}
@@ -720,10 +813,11 @@ export function OfflineGradingModal({
                     <tr>
                       <th className="og-col-sticky-action">#</th>
                       <th className="og-col-sticky-name">Candidate</th>
-                      <th style={{ minWidth: '90px' }}>Class</th>
-                      <th style={{ minWidth: '90px' }}>Score</th>
-                      <th style={{ minWidth: '70px' }}>%</th>
-                      <th style={{ minWidth: '70px' }}>Grade</th>
+                      <th style={{ minWidth: '95px', textAlign: 'center' }}>Reports</th>
+                      <th style={{ minWidth: '85px' }}>Class</th>
+                      <th style={{ minWidth: '85px' }}>Score</th>
+                      <th style={{ minWidth: '65px' }}>%</th>
+                      <th style={{ minWidth: '65px' }}>Grade</th>
                       {columns.map((col) => (
                         <th key={col.id} style={{ minWidth: '110px' }}>
                           <div>{col.columnKey}</div>
@@ -733,7 +827,7 @@ export function OfflineGradingModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {gradedSubmissions.map((sub, sIdx) => {
+                    {displayedSubmissions.map((sub, sIdx) => {
                       const grade =
                         sub.percentage >= 90
                           ? 'A*'
@@ -750,18 +844,82 @@ export function OfflineGradingModal({
                           : 'U';
 
                       const gradeColor =
-                        grade === 'A*' || grade === 'A'
-                          ? '#16a34a'
+                        grade === 'A*'
+                          ? '#d97706'
+                          : grade === 'A'
+                          ? '#059669'
                           : grade === 'B'
                           ? '#2563eb'
                           : grade === 'C'
-                          ? '#d97706'
-                          : '#dc2626';
+                          ? '#7c3aed'
+                          : grade === 'D'
+                          ? '#ea580c'
+                          : grade === 'E'
+                          ? '#dc2626'
+                          : '#475569';
 
                       return (
                         <tr key={sub.id}>
                           <td className="og-col-sticky-action" style={{ color: '#94a3b8', fontWeight: 600 }}>{sIdx + 1}</td>
                           <td className="og-col-sticky-name" style={{ fontWeight: 600, color: '#0f172a' }}>{sub.studentName}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                              <button
+                                type="button"
+                                onClick={() => exportStudentFeedbackReportPdf(sub)}
+                                style={{
+                                  background: '#f5f3ff',
+                                  color: '#6d28d9',
+                                  border: '1px solid #ddd6fe',
+                                  borderRadius: '4px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  padding: '2px 6px',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                }}
+                                title={`Print 1-page student feedback & improvement report card for ${sub.studentName}`}
+                              >
+                                🎓 1-Page Report
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => exportIndividualStudentReportPdf(sub)}
+                                style={{
+                                  background: '#eff6ff',
+                                  color: '#1d4ed8',
+                                  border: '1px solid #bfdbfe',
+                                  borderRadius: '4px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  padding: '2px 5px',
+                                  cursor: 'pointer',
+                                }}
+                                title={`Print/Download full Cambridge diagnostic script for ${sub.studentName}`}
+                              >
+                                📄 Script
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => exportSingleSubmissionExcel(sub)}
+                                style={{
+                                  background: '#f0fdf4',
+                                  color: '#15803d',
+                                  border: '1px solid #bbf7d0',
+                                  borderRadius: '4px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  padding: '2px 5px',
+                                  cursor: 'pointer',
+                                }}
+                                title={`Download individual Excel score sheet for ${sub.studentName}`}
+                              >
+                                📥 XLS
+                              </button>
+                            </div>
+                          </td>
                           <td style={{ color: '#64748b' }}>{sub.studentClass}</td>
                           <td style={{ fontWeight: 700, color: '#1e293b' }}>
                             {sub.score} / {totalMarks}
@@ -875,8 +1033,8 @@ export function OfflineGradingModal({
               <h3 className="og-success-title">Offline Exam Saved to Gradebook!</h3>
               <p className="og-success-desc">
                 {gradedSubmissions.length} student scripts have been registered under{' '}
-                <strong>{savedQuiz?.title || 'Offline Exam'}</strong>. You can now download individual
-                Cambridge diagnostic report cards, print class reports, or view analytics.
+                <strong>{savedQuiz?.title || 'Offline Exam'}</strong>. You can download individual
+                Cambridge diagnostic report cards, generate class reports, or view analytics.
               </p>
 
               <div className="og-success-actions">
@@ -889,7 +1047,7 @@ export function OfflineGradingModal({
                       onViewInGradebook(savedQuiz);
                     }}
                   >
-                    <span>📊</span> View in Quiz Manager / Gradebook
+                    <span>📊</span> Open in Central Gradebook & Analytics
                   </button>
                 )}
 
@@ -904,11 +1062,12 @@ export function OfflineGradingModal({
                         totalMarks,
                         subject: headerConfig.subject,
                       },
-                      gradedSubmissions
+                      gradedSubmissions,
+                      selectedClass
                     );
                   }}
                 >
-                  <span>📄</span> Download Class PDF Report
+                  <span>📄</span> Download {selectedClass === 'all' ? 'Overall Cohort' : `Class ${selectedClass}`} PDF
                 </button>
 
                 <button
@@ -919,7 +1078,7 @@ export function OfflineGradingModal({
                       headerConfig.title || 'Offline Exam Assessment',
                       'OFFLINE',
                       totalMarks,
-                      gradedSubmissions
+                      displayedSubmissions
                     );
                   }}
                 >

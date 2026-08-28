@@ -72,6 +72,9 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [variant, setVariant] = useState<Question | null>(null);
   const [showMarkScheme, setShowMarkScheme] = useState(true);
+  const [isSavedToBank, setIsSavedToBank] = useState(false);
+  const [isAddedToTest, setIsAddedToTest] = useState(false);
+  const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
   const handleGenerate = useCallback(
     async (mode?: VariantMode, overrideInstruction?: string) => {
@@ -111,6 +114,9 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
         };
 
         setVariant(fullVariant);
+        setIsSavedToBank(false);
+        setIsAddedToTest(false);
+        setActionSuccessMsg(null);
       } catch (err: any) {
         console.error('Failed to generate variant:', err);
         setErrorMessage(err?.message || 'Failed to generate question variant. Please try again.');
@@ -121,21 +127,16 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     [question, selectedMode, customInstruction]
   );
 
-  // Reset state on open — wait for user to select a variant mode
+  // Reset state on open or question change
   useEffect(() => {
-    if (!isOpen || !question) {
-      setVariant(null);
-      setSelectedMode(null);
-      setCustomInstruction('');
-      setErrorMessage(null);
-      setIsGenerating(false);
-      return;
-    }
     setVariant(null);
     setSelectedMode(null);
     setCustomInstruction('');
     setErrorMessage(null);
     setIsGenerating(false);
+    setIsSavedToBank(false);
+    setIsAddedToTest(false);
+    setActionSuccessMsg(null);
   }, [isOpen, question]);
 
   const handleSaveToQuestionBank = async () => {
@@ -144,11 +145,20 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     setErrorMessage(null);
 
     try {
+      if (isSavedToBank) {
+        setActionSuccessMsg('Already saved to Question Bank!');
+        setTimeout(() => setActionSuccessMsg(null), 3000);
+        return;
+      }
+
       const { id, created_at, ...cleanVariant } = variant;
       const saved = await createQuestion(cleanVariant);
       if (saved) {
+        setVariant(saved);
+        setIsSavedToBank(true);
         onSaveToBank?.(saved);
-        onClose();
+        setActionSuccessMsg('✓ Saved to Question Bank!');
+        setTimeout(() => setActionSuccessMsg(null), 4000);
       } else {
         throw new Error('Failed to create question record.');
       }
@@ -160,10 +170,37 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     }
   };
 
-  const handleAddToTest = () => {
+  const handleAddToTest = async () => {
     if (!variant) return;
-    onAddToTest?.(variant);
-    onClose();
+    setIsSaving(true);
+    setErrorMessage(null);
+
+    try {
+      let questionToAdd = variant;
+      // Auto-save to ensure permanent record with valid UUID for custom tests if not already saved
+      if (!isSavedToBank && (!variant.id || variant.id.startsWith('variant-temp-'))) {
+        const { id, created_at, ...cleanVariant } = variant;
+        const saved = await createQuestion(cleanVariant);
+        if (saved) {
+          questionToAdd = saved;
+          setVariant(saved);
+          setIsSavedToBank(true);
+          onSaveToBank?.(saved);
+        }
+      }
+      onAddToTest?.(questionToAdd);
+      setIsAddedToTest(true);
+      setActionSuccessMsg('✓ Added to Custom Test!');
+      setTimeout(() => setActionSuccessMsg(null), 4000);
+    } catch (err: any) {
+      console.warn('Could not persist variant to DB, adding locally:', err);
+      onAddToTest?.(variant);
+      setIsAddedToTest(true);
+      setActionSuccessMsg('✓ Added to Custom Test!');
+      setTimeout(() => setActionSuccessMsg(null), 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleOpenEditor = () => {
@@ -484,12 +521,18 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           </div>
 
           <div className="variant-footer-right">
+            {actionSuccessMsg && (
+              <span className="variant-success-pill animate-fade-in">
+                {actionSuccessMsg}
+              </span>
+            )}
+
             <button
               type="button"
               className="variant-btn-secondary"
               onClick={onClose}
             >
-              Cancel
+              {isAddedToTest || isSavedToBank ? 'Done' : 'Cancel'}
             </button>
 
             {variant && (
@@ -506,20 +549,25 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                 {onAddToTest && (
                   <button
                     type="button"
-                    className="variant-btn-accent"
+                    className={`variant-btn-accent ${isAddedToTest ? 'variant-btn--completed' : ''}`}
                     onClick={handleAddToTest}
+                    disabled={isSaving}
                   >
-                    + Add to Custom Test
+                    {isAddedToTest ? '✓ Added to Test' : '+ Add to Custom Test'}
                   </button>
                 )}
 
                 <button
                   type="button"
-                  className="variant-btn-primary"
+                  className={`variant-btn-primary ${isSavedToBank ? 'variant-btn--completed' : ''}`}
                   onClick={handleSaveToQuestionBank}
-                  disabled={isSaving}
+                  disabled={isSaving || isSavedToBank}
                 >
-                  {isSaving ? 'Saving…' : '💾 Save to Question Bank'}
+                  {isSavedToBank
+                    ? '✓ Saved to Question Bank'
+                    : isSaving
+                    ? 'Saving…'
+                    : '💾 Save to Question Bank'}
                 </button>
               </>
             )}

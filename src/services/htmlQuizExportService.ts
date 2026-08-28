@@ -6,6 +6,7 @@ import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
+import { resolveMcqCorrectOptionIndex } from './deterministicGradingService';
 
 export function exportOfflineInteractiveHtmlQuiz(
   headerConfig: ExamHeaderConfig,
@@ -21,6 +22,7 @@ export function exportOfflineInteractiveHtmlQuiz(
       number: idx + 1,
       text: ensureInlineMathDelimiters(q.question_text || ''),
       options: (q.options || []).map((opt) => ensureInlineMathDelimiters(opt)),
+      correctOptionIndex: q.options && q.options.length > 0 ? resolveMcqCorrectOptionIndex(q) : -1,
       subQuestions: (q.sub_questions || []).map((sq) => ({
         ...sq,
         question_text: ensureInlineMathDelimiters(sq.question_text || ''),
@@ -213,8 +215,17 @@ export function exportOfflineInteractiveHtmlQuiz(
 
       renderNavigator();
       if (window.renderMathInElement) {
-        renderMathInElement(document.getElementById('qText'), { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
-        renderMathInElement(container, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
+        const mathOpts = {
+          delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '\\[', right: '\\]', display: true},
+            {left: '$', right: '$', display: false},
+            {left: '\\(', right: '\\)', display: false}
+          ],
+          throwOnError: false
+        };
+        renderMathInElement(document.getElementById('qText'), mathOpts);
+        renderMathInElement(container, mathOpts);
       }
     }
 
@@ -254,7 +265,9 @@ export function exportOfflineInteractiveHtmlQuiz(
       questions.forEach((q, idx) => {
         if (q.options && q.options.length > 0) {
           totalMcq += (q.marks || 1);
-          if (answers[idx] !== undefined) mcqScore += (q.marks || 1);
+          if (answers[idx] !== undefined && answers[idx] === q.correctOptionIndex) {
+            mcqScore += (q.marks || 1);
+          }
         }
       });
 

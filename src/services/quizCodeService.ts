@@ -79,6 +79,16 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
           p.id.toUpperCase() === cleanInput ||
           p.testId.toUpperCase() === cleanInput
       );
+      if (published) {
+        try {
+          const localList = getPublishedQuizzes();
+          if (!localList.some((q) => q.id === published!.id)) {
+            localStorage.setItem('fluffykitten_published_quizzes', JSON.stringify([published, ...localList]));
+          }
+        } catch {
+          // ignore local caching error
+        }
+      }
     } catch (err) {
       console.warn('Cloud published quiz lookup error:', err);
     }

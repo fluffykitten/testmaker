@@ -228,6 +228,8 @@ CRITICAL FORMATTING RULES:
 7. TICK BOX QUESTIONS:
    - If a question asks to "Tick (✓) the conclusions/boxes", format choices as [ ] and put options array on that question/sub-question.
 8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
+9. ANSWER KEYS & SOLUTIONS: If the PDF contains an answer key or solutions grid at the end (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
+10. CURRENCY & PRICES: When transcribing prices or costs (e.g. $25, $1.50), write them as normal text without LaTeX delimiters to prevent math rendering conflicts.
 `;
 }
 
@@ -575,6 +577,11 @@ CRITICAL FORMATTING RULES:
 5. BOUNDING BOXES FOR MAPS & PHOTOGRAPHS:
    - Make bounding boxes generous around the entire photograph, map, key/legend, and figure caption.
 6. In JSON strings, escape quotes and backslashes properly.
+7. SHARED READING PASSAGES & STIMULUS (English, Literature, History, Economics):
+   - When multiple questions refer to a shared passage, poem, article, or case study (e.g. 'Read the text below and answer Questions 1 to 5'): preserve the full text.
+   - Either place the stimulus text in the parent question stem with questions as sub_questions, OR attach the relevant excerpt/context to each linked question's 'question_text' so each question is fully comprehensible.
+8. ANSWER KEYS & SOLUTIONS: If an answer key or solutions table appears on the final page (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
+9. CURRENCY & PRICES: When transcribing prices or costs (e.g. $50, $12.50), write them as regular text without LaTeX math delimiters.
 `;
 }
 
@@ -882,9 +889,7 @@ export function cleanExtAndLatexArtifacts(text: string): string {
     // Remove "ext" prefix accidentally added in front of chemical formulas (e.g. extCH4, extCO2, extH2O, extCaCO3, extHCl)
     .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
     // Remove "ext{...}" (e.g. ext{CH}_4 -> CH_4 or ext{CaCO_3} -> CaCO_3)
-    .replace(/\bext\{([^{}]+)\}/g, '$1')
-    // Remove \text{...} wrapping pure chemical formulas inside math, like $\text{CH}_4$ -> $CH_4$
-    .replace(/\\text\{([A-Z][a-z]?(?:\d+|[a-z])?(?:[A-Z][a-z]?(?:\d+|[a-z])?)*)\}/g, '$1');
+    .replace(/\bext\{([^{}]+)\}/g, '$1');
 }
 
 export function parseRobustJson<T = any>(rawText: string): T {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { ExtractionResult, ExtractedQuestion, SubQuestion } from '../types/database';
+import { createPortal } from 'react-dom';
+import type { ExtractionResult, ExtractedQuestion, SubQuestion, PaperMetadata } from '../types/database';
 import { type DiagramCropItem } from '../lib/diagramCropper';
 import { ExamMathText } from './ExamMathText';
 import { QuestionEditorModal } from './QuestionEditorModal';
@@ -36,7 +37,7 @@ interface CropTarget {
  * Enhanced Extraction Review Screen for Teachers:
  * 1. Sub-question diagram cropping & interactive PDF snip tool
  * 2. Fast-Edit Teacher Workspace (inline quick-edit, 1-click split/merge, selective save)
- * 3. Quality Assurance (duplicate detection banner & mark tally verification)
+ * 3. Quality Assurance (duplicate detection banner, editable paper details & dynamic mark tally verification)
  */
 export function ExtractionReview({
   result,
@@ -57,6 +58,17 @@ export function ExtractionReview({
   const [showAllGuidance, setShowAllGuidance] = useState(true);
   const [isFastEditMode, setIsFastEditMode] = useState(false);
 
+  // Editable Paper Metadata & Custom Target Marks
+  const [paperMetadata, setPaperMetadata] = useState<PaperMetadata>(() => ({
+    ...result.paper_metadata,
+  }));
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [customTargetMarks, setCustomTargetMarks] = useState<number | null>(null);
+  const [metadataDraft, setMetadataDraft] = useState<PaperMetadata>(() => ({
+    ...result.paper_metadata,
+  }));
+  const [targetMarksDraft, setTargetMarksDraft] = useState<string>('');
+
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cropTarget, setCropTarget] = useState<CropTarget | null>(null);
   const [showBookletDrawer, setShowBookletDrawer] = useState<boolean>(false);
@@ -73,40 +85,55 @@ export function ExtractionReview({
   // Duplicate paper check states
   const [existingDuplicates, setExistingDuplicates] = useState<Set<string>>(new Set());
 
-  // Sync questions if external result changes
+  // Sync questions & metadata if external result changes
   useEffect(() => {
     if (result?.questions) {
       setQuestions(result.questions);
       setSelectedIndices(new Set(result.questions.map((_, i) => i)));
     }
+    if (result?.paper_metadata) {
+      setPaperMetadata(result.paper_metadata);
+      setMetadataDraft(result.paper_metadata);
+    }
   }, [result]);
 
-  const { paper_metadata } = result;
+  const handleOpenMetadataModal = () => {
+    setMetadataDraft({ ...paperMetadata });
+    setTargetMarksDraft(customTargetMarks ? String(customTargetMarks) : (expectedMarks ? String(expectedMarks) : ''));
+    setIsEditingMetadata(true);
+  };
+
+  const handleSaveMetadata = () => {
+    setPaperMetadata({ ...metadataDraft });
+    const parsedTarget = targetMarksDraft.trim() ? parseInt(targetMarksDraft.trim(), 10) : null;
+    setCustomTargetMarks(!isNaN(Number(parsedTarget)) && (parsedTarget || 0) > 0 ? parsedTarget : null);
+    setIsEditingMetadata(false);
+  };
 
   // ─── Duplicate Paper & Question Check ──────────────────────────────────────
   useEffect(() => {
-    if (!paper_metadata) return;
-    const { year, series, paper_number, subject_code, subject } = paper_metadata;
+    if (!paperMetadata) return;
+    const { year, series, paper_number, subject_code, subject } = paperMetadata;
 
     async function checkDuplicates() {
       try {
         // 1. Resolve matching syllabus for this subject first
         let targetSyllabusId: string | null = null;
         if (subject_code) {
-          const { data: syl } = await supabase
+          const { data: syl } = (await supabase
             .from('syllabuses')
             .select('id')
             .eq('subject_code', subject_code)
             .limit(1)
-            .maybeSingle() as { data: { id: string } | null };
+            .maybeSingle()) as { data: { id: string } | null };
           if (syl?.id) targetSyllabusId = syl.id;
         } else if (subject) {
-          const { data: syl } = await supabase
+          const { data: syl } = (await supabase
             .from('syllabuses')
             .select('id')
             .ilike('subject_name', `%${subject}%`)
             .limit(1)
-            .maybeSingle() as { data: { id: string } | null };
+            .maybeSingle()) as { data: { id: string } | null };
           if (syl?.id) targetSyllabusId = syl.id;
         }
 
@@ -143,7 +170,7 @@ export function ExtractionReview({
     }
 
     checkDuplicates();
-  }, [paper_metadata]);
+  }, [paperMetadata]);
 
   // ─── Mark Tally Calculations ───────────────────────────────────────────────
   const selectedQuestions = questions.filter((_, i) => selectedIndices.has(i));
@@ -160,8 +187,9 @@ export function ExtractionReview({
     6: 40, 61: 40, 62: 40, 63: 40,
   };
 
-  const paperNum = Number(paper_metadata?.paper_number) || 1;
-  const expectedMarks = standardPaperMarks[paperNum] || null;
+  const paperNum = Number(paperMetadata?.paper_number) || 1;
+  const isCambridgeCode = /^\d{4}$/.test((paperMetadata?.subject_code || '').trim());
+  const expectedMarks = customTargetMarks ?? (isCambridgeCode ? standardPaperMarks[paperNum] || null : null);
   const isMarkTallyExact = expectedMarks ? totalAllMarks === expectedMarks : true;
 
   // ─── Keyboard Shortcut (Press 'M' to toggle mark schemes) ──────────────────
@@ -240,9 +268,9 @@ export function ExtractionReview({
     const newQuestion: ExtractedQuestion = {
       question_number: `${parentQ.question_number}${sub.sub_id.replace(/[()]/g, '')}`,
       parent_question_id: `Q${parentQ.question_number}`,
-      year: parentQ.year || paper_metadata?.year,
-      series: parentQ.series || paper_metadata?.series,
-      paper_number: parentQ.paper_number || paper_metadata?.paper_number,
+      year: parentQ.year || paperMetadata?.year,
+      series: parentQ.series || paperMetadata?.series,
+      paper_number: parentQ.paper_number || paperMetadata?.paper_number,
       question_text: sub.question_text,
       question_style: parentQ.question_style,
       total_marks: subMarks,
@@ -268,7 +296,7 @@ export function ExtractionReview({
     result.questions = updatedList;
     setQuestions(updatedList);
     setSelectedIndices(new Set(updatedList.map((_, i) => i)));
-  }, [questions, paper_metadata, result]);
+  }, [questions, paperMetadata, result]);
 
   // ─── 1-Click Merge: Merge Question into Preceding Question ─────────────────
   const handleMergeWithPrevious = useCallback((qIdx: number) => {
@@ -379,7 +407,13 @@ export function ExtractionReview({
     const questionsToSave = questions.filter((_, i) => selectedIndices.has(i));
     onConfirmSave({
       ...result,
-      questions: questionsToSave,
+      paper_metadata: paperMetadata,
+      questions: questionsToSave.map((q) => ({
+        ...q,
+        year: paperMetadata.year,
+        series: paperMetadata.series,
+        paper_number: paperMetadata.paper_number,
+      })),
     });
   };
 
@@ -406,7 +440,7 @@ export function ExtractionReview({
             <strong className="review-dup-title">Existing Paper Questions Detected</strong>
             <p className="review-dup-desc">
               Found {existingDuplicates.size} question{existingDuplicates.size !== 1 ? 's' : ''} in Question Bank already saved for{' '}
-              <strong>{paper_metadata?.subject} {paper_metadata?.series} {paper_metadata?.year} Paper {paper_metadata?.paper_number}</strong>.
+              <strong>{paperMetadata?.subject} {paperMetadata?.series} {paperMetadata?.year} Paper {paperMetadata?.paper_number}</strong>.
             </p>
           </div>
           <div className="review-dup-actions">
@@ -433,6 +467,23 @@ export function ExtractionReview({
           </div>
 
           <div className="review-header-controls">
+            {/* Edit Paper Details Button */}
+            <button
+              type="button"
+              className="review-toggle-btn"
+              style={{
+                background: 'rgba(99, 102, 241, 0.12)',
+                color: '#4f46e5',
+                borderColor: 'rgba(99, 102, 241, 0.3)',
+                fontWeight: 600,
+              }}
+              onClick={handleOpenMetadataModal}
+              id="edit-paper-info-btn"
+              title="Customize subject name, course code, year, session, or mark target"
+            >
+              <span>✏️ Edit Paper Info</span>
+            </button>
+
             {/* Fast Edit Mode Toggle */}
             <button
               type="button"
@@ -488,20 +539,42 @@ export function ExtractionReview({
 
         {/* Metadata & Quality Assurance Badges */}
         <div className="review-meta-grid">
-          <MetaBadge label="Subject" value={`${paper_metadata?.subject || 'Exam'} (${paper_metadata?.subject_code || 'General'})`} />
-          <MetaBadge label="Session" value={`${paper_metadata?.series || 'Series'} ${paper_metadata?.year || new Date().getFullYear()}`} />
-          <MetaBadge label="Paper" value={`Paper ${paper_metadata?.paper_number || 1}`} />
+          <MetaBadge
+            label="Subject"
+            value={`${paperMetadata?.subject || 'Exam'} (${paperMetadata?.subject_code || 'General'})`}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
+          <MetaBadge
+            label="Session"
+            value={`${paperMetadata?.series || 'Series'} ${paperMetadata?.year || new Date().getFullYear()}`}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
+          <MetaBadge
+            label="Paper"
+            value={`Paper ${paperMetadata?.paper_number || 1}`}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
           <MetaBadge label="Extracted" value={`${questions.length} Questions`} />
           
-          {/* Mark Tally Validator Badge */}
-          <div className={`meta-badge ${expectedMarks ? (isMarkTallyExact ? 'meta-badge--success' : 'meta-badge--warning') : ''}`}>
-            <span className="meta-badge-label">Mark Tally</span>
+          {/* Dynamic Mark Tally Validator Badge */}
+          <div
+            className={`meta-badge ${expectedMarks ? (isMarkTallyExact ? 'meta-badge--success' : 'meta-badge--warning') : 'meta-badge--neutral'} meta-badge--clickable`}
+            onClick={handleOpenMetadataModal}
+            title={expectedMarks ? 'Click to adjust target marks benchmark' : 'Click to set target marks benchmark'}
+          >
+            <span className="meta-badge-label">Mark Tally {expectedMarks ? '' : '(Custom)'}</span>
             <span className="meta-badge-value">
               {totalAllMarks} {expectedMarks ? `/ ${expectedMarks}` : 'marks'}
               {expectedMarks && (
                 <span className="meta-badge-sub">
                   {isMarkTallyExact ? ' ✓ Exact' : ` (${totalAllMarks > expectedMarks ? `+${totalAllMarks - expectedMarks}` : totalAllMarks - expectedMarks})`}
                 </span>
+              )}
+              {!expectedMarks && (
+                <span className="meta-badge-sub"> ({questions.length} Qs)</span>
               )}
             </span>
           </div>
@@ -576,7 +649,7 @@ export function ExtractionReview({
                   )}
 
                   <span className="review-badge badge--paper">
-                    📄 Paper {q.paper_number || paper_metadata.paper_number}
+                    📄 Paper {q.paper_number || paperMetadata?.paper_number || 1}
                   </span>
 
                   {/* Insert Resource Badge */}
@@ -1153,9 +1226,9 @@ export function ExtractionReview({
               id: `temp-extracted-${editingIdx}`,
               created_at: new Date().toISOString(),
               syllabus_id: '',
-              year: curQ.year || paper_metadata?.year || new Date().getFullYear(),
-              series: curQ.series || paper_metadata?.series || 'Exam',
-              paper_number: curQ.paper_number || paper_metadata?.paper_number || 1,
+              year: curQ.year || paperMetadata?.year || new Date().getFullYear(),
+              series: curQ.series || paperMetadata?.series || 'Exam',
+              paper_number: curQ.paper_number || paperMetadata?.paper_number || 1,
               question_number: curQ.question_number || '1',
               parent_question_id: curQ.parent_question_id || null,
               question_text: curQ.question_text || '',
@@ -1263,18 +1336,139 @@ export function ExtractionReview({
         onClose={() => setShowBookletDrawer(false)}
         questions={questions as any}
         resources={result.insert_resources}
-        title={`${paper_metadata?.subject || 'Assessment'} — Insert / Resource Booklet`}
-        subject={paper_metadata?.subject || 'Humanities'}
+        title={`${paperMetadata?.subject || 'Assessment'} — Insert / Resource Booklet`}
+        subject={paperMetadata?.subject || 'Humanities'}
       />
+
+      {/* ─── Edit Paper Metadata Modal ────────────────────────────────────── */}
+      {isEditingMetadata &&
+        createPortal(
+          <div className="review-metadata-modal-overlay animate-fade-in" onClick={() => setIsEditingMetadata(false)}>
+            <div className="review-metadata-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="review-metadata-modal-header">
+                <div className="review-metadata-modal-title-group">
+                  <span className="review-metadata-modal-icon">✏️</span>
+                  <div>
+                    <h3 className="review-metadata-modal-title">Edit Paper Details</h3>
+                    <p className="review-metadata-modal-desc">
+                      Customize subject, course code, and exam term before saving to Question Bank.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="review-metadata-modal-close"
+                  onClick={() => setIsEditingMetadata(false)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="review-metadata-modal-body">
+                <div className="review-metadata-grid">
+                  <div className="review-meta-field">
+                    <label>Subject Name</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.subject}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, subject: e.target.value })}
+                      placeholder="e.g. English Literature, Chemistry, History"
+                    />
+                  </div>
+
+                  <div className="review-meta-field">
+                    <label>Subject / Exam Code</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.subject_code}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, subject_code: e.target.value })}
+                      placeholder="e.g. 0500, ENG-10, AP-CHEM, General"
+                    />
+                  </div>
+
+                  <div className="review-meta-field">
+                    <label>Session / Term</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.series}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, series: e.target.value })}
+                      placeholder="e.g. Midterm, Semester 1, May/June, Final"
+                    />
+                  </div>
+
+                  <div className="review-meta-field">
+                    <label>Year</label>
+                    <input
+                      type="number"
+                      value={metadataDraft.year}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, year: parseInt(e.target.value) || new Date().getFullYear() })}
+                    />
+                  </div>
+
+                  <div className="review-meta-field">
+                    <label>Paper / Section Number</label>
+                    <input
+                      type="number"
+                      value={metadataDraft.paper_number}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: parseInt(e.target.value) || 1 })}
+                    />
+                  </div>
+
+                  <div className="review-meta-field">
+                    <label>Target Total Marks (Optional)</label>
+                    <input
+                      type="number"
+                      value={targetMarksDraft}
+                      onChange={(e) => setTargetMarksDraft(e.target.value)}
+                      placeholder="e.g. 25, 50, 100 (auto if empty)"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="review-metadata-modal-footer">
+                <button
+                  type="button"
+                  className="review-meta-cancel-btn"
+                  onClick={() => setIsEditingMetadata(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="review-meta-save-btn"
+                  onClick={handleSaveMetadata}
+                >
+                  Apply Changes
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
 
 // ─── Helper: Metadata Badge ────────────────────────────────────────────────────
 
-function MetaBadge({ label, value }: { label: string; value: string }) {
+function MetaBadge({
+  label,
+  value,
+  onClick,
+  isClickable,
+}: {
+  label: string;
+  value: string;
+  onClick?: () => void;
+  isClickable?: boolean;
+}) {
   return (
-    <div className="meta-badge">
+    <div
+      className={`meta-badge ${isClickable ? 'meta-badge--clickable' : ''}`}
+      onClick={onClick}
+      title={isClickable ? 'Click to edit' : undefined}
+    >
       <span className="meta-badge-label">{label}</span>
       <span className="meta-badge-value">{value}</span>
     </div>

@@ -19,6 +19,7 @@ import {
   evaluateGameAnswer,
   type GamePlayableItem,
 } from '../services/gameQuestionAdapter';
+import { resolveMcqCorrectOptionIndex } from '../services/deterministicGradingService';
 import {
   playCorrectSound,
   playWrongSound,
@@ -155,6 +156,7 @@ export function GameQuizRunner({
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [myRank, setMyRank] = useState<number>(1);
   const [history, setHistory] = useState<QuestionResultRecord[]>(() => savedSess?.history || []);
+  const [showReview, setShowReview] = useState<boolean>(false);
 
   // Config
   const [gameConfig, setGameConfig] = useState<GameConfig>({
@@ -173,8 +175,9 @@ export function GameQuizRunner({
   const playableItems: GamePlayableItem[] = useMemo(() => {
     return flattenQuizQuestionsForGame(questions, {
       shuffleQuestions: gameConfig.shuffleQuestions ?? false,
+      shuffleOptions: gameConfig.shuffleOptions ?? false,
     });
-  }, [questions, gameConfig.shuffleQuestions]);
+  }, [questions, gameConfig.shuffleQuestions, gameConfig.shuffleOptions]);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const questionStartTimeRef = useRef<number>(0);
@@ -184,19 +187,7 @@ export function GameQuizRunner({
 
   // Helper to extract correct option index
   const getCorrectOptionIndex = useCallback((q: Question): number => {
-    if (!q.options || q.options.length === 0) return 0;
-    const ms = q.mark_scheme;
-    if (!ms) return 0;
-    const pts = ms.marking_points || [];
-    for (const pt of pts) {
-      const match = pt.trim().match(/^[\[\(]?([A-Da-d])[\]\)]?$/);
-      if (match) {
-        const char = match[1].toUpperCase();
-        const idx = char.charCodeAt(0) - 65;
-        if (idx >= 0 && idx < q.options.length) return idx;
-      }
-    }
-    return 0;
+    return resolveMcqCorrectOptionIndex(q);
   }, []);
 
   // ─── 1. Load Quiz Data ──────────────────────────────────────────────────────
@@ -486,7 +477,10 @@ export function GameQuizRunner({
     if (type === 'fifty_fifty' && !usedFiftyFifty && activeDisplayQuestion) {
       setUsedFiftyFifty(true);
       let correctIdx = 0;
-      if (!isLiveMultiplayer && currentQ) {
+      const currentItem = playableItems[currentQIndex];
+      if (currentItem && currentItem.correctOptionIndex !== undefined) {
+        correctIdx = currentItem.correctOptionIndex;
+      } else if (!isLiveMultiplayer && currentQ) {
         correctIdx = getCorrectOptionIndex(currentQ);
       } else {
         const matched = questions.find((q) => q.question_text === activeDisplayQuestion.questionText);
@@ -1138,6 +1132,58 @@ export function GameQuizRunner({
                 </div>
               )}
             </div>
+
+            {/* Question & Mark Scheme Review Toggle */}
+            {history.length > 0 && (
+              <div className="gq-review-section">
+                <button
+                  type="button"
+                  className="gq-btn-review-toggle"
+                  onClick={() => setShowReview(!showReview)}
+                >
+                  <span>{showReview ? '▲ Hide' : '📋 Review'} Questions & Mark Schemes ({history.length})</span>
+                </button>
+
+                {showReview && (
+                  <div className="gq-review-list animate-fade-in">
+                    {history.map((h, i) => (
+                      <div
+                        key={i}
+                        className={`gq-review-item ${h.isCorrect ? 'gq-review-item--correct' : 'gq-review-item--incorrect'}`}
+                      >
+                        <div className="gq-review-header">
+                          <span className="gq-review-qnum">
+                            {h.title || `Question ${i + 1}`}
+                          </span>
+                          <span className={`gq-review-status ${h.isCorrect ? 'status-correct' : 'status-incorrect'}`}>
+                            {h.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                          </span>
+                        </div>
+                        <div className="gq-review-prompt">
+                          <ExamMathText content={h.questionText} />
+                        </div>
+                        <div className="gq-review-details">
+                          <div className="gq-review-row">
+                            <span className="gq-review-lbl">Your Answer:</span>
+                            <span className="gq-review-val">
+                              {typeof h.selectedOption === 'number' && h.selectedOption >= 0
+                                ? `Option ${String.fromCharCode(65 + h.selectedOption)}`
+                                : h.selectedOption || '(None)'}
+                            </span>
+                          </div>
+                          <div className="gq-review-row gq-review-row--scheme">
+                            <span className="gq-review-lbl">Mark Scheme / Correct:</span>
+                            <span className="gq-review-val gq-review-val--scheme">
+                              <ExamMathText content={String(h.correctOption)} />
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="gq-results-actions">
               <button

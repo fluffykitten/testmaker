@@ -22,6 +22,7 @@ import { gradeDeterministicAnswer, resolveMcqCorrectOptionIndex } from '../servi
 import {
   exportClassQuizReportPdf,
   exportIndividualStudentReportPdf,
+  exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
 import './QuizResultsModal.css';
@@ -850,7 +851,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       )}
                     </div>
                     <p>
-                      Submitted on {formatSubmissionDateTime(selectedSubmission.submittedAt)} • Duration: {Math.floor(selectedSubmission.durationSeconds / 60)}m {selectedSubmission.durationSeconds % 60}s
+                      Submitted on {formatSubmissionDateTime(selectedSubmission.submittedAt)}
+                      {selectedSubmission.durationSeconds > 0 ? ` • Duration: ${Math.floor(selectedSubmission.durationSeconds / 60)}m ${selectedSubmission.durationSeconds % 60}s` : ''}
                     </p>
                   </div>
 
@@ -862,6 +864,28 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   </div>
 
                   <div className="cand-actions">
+                    <button
+                      type="button"
+                      className="qrm-btn"
+                      style={{
+                        background: '#7c3aed',
+                        color: '#ffffff',
+                        fontWeight: 700,
+                        fontSize: '0.8125rem',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                      onClick={() => exportStudentFeedbackReportPdf(selectedSubmission)}
+                      title="Print 1-page student feedback & improvement report card"
+                    >
+                      🎓 1-Page Report
+                    </button>
+
                     <button
                       type="button"
                       className="qrm-btn"
@@ -879,9 +903,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         gap: '6px',
                       }}
                       onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
-                      title="Export this candidate's diagnostic report as PDF"
+                      title="Export this candidate's full diagnostic script as PDF"
                     >
-                      📄 Export PDF Report
+                      📄 Full Script
                     </button>
 
                     <button
@@ -904,7 +928,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   </div>
                 </div>
 
-                {/* 🔒 Anti-Cheating & Proctoring Audit Box */}
+                {/* 🔒 Anti-Cheating & Proctoring Audit Box (Only for Online exams) */}
+                {selectedSubmission.durationSeconds > 0 && !selectedSubmission.quizCode?.startsWith('OFFLINE') && (
                 <div className={`qrm-proctor-card ${selectedSubmission.violationsCount > 0 ? 'alert' : 'clean'}`}>
                   <div className="proctor-header">
                     <span className="proctor-icon">
@@ -934,6 +959,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* Topic Breakdown Progress */}
                 {selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0 && (

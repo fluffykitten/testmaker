@@ -9,6 +9,7 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import {
   gradeDeterministicAnswer,
   extractAcceptableAnswers,
+  resolveMcqCorrectOptionIndex,
 } from './deterministicGradingService';
 import { evaluateAnswerWithGemini } from './aiGradingService';
 import {
@@ -20,7 +21,6 @@ import {
   savePublishedQuiz,
   type PublishedQuiz,
 } from './quizManagerService';
-import { parseMcqOption } from '../utils/mcqUtils';
 
 export interface OfflineGradingColumn {
   id: string;                    // unique key: "q_0" or "q_0_sub_0"
@@ -55,45 +55,86 @@ export interface OfflineGradeSessionResult {
   unhandledQuestionsCount: number;
 }
 
-// ─── 1. Helper: Extract Reference Correct Answer ───────────────────────────────
+// ─── 1. Helper: Extract Reference Correct Answer & MCQ Letters ───────────────────
 
-export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): string {
-  if (sq) {
-    if (sq.mark_scheme) {
-      // If it's a short clean string or has acceptable answer
-      const clean = sq.mark_scheme.replace(/\[\d+\]/g, '').trim();
-      if (clean) return clean;
-    }
-    if (sq.options && sq.options.length > 0) {
-      return parseMcqOption(sq.options[0], 0).letter;
+/**
+ * Normalizes candidate MCQ inputs (e.g. "D", "Option D", "d.", "(D)", "4", or full option text) into a single uppercase letter (A, B, C, D).
+ */
+export function extractStudentMcqLetter(
+  studentInput: string,
+  options?: any[] | null
+): string | null {
+  if (!studentInput) return null;
+  const trimmed = studentInput.trim();
+
+  // 1. Direct single letter: "A", "b", "(C)", "[d]", "D."
+  const singleMatch = trimmed.match(/^[[(]?\s*([A-Da-d])\s*[\]).:]?$/);
+  if (singleMatch) return singleMatch[1].toUpperCase();
+
+  // 2. "Option D", "Choice D", "D - Limewater", "D: Limewater"
+  const optionMatch = trimmed.match(/^(?:Option|Choice)?\s*[:\-]?\s*([A-Da-d])\b/i);
+  if (optionMatch) return optionMatch[1].toUpperCase();
+
+  // 3. Numerical index (e.g. 1 -> A, 2 -> B, 3 -> C, 4 -> D)
+  const num = Number(trimmed);
+  if (!isNaN(num) && Number.isInteger(num)) {
+    if (num >= 1 && num <= 4) {
+      return String.fromCharCode(64 + num);
     }
   }
 
-  // Check Multiple Choice Options
-  if (q.options && q.options.length > 0) {
-    // Check if mark_scheme indicates which option
-    if (q.mark_scheme) {
-      const candidates = [
-        ...(q.mark_scheme.marking_points || []),
-        ...(q.mark_scheme.acceptable_answers || []),
-      ];
-      for (const cand of candidates) {
-        const match = cand.trim().match(/^[[(]?([A-Da-d])[\])]?$/);
-        if (match) {
-          return match[1].toUpperCase();
-        }
+  // 4. Match option text against options array
+  if (options && Array.isArray(options) && options.length > 0) {
+    const lowerInput = trimmed.toLowerCase();
+    for (let oIdx = 0; oIdx < options.length; oIdx++) {
+      const opt = options[oIdx];
+      const optStr = typeof opt === 'string' ? opt : (opt?.text || '');
+      const cleanOptText = optStr.replace(/^[[(]?([A-Da-d])[\]).:\s-]+/, '').trim().toLowerCase();
+      if (cleanOptText && (lowerInput === cleanOptText || cleanOptText.includes(lowerInput) || lowerInput.includes(cleanOptText))) {
+        return String.fromCharCode(65 + oIdx);
       }
     }
-    // Default to first option letter or 'A'
-    return 'A';
+  }
+
+  return trimmed.replace(/[^A-Za-z]/g, '').charAt(0).toUpperCase() || null;
+}
+
+export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): string {
+  const targetOptions = sq?.options || q.options;
+  const isMcq =
+    (targetOptions && targetOptions.length >= 2) ||
+    q.question_style === 'Multiple Choice';
+
+  if (isMcq) {
+    const sIdx = sq && q.sub_questions ? q.sub_questions.indexOf(sq) : undefined;
+    const correctIdx = resolveMcqCorrectOptionIndex(q, sIdx !== undefined && sIdx >= 0 ? sIdx : undefined);
+    return String.fromCharCode(65 + correctIdx);
+  }
+
+  if (sq && sq.mark_scheme) {
+    const sqMs: any = sq.mark_scheme;
+    if (typeof sqMs === 'string') {
+      const clean = sqMs.replace(/\[\d+\]/g, '').trim();
+      if (clean) return clean;
+    } else if (typeof sqMs === 'object') {
+      const first = sqMs.marking_points?.[0] || sqMs.acceptable_answers?.[0] || '';
+      const clean = String(first).replace(/\[\d+\]/g, '').trim();
+      if (clean) return clean;
+    }
   }
 
   if (q.mark_scheme) {
-    if (q.mark_scheme.acceptable_answers && q.mark_scheme.acceptable_answers.length > 0) {
-      return q.mark_scheme.acceptable_answers[0];
-    }
-    if (q.mark_scheme.marking_points && q.mark_scheme.marking_points.length > 0) {
-      return q.mark_scheme.marking_points[0].replace(/\[\d+\]/g, '').trim();
+    const qMs: any = q.mark_scheme;
+    if (typeof qMs === 'string') {
+      const clean = qMs.replace(/\[\d+\]/g, '').trim();
+      if (clean) return clean;
+    } else if (typeof qMs === 'object') {
+      if (Array.isArray(qMs.acceptable_answers) && qMs.acceptable_answers.length > 0) {
+        return String(qMs.acceptable_answers[0]).trim();
+      }
+      if (Array.isArray(qMs.marking_points) && qMs.marking_points.length > 0) {
+        return String(qMs.marking_points[0]).replace(/\[\d+\]/g, '').trim();
+      }
     }
   }
 
@@ -371,32 +412,60 @@ export async function parseOfflineGradingExcel(
     else if (/candidate\s*#|id|number|seat/i.test(str)) candNumColIdx = idx;
   });
 
+  // Helper: Safely match Excel column header to a question item code (e.g. Q1, Q1(a), Q10)
+  const matchHeaderToColumn = (headerStr: any, colKey: string): boolean => {
+    if (!headerStr || !colKey) return false;
+    const cleanHeader = String(headerStr).trim();
+    const cleanColKey = String(colKey).trim();
+
+    const colMatch = cleanColKey.match(/^Q?(\d+)(?:\(([^)]+)\))?$/i);
+    if (colMatch) {
+      const qNum = colMatch[1];
+      const subId = colMatch[2] ? colMatch[2].toLowerCase() : null;
+
+      if (subId) {
+        const regex = new RegExp(`^\\s*(?:Q|Question)?\\s*${qNum}\\s*\\(?${subId}\\)?(?:\\b|[\\s\\[\\:]|$)`, 'i');
+        return regex.test(cleanHeader);
+      } else {
+        const regex = new RegExp(`^\\s*(?:Q|Question)?\\s*${qNum}(?:\\s*\\[|\\s*\\:|\\s*\\-|$|\\s+(?![a-zA-Z]\\b))`, 'i');
+        if (regex.test(cleanHeader)) {
+          if (!/^\s*(?:Q|Question)?\s*\d+\s*\([a-zA-Z0-9]{1,2}\)/i.test(cleanHeader)) {
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+
+    return cleanHeader.toLowerCase() === cleanColKey.toLowerCase();
+  };
+
   // Map each question column by matching header or sequential order
   const colIndexMap: Map<number, OfflineGradingColumn> = new Map();
+  const claimedHeaders = new Set<number>([nameColIdx, classColIdx, candNumColIdx]);
 
   columns.forEach((col, cIdx) => {
-    // Try to find matching header cell
     let matchedHeaderIdx = -1;
 
-    headerRow.forEach((cell, idx) => {
-      if (idx === nameColIdx || idx === classColIdx || idx === candNumColIdx) return;
-      const str = String(cell).toLowerCase().replace(/\s+/g, '');
-      const keyStr = col.columnKey.toLowerCase().replace(/\s+/g, '');
-
-      if (str.includes(keyStr) || str.startsWith(keyStr)) {
+    // Pass 1: Match against unclaimed header cells using exact pattern boundary
+    for (let idx = 0; idx < headerRow.length; idx++) {
+      if (claimedHeaders.has(idx)) continue;
+      if (matchHeaderToColumn(headerRow[idx], col.columnKey)) {
         matchedHeaderIdx = idx;
+        break;
       }
-    });
+    }
 
-    // Fallback to sequential position (start after metadata columns)
+    // Pass 2: Sequential fallback if column header wasn't uniquely identified
     if (matchedHeaderIdx === -1) {
       const fallbackIdx = 3 + cIdx;
-      if (fallbackIdx < headerRow.length || rawRows.some((r) => r[fallbackIdx] !== undefined)) {
+      if (!claimedHeaders.has(fallbackIdx) && (fallbackIdx < headerRow.length || rawRows.some((r) => r[fallbackIdx] !== undefined))) {
         matchedHeaderIdx = fallbackIdx;
       }
     }
 
     if (matchedHeaderIdx !== -1) {
+      claimedHeaders.add(matchedHeaderIdx);
       colIndexMap.set(matchedHeaderIdx, col);
     }
   });
@@ -496,6 +565,12 @@ export async function gradeOfflineSubmissions(
         ansStr !== col.referenceAnswer &&
         !col.acceptableAnswers.includes(ansStr);
 
+      const isMcqQuestion =
+        col.questionStyle === 'Multiple Choice' ||
+        (col.question.options && col.question.options.length >= 2) ||
+        (col.subQuestion?.options && col.subQuestion.options.length >= 2) ||
+        /^[A-Da-d]$/.test(col.referenceAnswer.trim());
+
       if (isExplicitMarkInput) {
         earnedMarks = Number(ansStr);
         isCorrect = earnedMarks === col.maxMarks;
@@ -505,20 +580,32 @@ export async function gradeOfflineSubmissions(
         earnedMarks = 0;
         isCorrect = false;
         feedback = 'No answer provided.';
-      } else if (col.questionStyle === 'Multiple Choice') {
+      } else if (isMcqQuestion) {
         // ── Scenario B: Multiple Choice Matching ──
         gradingMethod = 'mcq';
-        const cleanStudentChoice = ansStr.toUpperCase().replace(/[^A-D]/g, '').charAt(0) || ansStr.toUpperCase();
-        const refChoice = col.referenceAnswer.toUpperCase().replace(/[^A-D]/g, '').charAt(0) || col.referenceAnswer.toUpperCase();
+        const cleanStudentChoice = extractStudentMcqLetter(
+          ansStr,
+          col.question?.options || col.subQuestion?.options
+        );
+        const refChoice =
+          col.referenceAnswer.toUpperCase().replace(/[^A-D]/g, '').charAt(0) ||
+          col.referenceAnswer.toUpperCase();
 
-        if (cleanStudentChoice === refChoice) {
+        const isDirectAcceptable = col.acceptableAnswers.some(
+          (acc) => acc.trim().toLowerCase() === ansStr.trim().toLowerCase()
+        );
+
+        if (
+          (cleanStudentChoice && refChoice && cleanStudentChoice === refChoice) ||
+          isDirectAcceptable
+        ) {
           earnedMarks = col.maxMarks;
           isCorrect = true;
-          feedback = `✓ Correct (${cleanStudentChoice})`;
+          feedback = `✓ Correct (${cleanStudentChoice || ansStr})`;
         } else {
           earnedMarks = 0;
           isCorrect = false;
-          feedback = `Incorrect. Selected ${cleanStudentChoice || ansStr}, expected ${refChoice}`;
+          feedback = `Incorrect. Selected ${cleanStudentChoice || ansStr}, expected ${refChoice || col.referenceAnswer}`;
         }
       } else {
         // ── Scenario C: Deterministic Fast-Grading Engine (Formulas, Math, Keywords) ──

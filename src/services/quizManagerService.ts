@@ -67,45 +67,120 @@ export async function fetchPublishedQuizzesFromSupabase(): Promise<PublishedQuiz
   return [];
 }
 
-export function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): void {
+export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Promise<boolean> {
   try {
-    (supabase.from('app_config' as any) as any)
+    const { error } = await (supabase.from('app_config' as any) as any)
       .upsert({
         key: 'published_quizzes',
         value: JSON.stringify(quizzes),
-      })
-      .then(({ error }: any) => {
-        if (error) console.warn('Supabase cloud sync notice:', error.message);
       });
+    if (error) {
+      console.warn('Supabase cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.warn('Cloud sync error:', err);
+    return false;
   }
 }
 
-export function savePublishedQuiz(quiz: PublishedQuiz): void {
+/**
+ * Loads published quizzes from localStorage immediately, then fetches from Supabase Cloud,
+ * merges both lists safely by ID & quizCode, updates localStorage, and returns the merged list.
+ */
+export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
+  const localList = getPublishedQuizzes();
+
   try {
+    const cloudList = await fetchPublishedQuizzesFromSupabase();
+
+    // Map to merge local and cloud quizzes without dropping items
+    const mergedMap = new Map<string, PublishedQuiz>();
+
+    // 1. Populate with cloud quizzes first
+    cloudList.forEach((q) => {
+      mergedMap.set(q.id, q);
+    });
+
+    // 2. Merge local quizzes — if collision, preserve the newest record
+    let hasLocalExclusiveOrNewer = false;
+    localList.forEach((localQ) => {
+      const existing = mergedMap.get(localQ.id);
+      if (!existing) {
+        mergedMap.set(localQ.id, localQ);
+        hasLocalExclusiveOrNewer = true;
+      } else {
+        const localTime = new Date(localQ.updatedAt || localQ.createdAt || 0).getTime();
+        const cloudTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+        if (localTime > cloudTime) {
+          mergedMap.set(localQ.id, localQ);
+          hasLocalExclusiveOrNewer = true;
+        }
+      }
+    });
+
+    const merged = Array.from(mergedMap.values());
+
+    // 3. Update localStorage with authoritative merged list
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+
+    // 4. If local had newer items not yet in cloud, sync back to Supabase
+    if (hasLocalExclusiveOrNewer || cloudList.length < merged.length) {
+      await syncPublishedQuizzesToCloud(merged);
+    }
+
+    return merged;
+  } catch (err) {
+    console.warn('Could not sync published quizzes with cloud, using local cache:', err);
+    return localList;
+  }
+}
+
+export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQuiz[]> {
+  try {
+    // 1. Update local storage immediately for zero-lag UI
     const existing = getPublishedQuizzes();
     const filtered = existing.filter((q) => q.id !== quiz.id && q.quizCode.toUpperCase() !== quiz.quizCode.toUpperCase());
     const updated = [quiz, ...filtered];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    syncPublishedQuizzesToCloud(updated);
+
+    // 2. Fetch current cloud state and merge to avoid overwriting quizzes from other devices
+    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    const mergedMap = new Map<string, PublishedQuiz>();
+    cloudList.forEach((q) => mergedMap.set(q.id, q));
+    updated.forEach((q) => mergedMap.set(q.id, q));
+    mergedMap.set(quiz.id, quiz); // authoritatively keep current quiz
+
+    const finalMerged = Array.from(mergedMap.values());
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(finalMerged));
+    await syncPublishedQuizzesToCloud(finalMerged);
+
+    return finalMerged;
   } catch (err) {
     console.error('Failed to save published quiz:', err);
+    return getPublishedQuizzes();
   }
 }
 
-export function deletePublishedQuiz(id: string): void {
+export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> {
   try {
     const existing = getPublishedQuizzes();
     const updated = existing.filter((q) => q.id !== id);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    syncPublishedQuizzesToCloud(updated);
+
+    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    const updatedCloud = cloudList.filter((q) => q.id !== id);
+    await syncPublishedQuizzesToCloud(updatedCloud);
+
+    return updated;
   } catch (err) {
     console.error('Failed to delete published quiz:', err);
+    return getPublishedQuizzes();
   }
 }
 
-export function toggleQuizActiveStatus(id: string): PublishedQuiz | null {
+export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz | null> {
   try {
     const existing = getPublishedQuizzes();
     const target = existing.find((q) => q.id === id);
@@ -113,7 +188,17 @@ export function toggleQuizActiveStatus(id: string): PublishedQuiz | null {
     target.isActive = !target.isActive;
     target.updatedAt = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-    syncPublishedQuizzesToCloud(existing);
+
+    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    const cloudTarget = cloudList.find((q) => q.id === id);
+    if (cloudTarget) {
+      cloudTarget.isActive = target.isActive;
+      cloudTarget.updatedAt = target.updatedAt;
+    } else {
+      cloudList.push(target);
+    }
+    await syncPublishedQuizzesToCloud(cloudList);
+
     return target;
   } catch (err) {
     console.error('Failed to toggle quiz status:', err);

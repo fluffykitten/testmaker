@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
+import { resolveQuestionResources, isInsertResource } from '../utils/questionResourceHelper';
 import {
   exportStudentPaperDocx,
   exportAnswerBookletDocx,
   exportTeacherMarkSchemeDocx,
   exportMcqAnswerSheetDocx,
+  exportInsertBookletDocx,
 } from '../services/docxExportService';
 import {
   openStudentPaperPrintWindow,
@@ -24,6 +26,7 @@ import {
   type ExportLayoutOptions,
 } from '../types/exportTemplates';
 import { exportOfflineGradingTemplateExcel } from '../services/offlineGradingService';
+import { exportOfflineInteractiveHtmlQuiz } from '../services/htmlQuizExportService';
 import { DEFAULT_SCHOOL_LOGO } from '../assets/logoConstants';
 import './ExportModal.css';
 
@@ -38,7 +41,7 @@ export function ExportModal({
   isOpen,
   onClose,
   headerConfig,
-  questions,
+  questions: rawQuestions,
 }: ExportModalProps) {
   const [customLogo, setCustomLogo] = useState<string>(() => {
     return localStorage.getItem('fluffykitten_school_logo') || DEFAULT_SCHOOL_LOGO;
@@ -49,6 +52,14 @@ export function ExportModal({
     schoolName: headerConfig.schoolName || '',
     schoolLogoUrl: localStorage.getItem('fluffykitten_school_logo') || DEFAULT_SCHOOL_LOGO,
   });
+
+  const questions = useMemo(
+    () =>
+      resolveQuestionResources(rawQuestions, {
+        autoRenumberFigures: layoutOptions.autoRenumberFigures ?? true,
+      }),
+    [rawQuestions, layoutOptions.autoRenumberFigures]
+  );
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -71,17 +82,47 @@ export function ExportModal({
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const backdropDismiss = useBackdropDismiss(onClose);
 
-  if (!isOpen) return null;
-
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
 
-  const isChemistry =
-    /chem/i.test(headerConfig.subject || '') ||
-    headerConfig.subjectCode === '0620' ||
-    headerConfig.subjectCode === '0971';
+  // Check if questions are Geography or Humanities
+  const hasGeographyQuestions = questions.some(
+    (q) =>
+      q.syllabus_id === 'd3efaaae-4e05-434d-93c4-0b1a992e375b' ||
+      /geograph|population|weather|climate|tectonic|river|coast|settlement|migration|urban/i.test(q.topic || '') ||
+      /geograph/i.test(q.question_text || '')
+  );
+
+  const hasChemistryQuestions = questions.some(
+    (q) =>
+      q.syllabus_id === 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' ||
+      /chem|acid|mole|stoich|periodic|reaction|catalyst|diffus|polym|element|compound/i.test(q.topic || '')
+  );
 
   const isSocialSubject =
+    hasGeographyQuestions ||
     /geograph|history|sociolog|econom|business|social|humanit|global/i.test(headerConfig.subject || '');
+
+  const isChemistry =
+    !hasGeographyQuestions &&
+    (hasChemistryQuestions ||
+      /chem/i.test(headerConfig.subject || '') ||
+      headerConfig.subjectCode === '0620' ||
+      headerConfig.subjectCode === '0971');
+
+  const hasInsertQuestions = questions.some(
+    (q) => isInsertResource(q) || (q.sub_questions && q.sub_questions.some((sq) => isInsertResource(sq)))
+  );
+
+  // Automatically default Periodic Table and Insert Booklet according to subject
+  useEffect(() => {
+    if (isOpen) {
+      setLayoutOptions((prev) => ({
+        ...prev,
+        includePeriodicTable: isChemistry,
+        includeInsertBooklet: isSocialSubject || hasInsertQuestions,
+      }));
+    }
+  }, [isOpen, isChemistry, isSocialSubject, hasInsertQuestions]);
 
   // Template switch handler
   const handleSelectTemplate = (tId: ExamLayoutTemplate) => {
@@ -135,7 +176,7 @@ export function ExportModal({
     setIsExporting(true);
     setActiveTask('Generating Teacher Mark Scheme (.docx)…');
     try {
-      await exportTeacherMarkSchemeDocx(headerConfig, questions);
+      await exportTeacherMarkSchemeDocx(headerConfig, questions, layoutOptions);
     } catch (err: any) {
       alert(`Export failed: ${err?.message || 'Unknown error'}`);
     } finally {
@@ -186,6 +227,21 @@ export function ExportModal({
     openMcqAnswerSheetPrintWindow(headerConfig, questions, layoutOptions);
   };
 
+  // 9. Export Insert / Resource Booklet Docx
+  const handleExportInsertBookletDocx = async () => {
+    setIsExporting(true);
+    setActiveTask('Generating Word Insert Booklet (.docx)…');
+    try {
+      await exportInsertBookletDocx(headerConfig, questions, layoutOptions);
+    } catch (err) {
+      console.error('Failed to export Insert Booklet Docx:', err);
+      alert('Error generating Word Insert Booklet file.');
+    } finally {
+      setIsExporting(false);
+      setActiveTask(null);
+    }
+  };
+
   // 9. Export Offline Excel Grading Template
   const handleExportOfflineTemplate = () => {
     try {
@@ -195,6 +251,8 @@ export function ExportModal({
       alert('Failed to generate offline grading template.');
     }
   };
+
+  if (!isOpen) return null;
 
   return createPortal(
     <div className="export-modal-backdrop animate-fade-in" {...backdropDismiss}>
@@ -418,6 +476,53 @@ export function ExportModal({
                 </label>
               </div>
             )}
+
+            {/* Cambridge Insert / Resource Booklet Checkbox (Available for Geography / Social Sciences or questions with inserts) */}
+            {(isSocialSubject || hasInsertQuestions) && (
+              <div className="export-opt-col" style={{ gridColumn: '1 / -1', background: '#fef3c7', padding: '10px 14px', borderRadius: '6px', border: '1px solid #fde68a', marginTop: '4px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 600, color: '#92400e', fontSize: '13px', margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!layoutOptions.includeInsertBooklet}
+                    onChange={(e) =>
+                      setLayoutOptions((prev) => ({ ...prev, includeInsertBooklet: e.target.checked }))
+                    }
+                    style={{ width: '18px', height: '18px', accentColor: '#d97706', cursor: 'pointer' }}
+                  />
+                  <span>🗺️ Attach Cambridge Insert / Resource Booklet to Student Exam Paper (Page Break)</span>
+                </label>
+                {layoutOptions.includeInsertBooklet && (
+                  <div style={{ marginLeft: '28px', marginTop: '6px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 500, color: '#92400e', fontSize: '12px', margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={!!layoutOptions.includeAllFiguresInBooklet}
+                        onChange={(e) =>
+                          setLayoutOptions((prev) => ({ ...prev, includeAllFiguresInBooklet: e.target.checked }))
+                        }
+                        style={{ width: '16px', height: '16px', accentColor: '#d97706', cursor: 'pointer' }}
+                      />
+                      <span>🖼️ Include in-paper figures (QP diagrams & graphs) in the Resource Booklet as well</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dynamic Figure Renumbering Checkbox */}
+            <div className="export-opt-col" style={{ gridColumn: '1 / -1', background: '#eff6ff', padding: '10px 14px', borderRadius: '6px', border: '1px solid #bfdbfe', marginTop: '4px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 600, color: '#1e40af', fontSize: '13px', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={layoutOptions.autoRenumberFigures ?? true}
+                  onChange={(e) =>
+                    setLayoutOptions((prev) => ({ ...prev, autoRenumberFigures: e.target.checked }))
+                  }
+                  style={{ width: '18px', height: '18px', accentColor: '#2563eb', cursor: 'pointer' }}
+                />
+                <span>🔢 Auto-renumber figures to match test question order (e.g. Fig. 1.1 for Question 1)</span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -788,6 +893,37 @@ export function ExportModal({
                 </button>
               </div>
 
+              {/* Card 7: Offline Standalone Interactive HTML Quiz */}
+              <div
+                className="export-card"
+                onClick={() => exportOfflineInteractiveHtmlQuiz(headerConfig, questions)}
+              >
+                <div
+                  className="export-card-icon-wrap"
+                  style={{ background: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe' }}
+                >
+                  🌐
+                </div>
+                <div className="export-card-content">
+                  <div className="export-card-header-row">
+                    <h3 className="export-card-name">Offline Interactive Quiz (.html)</h3>
+                    <span className="export-badge" style={{ background: '#ede9fe', color: '#6d28d9' }}>
+                      Interactive Web
+                    </span>
+                  </div>
+                  <p className="export-card-desc">
+                    Standalone HTML file with embedded KaTeX math notation, question timer, and automated MCQ scoring. Works 100% offline with zero server requirements.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="export-card-action-btn"
+                  style={{ background: '#7c3aed' }}
+                >
+                  Download HTML (.html)
+                </button>
+              </div>
+
               {/* Chemistry Only: Periodic Table Card */}
               {isChemistry && (
                 <div className="export-card" onClick={() => openPeriodicTablePrintWindow(headerConfig)}>
@@ -812,8 +948,8 @@ export function ExportModal({
                 </div>
               )}
 
-              {/* Social Subjects Only: Insert / Resource Booklet Card */}
-              {isSocialSubject && (
+              {/* Social Subjects / Questions with Inserts: Insert / Resource Booklet Card */}
+              {(isSocialSubject || hasInsertQuestions) && (
                 <div className="export-card" onClick={() => openInsertBookletPrintWindow(headerConfig, questions, layoutOptions)}>
                   <div className="export-card-icon-wrap" style={{ background: '#fef3c7', color: '#d97706', border: '1px solid #fde68a' }}>
                     🗺️
@@ -821,18 +957,29 @@ export function ExportModal({
                   <div className="export-card-content">
                     <div className="export-card-header-row">
                       <h3 className="export-card-name">Insert / Resource Booklet</h3>
-                      <span className="export-badge" style={{ background: '#fef3c7', color: '#b45309' }}>Social Sciences</span>
+                      <span className="export-badge" style={{ background: '#fef3c7', color: '#b45309' }}>Resource Booklet</span>
                     </div>
                     <p className="export-card-desc">
                       Dedicated Cambridge resource booklet containing figures, maps, tables, case studies, and source extracts.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className="export-card-action-btn"
-                  >
-                    Print / Save Insert
-                  </button>
+                  <div className="export-card-split-btns" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="export-card-action-btn export-card-action-btn--sub"
+                      onClick={handleExportInsertBookletDocx}
+                      disabled={isExporting}
+                    >
+                      Word (.docx)
+                    </button>
+                    <button
+                      type="button"
+                      className="export-card-action-btn"
+                      onClick={() => openInsertBookletPrintWindow(headerConfig, questions, layoutOptions)}
+                    >
+                      Print PDF
+                    </button>
+                  </div>
                 </div>
               )}
             </>

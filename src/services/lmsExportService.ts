@@ -4,6 +4,7 @@
 import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
+import { resolveMcqCorrectOptionIndex } from './deterministicGradingService';
 
 /**
  * Strips complex markdown/LaTeX markup into clean plain text for spreadsheet/LMS imports
@@ -161,7 +162,8 @@ export function exportKahootQuizizzCsv(
       const a3 = q.options[2] ? `"${cleanTextForLms(q.options[2]).replace(/"/g, '""')}"` : '""';
       const a4 = q.options[3] ? `"${cleanTextForLms(q.options[3]).replace(/"/g, '""')}"` : '""';
       const timeLimit = 60;
-      const correctAnswer = 1; // Default to first or keyed answer
+      const correctIdx = resolveMcqCorrectOptionIndex(q);
+      const correctAnswer = (correctIdx >= 0 && correctIdx < 4 ? correctIdx : 0) + 1;
 
       rows.push(`${qText},${a1},${a2},${a3},${a4},${timeLimit},${correctAnswer}`);
     }

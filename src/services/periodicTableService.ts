@@ -228,7 +228,7 @@ export function renderPeriodicTableHtml(options: { rotated?: boolean } = { rotat
               </div>
               <div style="display: flex; justify-content: space-between; align-items: center; line-height: 1.2;">
                 <span style="color: #444;">relative atomic mass</span>
-                <span style="font-weight: bold;">Ar</span>
+                <span style="font-weight: bold;"><i>A</i><sub>r</sub></span>
               </div>
             </div>
           </td>

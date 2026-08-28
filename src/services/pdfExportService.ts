@@ -9,7 +9,8 @@ import { getCambridgeCoverDetails, renderCambridgeCoverPageHtml, renderMcqAnswer
 import { parseMcqOption } from '../utils/mcqUtils';
 import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
-import { autoFormatChemistryAndMath } from '../components/ExamMathText';
+import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
+import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 
 /**
  * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean HTML
@@ -18,8 +19,14 @@ export function formatLatexForHtml(text: string): string {
   if (!text) return '';
   // 1. Unescape literal '\n' sequences from database/JSON strings
   const unescaped = text.replace(/\\n/g, '\n');
-  const chemFormatted = autoFormatChemistryAndMath(unescaped);
-  return chemFormatted
+  const protectedText = protectCurrencySymbols(unescaped);
+  const chemFormatted = autoFormatChemistryAndMath(protectedText);
+  const formatted = chemFormatted
+    // Markdown bold: **text** or __text__ -> <strong>text</strong>
+    .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+?)__/g, '<strong>$1</strong>')
+    // Markdown italic: *text* -> <em>text</em>
+    .replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, '$1<em>$2</em>')
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
@@ -108,6 +115,8 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/\n\s*\n/g, '<br /><br />')
     .replace(/\n/g, '<br />');
+
+  return restoreCurrencySymbols(formatted);
 }
 
 /**
@@ -234,9 +243,12 @@ function convertMarkdownTablesToHtml(text: string): string {
  */
 export function openStudentPaperPrintWindow(
   headerConfig: ExamHeaderConfig,
-  questions: Question[],
+  rawQuestions: Question[],
   options: Partial<ExportLayoutOptions> = {}
 ) {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
   const {
     template = 'cambridge_official',
     columns = 1,
@@ -555,10 +567,13 @@ export function openStudentPaperPrintWindow(
         `;
 
         const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
-        if (diagramUrl) {
+        const isInsert = isInsertResource(q);
+        // Only show diagram on the question paper if an insert booklet is NOT attached, or if it is a QP diagram
+        if (diagramUrl && (!options.includeInsertBooklet || !isInsert)) {
           content += `
             <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
               <img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />
+              <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${q.resource_ref || `Fig. ${qNum}.1`}</div>
             </div>
           `;
         }
@@ -587,10 +602,13 @@ export function openStudentPaperPrintWindow(
             `;
 
             const subDiagramUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
-            if (subDiagramUrl) {
+            const isSubInsert = isInsertResource(sub);
+            // Only show sub-diagram on question paper if booklet is NOT attached, or if it is a QP diagram
+            if (subDiagramUrl && (!options.includeInsertBooklet || !isSubInsert)) {
               content += `
                 <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
                   <img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />
+                  <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${sub.resource_ref || `Fig. ${qNum}.2`}</div>
                 </div>
               `;
             }
@@ -647,6 +665,15 @@ export function openStudentPaperPrintWindow(
       : ''
   }
 
+  ${
+    options.includeInsertBooklet
+      ? `
+    <!-- Attached Cambridge IGCSE Insert / Resource Booklet -->
+    ${renderInsertBookletSectionHtml(headerConfig, questions, options)}
+    `
+      : ''
+  }
+
   <script>
     window.addEventListener('DOMContentLoaded', () => {
       // Calculate realistic A4 page height (approx 1020px printable area per page)
@@ -657,7 +684,7 @@ export function openStudentPaperPrintWindow(
       if (questionsContainer && countEl) {
         const contentHeight = questionsContainer.scrollHeight;
         const questionPages = Math.max(1, Math.ceil(contentHeight / printablePageHeight));
-        const totalCalculatedPages = 1 + questionPages + ${options.includeMcqAnswerSheet ? 1 : 0} + ${options.includePeriodicTable ? 1 : 0}; // Cover + Questions + Extras
+        const totalCalculatedPages = 1 + questionPages + ${options.includeMcqAnswerSheet ? 1 : 0} + ${options.includePeriodicTable ? 1 : 0} + ${options.includeInsertBooklet ? 1 : 0}; // Cover + Questions + Extras
         countEl.textContent = String(totalCalculatedPages);
       }
       
@@ -711,11 +738,134 @@ export function openPeriodicTablePrintWindow(headerConfig: ExamHeaderConfig) {
 }
 
 /**
+ * Renders the HTML for the Cambridge Insert / Resource Booklet (Maps, Photos, Figures, Tables)
+ */
+export function renderInsertBookletSectionHtml(
+  headerConfig: Partial<ExamHeaderConfig> = {},
+  rawQuestions: Question[] = [],
+  options: Partial<ExportLayoutOptions> = {}
+): string {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
+  const schoolLogo = options.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
+  const cambridgeLogo = DEFAULT_CAMBRIDGE_LOGO;
+
+  interface InsertItem {
+    header: string;
+    topic?: string;
+    diagramUrl?: string | null;
+    tableText?: string;
+  }
+
+  const items: InsertItem[] = [];
+
+  questions.forEach((q, idx) => {
+    const qDiagram = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+    const qRef = q.resource_ref;
+    const isInsert = isInsertResource(q) || Boolean(options.includeAllFiguresInBooklet);
+
+    // Parent visual: ONLY push if an actual diagram exists
+    if (qDiagram && isInsert) {
+      let topic = q.topic || undefined;
+      const titleMatch =
+        (q.question_text || '').match(/Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i) ||
+        (q.sub_questions?.[0]?.question_text || '').match(
+          /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+        );
+      if (titleMatch) {
+        topic = titleMatch[1].trim();
+      }
+
+      const headerLabel = qRef
+        ? (/^figs?/i.test(qRef)
+            ? `${qRef} for Question ${q.question_number || idx + 1}`
+            : `${qRef} — Resource for Question ${q.question_number || idx + 1}`)
+        : `Resource for Question ${q.question_number || idx + 1}`;
+
+      items.push({
+        header: headerLabel,
+        topic,
+        diagramUrl: qDiagram,
+      });
+    }
+
+    // Check sub-questions: ONLY push if an actual diagram exists
+    (q.sub_questions || []).forEach((sq) => {
+      const sqDiagram = sq.diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
+      const sqRef = sq.resource_ref;
+      const isSubInsert = isInsertResource(sq) || Boolean(options.includeAllFiguresInBooklet);
+
+      if (sqDiagram && isSubInsert) {
+        let sqTopic = q.topic || undefined;
+        const subTitleMatch = (sq.question_text || '').match(
+          /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+        );
+        if (subTitleMatch) {
+          sqTopic = subTitleMatch[1].trim();
+        }
+
+        const sqHeaderLabel = sqRef
+          ? (/^figs?/i.test(sqRef)
+              ? `${sqRef} for Question ${q.question_number || idx + 1}`
+              : `${sqRef} — Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`)
+          : `Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`;
+
+        items.push({
+          header: sqHeaderLabel,
+          topic: sqTopic,
+          diagramUrl: sqDiagram,
+        });
+      }
+    });
+  });
+
+  return `
+  <div class="insert-booklet-section" style="page-break-before: always; break-before: page; margin-top: 24px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 16px;">
+      <img src="${schoolLogo}" alt="School Logo" style="height: 48px; max-width: 160px; object-fit: contain;" />
+      <img src="${cambridgeLogo}" alt="Cambridge Logo" style="height: 48px; max-width: 180px; object-fit: contain;" />
+    </div>
+
+    <div style="text-align: center; margin-bottom: 18px;">
+      <h1 style="font-size: 22px; font-weight: bold; margin: 0 0 6px;">${(headerConfig.subject || 'GEOGRAPHY').toUpperCase()} — INSERT / RESOURCE BOOKLET</h1>
+      <div style="font-size: 14px; font-weight: bold; color: #4b5563;">${headerConfig.title || 'Assessment Resources'} &nbsp;•&nbsp; ${headerConfig.subjectCode || '0460'}</div>
+    </div>
+
+    <div style="border: 1.5px solid #111; padding: 12px 16px; background: #fdfdfd; margin-bottom: 24px; font-family: Arial, sans-serif;">
+      <div style="font-weight: bold; margin-bottom: 6px; font-size: 13px;">INFORMATION & INSTRUCTIONS:</div>
+      <div style="font-size: 12px; line-height: 1.6;">
+        • This insert contains all the resources, figures, maps, tables, case studies, and source extracts referred to in the question paper.<br />
+        • You may make any necessary annotations or highlights directly on the insert.<br />
+        • This Insert is not assessed. Write your answers only in the question paper / answer booklet.
+      </div>
+    </div>
+
+    <div class="resources-container">
+      ${items.length > 0 ? items.map((it) => `
+        <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 16px; margin-bottom: 24px; page-break-inside: avoid; background: white;">
+          <div style="font-weight: bold; font-size: 16px; color: #1e3a8a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px;">
+            ${it.header} ${it.topic ? `(${it.topic})` : ''}
+          </div>
+          ${it.diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${it.diagramUrl}" alt="${it.header}" style="max-width: 95%; max-height: 480px; object-fit: contain;" /></div>` : ''}
+          ${it.tableText ? `<div style="margin-top: 10px;">${convertMarkdownTablesToHtml(it.tableText)}</div>` : ''}
+        </div>
+      `).join('') : `
+        <div style="text-align: center; padding: 30px; color: #64748b; font-style: italic;">
+          No figures or maps were attached to the questions in this paper.
+        </div>
+      `}
+    </div>
+  </div>
+  `;
+}
+
+/**
  * Opens a dedicated Insert / Resource Booklet for Social Sciences & Humanities (Geography, History, Sociology, Economics, etc.)
  */
 export function openInsertBookletPrintWindow(
-  headerConfig: ExamHeaderConfig,
-  questions: Question[],
+  headerConfig: Partial<ExamHeaderConfig> = {},
+  questions: Question[] = [],
   options: Partial<ExportLayoutOptions> = {}
 ) {
   const printWindow = window.open('', '_blank');
@@ -723,9 +873,6 @@ export function openInsertBookletPrintWindow(
     alert('Please allow popups to open the Insert Booklet.');
     return;
   }
-
-  const schoolLogo = options.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
-  const cambridgeLogo = DEFAULT_CAMBRIDGE_LOGO;
 
   const html = `<!DOCTYPE html>
 <html>
@@ -737,11 +884,6 @@ export function openInsertBookletPrintWindow(
     body { font-family: "Times New Roman", Times, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
     .no-print { text-align: center; padding: 10px; background: #e0e7ff; color: #3730a3; font-size: 13px; margin-bottom: 16px; border-radius: 6px; font-family: Arial, sans-serif; }
     @media print { .no-print { display: none; } }
-    .header-logo-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 16px; }
-    .cand-box { border: 1.5px solid #111; padding: 10px 14px; margin-bottom: 20px; }
-    .inst-box { border: 1.5px solid #111; padding: 12px 16px; background: #fdfdfd; margin-bottom: 24px; font-family: Arial, sans-serif; }
-    .resource-item { border: 1px solid #cbd5e1; border-radius: 6px; padding: 16px; margin-bottom: 24px; page-break-inside: avoid; background: white; }
-    .resource-title { font-weight: bold; font-size: 16px; color: #1e3a8a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px; }
   </style>
 </head>
 <body>
@@ -749,46 +891,7 @@ export function openInsertBookletPrintWindow(
     <strong>Cambridge IGCSE Insert / Resource Booklet</strong> — Press <code>Ctrl + P</code> to Save as PDF or Print.
   </div>
 
-  <div class="header-logo-row">
-    <img src="${schoolLogo}" alt="School Logo" style="height: 48px; max-width: 160px; object-fit: contain;" />
-    <img src="${cambridgeLogo}" alt="Cambridge Logo" style="height: 48px; max-width: 180px; object-fit: contain;" />
-  </div>
-
-  <div style="text-align: center; margin-bottom: 18px;">
-    <h1 style="font-size: 22px; font-weight: bold; margin: 0 0 6px;">${headerConfig.subject || 'Social Sciences'} — INSERT / RESOURCE BOOKLET</h1>
-    <div style="font-size: 14px; font-weight: bold; color: #4b5563;">${headerConfig.title || 'Assessment Resources'} &nbsp;•&nbsp; ${headerConfig.subjectCode || ''}</div>
-  </div>
-
-  <div class="inst-box">
-    <div style="font-weight: bold; margin-bottom: 6px; font-size: 13px;">INFORMATION & INSTRUCTIONS:</div>
-    <div style="font-size: 12px; line-height: 1.6;">
-      • This insert contains all the resources, figures, maps, tables, case studies, and source extracts referred to in the question paper.<br />
-      • You may make any necessary annotations or highlights directly on the insert.<br />
-      • This Insert is not assessed. Write your answers only in the question paper / answer booklet.
-    </div>
-  </div>
-
-  <div class="resources-container">
-    ${questions
-      .map((q, idx) => {
-        const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
-        const hasTable = q.question_text && q.question_text.includes('|');
-        if (!diagramUrl && !hasTable && !q.resource_ref) return '';
-
-        const refHeader = q.resource_ref 
-          ? `${q.resource_ref} — Resource for Question ${q.question_number || idx + 1}`
-          : `Resource for Question ${q.question_number || idx + 1}`;
-
-        return `
-          <div class="resource-item">
-            <div class="resource-title">${refHeader} ${q.topic ? `(${q.topic})` : ''}</div>
-            ${diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${diagramUrl}" alt="${refHeader}" style="max-width: 90%; max-height: 380px; object-fit: contain;" /></div>` : ''}
-            ${hasTable ? `<div style="margin-top: 10px;">${convertMarkdownTablesToHtml(q.question_text)}</div>` : ''}
-          </div>
-        `;
-      })
-      .join('')}
-  </div>
+  ${renderInsertBookletSectionHtml(headerConfig, questions, options)}
 
   <script>
     setTimeout(() => { window.print(); }, 400);

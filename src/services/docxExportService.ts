@@ -28,7 +28,9 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import type { ExportLayoutOptions } from '../types/exportTemplates';
 import { getCambridgeCoverDetails } from './cambridgeCoverService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
+import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import { parseMcqOption } from '../utils/mcqUtils';
+import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 
 export interface DocxExportOptions extends Partial<ExportLayoutOptions> {
   includeMarkSchemeInStudentPaper?: boolean;
@@ -76,7 +78,8 @@ export function parseFormattedTextToDocxRuns(
   if (!rawText) return [];
 
   // Step 1: Pre-process common LaTeX math symbols and standard chemistry/physics replacements
-  let processed = rawText
+  const protectedText = protectCurrencySymbols(rawText);
+  let processed = protectedText
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
@@ -109,7 +112,7 @@ export function parseFormattedTextToDocxRuns(
     .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
     .replace(/\\degree\s*C\b/gi, '°C')
     .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
-    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}\}/gi, '°C')
+    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
     .replace(/\^\{\\circ\s*C\}/gi, '°C')
     .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
     .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
@@ -161,6 +164,9 @@ export function parseFormattedTextToDocxRuns(
     .replace(/\$(.*?)\$/g, '$1')
     .replace(/\\\[(.*?)\\\]/g, '$1')
     .replace(/\\\((.*?)\\\)/g, '$1');
+
+  // Restore protected currency
+  processed = restoreCurrencySymbols(processed);
 
   // Step 2: Convert single-character sub/super syntax (e.g. Fe_3O_4 -> Fe_{3}O_{4}, H_2O -> H_{2}O, 10^3 -> 10^{3})
   processed = processed.replace(/([a-zA-Z0-9)\]])_([0-9a-zA-Z+\-*]+)/g, '$1_{$2}');
@@ -798,9 +804,12 @@ function buildWorksheetHeaderTable(schoolName: string, totalMarks: number): Tabl
  */
 export async function exportStudentPaperDocx(
   headerConfig: ExamHeaderConfig,
-  questions: Question[],
+  rawQuestions: Question[],
   options: DocxExportOptions = {}
 ): Promise<void> {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
   const {
     template = 'cambridge_official',
     includeAnswerLines = true,
@@ -922,9 +931,10 @@ export async function exportStudentPaperDocx(
     const stemElements = convertTextAndTablesToDocxElements(q.question_text || '', `${qNum}.  `, 22, fontName);
     docParagraphs.push(...stemElements);
 
-    // Embed Main Question Diagram if present
+    // Embed Main Question Diagram if present (only if NOT an insert diagram when booklet is attached)
     const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
-    if (diagramUrl) {
+    const isParentInsert = isInsertResource(q);
+    if (diagramUrl && (!options.includeInsertBooklet || !isParentInsert)) {
       const imgData = await loadImageData(diagramUrl);
       if (imgData) {
         docParagraphs.push(
@@ -940,7 +950,21 @@ export async function exportStudentPaperDocx(
                 },
               }),
             ],
-            spacing: { before: 120, after: 120 },
+            spacing: { before: 120, after: 60 },
+          })
+        );
+        docParagraphs.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new TextRun({
+                text: q.resource_ref || `Fig. ${qNum}.1`,
+                bold: true,
+                size: 20,
+                font: fontName,
+              }),
+            ],
+            spacing: { before: 0, after: 120 },
           })
         );
       }
@@ -979,9 +1003,10 @@ export async function exportStudentPaperDocx(
           })
         );
 
-        // Sub-question diagram if present
+        // Sub-question diagram if present (only if NOT an insert resource when booklet is attached)
         const subDiagramUrl = (sq as any).diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
-        if (subDiagramUrl) {
+        const isSubInsert = isInsertResource(sq);
+        if (subDiagramUrl && (!options.includeInsertBooklet || !isSubInsert)) {
           const subImgData = await loadImageData(subDiagramUrl);
           if (subImgData) {
             docParagraphs.push(
@@ -997,7 +1022,21 @@ export async function exportStudentPaperDocx(
                     },
                   }),
                 ],
-                spacing: { before: 100, after: 100 },
+                spacing: { before: 100, after: 40 },
+              })
+            );
+            docParagraphs.push(
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new TextRun({
+                    text: sq.resource_ref || `Fig. ${qNum}.2`,
+                    bold: true,
+                    size: 20,
+                    font: fontName,
+                  }),
+                ],
+                spacing: { before: 0, after: 100 },
               })
             );
           }
@@ -1049,6 +1088,189 @@ export async function exportStudentPaperDocx(
         spacing: { before: 40, after: 180 },
       })
     );
+  }
+
+  // ─── 4b. Attached Cambridge Insert / Resource Booklet ────────────────────
+  if (options.includeInsertBooklet) {
+    docParagraphs.push(
+      new Paragraph({
+        pageBreakBefore: true,
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: `${(headerConfig.subject || 'GEOGRAPHY').toUpperCase()} — INSERT / RESOURCE BOOKLET`,
+            bold: true,
+            size: 26,
+            font: fontName,
+            color: '111827',
+          }),
+        ],
+        spacing: { before: 180, after: 80 },
+      })
+    );
+
+    docParagraphs.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: `${headerConfig.title || 'Assessment Resources'} • ${headerConfig.subjectCode || '0460'}`,
+            bold: true,
+            size: 20,
+            font: fontName,
+            color: '4B5563',
+          }),
+        ],
+        spacing: { after: 180 },
+      })
+    );
+
+    // Information Box
+    docParagraphs.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: 'INFORMATION & INSTRUCTIONS:',
+            bold: true,
+            size: 18,
+            font: fontName,
+          }),
+        ],
+        spacing: { before: 80, after: 40 },
+      })
+    );
+    docParagraphs.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: '• This insert contains all the resources, figures, maps, tables, case studies, and source extracts referred to in the question paper.\n• You may make any necessary annotations or highlights directly on the insert.\n• This Insert is not assessed. Write your answers only in the question paper / answer booklet.',
+            size: 18,
+            font: fontName,
+            color: '374151',
+          }),
+        ],
+        spacing: { after: 240 },
+      })
+    );
+
+    // Append each resource / diagram that belongs to the Cambridge Insert Booklet
+    for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+      const q = questions[qIdx];
+      const qImg = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+      const qRef = q.resource_ref;
+      const isParentInsert = isInsertResource(q) || Boolean(options.includeAllFiguresInBooklet);
+
+      if (qImg && isParentInsert) {
+        let topic = q.topic || undefined;
+        const titleMatch =
+          (q.question_text || '').match(/Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i) ||
+          (q.sub_questions?.[0]?.question_text || '').match(
+            /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+          );
+        if (titleMatch) {
+          topic = titleMatch[1].trim();
+        }
+
+        const headerText = qRef
+          ? (/^figs?/i.test(qRef)
+              ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`
+              : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`)
+          : `Resource for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`;
+
+        docParagraphs.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: headerText,
+                bold: true,
+                size: 22,
+                color: '1E3A8A',
+                font: fontName,
+              }),
+            ],
+            spacing: { before: 180, after: 100 },
+          })
+        );
+
+        const imgData = await loadImageData(qImg);
+        if (imgData) {
+          docParagraphs.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new ImageRun({
+                  type: 'png',
+                  data: imgData.data,
+                  transformation: {
+                    width: Math.min(520, imgData.width),
+                    height: Math.min(350, imgData.height),
+                  },
+                }),
+              ],
+              spacing: { before: 100, after: 180 },
+            })
+          );
+        }
+      }
+
+      // Check sub-questions
+      for (const sq of q.sub_questions || []) {
+        const sqImg = sq.diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
+        const sqRef = sq.resource_ref;
+        const isSubInsert = isInsertResource(sq) || Boolean(options.includeAllFiguresInBooklet);
+
+        if (sqImg && isSubInsert) {
+          let sqTopic = q.topic || undefined;
+          const subTitleMatch = (sq.question_text || '').match(
+            /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+          );
+          if (subTitleMatch) {
+            sqTopic = subTitleMatch[1].trim();
+          }
+
+          const sqHeaderText = sqRef
+            ? (/^figs?/i.test(sqRef)
+                ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` — ${sqTopic}` : ''}`
+                : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` — ${sqTopic}` : ''}`)
+            : `Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` — ${sqTopic}` : ''}`;
+
+          docParagraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: sqHeaderText,
+                  bold: true,
+                  size: 20,
+                  color: '1E3A8A',
+                  font: fontName,
+                }),
+              ],
+              spacing: { before: 160, after: 80 },
+            })
+          );
+
+          const sqImgData = await loadImageData(sqImg);
+          if (sqImgData) {
+            docParagraphs.push(
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new ImageRun({
+                    type: 'png',
+                    data: sqImgData.data,
+                    transformation: {
+                      width: Math.min(520, sqImgData.width),
+                      height: Math.min(320, sqImgData.height),
+                    },
+                  }),
+                ],
+                spacing: { before: 80, after: 180 },
+              })
+            );
+          }
+        }
+      }
+    }
   }
 
   // ─── 5. Document Assemble & Download ──────────────────────────────────────
@@ -1125,9 +1347,12 @@ export async function exportStudentPaperDocx(
  */
 export async function exportAnswerBookletDocx(
   headerConfig: ExamHeaderConfig,
-  questions: Question[],
+  rawQuestions: Question[],
   options: DocxExportOptions = {}
 ): Promise<void> {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
   const {
     linesPerMark = 3,
     answerLineStyle = 'dotted',
@@ -1275,8 +1500,12 @@ export async function exportAnswerBookletDocx(
  */
 export async function exportTeacherMarkSchemeDocx(
   headerConfig: ExamHeaderConfig,
-  questions: Question[]
+  rawQuestions: Question[],
+  options: DocxExportOptions = {}
 ): Promise<void> {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
   const docParagraphs: (Paragraph | Table)[] = [];
 
@@ -1774,3 +2003,387 @@ export async function exportMcqAnswerSheetDocx(
   const safeTitle = (headerConfig.title || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
   await exportFileUniversal(blob, `${safeTitle}_Multiple_Choice_Answer_Sheet.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }
+
+/**
+ * Generates and downloads a dedicated Cambridge Insert / Resource Booklet as a .docx file.
+ * Formatted with Cambridge headers, information box, and high-resolution resource cards matching the PDF layout.
+ */
+export async function exportInsertBookletDocx(
+  headerConfig: Partial<ExamHeaderConfig> = {},
+  rawQuestions: Question[] = [],
+  options: DocxExportOptions = {}
+): Promise<void> {
+  const questions = resolveQuestionResources(rawQuestions, {
+    autoRenumberFigures: options.autoRenumberFigures ?? true,
+  });
+  const fontName = 'Arial';
+  const schoolLogo = options.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
+  const cambridgeLogo = DEFAULT_CAMBRIDGE_LOGO;
+
+  const docParagraphs: (Paragraph | Table)[] = [];
+
+  // 1. Top Header with Logos
+  const schoolImg = await loadImageData(schoolLogo);
+  const cambImg = await loadImageData(cambridgeLogo);
+
+  if (schoolImg || cambImg) {
+    docParagraphs.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 50, type: WidthType.PERCENTAGE },
+                children: [
+                  ...(schoolImg
+                    ? [
+                        new Paragraph({
+                          children: [
+                            new ImageRun({
+                              type: 'png',
+                              data: schoolImg.data,
+                              transformation: {
+                                width: Math.min(160, schoolImg.width),
+                                height: Math.min(48, schoolImg.height),
+                              },
+                            }),
+                          ],
+                        }),
+                      ]
+                    : []),
+                ],
+                borders: {
+                  top: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                  bottom: { style: BorderStyle.SINGLE, size: 12, color: '111827' },
+                  left: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                  right: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                },
+              }),
+              new TableCell({
+                width: { size: 50, type: WidthType.PERCENTAGE },
+                children: [
+                  ...(cambImg
+                    ? [
+                        new Paragraph({
+                          alignment: AlignmentType.RIGHT,
+                          children: [
+                            new ImageRun({
+                              type: 'png',
+                              data: cambImg.data,
+                              transformation: {
+                                width: Math.min(180, cambImg.width),
+                                height: Math.min(48, cambImg.height),
+                              },
+                            }),
+                          ],
+                        }),
+                      ]
+                    : []),
+                ],
+                borders: {
+                  top: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                  bottom: { style: BorderStyle.SINGLE, size: 12, color: '111827' },
+                  left: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                  right: { style: BorderStyle.NONE, size: 0, color: 'auto' },
+                },
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+    docParagraphs.push(new Paragraph({ text: '', spacing: { before: 120, after: 120 } }));
+  }
+
+  // 2. Title & Subject Banner
+  const subjectUpper = (headerConfig.subject || 'GEOGRAPHY').toUpperCase();
+  docParagraphs.push(
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [
+        new TextRun({
+          text: `${subjectUpper} — INSERT / RESOURCE BOOKLET`,
+          bold: true,
+          size: 26,
+          color: '111827',
+          font: fontName,
+        }),
+      ],
+      spacing: { before: 140, after: 60 },
+    })
+  );
+
+  docParagraphs.push(
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [
+        new TextRun({
+          text: `${headerConfig.title || 'Assessment Resources'}  •  ${headerConfig.subjectCode || '0460'}`,
+          bold: true,
+          size: 20,
+          color: '4B5563',
+          font: fontName,
+        }),
+      ],
+      spacing: { after: 200 },
+    })
+  );
+
+  // 3. Information & Instructions Box
+  docParagraphs.push(
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              margins: { top: 120, bottom: 120, left: 160, right: 160 },
+              children: [
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: 'INFORMATION & INSTRUCTIONS:',
+                      bold: true,
+                      size: 18,
+                      font: fontName,
+                      color: '111827',
+                    }),
+                  ],
+                  spacing: { after: 80 },
+                }),
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: '• This insert contains all the resources, figures, maps, tables, case studies, and source extracts referred to in the question paper.\n• You may make any necessary annotations or highlights directly on the insert.\n• This Insert is not assessed. Write your answers only in the question paper / answer booklet.',
+                      size: 18,
+                      font: fontName,
+                      color: '374151',
+                    }),
+                  ],
+                }),
+              ],
+              borders: {
+                top: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
+                bottom: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
+                left: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
+                right: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
+              },
+            }),
+          ],
+        }),
+      ],
+    })
+  );
+
+  docParagraphs.push(new Paragraph({ text: '', spacing: { before: 180, after: 180 } }));
+
+  // 4. Resource Cards List
+  let itemCount = 0;
+  for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+    const q = questions[qIdx];
+    const qImg = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+    const qRef = q.resource_ref;
+    const isParentInsert = isInsertResource(q) || Boolean(options.includeAllFiguresInBooklet);
+
+    if (qImg && isParentInsert) {
+      itemCount++;
+      let topic = q.topic || undefined;
+      const titleMatch =
+        (q.question_text || '').match(/Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i) ||
+        (q.sub_questions?.[0]?.question_text || '').match(
+          /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+        );
+      if (titleMatch) {
+        topic = titleMatch[1].trim();
+      }
+
+      const headerText = qRef
+        ? (/^figs?/i.test(qRef)
+            ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`
+            : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`)
+        : `Resource for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`;
+
+      docParagraphs.push(
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: headerText,
+              bold: true,
+              size: 22,
+              color: '1E3A8A',
+              font: fontName,
+            }),
+          ],
+          border: {
+            bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E2E8F0', space: 4 },
+          },
+          spacing: { before: 240, after: 140 },
+        })
+      );
+
+      const imgData = await loadImageData(qImg);
+      if (imgData) {
+        docParagraphs.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new ImageRun({
+                type: 'png',
+                data: imgData.data,
+                transformation: {
+                  width: Math.min(540, imgData.width),
+                  height: Math.min(460, imgData.height),
+                },
+              }),
+            ],
+            spacing: { before: 100, after: 200 },
+          })
+        );
+      }
+    }
+
+    // Check Sub-questions
+    for (const sq of q.sub_questions || []) {
+      const sqImg = sq.diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
+      const sqRef = sq.resource_ref;
+      const isSubInsert = isInsertResource(sq) || Boolean(options.includeAllFiguresInBooklet);
+
+      if (sqImg && isSubInsert) {
+        itemCount++;
+        let sqTopic = q.topic || undefined;
+        const subTitleMatch = (sq.question_text || '').match(
+          /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
+        );
+        if (subTitleMatch) {
+          sqTopic = subTitleMatch[1].trim();
+        }
+
+        const sqHeaderText = sqRef
+          ? (/^figs?/i.test(sqRef)
+              ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` (${sqTopic})` : ''}`
+              : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` (${sqTopic})` : ''}`)
+          : `Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` (${sqTopic})` : ''}`;
+
+        docParagraphs.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: sqHeaderText,
+                bold: true,
+                size: 22,
+                color: '1E3A8A',
+                font: fontName,
+              }),
+            ],
+            border: {
+              bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E2E8F0', space: 4 },
+            },
+            spacing: { before: 240, after: 140 },
+          })
+        );
+
+        const sqImgData = await loadImageData(sqImg);
+        if (sqImgData) {
+          docParagraphs.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new ImageRun({
+                  type: 'png',
+                  data: sqImgData.data,
+                  transformation: {
+                    width: Math.min(540, sqImgData.width),
+                    height: Math.min(460, sqImgData.height),
+                  },
+                }),
+              ],
+              spacing: { before: 100, after: 200 },
+            })
+          );
+        }
+      }
+    }
+  }
+
+  if (itemCount === 0) {
+    docParagraphs.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: 'No figures or maps were attached to the questions in this paper.',
+            italics: true,
+            size: 20,
+            color: '64748B',
+            font: fontName,
+          }),
+        ],
+        spacing: { before: 300, after: 300 },
+      })
+    );
+  }
+
+  // Assemble Document
+  const doc = new Document({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: fontName,
+            size: 22,
+          },
+        },
+      },
+    },
+    sections: [
+      {
+        properties: {
+          page: {
+            margin: {
+              top: 720,
+              bottom: 720,
+              left: 720,
+              right: 720,
+            },
+          },
+        },
+        headers: {
+          default: new Header({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                children: [
+                  new TextRun({
+                    text: `${subjectUpper} INSERT — Page `,
+                    size: 18,
+                    color: '9CA3AF',
+                    font: fontName,
+                  }),
+                  new TextRun({
+                    children: [PageNumber.CURRENT],
+                    bold: true,
+                    size: 18,
+                    color: '4B5563',
+                    font: fontName,
+                  }),
+                ],
+              }),
+            ],
+          }),
+        },
+        children: docParagraphs,
+      },
+    ],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const safeTitle = (headerConfig.title || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
+  await exportFileUniversal(
+    blob,
+    `${safeTitle}_Insert_Resource_Booklet.docx`,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  );
+}
+

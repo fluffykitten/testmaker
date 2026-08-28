@@ -21,6 +21,7 @@ interface QuestionBankPageProps {
   selectedQuestionIds: Set<string>;
   onToggleSelectQuestion: (question: Question) => void;
   onClearSelection: () => void;
+  onRemoveQuestionsFromTest?: (ids: string[]) => void;
   onNavigateToUpload: () => void;
   onNavigateToBuilder?: () => void;
 }
@@ -29,6 +30,7 @@ export function QuestionBankPage({
   selectedQuestionIds,
   onToggleSelectQuestion,
   onClearSelection,
+  onRemoveQuestionsFromTest,
   onNavigateToUpload,
   onNavigateToBuilder,
 }: QuestionBankPageProps) {
@@ -187,6 +189,11 @@ export function QuestionBankPage({
       } else {
         const res = await deleteQuestions(deleteModalState.ids);
         if (!res.success) throw new Error('Failed to delete selected questions');
+      }
+
+      // Immediately remove deleted questions from the custom test builder basket
+      if (onRemoveQuestionsFromTest) {
+        onRemoveQuestionsFromTest(deleteModalState.ids);
       }
 
       setActionToast({
@@ -479,7 +486,10 @@ export function QuestionBankPage({
         question={variantModalState.question}
         onClose={() => setVariantModalState({ isOpen: false, question: null })}
         onSaveToBank={(newQuestion) => {
-          setQuestions((prev) => [newQuestion, ...prev]);
+          setQuestions((prev) => {
+            if (prev.some((q) => q.id === newQuestion.id)) return prev;
+            return [newQuestion, ...prev];
+          });
           setTotalCount((c) => c + 1);
           setActionToast({
             message: `✨ Variant question ${newQuestion.question_number} saved to Question Bank!`,
@@ -488,7 +498,9 @@ export function QuestionBankPage({
           setTimeout(() => setActionToast(null), 3000);
         }}
         onAddToTest={(newQuestion) => {
-          onToggleSelectQuestion(newQuestion);
+          if (!selectedQuestionIds.has(newQuestion.id)) {
+            onToggleSelectQuestion(newQuestion);
+          }
           setActionToast({
             message: `✨ Variant question ${newQuestion.question_number} added to custom test!`,
             type: 'success',

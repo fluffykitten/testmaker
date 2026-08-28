@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { Question } from '../types/database';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
+import { exportInsertBookletDocx } from '../services/docxExportService';
+import { openInsertBookletPrintWindow } from '../services/pdfExportService';
 import './ResourceBookletDrawer.css';
 
 export interface ResourceBookletItem {
@@ -155,7 +158,7 @@ export function ResourceBookletDrawer({
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="rbd-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="rbd-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* ─── Header ──────────────────────────────────────────────────────── */}
@@ -172,9 +175,53 @@ export function ResourceBookletDrawer({
               </p>
             </div>
           </div>
-          <button type="button" className="rbd-btn-close" onClick={onClose} title="Close Booklet (Esc)">
-            ✕
-          </button>
+          <div className="rbd-header-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              className="rbd-export-btn rbd-export-btn--docx"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                background: '#2563eb',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+              onClick={() => exportInsertBookletDocx({ title, subject }, questions)}
+              title="Download Insert as Word document (.docx)"
+            >
+              📥 Word (.docx)
+            </button>
+            <button
+              type="button"
+              className="rbd-export-btn rbd-export-btn--pdf"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                background: '#f1f5f9',
+                color: '#334155',
+                border: '1px solid #cbd5e1',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+              onClick={() => openInsertBookletPrintWindow({ title, subject }, questions)}
+              title="Print or Save Insert as PDF"
+            >
+              🖨️ Print PDF
+            </button>
+            <button type="button" className="rbd-btn-close" onClick={onClose} title="Close Booklet (Esc)">
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* ─── Resource Selector Strip ─────────────────────────────────────── */}
@@ -300,6 +347,7 @@ export function ResourceBookletDrawer({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

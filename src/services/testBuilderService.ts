@@ -14,6 +14,7 @@ export interface ExamHeaderConfig {
   instructions: string;
   examDate?: string;
   additionalMaterials?: string;
+  layoutTemplate?: 'cambridge' | 'standard';
 }
 
 export interface SaveTestPayload {

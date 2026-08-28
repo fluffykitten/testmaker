@@ -32,6 +32,8 @@ export interface ExportLayoutOptions {
   includeMcqAnswerSheet?: boolean;
   includePeriodicTable?: boolean;
   includeInsertBooklet?: boolean;
+  includeAllFiguresInBooklet?: boolean;
+  autoRenumberFigures?: boolean;
 }
 
 export interface LayoutTemplateMeta {
@@ -112,4 +114,6 @@ export const DEFAULT_EXPORT_OPTIONS: ExportLayoutOptions = {
   showPageNumbers: true,
   showTurnOverNotice: true,
   includeMcqAnswerSheet: false,
+  includeAllFiguresInBooklet: false,
+  autoRenumberFigures: true,
 };

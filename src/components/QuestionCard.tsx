@@ -396,7 +396,10 @@ export function QuestionCard({
             <button
               type="button"
               className="q-action-btn q-action-btn--preview"
-              onClick={() => onViewDetails(question)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewDetails(question);
+              }}
             >
               🔍 View Details
             </button>
@@ -406,7 +409,10 @@ export function QuestionCard({
             <button
               type="button"
               className="q-action-btn q-action-btn--edit"
-              onClick={() => onEdit(question)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(question);
+              }}
               title="Edit question text, formulas, sub-questions, and mark scheme"
             >
               ✏️ Edit
@@ -417,7 +423,10 @@ export function QuestionCard({
             <button
               type="button"
               className="q-action-btn q-action-btn--variant"
-              onClick={() => onGenerateVariant(question)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onGenerateVariant(question);
+              }}
               title="Generate AI-powered twin question or scaffolding/extension variant"
             >
               ✨ Similar
@@ -428,7 +437,10 @@ export function QuestionCard({
             <button
               type="button"
               className="q-action-btn q-action-btn--delete"
-              onClick={() => onDelete(question)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(question);
+              }}
               title="Delete this question from question bank"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

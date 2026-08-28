@@ -482,12 +482,21 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
   const candidates: string[] = [];
   if (subIndex !== undefined && question.sub_questions?.[subIndex]) {
     const sq = question.sub_questions[subIndex];
-    if (sq.mark_scheme) candidates.push(sq.mark_scheme);
+    if (sq.mark_scheme) {
+      if (typeof sq.mark_scheme === 'string') {
+        candidates.push(sq.mark_scheme);
+      } else if (typeof (sq as any).mark_scheme === 'object') {
+        const obj: any = sq.mark_scheme;
+        if (Array.isArray(obj.acceptable_answers)) candidates.push(...obj.acceptable_answers);
+        if (Array.isArray(obj.marking_points)) candidates.push(...obj.marking_points);
+      }
+    }
   }
   if (question.mark_scheme) {
     if (typeof question.mark_scheme === 'string') {
       candidates.push(question.mark_scheme);
     } else {
+      // Prioritize acceptable_answers first (e.g. ["C"], ["B"])
       if (question.mark_scheme.acceptable_answers) {
         candidates.push(...question.mark_scheme.acceptable_answers);
       }
@@ -502,8 +511,8 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
     if (!cand) continue;
     const clean = String(cand).trim();
 
-    // Match patterns like "C", "C [1]", "[C]", "(C)", "Option C", "C 1", "C\n1"
-    const match = clean.match(/(?:^|[\s\[\(]|Option\s*)([A-D])(?:[\s\]\)]*\[\d+\]|[\s\]\)\.]|$)/i);
+    // Match patterns like "C", "C [1]", "[C]", "(C)", "Option C", "Option C: ...", "Answer: C", "Ans: C", "C. ...", "C - ..."
+    const match = clean.match(/(?:^|[\s\[\(]|Option\s*|Answer\s*[:\s]*|Ans\s*[:\s]*)([A-D])(?:[\s\]\)\.:,-]*\[\d+\]|[\s\]\)\.:,-]|$)/i);
     if (match && match[1]) {
       const letter = match[1].toUpperCase();
       const idx = letter.charCodeAt(0) - 65;
@@ -523,6 +532,14 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
           return oIdx;
         }
       }
+    }
+  }
+
+  // 5. Check if any option itself indicates correctness (e.g. contains "[x]" or "*")
+  for (let oIdx = 0; oIdx < options.length; oIdx++) {
+    const opt = options[oIdx].trim();
+    if (opt.startsWith('*') || opt.startsWith('[x]') || opt.startsWith('[X]') || /\(correct\)/i.test(opt)) {
+      return oIdx;
     }
   }
 

@@ -46,6 +46,27 @@ export function TestHeaderEditor({
 
       {isExpanded && (
         <div className="header-editor-form animate-fade-in">
+          {/* Header Layout Style Selector */}
+          <div className="header-template-selector">
+            <span className="header-template-label">Cover Page Style:</span>
+            <div className="header-template-options">
+              <button
+                type="button"
+                className={`header-template-btn ${(!config.layoutTemplate || config.layoutTemplate === 'cambridge') ? 'header-template-btn--active' : ''}`}
+                onClick={() => handleFieldChange('layoutTemplate', 'cambridge')}
+              >
+                🎓 Cambridge IGCSE Style
+              </button>
+              <button
+                type="button"
+                className={`header-template-btn ${config.layoutTemplate === 'standard' ? 'header-template-btn--active' : ''}`}
+                onClick={() => handleFieldChange('layoutTemplate', 'standard')}
+              >
+                🏫 Standard School Exam Style
+              </button>
+            </div>
+          </div>
+
           <div className="header-grid-2">
             {/* Exam Title */}
             <div className="header-field">
