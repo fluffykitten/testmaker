@@ -1,10 +1,7 @@
 name: Build Android APK
 
 on:
-  workflow_dispatch: # Allows manual one-click trigger from the GitHub website
-  push:
-    branches:
-      - main
+  workflow_dispatch: # Allows manual one-click trigger from the GitHub Actions tab
 
 jobs:
   build:
