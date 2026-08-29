@@ -401,11 +401,13 @@ export function OfflineGradingModal({
   };
 
   // ─── 6. Save Offline Exam to Central Gradebook ──────────────────────────────
-  const handleSaveToGradebook = () => {
+  const handleSaveToGradebook = async () => {
     if (gradedSubmissions.length === 0) return;
+    setIsProcessing(true);
+    setProcessingMessage('Saving exam to gradebook and syncing candidate submissions to cloud…');
 
     try {
-      const { publishedQuiz } = saveOfflineExamToGradebook(
+      const { publishedQuiz } = await saveOfflineExamToGradebook(
         headerConfig.title || 'Offline Exam Assessment',
         headerConfig.subject || 'Chemistry',
         questions,
@@ -415,6 +417,9 @@ export function OfflineGradingModal({
       setCurrentStep('success');
     } catch (err: any) {
       alert(`Failed to save exam to gradebook: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setIsProcessing(false);
+      setProcessingMessage('');
     }
   };
 

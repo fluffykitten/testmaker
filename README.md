@@ -10,11 +10,36 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 
 ### 🧠 1. Multimodal AI Extraction & Fault-Tolerant Parsing
 - **Gemini Multimodal AI**: Automatically parses past paper PDFs and mark schemes into structured question stems, sub-questions ((a)(i), (b)), MCQ options, topics, difficulty ratings, and official marking criteria.
+- **IELTS & Cambridge Cloze / Gap-Fill Parsing**: Automatically converts dotted/underlined blanks in listening forms, sentence completion, and notes completion into structured `[1]`, `[2]` inline gap tokens with per-blank mark scheme criteria.
 - **High-Resolution Diagram Cropper**: Automatic canvas-based diagram detection with interactive bounding-box cropping, multi-pass boundary expansion, and WebP compression.
 - **Robust JSON Repair Engine**: Multi-pass repair and balanced-brace fallback algorithms that smoothly recover questions even during network anomalies or long token generations.
 - **LaTeX Math & Chemistry Normalization**: Automatic formatting and KaTeX rendering for nuclide/isotope symbols (`^{40}_{20}\text{Ca}`), chemical ions/formulas (`Ca^{2+}`, `SO_4^{2-}`), escaped percentages, temperatures (`°C`), and reaction arrows.
 
-### 🏛️ 2. Publication-Quality Cambridge & School Exam Export
+### 🎧 2. IELTS & Cambridge Audio Listening Suite
+- **Persistent Top Listening Bar**:
+  - Persistent audio player positioned below the exam navigation bar that stays active and plays uninterrupted across related question ranges.
+  - **🔒 Strict Exam Security**: In Formal Exam Mode, rewind, fast-forward, and seeking are completely disabled with a real-time read-only progress meter. Speed is locked strictly at $1.0\times$ and transcript access is gated.
+  - **⏱️ Play Limit Enforcement**: Supports 1 Play (Strict Exam), 2 Plays (Cambridge standard), 3 Plays, or Unlimited Practice with real-time remaining play counters.
+- **Multi-Section Audio Timeline & Mapping Manager**:
+  - Visual segmented coverage meter showing all questions with color-coded listening sections.
+  - **`🪄 4 IELTS Sections` Auto-Divider**: Instantly partitions assessments into 4 equal quarters (e.g. Q1–10, Q11–20, Q21–30, Q31–40).
+  - Configure multiple audio tracks simultaneously with customizable start/end question ranges.
+- **Central Audio Library & Gallery**:
+  - Cloud-stored audio repository for reusing listening tracks across quizzes with automatic canonical key deduplication.
+  - Supports browser file uploads (compressed via Opus audio), direct microphone voice recording, and AI Text-to-Speech (TTS).
+
+### ✍️ 3. IELTS-Style Inline Gap Fill (Cloze & Form Completion)
+- **In-Place Interactive Inputs**:
+  - Gaps defined in question stems or sub-questions (e.g. `Customer Name: [1]`, `Address: 42 [2] Avenue`) are rendered as focused input fields embedded directly in the flow of the sentence, form, or table.
+  - **Keyboard Navigation**: Pressing `Tab` or `Enter` seamlessly cycles to the next numbered blank.
+- **Deterministic Multi-Gap Grading Engine**:
+  - Evaluates each gap individually against mark scheme alternative keys (e.g. `[1] John Smith / J. Smith`).
+  - Casing-tolerant, whitespace-normalized, punctuation-stripped, and handles numeric vs number word equivalence (`15` $\leftrightarrow$ `fifteen`).
+  - Proportional mark scoring accurately awards partial credit per correct blank.
+- **Solutions & Review Feedback**:
+  - Renders student responses inline with green checkmarks and expected answer hints during solution review and PDF diagnostic exports.
+
+### 🏛️ 4. Publication-Quality Cambridge & School Exam Export
 - **Authentic Cambridge IGCSE Cover Pages**:
   - Dual Header Logos (School Crest on top left, Cambridge Assessment on top right).
   - Dynamic instructions adapting for Paper 1/2 (Multiple Choice) vs. Paper 3/4 (Theory & Structured).
@@ -31,7 +56,7 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
   - **Camera-Ready PDF**: Printable student test papers, mark schemes, and MCQ bubble answer sheets with ~8mm handwriting lines.
   - **Standalone Offline HTML Quizzes**: Completely self-contained interactive quizzes that run in any web browser without an internet connection or server.
 
-### 🎮 3. Interactive Student Assessment & Gamified Arenas
+### 🎮 5. Interactive Student Assessment & Gamified Arenas
 - **Dual Assessment Modes**:
   - **🚀 Quizizz-Inspired Gamified Sprint Arena**: Synthesized Web Audio engine (`gameSoundEngine.ts`) with custom chords, thuds, streak fanfares, countdown ticks, and finish jingles. Features streak multipliers, speed bonuses, and interactive celebration confetti.
   - **🛡️ Formal Proctored Exam Mode**: Fullscreen exam lockdown with automatic re-entry, tab-switch and blur detection, proctor strike logging, 5-minute and 1-minute audio-visual time alerts, and invigilator PIN unlock gates.
@@ -40,7 +65,7 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 - **In-App Student Tooling**:
   - Integrated Cambridge Periodic Table drawer, on-screen Scientific Calculator (trig, roots, powers, parentheses), and Resource Booklet drawers.
 
-### 📝 4. Offline Exam Grading & Batch Excel Workflow
+### 📝 6. Offline Exam Grading & Batch Excel Workflow
 - **Custom Excel Mark-Entry Templates**:
   - Generates bespoke multi-sheet Excel templates matching the exact questions, sub-questions, and official mark schemes of any assembled exam.
 - **Deterministic Auto-Grading & Header Mapping**:
@@ -49,7 +74,7 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 - **Central Gradebook Integration**:
   - Saves offline scored exam results directly into the assessment hub for permanent record-keeping, item analysis, and report generation.
 
-### 📊 5. 3-Tier Diagnostic Reports & Personalized Feedback
+### 📊 7. 3-Tier Diagnostic Reports & Personalized Feedback
 - **🎓 1-Page Student Performance & Improvement Report**:
   - Compact, single A4 page printable report designed to give directly to students.
   - Displays total score, percentage, question-by-question candidate response vs official mark scheme, and topic mastery bars.
@@ -71,9 +96,9 @@ Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 - **Frontend**: React 19, TypeScript, Vite, Vanilla CSS Design System
 - **Math & Chemistry**: KaTeX, Custom Formula & Chemical Ion Parser
 - **PDF Engine**: PDF.js with high-resolution offscreen canvas rendering & `pdf-lib`
-- **Audio Engine**: Web Audio API Synthesizer (`gameSoundEngine.ts`)
+- **Audio Engine**: Web Audio API Synthesizer (`gameSoundEngine.ts`), Opus WebP Audio Compression
 - **AI Backend**: Google Gemini Multimodal APIs (Flash & Pro with dynamic discovery)
-- **Database & Storage**: Supabase (PostgreSQL + Supabase Storage for diagrams)
+- **Database & Storage**: Supabase (PostgreSQL + Supabase Storage for diagrams and audio)
 - **Export Engines**: `docx` (Word), `pdf-lib` / HTML5 Print Engine (PDF), `xlsx` (Excel)
 
 ---

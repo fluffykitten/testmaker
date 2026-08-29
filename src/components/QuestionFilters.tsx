@@ -59,6 +59,14 @@ export function QuestionFilters({
     });
   };
 
+  const handleToggleAudioFilter = () => {
+    onFilterChange({
+      ...filters,
+      hasAudio: !filters.hasAudio ? true : undefined,
+      page: 1,
+    });
+  };
+
   const handleCustomTagChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     onFilterChange({
@@ -148,8 +156,8 @@ export function QuestionFilters({
 
   return (
     <aside className="filters-sidebar">
-      {/* Quick Bookmark Toggle Pill */}
-      <div className="filter-group">
+      {/* Quick Filter Buttons */}
+      <div className="filter-group" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <button
           type="button"
           className={`filter-bookmark-pill ${filters.bookmarkedOnly ? 'active' : ''}`}
@@ -157,6 +165,15 @@ export function QuestionFilters({
         >
           <span>⭐ Bookmarked Questions</span>
           <span className="bookmark-count-badge">{bookmarkCount}</span>
+        </button>
+
+        <button
+          type="button"
+          className={`filter-bookmark-pill ${filters.hasAudio ? 'active' : ''}`}
+          style={filters.hasAudio ? { background: 'rgba(99, 102, 241, 0.2)', borderColor: '#6366f1', color: '#c7d2fe' } : undefined}
+          onClick={handleToggleAudioFilter}
+        >
+          <span>🎧 Listening Audio Questions</span>
         </button>
       </div>
 

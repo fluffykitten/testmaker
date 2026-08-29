@@ -6,6 +6,22 @@ import { ExamMathText } from './ExamMathText';
 import { updateQuestion, createQuestion, fetchSyllabuses } from '../services/questionBankService';
 import { DiagramCropModal } from './DiagramCropModal';
 import { uploadSingleDiagramBlob } from '../lib/diagramCropper';
+import {
+  compressAudioInBrowser,
+  uploadAudioToCloud,
+  startVoiceRecording,
+  getAvailableTtsVoices,
+  speakTtsPreview,
+  stopTtsSpeech,
+  formatBytes,
+  formatAudioDuration,
+  fetchAudioLibraryTracks,
+  type VoiceRecorderController,
+  type TtsVoiceOption,
+  type AudioLibraryItem,
+} from '../services/audioService';
+import { ExamAudioPlayer } from './ExamAudioPlayer';
+import { InlineGapText, hasInlineGaps } from './InlineGapText';
 import './QuestionEditorModal.css';
 
 interface QuestionEditorModalProps {
@@ -16,7 +32,7 @@ interface QuestionEditorModalProps {
   onSave: (saved: Question) => void;
 }
 
-type EditorTab = 'stem' | 'subquestions' | 'markscheme' | 'meta';
+type EditorTab = 'stem' | 'subquestions' | 'audio' | 'markscheme' | 'meta';
 
 const MATH_TOOLBAR_ITEMS = [
   { label: 'Fraction', insert: '\\frac{numerator}{denominator}', title: 'Fraction: \\frac{a}{b}' },
@@ -33,6 +49,7 @@ const MATH_TOOLBAR_ITEMS = [
   { label: 'dm³', insert: '\\text{ dm}^3', title: 'Cubic decimeters: \\text{ dm}^3' },
   { label: 'cm³', insert: '\\text{ cm}^3', title: 'Cubic centimeters: \\text{ cm}^3' },
   { label: 'Δ (Delta)', insert: '\\Delta ', title: 'Delta: \\Delta' },
+  { label: '✍️ Gap [1]', insert: ' [1] ', title: 'Insert Inline Blank Gap [1]' },
   { label: '📊 Table', insert: '\n\n| Item | Value | Unit |\n|---|---|---|\n| Substance A | 25.0 | $g$ |\n| Substance B | 100 | $cm^3$ |\n\n', title: 'Insert Markdown Table' },
 ];
 
@@ -92,8 +109,67 @@ export function QuestionEditorModal({
   const [cropSourceFile, setCropSourceFile] = useState<File | null>(null);
   const [cropSourceImage, setCropSourceImage] = useState<string | null>(null);
 
+  // Audio State & In-Browser Compression
+  const [audioUrl, setAudioUrl] = useState('');
+  const [audioTitle, setAudioTitle] = useState('');
+  const [audioTranscript, setAudioTranscript] = useState('');
+  const [audioPlayLimit, setAudioPlayLimit] = useState<number | null>(2);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioOriginalSize, setAudioOriginalSize] = useState<number | undefined>(undefined);
+  const [audioCompressedSize, setAudioCompressedSize] = useState<number | undefined>(undefined);
+  const [compressionRatioPercent, setCompressionRatioPercent] = useState<number | null>(null);
+  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const [audioProcessingStatus, setAudioProcessingStatus] = useState<string>('');
+
+  // Audio Recording State
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const recordingTimerRef = useRef<any>(null);
+  const recorderControllerRef = useRef<VoiceRecorderController | null>(null);
+
+  // TTS State
+  const [ttsText, setTtsText] = useState('');
+  const [selectedTtsVoice, setSelectedTtsVoice] = useState('');
+  const [availableTtsVoices, setAvailableTtsVoices] = useState<TtsVoiceOption[]>([]);
+  const [isTtsSpeaking, setIsTtsSpeaking] = useState(false);
+  const [ttsRate, setTtsRate] = useState(0.95);
+
+  // Audio Library State
+  const [audioCreatorTab, setAudioCreatorTab] = useState<'library' | 'upload' | 'record' | 'tts'>('library');
+  const [audioLibraryTracks, setAudioLibraryTracks] = useState<AudioLibraryItem[]>([]);
+  const [audioLibrarySearch, setAudioLibrarySearch] = useState<string>('');
+  const [isLoadingAudioLibrary, setIsLoadingAudioLibrary] = useState<boolean>(false);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
+  const backdropDismiss = useBackdropDismiss(onClose);
+
+  // Load available TTS voices on mount
+  useEffect(() => {
+    getAvailableTtsVoices().then((voices) => {
+      setAvailableTtsVoices(voices);
+      if (voices.length > 0 && !selectedTtsVoice) {
+        const engVoice = voices.find((v) => v.isEnglish) || voices[0];
+        setSelectedTtsVoice(engVoice.name);
+      }
+    });
+  }, [selectedTtsVoice]);
+
+  // Load Audio Library Tracks when modal opens or audio tab is active
+  useEffect(() => {
+    if (isOpen && activeTab === 'audio') {
+      setIsLoadingAudioLibrary(true);
+      fetchAudioLibraryTracks()
+        .then((tracks) => {
+          setAudioLibraryTracks(tracks);
+          if (tracks.length === 0 && !audioUrl) {
+            setAudioCreatorTab('upload');
+          }
+        })
+        .finally(() => setIsLoadingAudioLibrary(false));
+    }
+  }, [isOpen, activeTab, audioUrl]);
 
   // Initialize form whenever question changes or modal opens
   useEffect(() => {
@@ -196,6 +272,24 @@ export function QuestionEditorModal({
       setAcceptableAnswers(rawAnswers.map((a: any) => typeof a === 'string' ? a : String(a || '')));
       setGuidanceList(rawGuidance.map((g: any) => typeof g === 'string' ? g : String(g || '')));
       setMisconceptionsList(rawMisconceptions.map((m: any) => typeof m === 'string' ? m : String(m || '')));
+
+      // Audio initialization
+      setAudioUrl(question.audio_url || '');
+      setAudioTitle(question.audio_metadata?.title || '');
+      setAudioTranscript(question.audio_metadata?.transcript || '');
+      setAudioPlayLimit(question.audio_metadata?.play_limit !== undefined ? question.audio_metadata.play_limit : 2);
+      setAudioDuration(question.audio_metadata?.duration || 0);
+      setAudioOriginalSize(question.audio_metadata?.original_size);
+      setAudioCompressedSize(question.audio_metadata?.compressed_size);
+      if (question.audio_metadata?.original_size && question.audio_metadata?.compressed_size) {
+        const ratio = Math.round(((question.audio_metadata.original_size - question.audio_metadata.compressed_size) / question.audio_metadata.original_size) * 100);
+        setCompressionRatioPercent(ratio);
+      } else {
+        setCompressionRatioPercent(null);
+      }
+      if (question.audio_metadata?.transcript) {
+        setTtsText(question.audio_metadata.transcript);
+      }
     } else {
       // Default blank question
       const safeSyllabuses = Array.isArray(syllabuses) ? syllabuses : [];
@@ -206,29 +300,38 @@ export function QuestionEditorModal({
       setYear(new Date().getFullYear());
       setSeries('May/June');
       setPaperNumber(41);
-      setQuestionStyle('Structured');
+      setQuestionStyle('Multiple Choice');
       setDifficulty('Medium');
-      setTotalMarks(4);
+      setTotalMarks(1);
       setDiagramUrl('');
-      setQuestionText('A student investigates the reaction between dilute hydrochloric acid and calcium carbonate.');
-      setOptions([]);
-      setSubQuestions([
-        {
-          sub_id: '(a)',
-          question_text: 'State the chemical formula of calcium carbonate.',
-          marks: 1,
-          mark_scheme: '$CaCO_3$ [1]',
-          guidance: 'Award 1 mark for correct formula. Allow lower case if unambiguous.',
-          common_misconceptions: ['Writing $Ca(CO_3)_2$ or omitting subscript.'],
-        },
-      ]);
-      setMarkingPoints(['See sub-question breakdown [4]']);
+      setQuestionText('');
+      setOptions(['', '', '', '']);
+      setAudioUrl('');
+      setAudioTitle('');
+      setAudioTranscript('');
+      setAudioPlayLimit(2);
+      setAudioDuration(0);
+      setAudioOriginalSize(undefined);
+      setAudioCompressedSize(undefined);
+      setCompressionRatioPercent(null);
+      setSubQuestions([]);
+      setMarkingPoints(['A']);
       setAcceptableAnswers([]);
       setGuidanceList([]);
       setMisconceptionsList([]);
     }
     setErrorMessage(null);
   }, [isOpen, question, syllabuses]);
+
+  // Clean up any ongoing microphone recording or TTS speech on modal close / unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recorderControllerRef.current?.cancel();
+      recorderControllerRef.current = null;
+      stopTtsSpeech();
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -279,6 +382,22 @@ export function QuestionEditorModal({
     setSubQuestions((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const handleStyleChange = (newStyle: QuestionStyle) => {
+    setQuestionStyle(newStyle);
+    if (newStyle === 'Multiple Choice' || newStyle === 'Multiple Select') {
+      setSubQuestions([]);
+      if (options.length === 0) {
+        setOptions(['', '', '', '']);
+      }
+      if (markingPoints.length === 0 || !markingPoints[0] || markingPoints[0].includes('sub-question')) {
+        setMarkingPoints(['A']);
+      }
+    } else if (newStyle === 'Calculation' || newStyle === 'Short Answer') {
+      setSubQuestions([]);
+      setOptions([]);
+    }
+  };
+
   // Auto-calculate sub-question mark sum
   const subQuestionsTotalMarks = subQuestions.reduce((sum, s) => sum + (Number(s.marks) || 0), 0);
 
@@ -318,6 +437,127 @@ export function QuestionEditorModal({
   const handleRemoveMisconception = (idx: number) =>
     setMisconceptionsList((prev) => prev.filter((_, i) => i !== idx));
 
+  // ─── Audio Handlers ────────────────────────────────────────────────────────
+  const handleAudioFileSelected = async (file: File) => {
+    if (!file) return;
+
+    if (file.size > 50 * 1024 * 1024) {
+      setErrorMessage('Audio file size exceeds 50 MB safety ceiling. Please select a shorter audio file.');
+      return;
+    }
+
+    setIsProcessingAudio(true);
+    setErrorMessage(null);
+    setAudioProcessingStatus(`⚡ Compressing audio with Web Audio API (Mono downmix & voice optimization)...`);
+
+    try {
+      // 1. In-browser client-side compression
+      const comp = await compressAudioInBrowser(file);
+      setAudioDuration(comp.durationSeconds);
+      setAudioOriginalSize(comp.originalSize);
+      setAudioCompressedSize(comp.compressedSize);
+      const ratio = Math.round(comp.compressionRatio * 100);
+      setCompressionRatioPercent(ratio);
+
+      // 2. Direct upload to Supabase Storage
+      setAudioProcessingStatus(`☁️ Uploading compact audio (${comp.formattedCompressedSize}) to cloud storage...`);
+      const publicUrl = await uploadAudioToCloud(comp.blob, `q_${questionNumber || 'audio'}`);
+
+      if (publicUrl) {
+        setAudioUrl(publicUrl);
+        if (!audioTitle) {
+          const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+          setAudioTitle(cleanName);
+        }
+      } else {
+        // Direct local blob preview fallback if storage is offline
+        const localBlobUrl = URL.createObjectURL(comp.blob);
+        setAudioUrl(localBlobUrl);
+      }
+    } catch (err: any) {
+      setErrorMessage(`Audio compression error: ${err?.message || 'Failed to process audio'}`);
+    } finally {
+      setIsProcessingAudio(false);
+      setAudioProcessingStatus('');
+    }
+  };
+
+  const handleStartVoiceRecording = async () => {
+    try {
+      setErrorMessage(null);
+      const controller = await startVoiceRecording();
+      recorderControllerRef.current = controller;
+      setIsRecordingVoice(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err: any) {
+      setErrorMessage(`Microphone access error: ${err?.message || 'Please grant microphone permissions in your browser'}`);
+    }
+  };
+
+  const handleStopVoiceRecording = async () => {
+    if (!recorderControllerRef.current) return;
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    setIsRecordingVoice(false);
+    setIsProcessingAudio(true);
+    setAudioProcessingStatus('⚡ Processing & optimizing voice recording...');
+
+    try {
+      const rawBlob = await recorderControllerRef.current.stop();
+      const comp = await compressAudioInBrowser(rawBlob);
+      setAudioDuration(comp.durationSeconds);
+      setAudioOriginalSize(comp.originalSize);
+      setAudioCompressedSize(comp.compressedSize);
+      setCompressionRatioPercent(Math.round(comp.compressionRatio * 100));
+
+      setAudioProcessingStatus('☁️ Uploading recording to cloud storage...');
+      const publicUrl = await uploadAudioToCloud(comp.blob, `voice_${Date.now()}`);
+      if (publicUrl) {
+        setAudioUrl(publicUrl);
+        if (!audioTitle) setAudioTitle('Teacher Voice Prompt');
+      } else {
+        setAudioUrl(URL.createObjectURL(comp.blob));
+      }
+    } catch (err: any) {
+      setErrorMessage(`Voice recording error: ${err?.message || 'Failed to process recording'}`);
+    } finally {
+      setIsProcessingAudio(false);
+      setAudioProcessingStatus('');
+      recorderControllerRef.current = null;
+    }
+  };
+
+  const handleCancelVoiceRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    recorderControllerRef.current?.cancel();
+    recorderControllerRef.current = null;
+    setIsRecordingVoice(false);
+    setRecordingSeconds(0);
+  };
+
+  const handleTtsPreviewSpeak = () => {
+    if (!ttsText.trim()) return;
+    if (isTtsSpeaking) {
+      stopTtsSpeech();
+      setIsTtsSpeaking(false);
+    } else {
+      setIsTtsSpeaking(true);
+      speakTtsPreview(ttsText, selectedTtsVoice, ttsRate, 1.0, () => {
+        setIsTtsSpeaking(false);
+      });
+    }
+  };
+
+  const handleApplyTtsTranscript = () => {
+    if (ttsText.trim()) {
+      setAudioTranscript(ttsText.trim());
+      if (!audioTitle) setAudioTitle('English Listening Passage');
+    }
+  };
+
   // Save handler
   const handleSave = async () => {
     if (!questionText.trim()) {
@@ -351,6 +591,25 @@ export function QuestionEditorModal({
         ? subQuestionsTotalMarks
         : totalMarks;
 
+    const audioMetadataPayload = audioUrl.trim()
+      ? {
+          title: audioTitle.trim() || undefined,
+          transcript: audioTranscript.trim() || undefined,
+          duration: audioDuration || undefined,
+          play_limit: audioPlayLimit,
+          original_size: audioOriginalSize,
+          compressed_size: audioCompressedSize,
+        }
+      : null;
+
+    const isMcq = questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select';
+    const cleanOptions = isMcq
+      ? options.map((opt) => (typeof opt === 'string' ? opt.trim() : '')).filter(Boolean)
+      : [];
+    const finalSubQuestions = isMcq || questionStyle === 'Calculation' || questionStyle === 'Short Answer'
+      ? []
+      : subQuestions;
+
     const payload = {
       syllabus_id: syllabusId || (syllabuses[0]?.id ?? ''),
       year: Number(year) || new Date().getFullYear(),
@@ -360,13 +619,15 @@ export function QuestionEditorModal({
       parent_question_id: null,
       question_text: questionText,
       question_style: questionStyle,
-      topic: topic.trim(),
+      topic: topic.trim() || 'General',
       sub_topic: subTopic.trim() || null,
       difficulty: difficulty,
       marks: finalMarks,
       diagram_url: diagramUrl.trim() || null,
-      options: options.length > 0 ? options : null,
-      sub_questions: subQuestions,
+      audio_url: audioUrl.trim() || null,
+      audio_metadata: audioMetadataPayload,
+      options: cleanOptions.length > 0 ? cleanOptions : null,
+      sub_questions: finalSubQuestions,
       mark_scheme: markSchemePayload,
     };
 
@@ -410,8 +671,6 @@ export function QuestionEditorModal({
       setIsSaving(false);
     }
   };
-
-  const backdropDismiss = useBackdropDismiss(onClose);
 
   return createPortal(
     <div className="q-editor-backdrop animate-fade-in" {...backdropDismiss}>
@@ -459,6 +718,14 @@ export function QuestionEditorModal({
           >
             🧩 Sub-Questions & Options
             {subQuestions.length > 0 && <span className="q-editor-tab-count">{subQuestions.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={`q-editor-tab-btn ${activeTab === 'audio' ? 'q-editor-tab-btn--active' : ''}`}
+            onClick={() => setActiveTab('audio')}
+          >
+            🎧 Audio & Listening
+            {audioUrl ? <span className="q-editor-tab-count" style={{ background: '#10b981' }}>✓</span> : null}
           </button>
           <button
             type="button"
@@ -512,6 +779,23 @@ export function QuestionEditorModal({
                   <label className="q-editor-label" htmlFor="q-stem-input">
                     Question Stem Text (Supports LaTeX between <code>$...$</code> and Markdown tables):
                   </label>
+                  {/* Live Preview of Math & LaTeX / Inline Gaps */}
+                  {questionText && (
+                    <div className="q-editor-preview-card">
+                      <span className="q-editor-preview-label">
+                        {questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText)
+                          ? '✍️ Interactive Inline Gap Fill Preview:'
+                          : 'Live Formatted Preview:'}
+                      </span>
+                      <div className="q-editor-preview-body">
+                        {questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText) ? (
+                          <InlineGapText content={questionText} isReadOnly={false} />
+                        ) : (
+                          <ExamMathText content={questionText} />
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <textarea
                     id="q-stem-input"
                     ref={textareaRef}
@@ -623,14 +907,14 @@ export function QuestionEditorModal({
               <div className="q-editor-style-picker">
                 <label className="q-editor-label">Question Structure:</label>
                 <div className="q-editor-style-radios">
-                  {(['Structured', 'Multiple Choice', 'Calculation', 'Short Answer'] as QuestionStyle[]).map((style) => (
+                  {(['Structured', 'Multiple Choice', 'Multiple Select', 'Calculation', 'Short Answer', 'Fill in the Blank'] as QuestionStyle[]).map((style) => (
                     <label key={style} className={`q-style-radio ${questionStyle === style ? 'q-style-radio--active' : ''}`}>
                       <input
                         type="radio"
                         name="questionStyle"
                         value={style}
                         checked={questionStyle === style}
-                        onChange={() => setQuestionStyle(style)}
+                        onChange={() => handleStyleChange(style)}
                       />
                       <span>{style}</span>
                     </label>
@@ -638,36 +922,42 @@ export function QuestionEditorModal({
                 </div>
               </div>
 
-              {/* Multiple Choice Options Editor */}
-              {questionStyle === 'Multiple Choice' && (
+              {/* Multiple Choice / Multiple Select Options Editor */}
+              {(questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select') && (
                 <div className="q-editor-options-section">
                   <div className="q-editor-subhead-row">
-                    <h4 className="q-editor-subhead">Multiple Choice Options ({options.length})</h4>
+                    <h4 className="q-editor-subhead">Choices & Options ({options.length})</h4>
                     <button type="button" className="q-editor-btn-add" onClick={handleAddOption}>
                       + Add Choice
                     </button>
                   </div>
 
                   {options.length === 0 ? (
-                    <p className="q-editor-empty-hint">No MCQ choices added yet. Click "+ Add Choice" above.</p>
+                    <div className="q-editor-empty-card">
+                      <p>No options added yet.</p>
+                      <button type="button" className="q-editor-btn-secondary" onClick={handleAddOption}>
+                        + Add First Option (A)
+                      </button>
+                    </div>
                   ) : (
                     <div className="q-editor-options-list">
-                      {options.map((opt, oi) => (
-                        <div key={oi} className="q-editor-option-row">
+                      {options.map((opt, idx) => (
+                        <div key={idx} className="q-editor-option-row">
+                          <span className="q-editor-option-letter">{String.fromCharCode(65 + idx)}</span>
                           <input
                             type="text"
                             className="q-editor-input"
                             value={opt}
-                            onChange={(e) => handleUpdateOption(oi, e.target.value)}
-                            placeholder={`Option ${oi + 1} text...`}
+                            onChange={(e) => handleUpdateOption(idx, e.target.value)}
+                            placeholder={`Option ${String.fromCharCode(65 + idx)} text`}
                           />
                           <button
                             type="button"
-                            className="q-editor-delete-btn"
-                            onClick={() => handleRemoveOption(oi)}
-                            title="Remove choice"
+                            className="q-editor-btn-delete-small"
+                            onClick={() => handleRemoveOption(idx)}
+                            title="Delete this option"
                           >
-                            ✕
+                            ×
                           </button>
                         </div>
                       ))}
@@ -677,7 +967,7 @@ export function QuestionEditorModal({
               )}
 
               {/* Structured Sub-Questions Editor */}
-              {questionStyle !== 'Multiple Choice' && (
+              {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && (
                 <div className="q-editor-subs-section">
                   <div className="q-editor-subhead-row">
                     <div>
@@ -908,6 +1198,444 @@ export function QuestionEditorModal({
                       </button>
                     </div>
                   ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: Audio & Listening Comprehension */}
+          {activeTab === 'audio' && (
+            <div className="q-editor-tab-content animate-fade-in">
+              {/* Active Audio Preview */}
+              {audioUrl ? (
+                <div className="q-editor-section" style={{ background: 'rgba(99, 102, 241, 0.06)', border: '1.5px solid rgba(99, 102, 241, 0.3)', borderRadius: '14px', padding: '18px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: '1.25rem' }}>🎧</span>
+                      <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-primary)' }}>
+                        Attached Audio Track
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      className="q-editor-delete-btn"
+                      style={{ padding: '4px 10px', fontSize: '0.8125rem' }}
+                      onClick={() => {
+                        if (confirm('Remove audio track from this question?')) {
+                          setAudioUrl('');
+                          setAudioDuration(0);
+                          setAudioOriginalSize(undefined);
+                          setAudioCompressedSize(undefined);
+                          setCompressionRatioPercent(null);
+                        }
+                      }}
+                    >
+                      ✕ Remove Audio
+                    </button>
+                  </div>
+
+                  <ExamAudioPlayer
+                    audioUrl={audioUrl}
+                    metadata={{
+                      title: audioTitle || 'English Listening Audio',
+                      transcript: audioTranscript,
+                      duration: audioDuration,
+                      play_limit: audioPlayLimit,
+                    }}
+                    allowTranscript={Boolean(audioTranscript)}
+                  />
+
+                  {audioOriginalSize && audioCompressedSize && (
+                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8125rem', color: '#10b981', fontWeight: 700 }}>
+                      {compressionRatioPercent !== null && compressionRatioPercent > 0 ? (
+                        <>
+                          <span>⚡ Client-Side Optimized:</span>
+                          <span style={{ color: 'var(--color-text-secondary)', fontWeight: 500 }}>
+                            {formatBytes(audioOriginalSize)} → {formatBytes(audioCompressedSize)} ({compressionRatioPercent}% size saved, 24kHz Mono)
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span>✓ File Ready:</span>
+                          <span style={{ color: 'var(--color-text-secondary)', fontWeight: 500 }}>
+                            {formatBytes(audioOriginalSize)} (Already optimally compressed)
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {/* Audio Processing Indicator */}
+              {isProcessingAudio && (
+                <div style={{ background: 'rgba(99, 102, 241, 0.12)', border: '1.5px solid #6366f1', borderRadius: '12px', padding: '16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }} className="animate-fade-in">
+                  <div className="eap-spinner" style={{ width: 22, height: 22, border: '3px solid rgba(99, 102, 241, 0.3)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--color-text-primary)' }}>Processing Audio...</div>
+                    <div style={{ fontSize: '0.8125rem', color: '#a5b4fc' }}>{audioProcessingStatus}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-Tabs for Audio Source */}
+              <div style={{ display: 'flex', gap: 8, margin: '16px 0 12px', borderBottom: '1px solid var(--color-border)', paddingBottom: 10, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`q-editor-btn-secondary ${audioCreatorTab === 'library' ? 'q-editor-btn-primary' : ''}`}
+                  style={{ padding: '6px 14px', fontSize: '0.8125rem' }}
+                  onClick={() => setAudioCreatorTab('library')}
+                >
+                  📚 Audio Library ({audioLibraryTracks.length})
+                </button>
+                <button
+                  type="button"
+                  className={`q-editor-btn-secondary ${audioCreatorTab === 'upload' ? 'q-editor-btn-primary' : ''}`}
+                  style={{ padding: '6px 14px', fontSize: '0.8125rem' }}
+                  onClick={() => setAudioCreatorTab('upload')}
+                >
+                  📁 Upload New File
+                </button>
+                <button
+                  type="button"
+                  className={`q-editor-btn-secondary ${audioCreatorTab === 'record' ? 'q-editor-btn-primary' : ''}`}
+                  style={{ padding: '6px 14px', fontSize: '0.8125rem' }}
+                  onClick={() => setAudioCreatorTab('record')}
+                >
+                  🎙️ Record Voice
+                </button>
+                <button
+                  type="button"
+                  className={`q-editor-btn-secondary ${audioCreatorTab === 'tts' ? 'q-editor-btn-primary' : ''}`}
+                  style={{ padding: '6px 14px', fontSize: '0.8125rem' }}
+                  onClick={() => setAudioCreatorTab('tts')}
+                >
+                  🗣️ Text-to-Speech (TTS)
+                </button>
+              </div>
+
+              {/* TAB A: Audio Library Browser */}
+              {audioCreatorTab === 'library' && (
+                <div className="q-editor-section animate-fade-in" style={{ background: 'var(--color-surface-sunken)', padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: '1.25rem' }}>📚</span>
+                      <h4 style={{ margin: 0, fontSize: '0.9375rem', fontWeight: 700 }}>Choose from Uploaded Audio Library</h4>
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                      Re-use existing audio tracks across questions
+                    </span>
+                  </div>
+
+                  <input
+                    type="text"
+                    className="q-editor-input"
+                    style={{ width: '100%', marginBottom: 12 }}
+                    placeholder="🔍 Search tracks by title, topic, or keywords..."
+                    value={audioLibrarySearch}
+                    onChange={(e) => setAudioLibrarySearch(e.target.value)}
+                  />
+
+                  {isLoadingAudioLibrary ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>
+                      <div className="eap-spinner" style={{ width: 20, height: 20, margin: '0 auto 8px', border: '2px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                      <span>Loading library tracks...</span>
+                    </div>
+                  ) : audioLibraryTracks.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>
+                      <p style={{ margin: '0 0 10px' }}>No uploaded audio tracks found in library yet.</p>
+                      <button
+                        type="button"
+                        className="q-editor-btn-secondary"
+                        style={{ padding: '6px 14px' }}
+                        onClick={() => setAudioCreatorTab('upload')}
+                      >
+                        📁 Upload First Audio Track
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '240px', overflowY: 'auto' }}>
+                      {audioLibraryTracks
+                        .filter((tr) => {
+                          if (!audioLibrarySearch.trim()) return true;
+                          const q = audioLibrarySearch.toLowerCase();
+                          return tr.title.toLowerCase().includes(q) || (tr.transcript && tr.transcript.toLowerCase().includes(q));
+                        })
+                        .map((tr, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 12,
+                              padding: '10px 14px',
+                              background: audioUrl === tr.url ? 'rgba(99, 102, 241, 0.12)' : 'var(--color-surface)',
+                              border: audioUrl === tr.url ? '1.5px solid var(--color-primary-500)' : '1px solid var(--color-border)',
+                              borderRadius: '8px',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s',
+                            }}
+                            onClick={() => {
+                              setAudioUrl(tr.url);
+                              setAudioTitle(tr.title);
+                              if (tr.duration) setAudioDuration(tr.duration);
+                              if (tr.play_limit !== undefined) setAudioPlayLimit(tr.play_limit);
+                              if (tr.transcript) setAudioTranscript(tr.transcript);
+                            }}
+                          >
+                            <span style={{ fontSize: '1.25rem' }}>🎧</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--color-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {tr.title}
+                              </div>
+                              <div style={{ display: 'flex', gap: 8, fontSize: '0.75rem', color: 'var(--color-text-secondary)', marginTop: 2 }}>
+                                {tr.duration ? <span>⏱️ {formatAudioDuration(tr.duration)}</span> : null}
+                                {tr.source === 'cloud_storage' ? (
+                                  <span style={{ color: '#a78bfa' }}>☁️ Cloud Storage</span>
+                                ) : (
+                                  <span style={{ color: '#34d399' }}>📚 Question Bank ({tr.usageCount || 1} Qs)</span>
+                                )}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className={audioUrl === tr.url ? 'q-editor-btn-primary' : 'q-editor-btn-secondary'}
+                              style={{ padding: '4px 12px', fontSize: '0.75rem' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAudioUrl(tr.url);
+                                setAudioTitle(tr.title);
+                                if (tr.duration) setAudioDuration(tr.duration);
+                                if (tr.play_limit !== undefined) setAudioPlayLimit(tr.play_limit);
+                                if (tr.transcript) setAudioTranscript(tr.transcript);
+                              }}
+                            >
+                              {audioUrl === tr.url ? '✓ Selected' : 'Select'}
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB B: File Upload */}
+              {audioCreatorTab === 'upload' && (
+                <div className="q-editor-section animate-fade-in" style={{ background: 'var(--color-surface-sunken)', padding: '18px', borderRadius: '12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <span style={{ fontSize: '1.25rem' }}>📁</span>
+                    <h4 style={{ margin: 0, fontSize: '0.9375rem', fontWeight: 700 }}>Upload New Audio File</h4>
+                  </div>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                    Upload any voice/dialogue recording (.mp3, .wav, .m4a, .ogg, .webm). Auto-compressed in-browser to save 80-95% space and saved to library!
+                  </p>
+
+                  <input
+                    type="file"
+                    ref={audioFileInputRef}
+                    accept="audio/*,.mp3,.wav,.m4a,.ogg,.webm,.aac"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleAudioFileSelected(file);
+                      e.target.value = '';
+                    }}
+                  />
+
+                  <button
+                    type="button"
+                    className="q-editor-btn-secondary"
+                    style={{ width: '100%', padding: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontWeight: 700 }}
+                    onClick={() => audioFileInputRef.current?.click()}
+                    disabled={isProcessingAudio}
+                  >
+                    <span>⬆ Choose Audio File to Upload</span>
+                  </button>
+                </div>
+              )}
+
+              {/* TAB C: Microphone Voice Recorder */}
+              {audioCreatorTab === 'record' && (
+                <div className="q-editor-section animate-fade-in" style={{ background: 'var(--color-surface-sunken)', padding: '18px', borderRadius: '12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <span style={{ fontSize: '1.25rem' }}>🎙️</span>
+                    <h4 style={{ margin: 0, fontSize: '0.9375rem', fontWeight: 700 }}>Record Voice with Microphone</h4>
+                  </div>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                    Record voice instructions or dialogue directly in TestMaker.
+                  </p>
+
+                  {isRecordingVoice ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', padding: '8px 14px', borderRadius: '8px', color: '#fca5a5', fontWeight: 700 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1s infinite' }} />
+                        <span>Recording: {formatAudioDuration(recordingSeconds)}</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          type="button"
+                          className="q-editor-btn-primary"
+                          style={{ flex: 1, background: '#059669', padding: '8px 14px' }}
+                          onClick={handleStopVoiceRecording}
+                        >
+                          ✓ Stop & Attach Audio
+                        </button>
+                        <button
+                          type="button"
+                          className="q-editor-delete-btn"
+                          style={{ padding: '8px 14px' }}
+                          onClick={handleCancelVoiceRecording}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="q-editor-btn-secondary"
+                      style={{ width: '100%', padding: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontWeight: 700 }}
+                      onClick={handleStartVoiceRecording}
+                      disabled={isProcessingAudio}
+                    >
+                      <span>🔴 Start Microphone Recording</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* TAB D: Text-to-Speech (TTS) Studio */}
+              {audioCreatorTab === 'tts' && (
+                <div className="q-editor-section animate-fade-in" style={{ background: 'var(--color-surface-sunken)', padding: '18px', borderRadius: '12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: '1.25rem' }}>🗣️</span>
+                    <h4 style={{ margin: 0, fontSize: '0.9375rem', fontWeight: 700 }}>AI Text-to-Speech (TTS) Studio</h4>
+                  </div>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', margin: '0 0 14px' }}>
+                    Paste English dialogue text and test live speech playback with different accents (British UK, American US, Australian, etc.).
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <textarea
+                      className="q-editor-textarea"
+                      rows={3}
+                      placeholder="Enter English listening dialogue or passage script to read aloud..."
+                      value={ttsText}
+                      onChange={(e) => setTtsText(e.target.value)}
+                    />
+
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>
+                          Voice Accent:
+                        </label>
+                        <select
+                          className="q-editor-select"
+                          value={selectedTtsVoice}
+                          onChange={(e) => setSelectedTtsVoice(e.target.value)}
+                        >
+                          {availableTtsVoices.map((v) => (
+                            <option key={v.name} value={v.name}>
+                              {v.displayName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div style={{ width: 140 }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>
+                          Speed: {ttsRate}x
+                        </label>
+                        <input
+                          type="range"
+                          min={0.75}
+                          max={1.25}
+                          step={0.05}
+                          value={ttsRate}
+                          onChange={(e) => setTtsRate(Number(e.target.value))}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 8, alignSelf: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="q-editor-btn-secondary"
+                          style={{ padding: '8px 14px', fontWeight: 700 }}
+                          onClick={handleTtsPreviewSpeak}
+                          disabled={!ttsText.trim()}
+                        >
+                          {isTtsSpeaking ? '⏹ Stop Speech' : '▶ Test Listen Voice'}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="q-editor-btn-secondary"
+                          style={{ padding: '8px 14px', fontWeight: 700 }}
+                          onClick={handleApplyTtsTranscript}
+                          disabled={!ttsText.trim()}
+                          title="Copy script to audio transcript"
+                        >
+                          📝 Copy to Transcript
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Exam & Audio Settings */}
+              <div className="q-editor-section" style={{ background: 'var(--color-surface-sunken)', padding: '18px', borderRadius: '12px', border: '1px solid var(--color-border)', marginTop: 16 }}>
+                <h4 style={{ margin: '0 0 14px', fontSize: '0.9375rem', fontWeight: 700 }}>⚙️ Listening Exam Configuration</h4>
+
+                <div className="q-editor-grid-2" style={{ gap: 14 }}>
+                  <div className="q-editor-field">
+                    <label className="q-editor-label" htmlFor="q-audio-title-input">
+                      Audio Track Title / Description:
+                    </label>
+                    <input
+                      type="text"
+                      id="q-audio-title-input"
+                      className="q-editor-input"
+                      placeholder="e.g. Track 1: Conversation at the Airport"
+                      value={audioTitle}
+                      onChange={(e) => setAudioTitle(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="q-editor-field">
+                    <label className="q-editor-label" htmlFor="q-audio-limit-select">
+                      Exam Play Limit (Plays Allowed):
+                    </label>
+                    <select
+                      id="q-audio-limit-select"
+                      className="q-editor-select"
+                      value={audioPlayLimit === null ? 'unlimited' : String(audioPlayLimit)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setAudioPlayLimit(val === 'unlimited' ? null : Number(val));
+                      }}
+                    >
+                      <option value="2">2 Times (Cambridge IGCSE / IELTS Listening Standard)</option>
+                      <option value="1">1 Time (Strict Examination Standard)</option>
+                      <option value="3">3 Times</option>
+                      <option value="unlimited">Unlimited (Practice / Study Mode)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="q-editor-field" style={{ marginTop: 14 }}>
+                  <label className="q-editor-label" htmlFor="q-audio-transcript-input">
+                    Full Audio Transcript (For Teachers & Mark Schemes):
+                  </label>
+                  <textarea
+                    id="q-audio-transcript-input"
+                    className="q-editor-textarea"
+                    rows={4}
+                    placeholder="Enter complete text transcript of the recording (optional)..."
+                    value={audioTranscript}
+                    onChange={(e) => setAudioTranscript(e.target.value)}
+                  />
                 </div>
               </div>
             </div>

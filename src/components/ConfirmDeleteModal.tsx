@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import './ConfirmDeleteModal.css';
 
@@ -24,7 +25,7 @@ export function ConfirmDeleteModal({
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="confirm-overlay" {...backdropDismiss}>
       <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
         <div className="confirm-icon-wrap">
@@ -58,6 +59,7 @@ export function ConfirmDeleteModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,0 +1,157 @@
+/* ─── Inline Gap Fill Component Styles (Light Theme) ────────────────────────── */
+
+.sq-inline-gap-container {
+  display: inline;
+  line-height: 2.2;
+  font-size: inherit;
+  color: inherit;
+  word-break: break-word;
+}
+
+/* Interactive Input Pill Container */
+.sq-gap-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 4px;
+  vertical-align: middle;
+  position: relative;
+}
+
+/* Gap Number Badge */
+.sq-gap-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0284c7;
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 0.725rem;
+  padding: 2px 7px;
+  border-radius: 6px 0 0 6px;
+  height: 32px;
+  box-sizing: border-box;
+  user-select: none;
+  border: 1.5px solid #0284c7;
+  border-right: none;
+  flex-shrink: 0;
+  letter-spacing: -0.02em;
+}
+
+/* Interactive In-place Text Input */
+.sq-gap-input {
+  background: #ffffff;
+  border: 1.5px solid #cbd5e1;
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  padding: 4px 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #0f172a;
+  height: 32px;
+  min-width: 110px;
+  max-width: 220px;
+  width: 140px;
+  box-sizing: border-box;
+  outline: none;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.sq-gap-input::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
+  font-size: 0.8125rem;
+}
+
+.sq-gap-input:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+  background: #ffffff;
+  width: 170px;
+}
+
+.sq-gap-input:hover:not(:focus) {
+  border-color: #94a3b8;
+}
+
+/* ─── Review & Graded Mode State ─────────────────────────────────────────── */
+.sq-gap-review-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px;
+  padding: 3px 10px 3px 4px;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 700;
+  vertical-align: middle;
+  border: 1.5px solid #e2e8f0;
+  background: #f8fafc;
+  line-height: 1.4;
+}
+
+.sq-gap-num-tag {
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.sq-gap-val-text {
+  color: #0f172a;
+}
+
+.sq-gap-status-icon {
+  font-weight: 900;
+  font-size: 0.875rem;
+}
+
+/* Correct Pill */
+.sq-gap-review-pill--correct {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.sq-gap-review-pill--correct .sq-gap-num-tag {
+  background: #16a34a;
+}
+
+.sq-gap-review-pill--correct .sq-gap-val-text {
+  color: #15803d;
+}
+
+/* Incorrect Pill */
+.sq-gap-review-pill--incorrect {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.sq-gap-review-pill--incorrect .sq-gap-num-tag {
+  background: #dc2626;
+}
+
+.sq-gap-review-pill--incorrect .sq-gap-val-text {
+  color: #b91c1c;
+  text-decoration: line-through;
+  opacity: 0.85;
+}
+
+.sq-gap-incorrect-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sq-gap-key-hint {
+  font-size: 0.75rem;
+  font-weight: 800;
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #fecaca;
+}

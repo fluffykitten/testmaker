@@ -89,13 +89,13 @@ export function SavedTestsPage({
       if (resolved && resolved.questions.length > 0) {
         setExportData({
           headerConfig: {
-            title: test.title || 'Custom Exam Assessment',
-            schoolName: '',
-            subject: test.primarySubject || 'General Assessment',
-            subjectCode: '',
-            durationMinutes: Math.round((test.total_marks || 20) * 1.25),
-            instructions: 'Answer all questions. Write your answers in the spaces provided on the question paper.',
-            additionalMaterials: 'Periodic Table / Formula Sheet (if applicable)',
+            title: test.header_config?.title || test.title || 'Custom Exam Assessment',
+            schoolName: test.header_config?.schoolName || '',
+            subject: test.header_config?.subject || test.primarySubject || 'Chemistry',
+            subjectCode: test.header_config?.subjectCode || '',
+            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
+            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers in the spaces provided on the question paper.',
+            additionalMaterials: test.header_config?.additionalMaterials || 'Periodic Table / Formula Sheet (if applicable)',
           },
           questions: resolved.questions,
         });
@@ -116,13 +116,13 @@ export function SavedTestsPage({
       if (resolved && resolved.questions.length > 0) {
         setOfflineGradingData({
           headerConfig: {
-            title: test.title || 'Offline Exam Assessment',
-            schoolName: '',
-            subject: test.primarySubject || 'General Assessment',
-            subjectCode: '',
-            durationMinutes: Math.round((test.total_marks || 20) * 1.25),
-            instructions: 'Answer all questions.',
-            additionalMaterials: '',
+            title: test.header_config?.title || test.title || 'Offline Exam Assessment',
+            schoolName: test.header_config?.schoolName || '',
+            subject: test.header_config?.subject || test.primarySubject || 'Chemistry',
+            subjectCode: test.header_config?.subjectCode || '',
+            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
+            instructions: test.header_config?.instructions || 'Answer all questions.',
+            additionalMaterials: test.header_config?.additionalMaterials || '',
           },
           questions: resolved.questions,
         });

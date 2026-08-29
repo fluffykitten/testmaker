@@ -54,7 +54,20 @@ function buildExaminerPrompt(
     ...(markScheme?.common_misconceptions || []),
   ];
 
-  return `You are an expert Cambridge International Examinations (CIE) Senior Examiner for Chemistry & Sciences.
+  // Format structured/JSON student answers into human-readable gap responses for the examiner
+  let formattedStudentAnswer = studentAnswer;
+  if (studentAnswer && studentAnswer.startsWith('{') && studentAnswer.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(studentAnswer);
+      if (typeof parsed === 'object' && parsed !== null) {
+        formattedStudentAnswer = Object.entries(parsed)
+          .map(([k, v]) => `Blank [${k.replace(/^gap_?/i, '')}]: "${v || '(blank)'}"`)
+          .join('\n');
+      }
+    } catch {}
+  }
+
+  return `You are an expert Cambridge & IELTS Senior Examiner.
 Your task is to accurately assess a student's answer against the official mark scheme criteria.
 
 QUESTION CONTEXT:
@@ -63,21 +76,22 @@ QUESTION CONTEXT:
 MAXIMUM MARKS AVAILABLE: ${maxMarks}
 
 OFFICIAL MARK SCHEME CRITERIA:
-${markingPoints.map((p, idx) => `Point ${idx + 1}: ${p}`).join('\n') || 'Evaluate based on standard scientific accuracy for the question.'}
+${markingPoints.map((p, idx) => `Point ${idx + 1}: ${p}`).join('\n') || 'Evaluate based on standard academic accuracy for the question.'}
 
 ${guidance.length > 0 ? `EXAMINER GUIDANCE & ACCEPTABLE ALTERNATIVES:\n${guidance.join('\n')}\n` : ''}
 ${misconceptions.length > 0 ? `COMMON MISCONCEPTIONS TO WATCH FOR:\n${misconceptions.join('\n')}\n` : ''}
 
 STUDENT'S SUBMITTED RESPONSE:
 """
-${studentAnswer}
+${formattedStudentAnswer}
 """
 
 MARKING INSTRUCTIONS:
-1. Award marks (0 to ${maxMarks}) strictly based on how many mark scheme criteria points are satisfied or scientifically equivalent concepts are articulated.
-2. Allow equivalent chemical and scientific phrasing (as standard in Cambridge mark schemes).
-3. Check for specific criteria achieved and criteria missed.
-4. If the student makes a common misconception or invalid scientific claim, explain why gently.
+1. Award marks (0 to ${maxMarks}) strictly based on how many mark scheme criteria points are satisfied or equivalent concepts are articulated.
+2. For Fill-in-the-Blank, Form Completion, or Sentence Completion: Evaluate each numbered blank [1], [2] against its corresponding answer key. Award marks proportionally for each correct gap.
+3. Allow equivalent scientific/linguistic phrasing, synonyms, and numerical units (as standard in Cambridge/IELTS mark schemes).
+4. Check for specific criteria achieved and criteria missed.
+5. If the student makes a common misconception or invalid claim, explain why constructively.
 
 Return ONLY a JSON object with this EXACT structure (no markdown fences, no conversational filler):
 {

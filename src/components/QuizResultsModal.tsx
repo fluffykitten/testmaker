@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import {
@@ -12,13 +13,12 @@ import {
   exportSingleSubmissionExcel,
   formatProctorTimestamp,
   formatSubmissionDateTime,
-  cleanMcqOptionContent,
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
 import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
-import { gradeDeterministicAnswer, resolveMcqCorrectOptionIndex } from '../services/deterministicGradingService';
+import { gradeDeterministicAnswer, resolveQuestionModelAnswer } from '../services/deterministicGradingService';
 import {
   exportClassQuizReportPdf,
   exportIndividualStudentReportPdf,
@@ -45,6 +45,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [editMarksInput, setEditMarksInput] = useState<number>(0);
   const [editTeacherNote, setEditTeacherNote] = useState<string>('');
+  const [isEditingTotalScore, setIsEditingTotalScore] = useState<boolean>(false);
+  const [editTotalScoreInput, setEditTotalScoreInput] = useState<number>(0);
 
   // Batch AI Examiner & Release State
   const [isBatchGrading, setIsBatchGrading] = useState<boolean>(false);
@@ -54,10 +56,13 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     text: '',
   });
 
-  const refreshSubmissions = () => {
-    fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode).then((subs) => {
+  const refreshSubmissions = async () => {
+    try {
+      const subs = await fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode);
       setSubmissions(subs);
-    });
+    } catch (e) {
+      console.warn('Failed to refresh submissions:', e);
+    }
   };
 
   useEffect(() => {
@@ -131,23 +136,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
           const subResults: any[] = [];
 
-          // Case A: MCQ
-          if (q.options && q.options.length > 0) {
-            gradingMethod = 'mcq';
-            const userAns = rawAnswers[idx];
-            const correctIdx = resolveMcqCorrectOptionIndex(q);
-            const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
-            const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
-              ? userAns.trim().toUpperCase().charCodeAt(0) - 65
-              : -1;
-
-            if (userNum === correctIdx || userLetter === correctIdx) {
-              isCorrect = true;
-              qEarned = qMarks;
-            }
-          }
-          // Case B: Sub-questions
-          else if (q.sub_questions && q.sub_questions.length > 0) {
+          // Case A: Sub-questions
+          if (q.sub_questions && q.sub_questions.length > 0) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
@@ -193,7 +183,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             qEarned = Math.min(totalSubEarned, qMarks);
             isCorrect = qEarned === qMarks;
           }
-          // Case C: Single structured question
+          // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
           else {
             const userAns = rawAnswers[idx] ?? '';
             const det = gradeDeterministicAnswer(userAns, q);
@@ -201,7 +191,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               qEarned = det.earnedMarks;
               isCorrect = det.isCorrect;
               aiFeedback = det.feedback;
-              gradingMethod = 'deterministic';
+              gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
             } else {
               setGradingProgress({
                 current: sIdx + 1,
@@ -233,13 +223,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             earnedMarks: qEarned,
             isCorrect,
             studentAnswer: rawAnswers[idx] !== undefined ? rawAnswers[idx] : '',
-            correctAnswer: (q.options && q.options.length > 0)
-              ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
-              : typeof q.mark_scheme === 'string'
-              ? q.mark_scheme
-              : Array.isArray(q.mark_scheme?.marking_points)
-              ? q.mark_scheme.marking_points.join('; ')
-              : undefined,
+            correctAnswer: resolveQuestionModelAnswer(q),
             misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
             aiFeedback,
             missingPoints,
@@ -264,7 +248,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           status: 'graded',
         };
 
-        updateSubmission(updatedSub);
+        await updateSubmission(updatedSub);
       }
 
       refreshSubmissions();
@@ -337,19 +321,20 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     });
   }, [submissions, searchFilter, statusFilter, selectedClass]);
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     if (confirm('Delete this submission record?')) {
-      deleteSubmission(id);
+      await deleteSubmission(id);
       if (selectedSubmission?.id === id) setSelectedSubmission(null);
-      refreshSubmissions();
+      await refreshSubmissions();
     }
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     if (confirm(`Are you sure you want to delete all ${submissions.length} submission records for this quiz?`)) {
-      clearSubmissionsForQuiz(quiz.id);
+      await clearSubmissionsForQuiz(quiz.id, quiz.quizCode);
       setSelectedSubmission(null);
-      refreshSubmissions();
+      await refreshSubmissions();
     }
   };
 
@@ -367,12 +352,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setEditTeacherNote('');
   };
 
-  const handleSaveMarkOverride = (qr: QuestionSubmissionResult) => {
+  const handleSaveMarkOverride = async (qr: QuestionSubmissionResult) => {
     if (!selectedSubmission) return;
 
     const diff = editMarksInput - qr.earnedMarks;
     const newScore = Math.max(0, Math.min(selectedSubmission.totalMarks, selectedSubmission.score + diff));
-    const newPct = selectedSubmission.totalMarks > 0 ? (newScore / selectedSubmission.totalMarks) * 100 : 0;
+    const newPct = selectedSubmission.totalMarks > 0 ? Math.round((newScore / selectedSubmission.totalMarks) * 100) : 0;
 
     const updatedQuestionResults = selectedSubmission.questionResults.map((q) => {
       if (q.questionId === qr.questionId) {
@@ -394,15 +379,34 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
     };
 
-    updateSubmission(updatedSubmission);
+    await updateSubmission(updatedSubmission);
     setSelectedSubmission(updatedSubmission);
-    refreshSubmissions();
+    await refreshSubmissions();
     setEditingQuestionId(null);
+  };
+
+  const handleSaveTotalScoreOverride = async () => {
+    if (!selectedSubmission) return;
+    const newScore = Math.max(0, Math.min(selectedSubmission.totalMarks, editTotalScoreInput));
+    const newPct = selectedSubmission.totalMarks > 0 ? Math.round((newScore / selectedSubmission.totalMarks) * 100) : 0;
+    const diff = newScore - selectedSubmission.score;
+
+    const updatedSubmission: StudentSubmission = {
+      ...selectedSubmission,
+      score: newScore,
+      percentage: newPct,
+      teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
+    };
+
+    await updateSubmission(updatedSubmission);
+    setSelectedSubmission(updatedSubmission);
+    setIsEditingTotalScore(false);
+    await refreshSubmissions();
   };
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
-  return (
+  return createPortal(
     <div className="qrm-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="qrm-modal animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
@@ -857,10 +861,72 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   </div>
 
                   <div className="cand-grade">
-                    <span className="cand-grade-num">
-                      {selectedSubmission.score} / {selectedSubmission.totalMarks}
-                    </span>
-                    <span className="cand-grade-pct">{selectedSubmission.percentage.toFixed(1)}%</span>
+                    {isEditingTotalScore ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="number"
+                          min={0}
+                          max={selectedSubmission.totalMarks}
+                          value={editTotalScoreInput}
+                          onChange={(e) => setEditTotalScoreInput(Math.max(0, Math.min(selectedSubmission.totalMarks, Number(e.target.value))))}
+                          style={{
+                            width: '56px',
+                            padding: '4px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--color-border)',
+                            background: 'var(--color-surface)',
+                            color: 'var(--color-text-primary)',
+                            fontWeight: 800,
+                            textAlign: 'center',
+                            fontSize: '1rem',
+                          }}
+                        />
+                        <span style={{ fontSize: '0.875rem' }}>/ {selectedSubmission.totalMarks}</span>
+                        <button
+                          type="button"
+                          className="sq-btn sq-btn-primary"
+                          style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                          onClick={handleSaveTotalScoreOverride}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="sq-btn sq-btn-secondary"
+                          style={{ padding: '4px 6px', fontSize: '0.75rem' }}
+                          onClick={() => setIsEditingTotalScore(false)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="cand-grade-num">
+                          {selectedSubmission.score} / {selectedSubmission.totalMarks}
+                        </span>
+                        <span className="cand-grade-pct">{selectedSubmission.percentage.toFixed(1)}%</span>
+                        <button
+                          type="button"
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            border: '1px solid var(--color-border)',
+                            color: 'var(--color-text-secondary)',
+                            borderRadius: '4px',
+                            padding: '2px 8px',
+                            fontSize: '0.7rem',
+                            cursor: 'pointer',
+                            marginTop: '4px',
+                          }}
+                          onClick={() => {
+                            setIsEditingTotalScore(true);
+                            setEditTotalScoreInput(selectedSubmission.score);
+                          }}
+                          title="Directly adjust candidate total score"
+                        >
+                          ✏️ Edit Total Score
+                        </button>
+                      </>
+                    )}
                   </div>
 
                   <div className="cand-actions">
@@ -1173,6 +1239,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

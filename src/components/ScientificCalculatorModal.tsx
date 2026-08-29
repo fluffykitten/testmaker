@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import './ScientificCalculatorModal.css';
 
@@ -126,7 +127,7 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="sc-modal-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="sc-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
@@ -190,6 +191,7 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
           <button type="button" className="sc-btn sc-btn--eq" onClick={handleEquals} style={{ gridColumn: 'span 2' }}>=</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

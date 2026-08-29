@@ -10,10 +10,11 @@ import {
   gradeDeterministicAnswer,
   extractAcceptableAnswers,
   resolveMcqCorrectOptionIndex,
+  extractMultiSelectTargetLetters,
 } from './deterministicGradingService';
 import { evaluateAnswerWithGemini } from './aiGradingService';
 import {
-  saveQuizSubmission,
+  saveBatchQuizSubmissionsCloud,
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from './quizSubmissionService';
@@ -104,6 +105,30 @@ export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): stri
   const isMcq =
     (targetOptions && targetOptions.length >= 2) ||
     q.question_style === 'Multiple Choice';
+
+  const candidates: string[] = [];
+  if (sq && sq.mark_scheme) {
+    const sqMs: any = sq.mark_scheme;
+    if (typeof sqMs === 'string') candidates.push(sqMs);
+    else if (typeof sqMs === 'object') {
+      if (Array.isArray(sqMs.acceptable_answers)) candidates.push(...sqMs.acceptable_answers);
+      if (Array.isArray(sqMs.marking_points)) candidates.push(...sqMs.marking_points);
+    }
+  }
+  if (q.mark_scheme) {
+    const qMs: any = q.mark_scheme;
+    if (typeof qMs === 'string') candidates.push(qMs);
+    else if (typeof qMs === 'object') {
+      if (Array.isArray(qMs.acceptable_answers)) candidates.push(...qMs.acceptable_answers);
+      if (Array.isArray(qMs.marking_points)) candidates.push(...qMs.marking_points);
+    }
+  }
+
+  // Check multi-select first
+  const multiLetters = extractMultiSelectTargetLetters(candidates);
+  if (multiLetters.length >= 2) {
+    return multiLetters.join(', ');
+  }
 
   if (isMcq) {
     const sIdx = sq && q.sub_questions ? q.sub_questions.indexOf(sq) : undefined;
@@ -692,13 +717,13 @@ export async function gradeOfflineSubmissions(
 
 // ─── 6. Save Offline Exam to Central Gradebook ──────────────────────────────────
 
-export function saveOfflineExamToGradebook(
+export async function saveOfflineExamToGradebook(
   quizTitle: string,
   subject: string,
   questions: Question[],
   submissions: StudentSubmission[],
   existingQuizCode?: string
-): { publishedQuiz: PublishedQuiz; submissions: StudentSubmission[] } {
+): Promise<{ publishedQuiz: PublishedQuiz; submissions: StudentSubmission[] }> {
   const columns = getOfflineGradingColumns(questions);
   const totalMarks = columns.reduce((s, c) => s + c.maxMarks, 0);
   const code = existingQuizCode || `OFFLINE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
@@ -707,7 +732,7 @@ export function saveOfflineExamToGradebook(
   const publishedQuiz: PublishedQuiz = {
     id: quizId,
     testId: questions[0]?.id || `test_${Date.now()}`,
-    title: quizTitle || `${subject} Offline Paper Exam`,
+    title: quizTitle || `${subject || 'Chemistry'} Offline Paper Exam`,
     quizCode: code,
     subject: subject || 'Chemistry',
     totalMarks,
@@ -724,21 +749,20 @@ export function saveOfflineExamToGradebook(
     quizMode: 'exam',
   };
 
-  // Save the published quiz record so it appears in QuizManagerPage
-  savePublishedQuiz(publishedQuiz);
+  // 1. Save the published quiz record locally and sync to cloud
+  await savePublishedQuiz(publishedQuiz);
 
-  // Link submissions to this quiz and save each
+  // 2. Link submissions to this quiz
   const finalizedSubmissions = submissions.map((sub) => ({
     ...sub,
     quizId,
     quizCode: code,
     quizTitle: publishedQuiz.title,
-    subject: publishedQuiz.subject || subject,
+    subject: publishedQuiz.subject || subject || 'Chemistry',
   }));
 
-  finalizedSubmissions.forEach((sub) => {
-    saveQuizSubmission(sub);
-  });
+  // 3. Batch save submissions both locally and to Supabase cloud
+  await saveBatchQuizSubmissionsCloud(finalizedSubmissions);
 
   return {
     publishedQuiz,

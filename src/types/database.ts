@@ -8,8 +8,10 @@ export type QuestionDifficulty = 'Easy' | 'Medium' | 'Hard';
 export type QuestionStyle =
   | 'Structured'
   | 'Multiple Choice'
+  | 'Multiple Select'
   | 'Calculation'
-  | 'Short Answer';
+  | 'Short Answer'
+  | 'Fill in the Blank';
 
 // ─── JSONB Sub-Structures ──────────────────────────────────────────────────────
 
@@ -18,6 +20,16 @@ export interface MarkScheme {
   acceptable_answers?: string[];
   guidance?: string[];               // Teacher / Examiner tips & alternate allowable methods
   common_misconceptions?: string[];   // Common student errors & conceptual traps
+}
+
+export interface AudioMetadata {
+  title?: string;              // e.g. "Track 1: Airport Conversation"
+  transcript?: string;         // Full text transcript
+  duration?: number;           // In seconds
+  play_limit?: number | null;  // Max play count in formal exam (e.g. 2, or null for unlimited)
+  voice?: string;              // TTS voice used if synthesized
+  original_size?: number;      // Original file size in bytes
+  compressed_size?: number;    // Final compressed size in bytes
 }
 
 export interface InsertResourceItem {
@@ -44,6 +56,8 @@ export interface SubQuestion {
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
   guidance?: string;        // Sub-question specific teacher guidance/examiner tip
   common_misconceptions?: string[]; // Sub-question specific common student errors
+  audio_url?: string | null; // Optional audio URL for this sub-part
+  audio_metadata?: AudioMetadata | null; // Audio configuration & transcript
 }
 
 // ─── Table Interfaces ──────────────────────────────────────────────────────────
@@ -73,6 +87,8 @@ export interface Question {
   diagram_source?: 'qp' | 'insert' | null; // Source document for diagram
   resource_ref?: string | null;     // Reference to Insert figure/photo (e.g. "Fig. 1.1")
   insert_page_number?: number | null;
+  audio_url?: string | null;        // Supabase Storage audio public URL
+  audio_metadata?: AudioMetadata | null; // Audio play limits, transcript, duration
   options?: string[] | null;        // Multiple choice options [A, B, C, D]
   sub_questions: SubQuestion[];     // JSONB array of nested parts
   mark_scheme: MarkScheme | null;   // JSONB marking structure
@@ -125,6 +141,8 @@ export interface ExtractedQuestion {
   insert_page_number?: number | null;
   bounding_box: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options: string[] | null;
+  audio_url?: string | null;
+  audio_metadata?: AudioMetadata | null;
   sub_questions?: SubQuestion[];
   mark_scheme: MarkScheme | null;
 }

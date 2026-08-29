@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import {
@@ -58,6 +59,7 @@ export function QuizManagerPage({
     questions: Question[];
   } | null>(null);
   const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
+  const configModalDismiss = useBackdropDismiss(() => setIsConfigModalOpen(false));
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
   useEffect(() => {
@@ -169,13 +171,13 @@ export function QuizManagerPage({
       if (resolved && resolved.questions.length > 0) {
         setOfflineGradingData({
           headerConfig: {
-            title: testMeta?.title || 'Offline Exam Assessment',
-            schoolName: '',
-            subject: testMeta?.primarySubject || 'General Assessment',
-            subjectCode: '',
-            durationMinutes: Math.round((testMeta?.total_marks || 20) * 1.25),
-            instructions: 'Answer all questions.',
-            additionalMaterials: '',
+            title: testMeta?.header_config?.title || testMeta?.title || 'Offline Exam Assessment',
+            schoolName: testMeta?.header_config?.schoolName || '',
+            subject: testMeta?.header_config?.subject || testMeta?.primarySubject || 'Chemistry',
+            subjectCode: testMeta?.header_config?.subjectCode || '',
+            durationMinutes: testMeta?.header_config?.durationMinutes || Math.round((testMeta?.total_marks || 20) * 1.25),
+            instructions: testMeta?.header_config?.instructions || 'Answer all questions.',
+            additionalMaterials: testMeta?.header_config?.additionalMaterials || '',
           },
           questions: resolved.questions,
         });
@@ -506,8 +508,6 @@ export function QuizManagerPage({
     );
   };
 
-  const configModalDismiss = useBackdropDismiss(() => setIsConfigModalOpen(false));
-
   return (
     <div className="qm-root animate-fade-in">
       <div className="qm-container">
@@ -735,7 +735,7 @@ export function QuizManagerPage({
       )}
 
       {/* ─── Create & Configure Quiz Modal ────────────────────────────────────── */}
-      {isConfigModalOpen && activeQuizDraft && (
+      {isConfigModalOpen && activeQuizDraft && createPortal(
         <div className="qm-modal-backdrop animate-fade-in" {...configModalDismiss}>
           <div className="qm-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
             <div className="qm-modal-header">
@@ -1202,11 +1202,12 @@ export function QuizManagerPage({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Offline Exam Test Selection Modal */}
-      {isSelectOfflineTestOpen && (
+      {isSelectOfflineTestOpen && createPortal(
         <div className="qm-modal-backdrop animate-fade-in" onClick={() => setIsSelectOfflineTestOpen(false)}>
           <div
             className="qm-modal-card animate-scale-up"
@@ -1259,7 +1260,7 @@ export function QuizManagerPage({
                     <div>
                       <div style={{ fontWeight: 700, color: '#0f172a' }}>{t.title || 'Untitled Assessment'}</div>
                       <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                        {t.primarySubject || 'General'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
+                        {t.header_config?.subject || t.primarySubject || 'Chemistry'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
                       </div>
                     </div>
                     <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#2563eb' }}>Select →</span>
@@ -1268,7 +1269,8 @@ export function QuizManagerPage({
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Offline Grading Modal */}

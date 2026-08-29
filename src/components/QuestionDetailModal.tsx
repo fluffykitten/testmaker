@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
+import { ExamAudioPlayer } from './ExamAudioPlayer';
 import { enrichQuestionWithGuidance } from '../lib/gemini';
 import { updateQuestionMarkScheme } from '../services/questionBankService';
 import './QuestionDetailModal.css';
@@ -178,6 +179,18 @@ export function QuestionDetailModal({
               <ExamMathText content={question.question_text} />
             </div>
           </div>
+
+          {/* Listening Audio Track */}
+          {question.audio_url && (
+            <div className="modal-section" style={{ margin: '14px 0' }}>
+              <ExamAudioPlayer
+                audioUrl={question.audio_url}
+                metadata={question.audio_metadata}
+                title={question.audio_metadata?.title || `Question ${question.question_number} Audio`}
+                allowTranscript={true}
+              />
+            </div>
+          )}
 
           {question.diagram_url && (
             <div className="modal-section">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { renderPeriodicTableHtml, PERIODIC_TABLE_ELEMENTS } from '../services/periodicTableService';
 import './PeriodicTableDrawer.css';
@@ -78,7 +79,7 @@ export const PeriodicTableDrawer: React.FC<PeriodicTableDrawerProps> = ({ isOpen
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="pt-drawer-backdrop animate-fade-in" {...backdropDismiss}>
       <div
         className={`pt-drawer-card animate-scale-up ${isFullscreen ? 'pt-drawer-card--fullscreen' : ''}`}
@@ -262,6 +263,7 @@ export const PeriodicTableDrawer: React.FC<PeriodicTableDrawerProps> = ({ isOpen
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

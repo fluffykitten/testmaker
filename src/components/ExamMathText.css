@@ -4,6 +4,8 @@
   display: inline;
   line-height: inherit;
   color: inherit;
+  text-align: justify;
+  text-justify: inter-word;
 }
 
 .exam-math-inline {
@@ -92,6 +94,8 @@
 
 .exam-text-block {
   display: block;
+  text-align: justify;
+  text-justify: inter-word;
 }
 
 /* ─── Exam Flowcharts & Process Stage Boxes ────────────────────────────────── */

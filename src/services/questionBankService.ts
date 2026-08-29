@@ -16,6 +16,7 @@ export interface QuestionFilterParams {
   minMarks?: number;
   maxMarks?: number;
   questionStyle?: QuestionStyle;
+  hasAudio?: boolean;
   bookmarkedOnly?: boolean;
   customTag?: string;
   sortBy?: 'created_at' | 'marks_desc' | 'marks_asc' | 'difficulty' | 'year_desc';
@@ -242,6 +243,11 @@ export async function fetchQuestions(
     query = query.eq('question_style', questionStyle);
   }
 
+  // Filter: Has Audio Track
+  if (params.hasAudio) {
+    query = query.not('audio_url', 'is', null).neq('audio_url', '');
+  }
+
   // Filter: Bookmarks Only
   if (params.bookmarkedOnly) {
     const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
@@ -333,7 +339,7 @@ export async function fetchQuestions(
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 
   return {
-    questions: (data as Question[]) || [],
+    questions: ((data as any[]) || []).map(normalizeQuestionRecord),
     totalCount,
     page,
     totalPages,
@@ -355,7 +361,7 @@ export async function fetchQuestionById(id: string): Promise<Question | null> {
     return null;
   }
 
-  return data as Question;
+  return normalizeQuestionRecord(data);
 }
 
 /**
@@ -423,25 +429,89 @@ export async function updateQuestionMarkScheme(
 }
 
 /**
- * Updates an entire question record in Supabase
+ * Normalizes question record, unpacking embedded audio/diagram metadata if schema fallback was used
+ */
+export function normalizeQuestionRecord(q: any): Question {
+  if (!q) return q;
+  const audioUrl = q.audio_url || q.mark_scheme?._audio_url || null;
+  const audioMetadata = q.audio_metadata || q.mark_scheme?._audio_metadata || null;
+  const diagramSource = q.diagram_source || q.mark_scheme?._diagram_source || null;
+  const resourceRef = q.resource_ref || q.mark_scheme?._resource_ref || null;
+  const insertPageNumber = q.insert_page_number || q.mark_scheme?._insert_page_number || null;
+
+  return {
+    ...q,
+    audio_url: audioUrl,
+    audio_metadata: audioMetadata,
+    diagram_source: diagramSource,
+    resource_ref: resourceRef,
+    insert_page_number: insertPageNumber,
+  };
+}
+
+/**
+ * Updates an entire question record in Supabase with automatic schema-fallback resilience
  */
 export async function updateQuestion(
   id: string,
   updates: Partial<Omit<Question, 'id' | 'created_at'>>
 ): Promise<Question | null> {
-  const { data, error } = await (supabase as any)
+  const payload: any = { ...updates };
+  let { data, error } = await (supabase as any)
     .from('questions')
-    .update(updates)
+    .update(payload)
     .eq('id', id)
     .select('*')
     .single();
+
+  // If column doesn't exist in schema cache (e.g. audio_metadata or audio_url not migrated yet)
+  if (
+    error &&
+    error.message &&
+    (error.message.includes('audio_metadata') ||
+      error.message.includes('audio_url') ||
+      error.message.includes('options') ||
+      error.message.includes('diagram_source') ||
+      error.message.includes('resource_ref') ||
+      error.message.includes('insert_page_number'))
+  ) {
+    console.warn('Dedicated column not found in database schema, falling back to embedded mark_scheme:', error.message);
+    const fallbackPayload: any = { ...payload };
+    const markScheme = typeof fallbackPayload.mark_scheme === 'object' && fallbackPayload.mark_scheme !== null
+      ? { ...fallbackPayload.mark_scheme }
+      : { raw: fallbackPayload.mark_scheme };
+
+    if (fallbackPayload.audio_url) markScheme._audio_url = fallbackPayload.audio_url;
+    if (fallbackPayload.audio_metadata) markScheme._audio_metadata = fallbackPayload.audio_metadata;
+    if (fallbackPayload.diagram_source) markScheme._diagram_source = fallbackPayload.diagram_source;
+    if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
+    if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
+
+    delete fallbackPayload.audio_url;
+    delete fallbackPayload.audio_metadata;
+    if (error.message.includes('options')) delete fallbackPayload.options;
+    delete fallbackPayload.diagram_source;
+    delete fallbackPayload.resource_ref;
+    delete fallbackPayload.insert_page_number;
+    fallbackPayload.mark_scheme = markScheme;
+
+    const retryRes = await (supabase as any)
+      .from('questions')
+      .update(fallbackPayload)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    data = retryRes.data;
+    error = retryRes.error;
+  }
 
   if (error || !data) {
     console.error(`Failed to update question ${id}:`, error);
     return null;
   }
 
-  return data as Question;
+  return normalizeQuestionRecord(data);
 }
 
 /**
@@ -490,6 +560,11 @@ export async function createQuestion(
     difficulty: questionData.difficulty || 'Medium',
     marks: Number(questionData.marks) || 1,
     diagram_url: questionData.diagram_url || null,
+    diagram_source: (questionData as any).diagram_source || null,
+    resource_ref: (questionData as any).resource_ref || null,
+    insert_page_number: (questionData as any).insert_page_number || null,
+    audio_url: questionData.audio_url || null,
+    audio_metadata: questionData.audio_metadata || null,
     options: Array.isArray(questionData.options) ? questionData.options : null,
     sub_questions: Array.isArray(questionData.sub_questions) ? questionData.sub_questions : [],
     mark_scheme: questionData.mark_scheme || null,
@@ -507,14 +582,43 @@ export async function createQuestion(
     .select('*')
     .single();
 
-  // If insert failed due to missing options column in DB, retry without options
-  if (error && error.message && error.message.toLowerCase().includes('options')) {
-    const { options, ...payloadWithoutOptions } = payload;
+  // If insert failed due to missing columns in DB schema, fallback to embedded mark_scheme
+  if (
+    error &&
+    error.message &&
+    (error.message.includes('audio_metadata') ||
+      error.message.includes('audio_url') ||
+      error.message.includes('options') ||
+      error.message.includes('diagram_source') ||
+      error.message.includes('resource_ref') ||
+      error.message.includes('insert_page_number'))
+  ) {
+    console.warn('Dedicated columns not found in database schema, falling back to embedded mark_scheme:', error.message);
+    const fallbackPayload: any = { ...payload };
+    const markScheme = typeof fallbackPayload.mark_scheme === 'object' && fallbackPayload.mark_scheme !== null
+      ? { ...fallbackPayload.mark_scheme }
+      : { raw: fallbackPayload.mark_scheme };
+
+    if (fallbackPayload.audio_url) markScheme._audio_url = fallbackPayload.audio_url;
+    if (fallbackPayload.audio_metadata) markScheme._audio_metadata = fallbackPayload.audio_metadata;
+    if (fallbackPayload.diagram_source) markScheme._diagram_source = fallbackPayload.diagram_source;
+    if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
+    if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
+
+    delete fallbackPayload.audio_url;
+    delete fallbackPayload.audio_metadata;
+    if (error.message.includes('options')) delete fallbackPayload.options;
+    delete fallbackPayload.diagram_source;
+    delete fallbackPayload.resource_ref;
+    delete fallbackPayload.insert_page_number;
+    fallbackPayload.mark_scheme = markScheme;
+
     const retryResult = await (supabase as any)
       .from('questions')
-      .insert([payloadWithoutOptions])
+      .insert([fallbackPayload])
       .select('*')
       .single();
+
     data = retryResult.data;
     error = retryResult.error;
   }
@@ -524,5 +628,5 @@ export async function createQuestion(
     throw new Error(error?.message || 'Failed to create question record in database.');
   }
 
-  return data as Question;
+  return normalizeQuestionRecord(data);
 }

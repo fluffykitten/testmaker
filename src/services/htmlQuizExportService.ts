@@ -31,6 +31,8 @@ export function exportOfflineInteractiveHtmlQuiz(
       topic: q.topic || 'General',
       subTopic: q.sub_topic || '',
       diagramUrl: q.diagram_url || '',
+      audioUrl: q.audio_url || '',
+      audioMetadata: q.audio_metadata || null,
       markScheme: q.mark_scheme,
       guidance: q.mark_scheme?.guidance || [],
       misconceptions: q.mark_scheme?.common_misconceptions || [],

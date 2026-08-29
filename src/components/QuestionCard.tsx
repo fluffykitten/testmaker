@@ -3,6 +3,7 @@ import type { Question } from '../types/database';
 import { isQuestionBookmarked, toggleBookmarkQuestion } from '../services/questionBookmarkService';
 import { getQuestionTags, addQuestionTag, removeQuestionTag } from '../services/questionTagService';
 import { ExamMathText } from './ExamMathText';
+import { ExamAudioPlayer } from './ExamAudioPlayer';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -165,6 +166,22 @@ export function QuestionCard({
               📖 {question.resource_ref || 'Insert Resource'}
             </span>
           )}
+
+          {question.audio_url && (
+            <span
+              className="q-badge"
+              style={{
+                background: 'rgba(99, 102, 241, 0.12)',
+                color: '#818cf8',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                fontWeight: 700,
+                fontSize: '0.75rem',
+              }}
+              title={question.audio_metadata?.title || 'Listening audio track attached'}
+            >
+              🎧 Audio Track
+            </span>
+          )}
         </div>
 
         <div className="q-card-header-right">
@@ -181,6 +198,18 @@ export function QuestionCard({
         <div className="q-stem-text">
           <ExamMathText content={cleanQuestionStem(question.question_text, question.options)} />
         </div>
+
+        {/* Audio Track Player if present */}
+        {question.audio_url && (
+          <div className="q-audio-preview" style={{ margin: '8px 0 12px' }}>
+            <ExamAudioPlayer
+              audioUrl={question.audio_url}
+              metadata={question.audio_metadata}
+              compact={true}
+              title={question.audio_metadata?.title || `Q${question.question_number} Audio`}
+            />
+          </div>
+        )}
 
         {/* Diagram Preview */}
         {question.diagram_url && (

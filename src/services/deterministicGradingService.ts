@@ -334,7 +334,7 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
 }
 
 /**
- * Checks if a student's response satisfies a multi-point mark scheme (e.g. "liquid and solid")
+ * Checks if a student's response satisfies a multi-point mark scheme (e.g. "liquid and solid" or "Place: Conservation; Padar Island: Natural Beauty")
  */
 export function evaluateMultiPointAnswer(
   studentAnswer: string,
@@ -344,6 +344,87 @@ export function evaluateMultiPointAnswer(
     return { matchedCount: 0, totalPoints: targetPoints.length, isAllMatched: false, matchedPoints: [], feedbackSummary: '' };
   }
 
+  // 1. If target points have labels (e.g. table/matching questions: "KNP Waters: Conservation"),
+  // parse the student's answer as key-value pairs
+  const hasLabels = targetPoints.some((p) => p.label && p.label.trim().length > 0);
+
+  if (hasLabels) {
+    // Parse student's key-value pairs from "Row: Value; Row: Value" or "Row = Value" or lines
+    const studentPairs: Record<string, string> = {};
+    const rawPairs = studentAnswer.split(/[;\n]/).map((s) => s.trim()).filter(Boolean);
+
+    for (const pair of rawPairs) {
+      const splitIdx = pair.search(/[:=→\-]/);
+      if (splitIdx !== -1) {
+        const k = pair.substring(0, splitIdx).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+        const v = pair.substring(splitIdx + 1).trim().toLowerCase();
+        if (k && v) {
+          studentPairs[k] = v;
+        }
+      }
+    }
+
+    let matchedCount = 0;
+    const matchedPoints: string[] = [];
+
+    for (const point of targetPoints) {
+      const normLabel = (point.label || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      let pointMatched = false;
+
+      // Check if student provided an explicit pair for this row label
+      let studentVal = studentPairs[normLabel];
+      if (!studentVal) {
+        // Fallback: check if any student key contains or is contained by normLabel
+        for (const [k, v] of Object.entries(studentPairs)) {
+          if ((normLabel.length >= 4 && k.includes(normLabel)) || (k.length >= 4 && normLabel.includes(k))) {
+            studentVal = v;
+            break;
+          }
+        }
+      }
+
+      if (studentVal) {
+        // Compare student's value against point synonyms
+        for (const syn of point.synonyms) {
+          const cleanSyn = syn.toLowerCase().trim();
+          if (studentVal.includes(cleanSyn) || cleanSyn.includes(studentVal) || isChemicalEquivalent(studentVal, syn)) {
+            pointMatched = true;
+            break;
+          }
+        }
+      } else {
+        // Fallback: if student didn't use key-value format, check if both label and synonym appear in proximity
+        const cleanStudent = studentAnswer.toLowerCase();
+        for (const syn of point.synonyms) {
+          const cleanSyn = syn.toLowerCase().trim();
+          if (point.label && cleanStudent.includes(point.label.toLowerCase()) && cleanStudent.includes(cleanSyn)) {
+            pointMatched = true;
+            break;
+          }
+        }
+      }
+
+      if (pointMatched) {
+        matchedCount++;
+        matchedPoints.push(point.label ? `${point.label}: ${point.synonyms[0]}` : point.synonyms[0]);
+      }
+    }
+
+    const isAllMatched = matchedCount === targetPoints.length;
+    const feedbackSummary = targetPoints
+      .map((p) => (p.label ? `${p.label}: ${p.synonyms[0]}` : p.synonyms[0]))
+      .join('; ');
+
+    return {
+      matchedCount,
+      totalPoints: targetPoints.length,
+      isAllMatched,
+      matchedPoints,
+      feedbackSummary,
+    };
+  }
+
+  // 2. Free-form multi-clause points without labels
   const cleanStudent = studentAnswer
     .toLowerCase()
     .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, ' ')
@@ -402,7 +483,7 @@ export function evaluateMultiPointAnswer(
 
   const isAllMatched = matchedCount === targetPoints.length;
   const feedbackSummary = targetPoints
-    .map((p) => p.label ? `${p.label}: ${p.synonyms[0]}` : p.synonyms[0])
+    .map((p) => (p.label ? `${p.label}: ${p.synonyms[0]}` : p.synonyms[0]))
     .join('; ');
 
   return {
@@ -459,7 +540,7 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
     ? question.sub_questions[subIndex].options
     : question.options;
 
-  if (!options || options.length === 0) return 0;
+  if (!options || options.length === 0) return -1;
 
   // 1. Direct property check
   const directProp = (question as any).correct_option;
@@ -506,13 +587,13 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
     }
   }
 
-  // 3. Match letter (A, B, C, D) from mark scheme strings
+  // 3. Match letter (A-Z) from mark scheme strings
   for (const cand of candidates) {
     if (!cand) continue;
     const clean = String(cand).trim();
 
-    // Match patterns like "C", "C [1]", "[C]", "(C)", "Option C", "Option C: ...", "Answer: C", "Ans: C", "C. ...", "C - ..."
-    const match = clean.match(/(?:^|[\s\[\(]|Option\s*|Answer\s*[:\s]*|Ans\s*[:\s]*)([A-D])(?:[\s\]\)\.:,-]*\[\d+\]|[\s\]\)\.:,-]|$)/i);
+    // Match patterns like "C", "C [1]", "[C]", "(C)", "Option C", "Option C: ...", "Answer: C", "Ans: C", "C. ...", "C - ...", "E", "Option E"
+    const match = clean.match(/(?:^|[\s\[\(]|Option\s*|Answer\s*[:\s]*|Ans\s*[:\s]*)([A-Z])(?:[\s\]\)\.:,-]*\[\d+\]|[\s\]\)\.:,-]|$)/i);
     if (match && match[1]) {
       const letter = match[1].toUpperCase();
       const idx = letter.charCodeAt(0) - 65;
@@ -524,7 +605,7 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
 
   // 4. Match full option text against mark scheme text
   for (let oIdx = 0; oIdx < options.length; oIdx++) {
-    const optText = options[oIdx].replace(/^[A-Da-d][\.\)\s:]+/, '').trim().toLowerCase();
+    const optText = options[oIdx].replace(/^[A-Za-z][\.\)\s:]+/, '').trim().toLowerCase();
     if (optText.length >= 3) {
       for (const cand of candidates) {
         const cleanCand = String(cand).toLowerCase();
@@ -543,7 +624,201 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
     }
   }
 
-  return 0;
+  return -1;
+}
+
+/**
+ * Extracts multiple target choice letters (e.g. ["B", "D"] from "B;D", "B, D", "B; D", "B dan D", "B, C, E", etc.)
+ */
+export function extractMultiSelectTargetLetters(candidates: string[]): string[] {
+  for (const cand of candidates) {
+    if (!cand) continue;
+    const clean = String(cand).trim();
+
+    // Remove surrounding brackets or quotes
+    const stripped = clean.replace(/^[\[\(]/, '').replace(/[\]\)]$/, '').trim();
+
+    // Check if the string has multiple single letters separated by commas, semicolons, slashes, 'and', 'dan', '&', or whitespace
+    // e.g. "B;D", "B; D", "B, D", "B,D", "B / D", "B dan D", "B and D", "B & D", "A, B, C", "A; C; D"
+    // Also matches "Pilihan: B, D", "Kunci: B; D", "Answers: B dan D", "Option B, Option D"
+    const hasMultipleLetters =
+      /^[A-Za-z](?:\s*[,;\/&|\s]|\s+(?:and|dan)\s+)\s*[A-Za-z]/i.test(stripped) ||
+      /(?:Correct|Answers?|Pilihan|Kunci|Jawaban|Options?)[:\s]*[A-Za-z](?:\s*[,;\/&|\s]|\s+(?:and|dan)\s+)\s*[A-Za-z]/i.test(stripped) ||
+      /Option\s+[A-Za-z].*Option\s+[A-Za-z]/i.test(stripped);
+
+    if (hasMultipleLetters) {
+      // Remove marks like [1], [2] and words
+      const sanitized = stripped
+        .replace(/\[\d+\]/g, ' ')
+        .replace(/\b(?:and|dan|options?|pilihan|jawaban|kunci|correct|answers?)\b/gi, ' ');
+
+      const letters = sanitized.toUpperCase().match(/\b[A-Z]\b/g);
+      if (letters && letters.length >= 2) {
+        return Array.from(new Set(letters)).sort();
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * Resolves the display model answer text for a question (supporting MCQ, Multiple Select, and Structured).
+ */
+export function resolveQuestionModelAnswer(question: Question, subIndex?: number): string {
+  const options = (subIndex !== undefined && question.sub_questions?.[subIndex]?.options)
+    ? question.sub_questions[subIndex].options
+    : question.options;
+
+  const candidates: string[] = [];
+  if (subIndex !== undefined && question.sub_questions?.[subIndex]) {
+    const sq = question.sub_questions[subIndex];
+    if (sq.mark_scheme) {
+      if (typeof sq.mark_scheme === 'string') candidates.push(sq.mark_scheme);
+      else if (typeof (sq as any).mark_scheme === 'object') {
+        const obj: any = sq.mark_scheme;
+        if (Array.isArray(obj.acceptable_answers)) candidates.push(...obj.acceptable_answers);
+        if (Array.isArray(obj.marking_points)) candidates.push(...obj.marking_points);
+      }
+    }
+  }
+  if (question.mark_scheme) {
+    if (typeof question.mark_scheme === 'string') candidates.push(question.mark_scheme);
+    else {
+      if (question.mark_scheme.acceptable_answers) candidates.push(...question.mark_scheme.acceptable_answers);
+      if (question.mark_scheme.marking_points) candidates.push(...question.mark_scheme.marking_points);
+    }
+  }
+
+  if (options && options.length > 0) {
+    const multiLetters = extractMultiSelectTargetLetters(candidates);
+    if (multiLetters.length >= 2) {
+      return multiLetters
+        .map((l) => {
+          const idx = l.charCodeAt(0) - 65;
+          const optText = options[idx] ? options[idx].replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
+          return optText ? `Option ${l} (${optText})` : `Option ${l}`;
+        })
+        .join('; ');
+    }
+
+    const cIdx = resolveMcqCorrectOptionIndex(question, subIndex);
+    if (cIdx >= 0) {
+      const letter = String.fromCharCode(65 + cIdx);
+      const optText = options[cIdx] ? options[cIdx].replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
+      return optText ? `Option ${letter}: ${optText}` : `Option ${letter}`;
+    }
+  }
+
+  if (typeof question.mark_scheme === 'string') return question.mark_scheme;
+  if (Array.isArray(question.mark_scheme?.acceptable_answers) && question.mark_scheme.acceptable_answers.length > 0) {
+    return question.mark_scheme.acceptable_answers.join('; ');
+  }
+  if (Array.isArray(question.mark_scheme?.marking_points) && question.mark_scheme.marking_points.length > 0) {
+    return question.mark_scheme.marking_points.join('; ');
+  }
+
+  return 'See mark scheme';
+}
+
+/**
+ * Extracts a map of gap number to accepted answer strings from mark scheme and question text
+ */
+export function extractGapExpectedMap(question: Question, subIndex?: number): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  const acceptable = extractAcceptableAnswers(question, subIndex);
+
+  // 1. Parse from mark scheme lines (e.g. "[1] Paris / City of Light", "1: 1998", "(1) water")
+  acceptable.forEach((line) => {
+    if (!line) return;
+    const str = String(line).trim();
+
+    // Check for [1], 1., 1:, (1)
+    const gapMatch = str.match(/^\[?\s*(\d+)\s*\]?[\s:.-]+(.+)$/);
+    if (gapMatch) {
+      const gNum = gapMatch[1];
+      const answers = gapMatch[2]
+        .split(/\s*[/;|,]\s*|\s+OR\s+/i)
+        .map((s) => cleanMarkSchemeClause(s).target || s)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      if (!map[gNum]) map[gNum] = [];
+      answers.forEach((a) => {
+        if (!map[gNum].includes(a)) map[gNum].push(a);
+      });
+    } else {
+      // If line has no leading gap number, treat as gap 1 or split if only 1 gap
+      if (!map['1']) map['1'] = [];
+      const answers = str
+        .split(/\s*[/;|,]\s*|\s+OR\s+/i)
+        .map((s) => cleanMarkSchemeClause(s).target || s)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      answers.forEach((a) => {
+        if (!map['1'].includes(a)) map['1'].push(a);
+      });
+    }
+  });
+
+  // 2. Also check question_text for inline embedded answer syntax e.g. [1: Springfield]
+  const qText = subIndex !== undefined && question.sub_questions?.[subIndex]
+    ? question.sub_questions[subIndex].question_text
+    : (typeof question.question_text === 'string' ? question.question_text : '');
+
+  if (qText) {
+    const inlineMatches = qText.matchAll(/\[\s*(\d+)\s*:\s*([^\]]+)\]/g);
+    for (const m of inlineMatches) {
+      const gNum = m[1];
+      const ans = m[2].trim();
+      if (!map[gNum]) map[gNum] = [];
+      if (!map[gNum].includes(ans)) map[gNum].push(ans);
+    }
+  }
+
+  return map;
+}
+
+/**
+ * Parses student answers into a map of gap number to answer string
+ */
+export function parseStudentGapAnswers(rawAnswer: string | number | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (rawAnswer === undefined || rawAnswer === null) return result;
+
+  const str = String(rawAnswer).trim();
+  if (!str) return result;
+
+  // 1. JSON object string e.g. {"1": "Paris", "2": "1998"} or {"gap_1": "Paris"}
+  if (str.startsWith('{') && str.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(str);
+      if (typeof parsed === 'object' && parsed !== null) {
+        Object.entries(parsed).forEach(([k, v]) => {
+          const numKey = k.replace(/^gap_?/i, '').trim();
+          result[numKey] = String(v || '').trim();
+        });
+        return result;
+      }
+    } catch {}
+  }
+
+  // 2. Structured string e.g. "[1] Paris; [2] 1998" or "1. Paris; 2. 1998"
+  const gapPattern = /(?:\[|\b)(\d+)(?:\]|[:\.\)\s-])\s*([^;\[\n]+)/g;
+  let match: RegExpExecArray | null;
+  let foundStructured = false;
+
+  while ((match = gapPattern.exec(str)) !== null) {
+    foundStructured = true;
+    const gNum = match[1];
+    const val = match[2].trim();
+    result[gNum] = val;
+  }
+
+  if (foundStructured) return result;
+
+  // 3. Fallback: single answer string maps to gap 1
+  result['1'] = str;
+  return result;
 }
 
 /**
@@ -571,31 +846,159 @@ export function gradeDeterministicAnswer(
 
   const rawAnswerStr = String(studentAnswer).trim();
 
-  // A0. Check Multiple Choice Question (MCQ) Deterministic Evaluation
+  // A0. Check Multiple Choice Question (MCQ) / Multi-Select Evaluation
   const options = (subIndex !== undefined && question.sub_questions?.[subIndex]?.options)
     ? question.sub_questions[subIndex].options
     : question.options;
 
   if (options && options.length > 0) {
-    const correctIdx = resolveMcqCorrectOptionIndex(question, subIndex);
-    const userNum = Number(rawAnswerStr);
-    const userLetter = rawAnswerStr.length === 1 ? rawAnswerStr.toUpperCase().charCodeAt(0) - 65 : -1;
-    const isCorrect = userNum === correctIdx || userLetter === correctIdx;
-    const correctLetter = String.fromCharCode(65 + correctIdx);
-    const correctOptionText = options[correctIdx] || `Option ${correctLetter}`;
+    const candidates: string[] = [];
+    if (subIndex !== undefined && question.sub_questions?.[subIndex]) {
+      const sq = question.sub_questions[subIndex];
+      if (sq.mark_scheme) {
+        if (typeof sq.mark_scheme === 'string') candidates.push(sq.mark_scheme);
+        else if (typeof (sq as any).mark_scheme === 'object') {
+          const obj: any = sq.mark_scheme;
+          if (Array.isArray(obj.acceptable_answers)) candidates.push(...obj.acceptable_answers);
+          if (Array.isArray(obj.marking_points)) candidates.push(...obj.marking_points);
+        }
+      }
+    }
+    if (question.mark_scheme) {
+      if (typeof question.mark_scheme === 'string') candidates.push(question.mark_scheme);
+      else {
+        if (question.mark_scheme.acceptable_answers) candidates.push(...question.mark_scheme.acceptable_answers);
+        if (question.mark_scheme.marking_points) candidates.push(...question.mark_scheme.marking_points);
+      }
+    }
 
-    return {
-      isHandled: true,
-      earnedMarks: isCorrect ? maxMarks : 0,
-      maxMarks,
-      isCorrect,
-      matchType: 'mcq',
-      feedback: isCorrect
-        ? `✓ Correct choice: Option ${correctLetter}`
-        : `✗ Selected ${userNum >= 0 && userNum < 26 ? `Option ${String.fromCharCode(65 + userNum)}` : rawAnswerStr}, correct answer is Option ${correctLetter} (${correctOptionText})`,
-      matchedCriteria: [`Option ${correctLetter}`],
-      acceptedAnswers: [`Option ${correctLetter}`, correctOptionText],
-    };
+    // Check Multi-Select (e.g. "B, C" or "B, C, E")
+    const multiTargetLetters = extractMultiSelectTargetLetters(candidates);
+    if (multiTargetLetters.length >= 2) {
+      const studentLetters = Array.from(new Set(rawAnswerStr.toUpperCase().match(/[A-Z]/g) || [])).sort();
+      const isExactMatch = studentLetters.join('') === multiTargetLetters.join('');
+      const correctOverlap = studentLetters.filter((l) => multiTargetLetters.includes(l)).length;
+      const incorrectCount = studentLetters.filter((l) => !multiTargetLetters.includes(l)).length;
+
+      const correctSelected = studentLetters.filter((l) => multiTargetLetters.includes(l));
+      const incorrectSelected = studentLetters.filter((l) => !multiTargetLetters.includes(l));
+      const missedTargets = multiTargetLetters.filter((l) => !studentLetters.includes(l));
+
+      let earnedMarks = 0;
+      if (isExactMatch) {
+        earnedMarks = maxMarks;
+      } else if (incorrectCount === 0 && correctOverlap > 0 && maxMarks > 1) {
+        // Partial credit when all selected options are correct but some targets were missed
+        earnedMarks = Math.min(maxMarks - 1, Math.floor((correctOverlap / multiTargetLetters.length) * maxMarks));
+      } else if (incorrectCount > 0 && correctOverlap > incorrectCount && maxMarks > 1) {
+        // Net partial credit: correct selections minus wrong selections
+        const netCorrect = correctOverlap - incorrectCount;
+        earnedMarks = Math.min(maxMarks - 1, Math.floor((netCorrect / multiTargetLetters.length) * maxMarks));
+      }
+
+      let feedback = '';
+      if (isExactMatch) {
+        feedback = `✓ Correct multi-select: ${multiTargetLetters.join(', ')}`;
+      } else {
+        const breakdownParts: string[] = [];
+        if (correctSelected.length > 0) breakdownParts.push(`✓ Correct: ${correctSelected.join(', ')}`);
+        if (incorrectSelected.length > 0) breakdownParts.push(`✗ Incorrect: ${incorrectSelected.join(', ')}`);
+        if (missedTargets.length > 0) breakdownParts.push(`Missed: ${missedTargets.join(', ')}`);
+        feedback = `${earnedMarks > 0 ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): ` : '✗ '}Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')})`;
+      }
+
+      return {
+        isHandled: true,
+        earnedMarks,
+        maxMarks,
+        isCorrect: isExactMatch,
+        matchType: 'mcq',
+        feedback,
+        matchedCriteria: [multiTargetLetters.join(', ')],
+        acceptedAnswers: [multiTargetLetters.join(', ')],
+      };
+    }
+
+    // Single-Choice MCQ (only handled if an option index could be identified from mark scheme)
+    const correctIdx = resolveMcqCorrectOptionIndex(question, subIndex);
+    if (correctIdx >= 0) {
+      const userNum = Number(rawAnswerStr);
+      const userLetter = rawAnswerStr.length === 1 ? rawAnswerStr.toUpperCase().charCodeAt(0) - 65 : -1;
+      const isCorrect = userNum === correctIdx || userLetter === correctIdx;
+      const correctLetter = String.fromCharCode(65 + correctIdx);
+      const correctOptionText = options[correctIdx] || `Option ${correctLetter}`;
+
+      return {
+        isHandled: true,
+        earnedMarks: isCorrect ? maxMarks : 0,
+        maxMarks,
+        isCorrect,
+        matchType: 'mcq',
+        feedback: isCorrect
+          ? `✓ Correct choice: Option ${correctLetter}`
+          : `✗ Selected ${userNum >= 0 && userNum < options.length ? `Option ${String.fromCharCode(65 + userNum)}` : rawAnswerStr}, correct answer is Option ${correctLetter} (${correctOptionText})`,
+        matchedCriteria: [`Option ${correctLetter}`],
+        acceptedAnswers: [`Option ${correctLetter}`, correctOptionText],
+      };
+    }
+  }
+
+  // ─── 0. Inline Gap Fill (Cloze / Sentence Completion) Evaluation ─────────
+  const qText = (subIndex !== undefined && question.sub_questions?.[subIndex]
+    ? question.sub_questions[subIndex].question_text
+    : (typeof question.question_text === 'string' ? question.question_text : '')) || '';
+
+  const isGapFillStyle = question.question_style === 'Fill in the Blank' || /(\[\s*\d+\s*\]|\[\s*(?:blank|gap)\s*\d*\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\])/i.test(qText);
+
+  if (isGapFillStyle) {
+    const gapExpectedMap = extractGapExpectedMap(question, subIndex);
+    const gapKeys = Object.keys(gapExpectedMap);
+
+    if (gapKeys.length > 0) {
+      const studentGapAnswers = parseStudentGapAnswers(rawAnswerStr);
+      let correctGaps = 0;
+      const totalGaps = gapKeys.length;
+      const feedbackParts: string[] = [];
+      const matchedCriteria: string[] = [];
+
+      for (const gNum of gapKeys) {
+        const expectedList = gapExpectedMap[gNum] || [];
+        const studentAns = (studentGapAnswers[gNum] || studentGapAnswers[`gap_${gNum}`] || '').trim();
+
+        const isMatch = expectedList.some((exp) => {
+          if (!studentAns) return false;
+          if (studentAns.toLowerCase() === exp.toLowerCase()) return true;
+          if (isChemicalEquivalent(studentAns, exp)) return true;
+          if (isKeywordMatch(studentAns, [exp])) return true;
+          const numRes = isNumericEquivalent(studentAns, exp);
+          return numRes.isMatch;
+        });
+
+        if (isMatch) {
+          correctGaps++;
+          feedbackParts.push(`✓ [${gNum}] ${studentAns}`);
+          matchedCriteria.push(`[${gNum}] ${studentAns}`);
+        } else {
+          feedbackParts.push(`✗ [${gNum}] ${studentAns ? `"${studentAns}"` : '(blank)'} (Expected: ${expectedList.join(' / ')})`);
+        }
+      }
+
+      const earnedMarks = Math.round((correctGaps / totalGaps) * maxMarks);
+      const isAllCorrect = correctGaps === totalGaps;
+
+      return {
+        isHandled: true,
+        earnedMarks,
+        maxMarks,
+        isCorrect: isAllCorrect,
+        matchType: 'keyword',
+        feedback: isAllCorrect
+          ? `✓ All ${totalGaps} blanks correct: ${feedbackParts.join('; ')}`
+          : `${earnedMarks > 0 ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): ` : '✗ '}${feedbackParts.join('; ')}`,
+        matchedCriteria,
+        acceptedAnswers: gapKeys.map((k) => `[${k}] ${(gapExpectedMap[k] || []).join(' / ')}`),
+      };
+    }
   }
 
   const acceptableList = extractAcceptableAnswers(question, subIndex);

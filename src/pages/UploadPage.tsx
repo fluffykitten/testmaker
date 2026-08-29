@@ -11,6 +11,7 @@ import {
   revokeLocalDiagramUrls,
   type DiagramCropItem,
 } from '../lib/diagramCropper';
+import type { SubjectDomain } from '../lib/gemini';
 import type { ExtractionResult } from '../types/database';
 import './UploadPage.css';
 
@@ -57,7 +58,7 @@ export function UploadPage() {
       qpFile: File,
       msFile: File | null,
       insertFile: File | null,
-      options: { includeGuidance: boolean; domain: 'stem' | 'humanities' } = { includeGuidance: true, domain: 'stem' }
+      options: { includeGuidance: boolean; domain: SubjectDomain } = { includeGuidance: true, domain: 'stem' }
     ) => {
       setSavedCount(null);
       setExtractionResult(null);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   fetchStudentResultsCloud,
@@ -82,7 +83,7 @@ export function StudentResultModal({
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="srm-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="srm-modal animate-scale-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
@@ -430,6 +431,7 @@ export function StudentResultModal({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -595,7 +595,29 @@ export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className =
                 );
               }
 
-              // 3. Regular Text & Math
+              // 3. Markdown Headings (#, ##, ###, ####)
+              const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+              if (headingMatch) {
+                const level = headingMatch[1].length;
+                const headingText = headingMatch[2];
+                return (
+                  <div
+                    key={li}
+                    className={`exam-heading exam-heading-${level}`}
+                    style={{
+                      margin: '12px 0 6px 0',
+                      fontWeight: 800,
+                      fontSize: level === 1 ? '1.25rem' : level === 2 ? '1.125rem' : '1.025rem',
+                      color: 'var(--color-primary-600, #2563eb)',
+                      lineHeight: '1.4',
+                    }}
+                  >
+                    {renderMathSnippet(headingText)}
+                  </div>
+                );
+              }
+
+              // 4. Regular Text & Math
               return (
                 <React.Fragment key={li}>
                   {renderMathSnippet(line)}

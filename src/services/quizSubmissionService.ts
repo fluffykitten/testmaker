@@ -231,11 +231,69 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
   }
 }
 
-export function updateSubmission(submission: StudentSubmission): void {
-  saveQuizSubmissionCloud(submission);
+/**
+ * Saves a batch of submissions both locally and asynchronously in Supabase cloud.
+ */
+export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmission[]): Promise<boolean> {
+  if (submissions.length === 0) return true;
+
+  // 1. Save all to local storage immediately
+  try {
+    const existing = getAllSubmissions();
+    const subIds = new Set(submissions.map((s) => s.id));
+    const filtered = existing.filter((s) => !subIds.has(s.id));
+    const updated = [...submissions, ...filtered];
+    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+  } catch (err) {
+    console.error('Failed to batch save submissions locally:', err);
+  }
+
+  // 2. Batch upsert to Supabase
+  try {
+    const rows = submissions.map((submission) => ({
+      id: submission.id,
+      quiz_id: submission.quizId,
+      quiz_code: submission.quizCode.toUpperCase(),
+      quiz_title: submission.quizTitle,
+      subject: submission.subject,
+      student_name: submission.studentName,
+      student_class: submission.studentClass,
+      candidate_number: submission.candidateNumber,
+      submitted_at: submission.submittedAt,
+      duration_seconds: submission.durationSeconds,
+      score: submission.score,
+      total_marks: submission.totalMarks,
+      percentage: submission.percentage,
+      violations_count: submission.violationsCount,
+      proctoring_logs: submission.proctoringLogs,
+      raw_answers: submission.rawAnswers || {},
+      question_results: submission.questionResults,
+      topic_breakdown: submission.topicBreakdown,
+      status: submission.status || 'submitted',
+      teacher_adjusted_marks: submission.teacherAdjustedMarks || 0,
+      teacher_notes: submission.teacherNotes || '',
+      result_pin: submission.resultPin || '',
+      updated_at: new Date().toISOString(),
+    }));
+
+    const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(rows);
+
+    if (error) {
+      console.warn('Could not batch sync submissions to Supabase cloud:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Error batch pushing submissions to Supabase:', err);
+    return false;
+  }
 }
 
-export function deleteSubmission(id: string): void {
+export async function updateSubmission(submission: StudentSubmission): Promise<boolean> {
+  return await saveQuizSubmissionCloud(submission);
+}
+
+export async function deleteSubmission(id: string): Promise<void> {
   try {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.id !== id);
@@ -245,16 +303,16 @@ export function deleteSubmission(id: string): void {
   }
 
   try {
-    (supabase.from('quiz_submissions' as any) as any)
+    const { error } = await (supabase.from('quiz_submissions' as any) as any)
       .delete()
-      .eq('id', id)
-      .then(({ error }: any) => {
-        if (error) console.warn('Could not delete from cloud:', error.message);
-      });
-  } catch {}
+      .eq('id', id);
+    if (error) console.warn('Could not delete from cloud:', error.message);
+  } catch (err) {
+    console.warn('Cloud delete error:', err);
+  }
 }
 
-export function clearSubmissionsForQuiz(quizId: string, quizCode?: string): void {
+export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string): Promise<void> {
   try {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.quizId !== quizId && (!quizCode || s.quizCode.toUpperCase() !== quizCode.toUpperCase()));
@@ -270,10 +328,11 @@ export function clearSubmissionsForQuiz(quizId: string, quizCode?: string): void
     } else {
       q = q.eq('quiz_id', quizId);
     }
-    q.then(({ error }: any) => {
-      if (error) console.warn('Could not clear from cloud:', error.message);
-    });
-  } catch {}
+    const { error } = await q;
+    if (error) console.warn('Could not clear from cloud:', error.message);
+  } catch (err) {
+    console.warn('Cloud clear error:', err);
+  }
 }
 
 /**

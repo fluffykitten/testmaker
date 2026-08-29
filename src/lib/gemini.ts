@@ -62,7 +62,7 @@ export function hasMultipleApiKeys(): boolean {
   return getGeminiApiKeys().length >= 2;
 }
 
-export type SubjectDomain = 'stem' | 'humanities';
+export type SubjectDomain = 'stem' | 'humanities' | 'languages';
 
 /**
  * Builds the specialized STEM (Sciences, Math, Technology) extraction prompt.
@@ -586,6 +586,190 @@ CRITICAL FORMATTING RULES:
 }
 
 /**
+ * Builds the specialized Language, Literature, Reading Comprehension, and TKA/National Exam extraction prompt.
+ * Focuses on reading passage preservation, 5-option MCQs (A-E/a-e), complex multiple select (Pilihan Ganda Kompleks),
+ * matching/category tables (Menjodohkan), and in-PDF answer key/pembahasan parsing with 100% verbatim accuracy.
+ */
+export function getLanguageExtractionPrompt(includeGuidance: boolean = true): string {
+  const guidanceSchemaSnippet = includeGuidance
+    ? `,
+      "guidance": [
+        "Pembahasan: Teks secara eksplisit menyatakan...",
+        "Pedagogical explanation of why Option C is correct and distractor analysis"
+      ],
+      "common_misconceptions": [
+        "Common student error: confusing primary purpose with a supporting detail in paragraph 2",
+        "Selecting only one option when multiple choices are required"
+      ]`
+    : '';
+
+  return `You are an expert assessment parser specializing in English Language & Literature, Reading Comprehension, TKA / AKM / National Exams (e.g. SMA/MA Kelas 12 Bahasa Inggris), SAT, ACT, and Language Proficiency Assessments.
+Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.
+
+Extract every numbered question (e.g. Question 1, 2, 3... 30) as a structured JSON object.
+
+CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
+1. CRITICAL MANDATORY PASSAGE PRESERVATION RULE (FULL VERBATIM EXTRACTION - ZERO TRUNCATION / NO ELLIPSIS):
+   - ABSOLUTELY NEVER USE ELLIPSIS (...) OR TRUNCATE A READING TEXT!
+   - You MUST extract and transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom.
+   - When a reading passage / stimulus text applies to a group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
+   - You MUST include the complete reading text heading and FULL body paragraphs inside the "question_text" of EVERY SINGLE QUESTION belonging to that text.
+   - NEVER drop or omit paragraphs on subsequent questions (e.g. Q2, Q3, Q4 must contain the exact same complete text as Q1).
+   - Format "question_text" cleanly with Markdown:
+     "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n**Question 2:** The text primarily discusses..."
+
+2. EXTRACT 100% OF ALL QUESTIONS WITHOUT SKIPPING ANY:
+   - You MUST extract every numbered question (e.g. Question 1 to Question 30) present across all pages.
+   - Never skip, merge, or omit any question.
+
+3. 5-OPTION MULTIPLE CHOICE QUESTIONS (A, B, C, D, E or a, b, c, d, e):
+   - When a question has 5 options (A–E or a–e) and exactly 1 correct answer:
+   - Set "question_style": "Multiple Choice".
+   - Extract ALL 5 options in "options": ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."].
+   - Set "total_marks": 1.
+
+4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "[Multiple Select]" / "There is more than one answer"):
+   - When a question header specifies "[Multiple Select]" or "(There is more than one correct answer. Tick (✓) on every correct answer!)" or is classified as "Pilihan Ganda Kompleks" in the answer key:
+   - Set "question_style": "Multiple Select".
+   - Extract ALL choices (A–E) in "options".
+   - In "mark_scheme":
+     - Set "acceptable_answers": ["B, C"] (or ["B, C, E"], ["A, C, D"], etc.).
+     - Set "marking_points": ["Correct options: B, C [2]"].
+   - Assign appropriate total_marks (e.g. 2 or 3 marks).
+
+5. MATCHING & CATEGORY TABLES ("Menjodohkan" / Matrix / Categorization):
+   - When a question presents a classification table (e.g. "[Matching/Table]" or "Menjodohkan"):
+   - Set "question_style": "Structured".
+   - Transcribe the complete table as a clean Markdown Table inside "question_text":
+     "| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | [ ] | [ ] |\\n| Padar Island | [ ] | [ ] |\\n| Pink Beach | [ ] | [ ] |"
+   - In "mark_scheme":
+     - Set "acceptable_answers": ["KNP Waters: Conservation; Padar Island: Natural Beauty; Pink Beach: Natural Beauty"].
+     - Set "marking_points": ["KNP Waters = Conservation [1]", "Padar Island = Natural Beauty [1]", "Pink Beach = Natural Beauty [1]"].
+
+6. IN-PDF ANSWER KEYS & EXPLANATIONS ("Kunci Jawaban dan Pembahasan"):
+   - Match each question number in the table (e.g. No. 1 to No. 30) with its question.
+   - Extract the correct answer into "acceptable_answers" and "marking_points".
+   - Extract the complete pedagogical explanation / reasoning ("Pembahasan") verbatim into "guidance" or "marking_points". DO NOT summarize the Pembahasan!
+
+7. STRICT VERBATIM LANGUAGE PRESERVATION (ZERO UNWANTED TRANSLATIONS):
+   - ABSOLUTELY NEVER translate English reading texts or questions into Indonesian.
+   - ABSOLUTELY NEVER translate Indonesian instructions, headers, or "Pembahasan" into English.
+   - Preserve the exact verbatim text and original language of all passages, questions, options, table rows, and explanations.
+
+8. IELTS & CAMBRIDGE FILL-IN-THE-BLANK, FORM COMPLETION & NOTES COMPLETION (CRITICAL):
+   - When a question requires filling in missing words/numbers in sentences, notes, forms, summaries, or tables:
+     a) Set "question_style": "Fill in the Blank".
+     b) Replace blank lines or dots with numbered bracket gaps "[1]", "[2]", "[3]" directly inside the sentence or form layout:
+        e.g. "Customer Name: [1]\\nAddress: 42 [2] Avenue\\nDate of departure: [3]\\nType of ticket: [4]"
+     c) Set "total_marks" to the number of gaps (e.g. 4 marks for 4 gaps).
+     d) In "mark_scheme":
+        - "marking_points": ["[1] John Smith [1]", "[2] Springfield [1]", "[3] 15 October / 15th October [1]", "[4] economy / return [1]"]
+        - "acceptable_answers": ["[1] John Smith / J. Smith", "[2] Springfield / Springfield Ave", "[3] 15 October / October 15 / 15th Oct", "[4] economy / return ticket"]
+
+Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
+
+{
+  "paper_metadata": {
+    "subject": "English",
+    "subject_code": "ENG",
+    "year": 2026,
+    "series": "Tray Out TKA",
+    "paper_number": 1,
+    "has_insert_booklet": false
+  },
+  "questions": [
+    {
+      "question_number": "1",
+      "parent_question_id": "Q1",
+      "page_number": 3,
+      "year": 2026,
+      "series": "TKA",
+      "paper_number": 1,
+      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!\\n\\n| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | | |\\n| Padar Island | | |\\n| Pink Beach | | |",
+      "question_style": "Structured",
+      "total_marks": 3,
+      "estimated_difficulty": "Medium",
+      "topic": "Reading Comprehension - Descriptive Text",
+      "sub_topic": "Categorization & Purpose",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": null,
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": [
+          "KNP Waters: Conservation [1]",
+          "Padar Island: Natural Beauty [1]",
+          "Pink Beach: Natural Beauty [1]"
+        ],
+        "acceptable_answers": [
+          "KNP Waters: Conservation; Padar Island: Natural Beauty; Pink Beach: Natural Beauty"
+        ]${guidanceSchemaSnippet}
+      }
+    },
+    {
+      "question_number": "2",
+      "parent_question_id": "Q2",
+      "page_number": 4,
+      "year": 2026,
+      "series": "TKA",
+      "paper_number": 1,
+      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n2. [Multiple Choice]\\nThe text primarily discusses...",
+      "question_style": "Multiple Choice",
+      "total_marks": 1,
+      "estimated_difficulty": "Easy",
+      "topic": "Reading Comprehension - Main Idea",
+      "sub_topic": "General Understanding",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. Efforts to protect the Komodo dragon and islands in Indonesia.",
+        "B. Marine biodiversity and coral reefs in the Coral Triangle.",
+        "C. The natural beauty and importance of conservation at Komodo National Park.",
+        "D. Diving and hiking activities available to tourists in Flores.",
+        "E. Three bays with different colored sand on Padar Island."
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["C [1]"],
+        "acceptable_answers": ["C"]${guidanceSchemaSnippet}
+      }
+    },
+    {
+      "question_number": "3",
+      "parent_question_id": "Q3",
+      "page_number": 4,
+      "year": 2026,
+      "series": "TKA",
+      "paper_number": 1,
+      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n3. [Multiple Select]\\nWhich parts of the text best support the description of Komodo National Park as an \\"ecological paradise\\"? (There is more than one correct answer. Click on every correct answer!)",
+      "question_style": "Multiple Select",
+      "total_marks": 2,
+      "estimated_difficulty": "Medium",
+      "topic": "Reading Comprehension - Supporting Evidence",
+      "sub_topic": "Multiple Select",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. The iconic view featuring three bays with different colored sand.",
+        "B. The park was established to protect the Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity.",
+        "C. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.",
+        "D. Every ticket purchased supports the protection of the endangered Komodo dragon."
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["B, C [2]"],
+        "acceptable_answers": ["B, C", "B", "C"]${guidanceSchemaSnippet}
+      }
+    }
+  ]
+}
+`;
+}
+
+/**
  * Main prompt dispatcher based on subject domain and insert configuration.
  */
 export function getExtractionPrompt(
@@ -593,6 +777,9 @@ export function getExtractionPrompt(
   domain: SubjectDomain = 'stem',
   hasInsert: boolean = false
 ): string {
+  if (domain === 'languages') {
+    return getLanguageExtractionPrompt(includeGuidance);
+  }
   if (domain === 'humanities') {
     return getHumanitiesExtractionPrompt(hasInsert, includeGuidance);
   }

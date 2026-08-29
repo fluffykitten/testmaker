@@ -13,13 +13,19 @@ import {
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
-import { gradeDeterministicAnswer, resolveMcqCorrectOptionIndex } from '../services/deterministicGradingService';
+import {
+  gradeDeterministicAnswer,
+  resolveQuestionModelAnswer,
+  extractMultiSelectTargetLetters,
+} from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
+import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
+import { ExamAudioPlayer } from '../components/ExamAudioPlayer';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -214,6 +220,7 @@ export function StudentQuizRunner({
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
   const [showCalculator, setShowCalculator] = useState<boolean>(false);
   const [showResourceBooklet, setShowResourceBooklet] = useState<boolean>(false);
+  const [showMobileNav, setShowMobileNav] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
 
   // Grading & AI Evaluation State
@@ -243,6 +250,7 @@ export function StudentQuizRunner({
   const containerRef = useRef<HTMLDivElement>(null);
   const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
   const zoomModalDismiss = useBackdropDismiss(() => setZoomedImage(null));
+  const mobileNavDismiss = useBackdropDismiss(() => setShowMobileNav(false));
 
   // Accurate Sub-Questions and Answered Items Counting
   const quizStats = useMemo(() => {
@@ -251,7 +259,8 @@ export function StudentQuizRunner({
 
     for (let qIdx = 0; qIdx < questions.length; qIdx++) {
       const q = questions[qIdx];
-      if (q.sub_questions && q.sub_questions.length > 0) {
+      const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
+      if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
         for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
           totalItems++;
           const subKey = `${qIdx}_${sIdx}`;
@@ -503,24 +512,11 @@ export function StudentQuizRunner({
 
           let isCorrect = false;
           let qEarned = 0;
+          let aiFeedback: string | undefined;
           let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
           const subResults: any[] = [];
 
-          // Fast deterministic evaluation for MCQs
-          if (q.options && q.options.length > 0) {
-            gradingMethod = 'mcq';
-            const userAns = answers[idx];
-            const correctIdx = resolveMcqCorrectOptionIndex(q);
-            const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
-            const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
-              ? userAns.trim().toUpperCase().charCodeAt(0) - 65
-              : -1;
-
-            if (userNum === correctIdx || userLetter === correctIdx) {
-              isCorrect = true;
-              qEarned = qMarks;
-            }
-          } else if (q.sub_questions && q.sub_questions.length > 0) {
+          if (q.sub_questions && q.sub_questions.length > 0) {
             let totalSubEarned = 0;
             for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
               const sq = q.sub_questions[sIdx];
@@ -560,7 +556,8 @@ export function StudentQuizRunner({
             if (det.isHandled) {
               qEarned = det.earnedMarks;
               isCorrect = det.isCorrect;
-              gradingMethod = 'deterministic';
+              aiFeedback = det.feedback;
+              gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
             }
           }
 
@@ -577,14 +574,9 @@ export function StudentQuizRunner({
             earnedMarks: qEarned,
             isCorrect,
             studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
-            correctAnswer: (q.options && q.options.length > 0)
-              ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
-              : typeof q.mark_scheme === 'string'
-              ? q.mark_scheme
-              : Array.isArray(q.mark_scheme?.marking_points)
-              ? q.mark_scheme.marking_points.join('; ')
-              : undefined,
+            correctAnswer: resolveQuestionModelAnswer(q),
             misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+            aiFeedback,
             gradingMethod,
             subQuestionResults: subResults.length > 0 ? subResults : undefined,
           });
@@ -674,23 +666,9 @@ export function StudentQuizRunner({
         let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
         const subResults: any[] = [];
 
-        // Case A: Multiple Choice Question
-        if (q.options && q.options.length > 0) {
-          gradingMethod = 'mcq';
-          const userAns = answers[idx];
-          const correctIdx = resolveMcqCorrectOptionIndex(q);
-          const userNum = userAns !== undefined && userAns !== '' ? Number(userAns) : -1;
-          const userLetter = typeof userAns === 'string' && userAns.trim().length === 1
-            ? userAns.trim().toUpperCase().charCodeAt(0) - 65
-            : -1;
-
-          if (userNum === correctIdx || userLetter === correctIdx) {
-            isCorrect = true;
-            qEarned = qMarks;
-          }
-        }
-        // Case B: Multi-Part Structured Question
-        else if (q.sub_questions && q.sub_questions.length > 0) {
+        // Case A: Multi-Part Structured Question (excluding MCQ/Multiple Select)
+        const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
+        if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
           let totalSubEarned = 0;
           for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
             const sq = q.sub_questions[sIdx];
@@ -731,7 +709,7 @@ export function StudentQuizRunner({
           qEarned = Math.min(totalSubEarned, qMarks);
           isCorrect = qEarned === qMarks;
         }
-        // Case C: Standalone Structured / Short Answer Question
+        // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
         else {
           const userAns = answers[idx] ?? '';
           const det = gradeDeterministicAnswer(userAns, q);
@@ -739,7 +717,7 @@ export function StudentQuizRunner({
             qEarned = det.earnedMarks;
             isCorrect = det.isCorrect;
             aiFeedback = det.feedback;
-            gradingMethod = 'deterministic';
+            gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
           } else {
             setGradingProgressText(`AI Examiner evaluating Question ${idx + 1}...`);
             const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
@@ -765,13 +743,7 @@ export function StudentQuizRunner({
           earnedMarks: qEarned,
           isCorrect,
           studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
-          correctAnswer: (q.options && q.options.length > 0)
-            ? `Option ${String.fromCharCode(65 + resolveMcqCorrectOptionIndex(q))}: ${cleanMcqOptionContent(q.options[resolveMcqCorrectOptionIndex(q)] || '', resolveMcqCorrectOptionIndex(q))}`
-            : typeof q.mark_scheme === 'string'
-            ? q.mark_scheme
-            : Array.isArray(q.mark_scheme?.marking_points)
-            ? q.mark_scheme.marking_points.join('; ')
-            : undefined,
+          correctAnswer: resolveQuestionModelAnswer(q),
           misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
           aiFeedback,
           missingPoints,
@@ -929,9 +901,278 @@ export function StudentQuizRunner({
   const currentQuestion = questions[currentIndex];
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
 
+  // Active listening audio recording for IELTS persistent audio bar
+  const currentAudioUrl = useMemo(() => {
+    if (!currentQuestion) return null;
+    return currentQuestion.audio_url || currentQuestion.sub_questions?.find((s) => s.audio_url)?.audio_url || null;
+  }, [currentQuestion]);
+
+  const currentAudioMeta = useMemo(() => {
+    if (!currentQuestion) return null;
+    return currentQuestion.audio_metadata || currentQuestion.sub_questions?.find((s) => s.audio_metadata)?.audio_metadata || null;
+  }, [currentQuestion]);
+
+  // Compute question range that uses this exact audioUrl (e.g. "Questions 1–5")
+  const currentAudioQuestionRange = useMemo(() => {
+    if (!currentAudioUrl || questions.length === 0) return '';
+    const matchingNumbers: number[] = [];
+    questions.forEach((q, idx) => {
+      const qAudio = q.audio_url || q.sub_questions?.find((s) => s.audio_url)?.audio_url;
+      if (qAudio === currentAudioUrl) {
+        matchingNumbers.push(idx + 1);
+      }
+    });
+    if (matchingNumbers.length === 0) return '';
+    if (matchingNumbers.length === 1) return `Question ${matchingNumbers[0]}`;
+    const minQ = Math.min(...matchingNumbers);
+    const maxQ = Math.max(...matchingNumbers);
+    const isConsecutive = matchingNumbers.length === (maxQ - minQ + 1);
+    if (isConsecutive) {
+      return `Questions ${minQ}–${maxQ}`;
+    }
+    return `Questions ${matchingNumbers.join(', ')}`;
+  }, [currentAudioUrl, questions]);
+
+  // Subject Domain Detection & Tool Visibility
+  const isLanguageExam = useMemo(() => {
+    const subj = (headerConfig?.subject || '').toLowerCase();
+    const code = (headerConfig?.subjectCode || '').toLowerCase();
+    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
+    const titleLower = (title || '').toLowerCase();
+
+    return (
+      subj.includes('english') ||
+      subj.includes('bahasa') ||
+      subj.includes('literature') ||
+      subj.includes('reading') ||
+      subj.includes('tka') ||
+      code.includes('eng') ||
+      sampleTopic.includes('reading') ||
+      sampleTopic.includes('english') ||
+      titleLower.includes('english') ||
+      titleLower.includes('bahasa')
+    );
+  }, [headerConfig, questions, title]);
+
+  const isChemistryExam = useMemo(() => {
+    if (isLanguageExam) return false;
+    const subj = (headerConfig?.subject || '').toLowerCase();
+    const code = (headerConfig?.subjectCode || '').toLowerCase();
+    const mats = (headerConfig?.additionalMaterials || '').toLowerCase();
+    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
+    const titleLower = (title || '').toLowerCase();
+
+    return (
+      subj.includes('chem') ||
+      code === '0620' ||
+      code === '0971' ||
+      code === '5070' ||
+      mats.includes('periodic') ||
+      sampleTopic.includes('chem') ||
+      titleLower.includes('chemistry')
+    );
+  }, [isLanguageExam, headerConfig, questions, title]);
+
+  const isStemOrMathExam = useMemo(() => {
+    if (isLanguageExam) return false;
+    const subj = (headerConfig?.subject || '').toLowerCase();
+    const code = (headerConfig?.subjectCode || '').toLowerCase();
+    const mats = (headerConfig?.additionalMaterials || '').toLowerCase();
+    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
+    const titleLower = (title || '').toLowerCase();
+
+    return (
+      subj.includes('math') ||
+      subj.includes('phys') ||
+      subj.includes('chem') ||
+      subj.includes('bio') ||
+      subj.includes('econ') ||
+      subj.includes('account') ||
+      subj.includes('sci') ||
+      code.includes('0620') ||
+      code.includes('0625') ||
+      code.includes('0580') ||
+      mats.includes('calc') ||
+      sampleTopic.includes('math') ||
+      sampleTopic.includes('phys') ||
+      sampleTopic.includes('chem') ||
+      titleLower.includes('math') ||
+      titleLower.includes('phys') ||
+      titleLower.includes('chem')
+    );
+  }, [isLanguageExam, headerConfig, questions, title]);
+
+  const hasResourceBooklet = useMemo(() => {
+    return questions.some((q) => q.resource_ref || q.diagram_source === 'insert' || (q as any).insert_resource_id);
+  }, [questions]);
+
+  // Active Stimulus Passage detection for multi-question reading texts (e.g. Text 1 for Q1-Q4)
+  const activeStimulusPassage = useMemo(() => {
+    const currentQ = questions[currentIndex];
+    if (!currentQ) return null;
+    const currentText = currentQ.question_text || '';
+
+    // If current question already has a full stimulus passage header, don't duplicate
+    if (/###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+/i.test(currentText)) {
+      return null;
+    }
+
+    // Scan backwards to find the nearest previous question with a stimulus passage
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const prevText = questions[i]?.question_text || '';
+      const match = prevText.match(/(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    return null;
+  }, [questions, currentIndex]);
+
+  const isMultiSelect = useMemo(() => {
+    if (!currentQuestion) return false;
+    const stem = (currentQuestion.question_text || '').toLowerCase();
+    const markPoints = (currentQuestion.mark_scheme as any)?.marking_points || [];
+    const acceptable = (currentQuestion.mark_scheme as any)?.acceptable_answers || [];
+    const allCand = [...(Array.isArray(markPoints) ? markPoints : []), ...(Array.isArray(acceptable) ? acceptable : [])];
+    const targetLetters = extractMultiSelectTargetLetters(allCand);
+    return (
+      currentQuestion.question_style === 'Multiple Select' ||
+      targetLetters.length >= 2 ||
+      stem.includes('[multiple select]') ||
+      stem.includes('multiple select') ||
+      stem.includes('more than one correct answer') ||
+      stem.includes('more than one answer') ||
+      stem.includes('tick (✓) on every correct answer') ||
+      stem.includes('pilihan ganda kompleks') ||
+      stem.includes('select all that apply')
+    );
+  }, [currentQuestion]);
+
+  // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
+  const currentTable = useMemo(() => {
+    if (!currentQuestion || (currentQuestion.options && currentQuestion.options.length > 0) || (currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0)) {
+      return null;
+    }
+    const qText = currentQuestion.question_text || '';
+    if (!qText.includes('|')) return null;
+
+    const lines = qText.split('\n');
+    const tableLines: string[] = [];
+    const preLines: string[] = [];
+    let inTable = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const isPipe = trimmed.startsWith('|') || (trimmed.match(/\|/g) || []).length >= 2;
+      if (isPipe) {
+        inTable = true;
+        tableLines.push(line);
+      } else if (inTable) {
+        break;
+      } else {
+        preLines.push(line);
+      }
+    }
+
+    if (tableLines.length < 2) return null;
+
+    const isSeparatorRow = (l: string) => {
+      const clean = l.trim().replace(/^\|/, '').replace(/\|$/, '');
+      const cells = clean.split('|').map((c) => c.trim());
+      return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c) || /^[-:\s]+$/.test(c));
+    };
+
+    const parseRow = (r: string) => {
+      let clean = r.trim();
+      if (clean.startsWith('|')) clean = clean.slice(1);
+      if (clean.endsWith('|')) clean = clean.slice(0, -1);
+      return clean.split('|').map((c) => c.trim());
+    };
+
+    const rawRows = tableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
+    if (rawRows.length < 2) return null;
+
+    const headerCells = parseRow(rawRows[0]);
+    if (headerCells.length < 2) return null;
+
+    const rows = rawRows
+      .slice(1)
+      .map((r) => {
+        const cells = parseRow(r);
+        return {
+          label: cells[0] || '',
+          cells: cells.slice(1),
+        };
+      })
+      .filter((r) => r.label.trim().length > 0);
+
+    if (rows.length === 0) return null;
+
+    return {
+      headerCells,
+      rows,
+      preTableText: preLines.join('\n').trim(),
+    };
+  }, [currentQuestion]);
+
+  const currentTableSelections = useMemo(() => {
+    const map: Record<string, string> = {};
+    if (!currentTable) return map;
+    const rawVal = String(answers[currentIndex] || '');
+    if (!rawVal) return map;
+    const parts = rawVal.split(';');
+    for (const p of parts) {
+      const idx = p.indexOf(':');
+      if (idx !== -1) {
+        const rowLabel = p.slice(0, idx).trim();
+        const colVal = p.slice(idx + 1).trim();
+        if (rowLabel && colVal) {
+          map[rowLabel] = colVal;
+        }
+      }
+    }
+    return map;
+  }, [currentTable, answers, currentIndex]);
+
+  const handleTableSelectCell = (rowLabel: string, colName: string) => {
+    if (isSubmitted || !currentTable) return;
+    const nextMap = { ...currentTableSelections };
+    if (nextMap[rowLabel] === colName) {
+      delete nextMap[rowLabel];
+    } else {
+      nextMap[rowLabel] = colName;
+    }
+
+    const serialized = currentTable.rows
+      .filter((r) => nextMap[r.label])
+      .map((r) => `${r.label}: ${nextMap[r.label]}`)
+      .join('; ');
+
+    setAnswers((prev) => ({ ...prev, [currentIndex]: serialized }));
+  };
+
+  const handleClearTable = () => {
+    if (isSubmitted) return;
+    setAnswers((prev) => ({ ...prev, [currentIndex]: '' }));
+  };
+
   const handleSelectOption = (optionIndex: number) => {
     if (isSubmitted) return;
-    setAnswers((prev) => ({ ...prev, [currentIndex]: optionIndex }));
+    if (isMultiSelect) {
+      const letter = String.fromCharCode(65 + optionIndex);
+      const currentVal = String(answers[currentIndex] || '');
+      const currentLetters = currentVal.toUpperCase().match(/[A-Z]/g) || [];
+      const set = new Set(currentLetters);
+      if (set.has(letter)) {
+        set.delete(letter);
+      } else {
+        set.add(letter);
+      }
+      const sorted = Array.from(set).sort().join(', ');
+      setAnswers((prev) => ({ ...prev, [currentIndex]: sorted }));
+    } else {
+      setAnswers((prev) => ({ ...prev, [currentIndex]: optionIndex }));
+    }
   };
 
   const handleTextAnswerChange = (val: string) => {
@@ -1951,59 +2192,89 @@ export function StudentQuizRunner({
         <div className="sq-runner-header-right">
           {/* Interactive Exam Reference Tools: Periodic Table, Scientific Calculator, Resource Booklet */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              type="button"
-              className="sq-btn"
-              style={{
-                background: 'rgba(16, 185, 129, 0.15)',
-                color: '#34d399',
-                border: '1px solid rgba(16, 185, 129, 0.35)',
-                borderRadius: '8px',
-                fontSize: '0.8125rem',
-                fontWeight: 700,
-                padding: '6px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                cursor: 'pointer',
-              }}
-              onClick={() => setShowResourceBooklet(true)}
-              title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
-            >
-              <span>📖</span>
-              <span>Resource Booklet</span>
-            </button>
+            {hasResourceBooklet && (
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  color: '#34d399',
+                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setShowResourceBooklet(true)}
+                title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
+              >
+                <span>📖</span>
+                <span>Resource Booklet</span>
+              </button>
+            )}
 
-            <button
-              type="button"
-              className="sq-btn"
-              style={{
-                background: 'rgba(56, 189, 248, 0.15)',
-                color: '#38bdf8',
-                border: '1px solid rgba(56, 189, 248, 0.35)',
-                borderRadius: '8px',
-                fontSize: '0.8125rem',
-                fontWeight: 700,
-                padding: '6px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                cursor: 'pointer',
-              }}
-              onClick={() => setShowPeriodicTable(true)}
-              title="Open Cambridge Periodic Table of Elements & Physical Constants"
-            >
-              <span>🧪</span>
-              <span>Periodic Table</span>
-            </button>
+            {isChemistryExam && (
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'rgba(56, 189, 248, 0.15)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setShowPeriodicTable(true)}
+                title="Open Cambridge Periodic Table of Elements & Physical Constants"
+              >
+                <span>🧪</span>
+                <span>Periodic Table</span>
+              </button>
+            )}
 
+            {isStemOrMathExam && (
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'rgba(139, 92, 246, 0.15)',
+                  color: '#c084fc',
+                  border: '1px solid rgba(139, 92, 246, 0.35)',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setShowCalculator(true)}
+                title="Open On-Screen Scientific Calculator"
+              >
+                <span>🧮</span>
+                <span>Calculator</span>
+              </button>
+            )}
+
+            {/* Quick Question Jump Pill in Sticky Header */}
             <button
               type="button"
-              className="sq-btn"
+              className="sq-btn sq-header-nav-btn"
               style={{
-                background: 'rgba(139, 92, 246, 0.15)',
-                color: '#c084fc',
-                border: '1px solid rgba(139, 92, 246, 0.35)',
+                background: 'rgba(99, 102, 241, 0.15)',
+                color: '#818cf8',
+                border: '1px solid rgba(99, 102, 241, 0.35)',
                 borderRadius: '8px',
                 fontSize: '0.8125rem',
                 fontWeight: 700,
@@ -2013,11 +2284,12 @@ export function StudentQuizRunner({
                 gap: '6px',
                 cursor: 'pointer',
               }}
-              onClick={() => setShowCalculator(true)}
-              title="Open On-Screen Scientific Calculator"
+              onClick={() => setShowMobileNav(true)}
+              title="Open Question Navigator Matrix"
             >
-              <span>🧮</span>
-              <span>Calculator</span>
+              <span>📋</span>
+              <span>Q {currentIndex + 1}/{questions.length}</span>
+              <span style={{ fontSize: '0.6875rem', opacity: 0.85 }}>({quizStats.answeredItems}/{quizStats.totalItems})</span>
             </button>
           </div>
 
@@ -2099,6 +2371,27 @@ export function StudentQuizRunner({
         </div>
       )}
 
+      {/* ─── IELTS Persistent Listening Audio Bar ────────────────────────────── */}
+      {currentAudioUrl && (
+        <div className="sq-ielts-audio-bar animate-fade-in">
+          <div className="sq-ielts-audio-inner">
+            <ExamAudioPlayer
+              audioUrl={currentAudioUrl}
+              metadata={currentAudioMeta}
+              title={currentAudioMeta?.title || `${currentAudioQuestionRange || `Question ${currentIndex + 1}`} Listening Track`}
+              isIeltsMode={true}
+              questionRangeLabel={currentAudioQuestionRange}
+              maxPlaysAllowed={
+                currentAudioMeta?.play_limit !== undefined
+                  ? currentAudioMeta.play_limit
+                  : (isLanguageExam ? 2 : null)
+              }
+              allowTranscript={isSubmitted || !isExamMode}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Main Runner Body */}
       <main className="sq-runner-body">
         {/* Left / Center: Question View */}
@@ -2114,9 +2407,71 @@ export function StudentQuizRunner({
               <span className="sq-q-marks-pill">[{currentQuestion?.marks || 1} mark{currentQuestion?.marks !== 1 ? 's' : ''}]</span>
             </div>
 
+            {/* Active Stimulus / Reading Passage for Multi-Question Sections (e.g. Text 1 for Q1-Q4) */}
+            {activeStimulusPassage && (
+              <div
+                className="sq-stimulus-card animate-fade-in"
+                style={{
+                  marginBottom: '16px',
+                  padding: '16px 20px',
+                  background: 'rgba(59, 130, 246, 0.06)',
+                  border: '1px solid rgba(59, 130, 246, 0.25)',
+                  borderRadius: '12px',
+                  borderLeft: '4px solid #3b82f6',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    📖 Reference Reading Passage
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.9375rem', lineHeight: '1.65', color: 'var(--color-text-primary)' }}>
+                  <ExamMathText content={activeStimulusPassage} />
+                </div>
+              </div>
+            )}
+
             {/* Question Stem */}
             <div className="sq-q-stem">
-              <ExamMathText content={cleanQuestionStem(currentQuestion?.question_text || '', currentQuestion?.options)} />
+              {currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(currentQuestion?.question_text || '') ? (
+                <InlineGapText
+                  content={cleanQuestionStem(
+                    (currentTable ? currentTable.preTableText : currentQuestion?.question_text) || '',
+                    currentQuestion?.options
+                  )}
+                  values={(() => {
+                    const raw = answers[currentIndex];
+                    if (!raw) return {};
+                    if (typeof raw === 'object') return raw;
+                    const str = String(raw).trim();
+                    if (str.startsWith('{')) {
+                      try { return JSON.parse(str); } catch {}
+                    }
+                    return { 'gap_1': str, '1': str };
+                  })()}
+                  onGapChange={(gapId, val) => {
+                    const raw = answers[currentIndex];
+                    let currentMap: Record<string, string> = {};
+                    if (typeof raw === 'string' && raw.startsWith('{')) {
+                      try { currentMap = JSON.parse(raw); } catch {}
+                    } else if (raw) {
+                      currentMap['gap_1'] = String(raw);
+                    }
+                    currentMap[gapId] = val;
+                    setAnswers((prev) => ({
+                      ...prev,
+                      [currentIndex]: JSON.stringify(currentMap),
+                    }));
+                  }}
+                />
+              ) : (
+                <ExamMathText
+                  content={cleanQuestionStem(
+                    (currentTable ? currentTable.preTableText : currentQuestion?.question_text) || '',
+                    currentQuestion?.options
+                  )}
+                />
+              )}
             </div>
 
             {/* Insert / Resource Booklet Trigger Button */}
@@ -2148,6 +2503,17 @@ export function StudentQuizRunner({
               </div>
             )}
 
+            {/* Audio Listening Track Indicator */}
+            {currentQuestion?.audio_url && (
+              <div className="sq-q-audio-chip animate-fade-in" style={{ margin: '8px 0 12px' }}>
+                <span style={{ fontSize: '1rem' }}>🎧</span>
+                <span>
+                  <strong>Listening Comprehension Question</strong>
+                  {currentAudioQuestionRange ? ` (${currentAudioQuestionRange})` : ''} • Audio is active in the top persistent bar above.
+                </span>
+              </div>
+            )}
+
             {/* Diagram Image if available */}
             {currentQuestion?.diagram_url && (
               <div className="sq-q-diagram-wrap">
@@ -2161,8 +2527,40 @@ export function StudentQuizRunner({
               </div>
             )}
 
-            {/* 1. Multi-Part Sub-Questions Stream if structured */}
-            {currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 ? (
+            {/* 1. MCQ / Multi-Select Choices Input */}
+            {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (
+              <div className="sq-choices-list">
+                {isMultiSelect && (
+                  <div style={{ marginBottom: 8, fontSize: '0.8125rem', color: '#2563eb', fontWeight: 700 }}>
+                    ☑ Multiple Select: Tick all choices that apply
+                  </div>
+                )}
+                {currentQuestion.options.map((optionText, oIdx) => {
+                  const letter = String.fromCharCode(65 + oIdx);
+                  const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
+                  const isSelected = isMultiSelect
+                    ? selectedLetters.includes(letter)
+                    : Number(answers[currentIndex]) === oIdx;
+                  return (
+                    <button
+                      key={oIdx}
+                      type="button"
+                      className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''}`}
+                      onClick={() => handleSelectOption(oIdx)}
+                    >
+                      <span
+                        className="sq-choice-letter"
+                        style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                      >
+                        {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
+                      </span>
+                      <span className="sq-choice-text"><ExamMathText content={cleanOptionText(optionText, oIdx)} /></span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
+              /* 2. Multi-Part Sub-Questions Stream if structured */
               <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
                 {currentQuestion.sub_questions.map((sub, sIdx) => {
                   const subKey = `${currentIndex}_${sIdx}`;
@@ -2181,12 +2579,50 @@ export function StudentQuizRunner({
                       <div className="sq-sub-header" style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
                         <span className="sq-sub-id" style={{ fontWeight: 800, color: 'var(--color-primary-500)' }}>({sub.sub_id})</span>
                         <div className="sq-sub-text" style={{ flex: 1 }}>
-                          <ExamMathText content={sub.question_text || ''} />
+                          {hasInlineGaps(sub.question_text || '') ? (
+                            <InlineGapText
+                              content={sub.question_text || ''}
+                              values={(() => {
+                                const raw = answers[subKey];
+                                if (!raw) return {};
+                                if (typeof raw === 'object') return raw;
+                                const str = String(raw).trim();
+                                if (str.startsWith('{')) {
+                                  try { return JSON.parse(str); } catch {}
+                                }
+                                return { 'gap_1': str, '1': str };
+                              })()}
+                              onGapChange={(gapId, val) => {
+                                const raw = answers[subKey];
+                                let currentMap: Record<string, string> = {};
+                                if (typeof raw === 'string' && raw.startsWith('{')) {
+                                  try { currentMap = JSON.parse(raw); } catch {}
+                                } else if (raw) {
+                                  currentMap['gap_1'] = String(raw);
+                                }
+                                currentMap[gapId] = val;
+                                setAnswers((prev) => ({
+                                  ...prev,
+                                  [subKey]: JSON.stringify(currentMap),
+                                }));
+                              }}
+                            />
+                          ) : (
+                            <ExamMathText content={sub.question_text || ''} />
+                          )}
                         </div>
                         <span className="sq-sub-marks" style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
                           [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
                         </span>
                       </div>
+
+                      {/* Sub-Question Audio Indicator */}
+                      {sub.audio_url && (
+                        <div className="sq-sub-audio-chip" style={{ margin: '6px 0 10px', fontSize: '0.8125rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span>🎧</span>
+                          <span>Part ({sub.sub_id}) Audio active in top listening bar</span>
+                        </div>
+                      )}
 
                       {/* Sub-Question Diagram (if specifically attached to this sub-part) */}
                       {sub.diagram_url && (
@@ -2202,114 +2638,183 @@ export function StudentQuizRunner({
                         </div>
                       )}
 
-                      {/* Quick Symbol Insert Bar for sub-question */}
-                      <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
-                        {QUICK_CHEM_SYMBOLS.map((sym) => (
-                          <button
-                            key={sym}
-                            type="button"
-                            className="sq-sym-pill"
-                            style={{
-                              background: 'var(--color-surface-elevated)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 'var(--radius-sm)',
-                              padding: '2px 6px',
-                              fontSize: '0.75rem',
-                              cursor: 'pointer',
-                              color: 'var(--color-text-primary)',
-                            }}
-                            onClick={() => handleInsertSymbol(subKey, sym)}
-                            title={`Insert ${sym}`}
-                          >
-                            {sym}
-                          </button>
-                        ))}
-                      </div>
+                      {/* Quick Symbol Insert Bar for sub-question (STEM only) */}
+                      {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && !hasInlineGaps(sub.question_text || '') && (
+                        <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
+                          {QUICK_CHEM_SYMBOLS.map((sym) => (
+                            <button
+                              key={sym}
+                              type="button"
+                              className="sq-sym-pill"
+                              style={{
+                                background: 'var(--color-surface-elevated)',
+                                border: '1px solid var(--color-border)',
+                                borderRadius: 'var(--radius-sm)',
+                                padding: '2px 6px',
+                                fontSize: '0.75rem',
+                                cursor: 'pointer',
+                                color: 'var(--color-text-primary)',
+                              }}
+                              onClick={() => handleInsertSymbol(subKey, sym)}
+                              title={`Insert ${sym}`}
+                            >
+                              {sym}
+                            </button>
+                          ))}
+                        </div>
+                      )}
 
-                      <div className="sq-sub-input-wrap">
-                        <textarea
-                          className="sq-text-answer-area"
-                          placeholder={`Type answer for part (${sub.sub_id})...`}
-                          value={subVal}
-                          onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
-                          rows={3}
-                          style={{
-                            width: '100%',
-                            padding: '10px 14px',
-                            borderRadius: 'var(--radius-md)',
-                            border: '1.5px solid var(--color-border)',
-                            background: 'var(--color-surface)',
-                            color: 'var(--color-text-primary)',
-                            fontSize: '0.875rem',
-                            outline: 'none',
-                            boxSizing: 'border-box',
-                          }}
-                        />
-                        {subVal.trim() && (
-                          <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                            <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
-                            <ExamMathText content={subVal} />
-                          </div>
-                        )}
-                      </div>
+                      {!hasInlineGaps(sub.question_text || '') && (
+                        <div className="sq-sub-input-wrap">
+                          <textarea
+                            className="sq-text-answer-area"
+                            placeholder={isLanguageExam ? `Type answer for part (${sub.sub_id})...` : `Type answer, equation, or steps for (${sub.sub_id})...`}
+                            value={subVal}
+                            onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
+                            rows={3}
+                            style={{
+                              width: '100%',
+                              padding: '10px 14px',
+                              borderRadius: 'var(--radius-md)',
+                              border: '1.5px solid var(--color-border)',
+                              background: 'var(--color-surface)',
+                              color: 'var(--color-text-primary)',
+                              fontSize: '0.875rem',
+                              outline: 'none',
+                              boxSizing: 'border-box',
+                            }}
+                          />
+                          {subVal.trim() && (
+                            <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                              <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
+                              <ExamMathText content={subVal} />
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
-            ) : currentQuestion?.options && currentQuestion.options.length > 0 ? (
-              /* 2. MCQ Choices Input */
-              <div className="sq-choices-list">
-                {currentQuestion.options.map((optionText, oIdx) => {
-                  const isSelected = Number(answers[currentIndex]) === oIdx;
-                  return (
-                    <button
-                      key={oIdx}
-                      type="button"
-                      className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''}`}
-                      onClick={() => handleSelectOption(oIdx)}
-                    >
-                      <span className="sq-choice-letter">{String.fromCharCode(65 + oIdx)}</span>
-                      <span className="sq-choice-text"><ExamMathText content={cleanOptionText(optionText, oIdx)} /></span>
-                    </button>
-                  );
-                })}
+            ) : currentTable ? (
+              /* 3. Interactive Matching / Classification Table Response */
+              <div className="sq-interactive-table-card animate-fade-in">
+                <div className="sq-table-hint-bar">
+                  <span className="sq-table-hint-tag">
+                    <span>📊</span>
+                    <span>Interactive Classification Table: Click your choice for each row</span>
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                      {Object.keys(currentTableSelections).length} of {currentTable.rows.length} rows answered
+                    </span>
+                    {Object.keys(currentTableSelections).length > 0 && !isSubmitted && (
+                      <button
+                        type="button"
+                        onClick={handleClearTable}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#ef4444',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                        }}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="sq-interactive-table-wrap">
+                  <table className="sq-interactive-table">
+                    <thead>
+                      <tr>
+                        <th>{currentTable.headerCells[0] || 'Item / Prompt'}</th>
+                        {currentTable.headerCells.slice(1).map((h, hi) => (
+                          <th key={hi}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {currentTable.rows.map((row, ri) => (
+                        <tr key={ri}>
+                          <td>
+                            <span className="sq-table-row-label">{row.label}</span>
+                          </td>
+                          {currentTable.headerCells.slice(1).map((colName, ci) => {
+                            const isSelected = currentTableSelections[row.label] === colName;
+                            return (
+                              <td key={ci} style={{ textAlign: 'center' }}>
+                                <button
+                                  type="button"
+                                  className={`sq-table-cell-btn ${isSelected ? 'sq-table-cell-btn--active' : ''}`}
+                                  onClick={() => handleTableSelectCell(row.label, colName)}
+                                  disabled={isSubmitted}
+                                  title={`Click to choose "${colName}" for "${row.label}"`}
+                                >
+                                  {isSelected ? `✓ ${colName}` : colName}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
+                  <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--color-surface)', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                    <span style={{ fontWeight: 700, color: 'var(--color-primary-600)', marginRight: 6 }}>Your Table Selection:</span>
+                    <span>{String(answers[currentIndex])}</span>
+                  </div>
+                )}
               </div>
-            ) : (
-              /* 3. Structured Single Response Text Box */
+            ) : (currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(currentQuestion?.question_text || '')) ? null : (
+              /* 4. Structured Single Response Text Box */
               <div className="sq-structured-input-box" style={{ marginTop: 16 }}>
                 <label className="sq-input-label" style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: 8 }}>
-                  Your Response / Chemical Formula / Calculation:
+                  {isLanguageExam ? 'Your Response / Written Answer:' : 'Your Response / Chemical Formula / Calculation:'}
                 </label>
 
-                {/* Quick Symbol Insert Bar */}
-                <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
-                  {QUICK_CHEM_SYMBOLS.map((sym) => (
-                    <button
-                      key={sym}
-                      type="button"
-                      className="sq-sym-pill"
-                      style={{
-                        background: 'var(--color-surface-elevated)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 'var(--radius-sm)',
-                        padding: '2px 6px',
-                        fontSize: '0.75rem',
-                        cursor: 'pointer',
-                        color: 'var(--color-text-primary)',
-                      }}
-                      onClick={() => handleInsertSymbol(currentIndex, sym)}
-                      title={`Insert ${sym}`}
-                    >
-                      {sym}
-                    </button>
-                  ))}
-                </div>
+                {/* Quick Symbol Insert Bar (STEM only) */}
+                {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && (
+                  <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
+                    {QUICK_CHEM_SYMBOLS.map((sym) => (
+                      <button
+                        key={sym}
+                        type="button"
+                        className="sq-sym-pill"
+                        style={{
+                          background: 'var(--color-surface-elevated)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '2px 6px',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          color: 'var(--color-text-primary)',
+                        }}
+                        onClick={() => handleInsertSymbol(currentIndex, sym)}
+                        title={`Insert ${sym}`}
+                      >
+                        {sym}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 <textarea
                   className="sq-text-answer-area"
-                  placeholder="Type your final answer, chemical equation, or calculation steps here..."
+                  placeholder={
+                    isLanguageExam
+                      ? 'Type your answer, analysis, or explanation here...'
+                      : 'Type your final answer, chemical equation, or calculation steps here...'
+                  }
                   value={String(answers[currentIndex] || '')}
                   onChange={(e) => handleTextAnswerChange(e.target.value)}
                   rows={5}
@@ -2594,6 +3099,85 @@ export function StudentQuizRunner({
                 </div>
               )}
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile/Header Question Navigator Modal */}
+      {showMobileNav && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            background: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+          {...mobileNavDismiss}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface, #1e293b)',
+              border: '1.5px solid var(--color-border, rgba(255, 255, 255, 0.15))',
+              borderRadius: '20px',
+              maxWidth: '460px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              color: 'var(--color-text-primary, #ffffff)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <h3 className="sq-nav-card-title" style={{ fontSize: '1.125rem', margin: 0 }}>Question Navigator</h3>
+                <p className="sq-nav-card-subtitle" style={{ margin: '4px 0 0' }}>
+                  {quizStats.answeredItems} of {quizStats.totalItems} Items Answered
+                </p>
+              </div>
+              <button
+                type="button"
+                className="sq-alert-dismiss"
+                onClick={() => setShowMobileNav(false)}
+                style={{ fontSize: '1.25rem', cursor: 'pointer', color: 'var(--color-text-secondary)' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="sq-nav-matrix-grid" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
+              {questions.map((_, idx) => {
+                const isAnswered = answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`));
+                const isCurrent = currentIndex === idx;
+                const isFlagged = flaggedIndices.has(idx);
+
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    className={`sq-matrix-cell ${isCurrent ? 'sq-matrix-cell--current' : ''} ${isAnswered ? 'sq-matrix-cell--answered' : ''} ${isFlagged ? 'sq-matrix-cell--flagged' : ''}`}
+                    onClick={() => {
+                      setCurrentIndex(idx);
+                      setShowMobileNav(false);
+                    }}
+                    title={`Jump to Question ${idx + 1}`}
+                  >
+                    {idx + 1}
+                    {isFlagged && <span className="matrix-flag-dot">★</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="sq-matrix-legend" style={{ marginTop: '14px' }}>
+              <div className="legend-item"><span className="legend-box answered" /> Answered</div>
+              <div className="legend-item"><span className="legend-box flagged" /> Flagged</div>
+              <div className="legend-item"><span className="legend-box unanswered" /> Unanswered</div>
+            </div>
           </div>
         </div>
       )}

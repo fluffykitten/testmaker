@@ -14,6 +14,7 @@ import { QuestionEditorModal } from '../components/QuestionEditorModal';
 import { QuestionVariantModal } from '../components/QuestionVariantModal';
 import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
 import { StudentShareModal } from '../components/StudentShareModal';
+import { BatchAudioModal } from '../components/BatchAudioModal';
 import './TestBuilderPage.css';
 
 /**
@@ -155,6 +156,7 @@ export function TestBuilderPage({
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [variantQuestion, setVariantQuestion] = useState<Question | null>(null);
   const [isAssemblerOpen, setIsAssemblerOpen] = useState(false);
+  const [isBatchAudioModalOpen, setIsBatchAudioModalOpen] = useState(false);
 
   // Load syllabuses from Supabase
   useEffect(() => {
@@ -315,6 +317,16 @@ export function TestBuilderPage({
               title="Share Quiz code or export to Canvas/Moodle/Google Forms"
             >
               🔗 Share & LMS
+            </button>
+
+            <button
+              type="button"
+              className="builder-audio-top-btn"
+              onClick={() => setIsBatchAudioModalOpen(true)}
+              disabled={questions.length === 0}
+              title="Attach or assign audio listening track across question range (IELTS format)"
+            >
+              🎧 Audio Tracks
             </button>
 
             {onLaunchTestRun && (
@@ -548,6 +560,19 @@ export function TestBuilderPage({
         onClose={() => setIsExportModalOpen(false)}
         headerConfig={headerConfig}
         questions={questions}
+      />
+
+      {/* Batch Audio Range Modal */}
+      <BatchAudioModal
+        isOpen={isBatchAudioModalOpen}
+        onClose={() => setIsBatchAudioModalOpen(false)}
+        questions={questions}
+        onApplyAudioToRange={(updated) => {
+          setQuestions(updated);
+          onUpdateQuestions?.(updated);
+          setSavedSuccessMsg(`🎧 Audio listening track applied across target questions!`);
+          setTimeout(() => setSavedSuccessMsg(null), 3500);
+        }}
       />
     </div>
   );

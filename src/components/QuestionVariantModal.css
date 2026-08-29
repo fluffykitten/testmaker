@@ -259,7 +259,6 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  divide-x: 1px solid var(--color-border);
 }
 
 .variant-column {

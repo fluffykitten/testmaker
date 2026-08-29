@@ -131,10 +131,23 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         >
           <span className="upload-tab-icon">🌍</span>
           <div className="upload-tab-text">
-            <span className="upload-tab-title">Humanities & Languages</span>
-            <span className="upload-tab-desc">Geography, History, Economics, English</span>
+            <span className="upload-tab-title">Geography & Humanities</span>
+            <span className="upload-tab-desc">Geography (0460), History, Economics</span>
           </div>
           <span className="upload-tab-badge">Insert Support</span>
+        </button>
+
+        <button
+          type="button"
+          className={`upload-tab ${domain === 'languages' ? 'upload-tab--active' : ''}`}
+          onClick={() => setDomain('languages')}
+        >
+          <span className="upload-tab-icon">📖</span>
+          <div className="upload-tab-text">
+            <span className="upload-tab-title">English & Languages / TKA</span>
+            <span className="upload-tab-desc">Reading Passages, 5-Option MCQs, Multi-Select</span>
+          </div>
+          <span className="upload-tab-badge">Smart Keys</span>
         </button>
       </div>
 
@@ -143,6 +156,18 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
           <span className="upload-hint-icon">💡</span>
           <span>
             <strong>Geography & Humanities Mode:</strong> Supports separate Cambridge IGCSE / O-Level / A-Level <strong>Insert & Resource Booklets</strong> (0460, 0470, 0455, 0680). Figures and maps in the insert are automatically extracted and cross-referenced with their questions.
+          </span>
+        </div>
+      )}
+
+      {domain === 'languages' && (
+        <div
+          className="upload-humanities-hint animate-fade-in"
+          style={{ borderColor: '#93c5fd', background: '#eff6ff' }}
+        >
+          <span className="upload-hint-icon">📖</span>
+          <span style={{ color: '#1e40af' }}>
+            <strong>English & Language Exam Mode:</strong> Specialized for Reading Comprehension passages, 5-option MCQs (A–E), complex multi-select (<em>Pilihan Ganda Kompleks</em>), and matching tables (<em>Menjodohkan</em>). <strong>In-document answer keys ("Kunci Jawaban & Pembahasan") are automatically detected and matched to all questions!</strong>
           </span>
         </div>
       )}
@@ -446,7 +471,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
           {isProcessing ? (
             <>
               <span className="extract-btn-spinner" />
-              Analyzing {domain === 'humanities' ? 'Humanities Paper' : 'STEM Paper'} with AI…
+              Analyzing {domain === 'languages' ? 'English / Language Paper' : domain === 'humanities' ? 'Humanities Paper' : 'STEM Paper'} with AI…
             </>
           ) : (
             <>
@@ -454,7 +479,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                 <path d="M10 2L10 14M6 10l4 4 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M3 15v2a2 2 0 002 2h10a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              Extract {domain === 'humanities' ? 'Geography / Humanities' : 'STEM'} Questions {insertFile ? '(with Insert Resources)' : ''} {msFile ? '(Using Mark Scheme)' : '(Auto-Solved)'}
+              Extract {domain === 'languages' ? 'English / Language' : domain === 'humanities' ? 'Geography / Humanities' : 'STEM'} Questions {insertFile ? '(with Insert Resources)' : ''} {msFile ? '(Using Mark Scheme)' : '(Auto-Solved)'}
             </>
           )}
         </button>

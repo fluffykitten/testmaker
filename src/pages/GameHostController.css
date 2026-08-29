@@ -150,6 +150,7 @@
   letter-spacing: 0.1em;
   background: linear-gradient(135deg, #ffffff, #a78bfa);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
   text-shadow: 0 0 30px rgba(167, 139, 250, 0.5);
 }
@@ -284,6 +285,7 @@
   font-weight: 900;
   background: linear-gradient(135deg, #f59e0b, #ef4444);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 0 40px rgba(245, 158, 11, 0.6));
 }
@@ -520,6 +522,7 @@
   margin: 0;
   background: linear-gradient(135deg, #f59e0b, #fbbf24);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -628,6 +631,7 @@
   margin: 0.5rem 0 0 0;
   background: linear-gradient(135deg, #ec4899, #8b5cf6, #3b82f6);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 

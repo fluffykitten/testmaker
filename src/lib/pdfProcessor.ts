@@ -11,7 +11,7 @@ import {
   getApiKeyForChunk,
   type SubjectDomain,
 } from './gemini';
-import { splitPdfForParallelExtraction } from './pdfChunker';
+import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
 import {
   cropDiagramsLocally,
   uploadDiagramsToStorage,
@@ -147,18 +147,29 @@ export async function saveExtractedQuestions(
     .insert(records as any)
     .select('id') as { data: { id: string }[] | null; error: any };
 
-  // If column doesn't exist in user's Supabase questions table, retry with standard columns only
+  // If columns don't exist in user's Supabase questions table, retry with standard core schema
   if (
     error &&
     error.message &&
     (error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
-      error.message.includes('insert_page_number'))
+      error.message.includes('insert_page_number') ||
+      error.message.includes('audio_url') ||
+      error.message.includes('audio_metadata'))
   ) {
-    console.warn('Top-level diagram columns not found in database, falling back to core schema:', error.message);
-    const fallbackRecords = records.map(({ diagram_source, resource_ref, insert_page_number, ...rest }) => ({
-      ...rest,
-    }));
+    console.warn('Extended columns not found in database, falling back to core schema:', error.message);
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, mark_scheme, ...rest }: any) => {
+      const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
+      if (audio_url) (ms as any)._audio_url = audio_url;
+      if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
+      if (diagram_source) (ms as any)._diagram_source = diagram_source;
+      if (resource_ref) (ms as any)._resource_ref = resource_ref;
+      if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
+      return {
+        ...rest,
+        mark_scheme: ms,
+      };
+    });
 
     const retryRes = (await supabase
       .from('questions')
@@ -179,6 +190,65 @@ export async function saveExtractedQuestions(
   const insertedCount = data?.length ?? 0;
   onProgress?.(`Successfully saved ${insertedCount} questions.`);
   return insertedCount;
+}
+
+/**
+ * Ensures every question that refers to a reading passage contains the full passage text.
+ * If Question 1 has "### Text 1: [Body]\n\n1. [Prompt]", and Question 2 only has "2. [Prompt]",
+ * this automatically prepends "### Text 1: [Body]\n\n" to Question 2, 3, 4 until the next "### Text 2:".
+ */
+export function propagateReadingPassages(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  let activePassage = '';
+
+  return questions.map((q) => {
+    const text = q.question_text || '';
+
+    // Check if this question defines a new reading passage (e.g. "### Text 1:", "### Passage 1:", "Text 1: ...")
+    const passageMatch = text.match(/(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i);
+
+    if (passageMatch && passageMatch[1]) {
+      // New active passage found
+      activePassage = passageMatch[1].trim();
+      return q;
+    }
+
+    // If there's an active passage and current question does NOT already include it
+    if (activePassage) {
+      const firstLine = activePassage.split('\n')[0].trim();
+      if (!text.includes(firstLine)) {
+        return {
+          ...q,
+          question_text: `${activePassage}\n\n${text}`,
+        };
+      }
+    }
+
+    return q;
+  });
+}
+
+/**
+ * Normalizes question styles for Multiple Select / Complex Multiple Choice questions
+ */
+export function normalizeQuestionStyles(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  return questions.map((q) => {
+    const text = q.question_text || '';
+    const accAnswers = q.mark_scheme?.acceptable_answers || [];
+    const hasMultiLetters = accAnswers.some((a) => (String(a).match(/[A-Za-z]/g) || []).length > 1);
+
+    const isMulti =
+      /\[Multiple\s*Select\]|pilihan\s*ganda\s*kompleks|more\s*than\s*one\s*(?:correct\s*)?answer|tick\s*(?:\(✓\)\s*)?on\s*every/i.test(
+        text
+      ) || hasMultiLetters;
+
+    if (isMulti && q.options && q.options.length > 0) {
+      return {
+        ...q,
+        question_style: 'Multiple Select',
+      };
+    }
+    return q;
+  });
 }
 
 // ─── Full Pipeline Orchestrator (Zero Storage Uploads during Preview) ─────────
@@ -211,9 +281,27 @@ export async function runExtractionPipeline(
       error: null,
     });
 
-    const chunks = await splitPdfForParallelExtraction(file, 8);
-    const msBase64 = markSchemeFile ? await fileToBase64(markSchemeFile) : undefined;
+    let msBase64 = markSchemeFile ? await fileToBase64(markSchemeFile) : undefined;
     const insertBase64 = insertFile ? await fileToBase64(insertFile) : undefined;
+    let bytesToChunk: File | Uint8Array = file;
+
+    // If no separate mark scheme was provided, check if the PDF contains an embedded answer key at the back
+    if (!markSchemeFile) {
+      const splitInfo = await detectAndSplitInDocumentAnswerKey(file);
+      if (splitInfo.hasAnswerKey && splitInfo.msBase64) {
+        bytesToChunk = splitInfo.qpDocBytes;
+        msBase64 = splitInfo.msBase64;
+        onStateChange({
+          stage: 'extracting',
+          message: `Detected embedded Answer Key (Pages ${splitInfo.msStartPage}–${splitInfo.msEndPage}) — matching with Question Paper (Pages 1–${splitInfo.qpEndPage})…`,
+          progress: 25,
+          result: null,
+          error: null,
+        });
+      }
+    }
+
+    const chunks = await splitPdfForParallelExtraction(bytesToChunk, 8);
 
     let result: ExtractionResult;
 
@@ -261,11 +349,16 @@ export async function runExtractionPipeline(
 
       // Merge questions from all parallel chunks with boundary stitching & deep merging
       const questionMap = new Map<string, ExtractedQuestion>();
+      const normalizeQNum = (num: string | number) =>
+        String(num)
+          .replace(/^(?:Question|Q|Soal|No\.?)\s*/i, '')
+          .replace(/[.:]$/, '')
+          .trim();
 
       chunkResults.forEach((cr, cIdx) => {
         const chunkOffset = chunks[cIdx].startPage - 1;
         cr.questions.forEach((q) => {
-          const qNumClean = String(q.question_number).trim();
+          const qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
           const adjustedQ: ExtractedQuestion = {
             ...q,
             page_number: (q.page_number || 1) + chunkOffset,
@@ -325,6 +418,10 @@ export async function runExtractionPipeline(
         return numA - numB;
       });
 
+      // Propagate reading passages across all questions in each text group
+      const propagated = propagateReadingPassages(allQuestions);
+      const finalizedQuestions = normalizeQuestionStyles(propagated);
+
       // Merge insert_resources across chunks
       const mergedInsertResources = chunkResults.flatMap((cr) => cr.insert_resources || []);
       const seenResourceIds = new Set<string>();
@@ -336,14 +433,24 @@ export async function runExtractionPipeline(
 
       result = {
         paper_metadata: chunkResults[0]?.paper_metadata || {
-          subject: options.domain === 'humanities' ? 'Geography' : 'Chemistry',
-          subject_code: options.domain === 'humanities' ? '0460' : '0620',
+          subject:
+            options.domain === 'languages'
+              ? 'English'
+              : options.domain === 'humanities'
+              ? 'Geography'
+              : 'Chemistry',
+          subject_code:
+            options.domain === 'languages'
+              ? 'ENG'
+              : options.domain === 'humanities'
+              ? '0460'
+              : '0620',
           year: new Date().getFullYear(),
           series: 'Exam',
           paper_number: 1,
           has_insert_booklet: Boolean(insertFile),
         },
-        questions: allQuestions,
+        questions: finalizedQuestions,
         insert_resources: uniqueInsertResources.length > 0 ? uniqueInsertResources : undefined,
       };
     } else {
@@ -367,6 +474,7 @@ export async function runExtractionPipeline(
           hasInsertBooklet: Boolean(insertFile),
         }
       );
+      result.questions = normalizeQuestionStyles(propagateReadingPassages(result.questions));
     }
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)

@@ -55,6 +55,27 @@ function removeLocalTest(id: string) {
 }
 
 /**
+ * Helper to infer subject from keywords in titles or question text
+ */
+function inferSubjectFromText(text: string): string | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/chem|stoich|acid|base|organic|element|compound|reaction|atom|mole|periodic|titrat|redox|halogen|alkane|alkene|polymer/i.test(lower)) {
+    return 'Chemistry';
+  }
+  if (/geograph|population|tectonic|earthquake|volcano|weather|climate|river|coast|settlement|migration|urban/i.test(lower)) {
+    return 'Geography';
+  }
+  if (/biology|cell|photosynthesis|enzyme|respiration|organism|plant|digest|circulat|genetics|dna/i.test(lower)) {
+    return 'Biology';
+  }
+  if (/physics|force|velocity|acceleration|energy|wave|refraction|lens|magnet|circuit|current|voltage|radioactivity/i.test(lower)) {
+    return 'Physics';
+  }
+  return null;
+}
+
+/**
  * Saves a new custom exam test to Supabase with automatic local storage fallback
  */
 export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTest> {
@@ -69,9 +90,11 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
     total_marks: payload.totalMarks,
     question_ids: payload.questionIds,
     created_at: new Date().toISOString(),
+    header_config: payload.headerConfig,
   };
 
   try {
+    // Attempt insert with header_config included
     const { data, error } = await supabase
       .from('custom_tests')
       .insert([
@@ -79,14 +102,37 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
           title: payload.title,
           total_marks: payload.totalMarks,
           question_ids: payload.questionIds,
+          header_config: payload.headerConfig,
         },
       ] as any)
       .select('*')
       .single();
 
     if (!error && data) {
-      saveLocalTest(data as CustomTest);
-      return data as CustomTest;
+      const saved = { ...(data as CustomTest), header_config: payload.headerConfig || (data as any).header_config };
+      saveLocalTest(saved);
+      return saved;
+    }
+
+    // Fallback: If header_config column doesn't exist in Supabase custom_tests schema
+    if (error && error.message && error.message.includes('header_config')) {
+      const { data: retryData, error: retryError } = await supabase
+        .from('custom_tests')
+        .insert([
+          {
+            title: payload.title,
+            total_marks: payload.totalMarks,
+            question_ids: payload.questionIds,
+          },
+        ] as any)
+        .select('*')
+        .single();
+
+      if (!retryError && retryData) {
+        const saved = { ...(retryData as CustomTest), header_config: payload.headerConfig };
+        saveLocalTest(saved);
+        return saved;
+      }
     }
   } catch (err) {
     console.warn('Supabase insert failed, persisting to local storage:', err);
@@ -119,7 +165,15 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
       const mergedMap = new Map<string, CustomTest>();
       (data as CustomTest[]).forEach((t) => mergedMap.set(t.id, t));
       localTests.forEach((t) => {
-        if (!mergedMap.has(t.id)) mergedMap.set(t.id, t);
+        if (!mergedMap.has(t.id)) {
+          mergedMap.set(t.id, t);
+        } else {
+          // Preserve local header_config if cloud record is missing it
+          const existing = mergedMap.get(t.id)!;
+          if (!existing.header_config && t.header_config) {
+            mergedMap.set(t.id, { ...existing, header_config: t.header_config });
+          }
+        }
       });
       return Array.from(mergedMap.values());
     }
@@ -142,6 +196,19 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 
   const questionMetaMap = new Map<string, { topic: string; subject: string }>();
 
+  // Fetch syllabuses in parallel for resilient fallback mapping
+  const syllabusMap = new Map<string, string>();
+  try {
+    const { data: sData } = await supabase.from('syllabuses').select('id, subject_name');
+    if (sData && Array.isArray(sData)) {
+      sData.forEach((s: any) => {
+        if (s.id && s.subject_name) syllabusMap.set(s.id, s.subject_name);
+      });
+    }
+  } catch (err) {
+    console.warn('Could not fetch syllabuses dictionary:', err);
+  }
+
   if (allQIds.length > 0) {
     try {
       const { data: qData } = await supabase
@@ -149,6 +216,9 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
         .select(`
           id,
           topic,
+          sub_topic,
+          syllabus_id,
+          question_text,
           syllabuses (
             subject_name
           )
@@ -157,10 +227,30 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 
       if (qData && Array.isArray(qData)) {
         qData.forEach((q: any) => {
-          const subject = q.syllabuses?.subject_name || 'General';
+          let subject = '';
+          // 1. Check embedded syllabuses join (handles object or array)
+          if (q.syllabuses) {
+            if (Array.isArray(q.syllabuses) && q.syllabuses.length > 0) {
+              subject = q.syllabuses[0]?.subject_name || '';
+            } else if (typeof q.syllabuses === 'object') {
+              subject = q.syllabuses.subject_name || '';
+            }
+          }
+
+          // 2. Check direct syllabus ID lookup
+          if (!subject && q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
+            subject = syllabusMap.get(q.syllabus_id) || '';
+          }
+
+          // 3. Check topic/text keyword inference
+          if (!subject || subject.toLowerCase() === 'general') {
+            const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`);
+            if (inferred) subject = inferred;
+          }
+
           questionMetaMap.set(q.id, {
             topic: q.topic || 'General',
-            subject,
+            subject: subject || 'Chemistry',
           });
         });
       }
@@ -207,12 +297,39 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
       }
     }
 
-    const primarySubject = testSubjects.length > 0 ? testSubjects[0] : 'General';
+    // Resolve primary subject with multi-tier hierarchy:
+    // 1. Explicit header config subject (if present and not "General")
+    // 2. Title keyword inference (e.g. "Chemistry Paper 4 Practice")
+    // 3. Predominant question subject
+    // 4. Default fallback to 'Chemistry'
+    let primarySubject = '';
+    const headerSubject = t.header_config?.subject;
+    if (headerSubject && headerSubject.trim() && headerSubject.toLowerCase() !== 'general') {
+      primarySubject = headerSubject.trim();
+    }
+
+    if (!primarySubject) {
+      const titleInferred = inferSubjectFromText(t.title || '');
+      if (titleInferred) primarySubject = titleInferred;
+    }
+
+    if (!primarySubject && testSubjects.length > 0 && testSubjects[0].toLowerCase() !== 'general') {
+      primarySubject = testSubjects[0];
+    }
+
+    if (!primarySubject) {
+      primarySubject = 'Chemistry';
+    }
+
+    const finalSubjects = testSubjects.filter((s) => s.toLowerCase() !== 'general');
+    if (finalSubjects.length === 0) {
+      finalSubjects.push(primarySubject);
+    }
 
     return {
       ...t,
       topics: uniqueTopics.length > 0 ? uniqueTopics : ['General'],
-      subjects: testSubjects.length > 0 ? testSubjects : ['General'],
+      subjects: finalSubjects,
       primaryTopic,
       primarySubject,
     };

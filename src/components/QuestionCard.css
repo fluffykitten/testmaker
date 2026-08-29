@@ -242,6 +242,14 @@
   border-color: #10b981;
 }
 
+.q-stem-text {
+  text-align: justify;
+  text-justify: inter-word;
+  line-height: 1.65;
+  color: var(--color-text-primary);
+  margin-bottom: 12px;
+}
+
 /* MCQ Options */
 .q-mcq-grid {
   display: grid;

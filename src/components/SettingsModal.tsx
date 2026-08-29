@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   type AppSettings,
@@ -57,7 +58,7 @@ export function SettingsModal({
     saveSettings(DEFAULT_SETTINGS);
   };
 
-  return (
+  return createPortal(
     <div className="settings-overlay" {...backdropDismiss}>
       <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
         {/* ─── Header ───────────────────────────────────────────────────────── */}
@@ -237,6 +238,7 @@ export function SettingsModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

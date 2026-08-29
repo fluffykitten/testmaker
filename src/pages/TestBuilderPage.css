@@ -94,6 +94,30 @@
   cursor: not-allowed;
 }
 
+.builder-audio-top-btn {
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(56, 189, 248, 0.12);
+  border: 1.5px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.builder-audio-top-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+  transform: translateY(-1px);
+}
+
+.builder-audio-top-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .builder-testrun-top-btn {
   padding: 8px 14px;
   border-radius: var(--radius-md);

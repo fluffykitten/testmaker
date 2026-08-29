@@ -3,6 +3,7 @@ import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
 import type { PublishedQuiz } from './quizManagerService';
+import { normalizeQuestionRecord } from './questionBankService';
 
 export interface StudentQuizData {
   testId: string;
@@ -241,8 +242,8 @@ export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
       return [];
     }
 
-    // Preserve the original order of question IDs
-    const qMap = new Map((data as Question[]).map((q) => [q.id, q]));
+    // Preserve the original order of question IDs and normalize schema attributes
+    const qMap = new Map(((data as any[]) || []).map((q) => [q.id, normalizeQuestionRecord(q)]));
     return ids.map((id) => qMap.get(id)).filter(Boolean) as Question[];
   } catch (err) {
     console.error('fetchQuestionsByIds error:', err);
