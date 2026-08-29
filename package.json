@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "deploy": "npm run build && npx netlify-cli deploy --prod --dir=dist",
+    "deploy:draft": "npm run build && npx netlify-cli deploy --dir=dist",
     "mobile:build": "tsc -b && vite build && npx cap sync",
     "mobile:sync": "npx cap sync",
     "mobile:android": "npm run mobile:build && npx cap open android",
