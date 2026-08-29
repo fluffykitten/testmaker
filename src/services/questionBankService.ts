@@ -49,35 +49,102 @@ export async function fetchSyllabuses(): Promise<Syllabus[]> {
 }
 
 /**
- * Fetches distinct topics for a given syllabus (or all syllabuses)
+ * Helper to infer a rich topic from question text, sub-topic or domain keywords
+ */
+export function inferTopicFromContent(text?: string, subTopic?: string): string {
+  if (subTopic && subTopic.trim() && subTopic.trim().toLowerCase() !== 'general') {
+    return subTopic.trim();
+  }
+  if (!text) return 'General';
+  const lower = text.toLowerCase();
+
+  // English & Languages
+  if (/reading|comprehension|passage|text\s*\d|komodo|article|paragraph/i.test(lower)) return 'Reading Comprehension';
+  if (/listen|dialogue|speaker|conversation|audio|recording|transcript/i.test(lower)) return 'Listening Comprehension';
+  if (/grammar|tense|verb|noun|adjective|preposition|pronoun|sentence/i.test(lower)) return 'Grammar & Usage';
+  if (/vocabulary|word|synonym|antonym|definition|lexis/i.test(lower)) return 'Vocabulary & Word Choice';
+  if (/cloze|fill in|blank|complete/i.test(lower)) return 'Language Completion';
+
+  // Chemistry
+  if (/acid|base|salt|ph|alkali|neutral/i.test(lower)) return 'Acids, Bases & Salts';
+  if (/atom|electron|proton|neutron|isotope|nuclide/i.test(lower)) return 'Atomic Structure';
+  if (/mole|stoich|concentration|avogadro|equation|titrat/i.test(lower)) return 'Stoichiometry & Mole Concept';
+  if (/organic|alkane|alkene|alcohol|polymer|ester|hydrocarbon/i.test(lower)) return 'Organic Chemistry';
+  if (/periodic|halogen|noble gas|transition|metal/i.test(lower)) return 'Periodic Table & Trends';
+  if (/redox|oxidation|reduction|electrolysis/i.test(lower)) return 'Electrochemistry & Redox';
+  if (/rate|catalyst|equilibrium|le chatelier/i.test(lower)) return 'Reaction Rates & Equilibrium';
+
+  // Biology
+  if (/cell|membrane|organelle|nucleus|cytoplasm|mitochondria/i.test(lower)) return 'Cell Biology';
+  if (/photosynthesis|chlorophyll|light reaction/i.test(lower)) return 'Plant Nutrition & Photosynthesis';
+  if (/enzyme|catalyst|denature|active site/i.test(lower)) return 'Enzymes & Biological Reactions';
+  if (/genetics|dna|gene|chromosome|inheritance/i.test(lower)) return 'Genetics & Inheritance';
+  if (/ecology|ecosystem|food web|trophic/i.test(lower)) return 'Ecology & Environment';
+
+  // Physics
+  if (/force|mass|acceleration|newton|gravity|friction/i.test(lower)) return 'Forces & Dynamics';
+  if (/energy|work|power|kinetic|potential/i.test(lower)) return 'Work, Energy & Power';
+  if (/wave|frequency|wavelength|sound|light|refraction|lens/i.test(lower)) return 'Waves & Optics';
+  if (/electric|circuit|current|voltage|resistance|ohm/i.test(lower)) return 'Electricity & Magnetism';
+  if (/thermal|heat|temperature|conduction|convection/i.test(lower)) return 'Thermal Physics';
+
+  // Geography
+  if (/population|migration|urban|settlement|birth rate|death rate/i.test(lower)) return 'Population & Settlement';
+  if (/volcano|earthquake|plate tectonic|crust/i.test(lower)) return 'Earthquakes & Volcanoes';
+  if (/river|coast|wave|erosion|deposition|delta/i.test(lower)) return 'Rivers & Coasts';
+  if (/weather|climate|rain|monsoon|temperature/i.test(lower)) return 'Weather & Climate';
+
+  // Mathematics
+  if (/algebra|equation|solve|variable|linear|quadratic/i.test(lower)) return 'Algebra & Functions';
+  if (/geometry|angle|triangle|circle|polygon|perimeter|area/i.test(lower)) return 'Geometry & Measure';
+  if (/probability|statistic|mean|median|mode|histogram/i.test(lower)) return 'Probability & Statistics';
+
+  return 'General';
+}
+
+/**
+ * Fetches distinct topics for a given syllabus (or all syllabuses) with intelligent inference
  */
 export async function fetchTopics(syllabusId?: string): Promise<{ topic: string; subTopics: string[] }[]> {
   let query = supabase
     .from('questions')
-    .select('topic, sub_topic');
+    .select('topic, sub_topic, question_text, syllabus_id');
 
   if (syllabusId) {
     query = query.eq('syllabus_id', syllabusId);
   }
 
-  const { data, error } = await query;
+  let { data, error } = await query;
+
+  // Fallback: If syllabusId filter yielded no results, fetch all questions to avoid empty topic lists
+  if ((!data || data.length === 0) && syllabusId) {
+    const fallbackRes = await supabase.from('questions').select('topic, sub_topic, question_text, syllabus_id');
+    if (fallbackRes.data && fallbackRes.data.length > 0) {
+      data = fallbackRes.data;
+    }
+  }
 
   if (error || !data) {
     console.error('Failed to fetch topics:', error);
     return [];
   }
 
-  // Aggregate topics and distinct sub-topics
+  // Aggregate topics and distinct sub-topics with smart inference
   const topicMap = new Map<string, Set<string>>();
 
   data.forEach((row: any) => {
-    if (row.topic && row.topic.trim()) {
-      const trimmedTopic = row.topic.trim();
-      if (!topicMap.has(trimmedTopic)) {
-        topicMap.set(trimmedTopic, new Set());
+    let rawTopic = row.topic?.trim() || '';
+    if (!rawTopic || rawTopic.toLowerCase() === 'general') {
+      rawTopic = inferTopicFromContent(row.question_text, row.sub_topic);
+    }
+
+    if (rawTopic && rawTopic.trim()) {
+      const cleanTopic = rawTopic.trim();
+      if (!topicMap.has(cleanTopic)) {
+        topicMap.set(cleanTopic, new Set());
       }
-      if (row.sub_topic && row.sub_topic.trim()) {
-        topicMap.get(trimmedTopic)!.add(row.sub_topic.trim());
+      if (row.sub_topic && row.sub_topic.trim() && row.sub_topic.trim().toLowerCase() !== 'general') {
+        topicMap.get(cleanTopic)!.add(row.sub_topic.trim());
       }
     }
   });
@@ -111,33 +178,54 @@ export async function fetchUploadedSubjectTopics(): Promise<SubjectTopicSummary[
 
   const { data, error } = await supabase
     .from('questions')
-    .select('id, syllabus_id, topic, marks');
+    .select('id, syllabus_id, topic, sub_topic, question_text, marks');
 
   if (error || !data || data.length === 0) {
     return [];
   }
 
   const subjectGroups = new Map<string, Map<string, { count: number; marks: number }>>();
+  const subjectTexts = new Map<string, string>();
 
   data.forEach((row: any) => {
     const sId = row.syllabus_id || 'general';
-    const topic = row.topic?.trim() || 'General';
+    let topic = row.topic?.trim();
+    if (!topic || topic.toLowerCase() === 'general') {
+      topic = inferTopicFromContent(row.question_text, row.sub_topic);
+    }
     const marks = row.marks || 1;
 
     if (!subjectGroups.has(sId)) {
       subjectGroups.set(sId, new Map());
+      subjectTexts.set(sId, '');
     }
     const topicMap = subjectGroups.get(sId)!;
     const current = topicMap.get(topic) || { count: 0, marks: 0 };
     topicMap.set(topic, { count: current.count + 1, marks: current.marks + marks });
+
+    if (row.question_text) {
+      subjectTexts.set(sId, (subjectTexts.get(sId) || '') + ' ' + row.question_text.slice(0, 100));
+    }
   });
 
   const result: SubjectTopicSummary[] = [];
 
   subjectGroups.forEach((topicMap, sId) => {
     const sObj = syllabusMap.get(sId);
-    const subjectName = sObj ? sObj.subject_name : 'Uploaded Past Papers';
+    let subjectName = sObj ? sObj.subject_name : '';
     const subjectCode = sObj?.subject_code;
+
+    // If subject is missing or 'general', infer from question text
+    if (!subjectName || subjectName.toLowerCase() === 'general' || subjectName === 'Uploaded Past Papers') {
+      const sampleText = subjectTexts.get(sId) || '';
+      if (/reading|comprehension|passage|grammar|vocabulary|english|ielts|listening/i.test(sampleText)) subjectName = 'English';
+      else if (/chem|stoich|acid|base|organic|element/i.test(sampleText)) subjectName = 'Chemistry';
+      else if (/geograph|population|tectonic|weather/i.test(sampleText)) subjectName = 'Geography';
+      else if (/biology|cell|photosynthesis|enzyme/i.test(sampleText)) subjectName = 'Biology';
+      else if (/physics|force|energy|wave|circuit/i.test(sampleText)) subjectName = 'Physics';
+      else if (/math|algebra|geometry|calculus/i.test(sampleText)) subjectName = 'Mathematics';
+      else subjectName = sObj?.subject_name || 'General';
+    }
 
     const topics = Array.from(topicMap.entries())
       .map(([name, stats]) => ({
