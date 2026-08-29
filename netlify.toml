@@ -1,6 +1,6 @@
 [build]
   publish = "dist"
-  command = "npm run build"
+  ignore = "true"
 
 # SPA Fallback for client-side routing & quiz codes
 [[redirects]]
