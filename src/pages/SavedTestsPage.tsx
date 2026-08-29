@@ -91,7 +91,7 @@ export function SavedTestsPage({
           headerConfig: {
             title: test.header_config?.title || test.title || 'Custom Exam Assessment',
             schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'Chemistry',
+            subject: test.header_config?.subject || test.primarySubject || 'General',
             subjectCode: test.header_config?.subjectCode || '',
             durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
             instructions: test.header_config?.instructions || 'Answer all questions. Write your answers in the spaces provided on the question paper.',
@@ -118,7 +118,7 @@ export function SavedTestsPage({
           headerConfig: {
             title: test.header_config?.title || test.title || 'Offline Exam Assessment',
             schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'Chemistry',
+            subject: test.header_config?.subject || test.primarySubject || 'General',
             subjectCode: test.header_config?.subjectCode || '',
             durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
             instructions: test.header_config?.instructions || 'Answer all questions.',

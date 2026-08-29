@@ -60,18 +60,44 @@ function removeLocalTest(id: string) {
 function inferSubjectFromText(text: string): string | null {
   if (!text) return null;
   const lower = text.toLowerCase();
+
+  // English, Languages & Literature
+  if (/english|ielts|toefl|listening|reading|comprehension|passage|grammar|vocabulary|literature|writing|essay|dialogue|conversation|cloze|tka|akm|bahasa inggris|indonesian|spanish|french/i.test(lower)) {
+    return 'English';
+  }
+  // Chemistry
   if (/chem|stoich|acid|base|organic|element|compound|reaction|atom|mole|periodic|titrat|redox|halogen|alkane|alkene|polymer/i.test(lower)) {
     return 'Chemistry';
   }
-  if (/geograph|population|tectonic|earthquake|volcano|weather|climate|river|coast|settlement|migration|urban/i.test(lower)) {
+  // Geography
+  if (/geograph|population|tectonic|earthquake|volcano|weather|climate|river|coast|settlement|migration|urban|landform/i.test(lower)) {
     return 'Geography';
   }
-  if (/biology|cell|photosynthesis|enzyme|respiration|organism|plant|digest|circulat|genetics|dna/i.test(lower)) {
+  // Biology
+  if (/biology|cell|photosynthesis|enzyme|respiration|organism|plant|digest|circulat|genetics|dna|ecosystem/i.test(lower)) {
     return 'Biology';
   }
+  // Physics
   if (/physics|force|velocity|acceleration|energy|wave|refraction|lens|magnet|circuit|current|voltage|radioactivity/i.test(lower)) {
     return 'Physics';
   }
+  // Mathematics
+  if (/math|algebra|geometry|calculus|trigonometry|matrix|fraction|probability|statistic|arithmetic|polynomial|vector/i.test(lower)) {
+    return 'Mathematics';
+  }
+  // Economics & Business
+  if (/economic|business|account|inflation|gdp|finance|market|monopoly|trade|revenue|cost|elasticity|demand|supply/i.test(lower)) {
+    return 'Economics';
+  }
+  // History
+  if (/history|treaty|war|revolution|reich|cold war|league of nations|armistice|empire|colony/i.test(lower)) {
+    return 'History';
+  }
+  // Computer Science
+  if (/computer science|python|pseudocode|algorithm|binary|hexadecimal|logic gate|sql|database|cybersecurity/i.test(lower)) {
+    return 'Computer Science';
+  }
+
   return null;
 }
 
@@ -318,7 +344,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
     }
 
     if (!primarySubject) {
-      primarySubject = 'Chemistry';
+      primarySubject = inferSubjectFromText(testTopics.join(' ')) || 'General';
     }
 
     const finalSubjects = testSubjects.filter((s) => s.toLowerCase() !== 'general');

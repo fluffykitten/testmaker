@@ -84,13 +84,25 @@ function inferSubjectFromQuestions(
     }
   }
 
-  // 2. Topic-based detection fallback
+  // 2. Topic & Content-based detection fallback
   const allText = questions
     .map((q) => `${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`)
     .join(' ')
     .toLowerCase();
 
-  if (/geograph|population|tectonic|earthquake|volcano|weather|climate|river|coast|settlement|migration|urban/i.test(allText)) {
+  // English, Languages & IELTS
+  if (/english|ielts|toefl|listening|reading|comprehension|passage|grammar|vocabulary|literature|writing|essay|dialogue|conversation|cloze|tka|akm|bahasa inggris|indonesian|spanish|french/i.test(allText)) {
+    return {
+      subject: 'English',
+      subjectCode: '0500',
+      defaultTitle: 'English Practice Assessment',
+      additionalMaterials: 'Listening Equipment / Insert (if applicable)',
+      instructions: 'Answer all questions. Write your answers in the spaces provided on the question paper.',
+    };
+  }
+
+  // Geography
+  if (/geograph|population|tectonic|earthquake|volcano|weather|climate|river|coast|settlement|migration|urban|landform/i.test(allText)) {
     return {
       subject: 'Geography',
       subjectCode: '0460',
@@ -100,7 +112,8 @@ function inferSubjectFromQuestions(
     };
   }
 
-  if (/biology|cell|photosynthesis|enzyme|respiration|organism|plant|digest|circulat|genetics|dna/i.test(allText)) {
+  // Biology
+  if (/biology|cell|photosynthesis|enzyme|respiration|organism|plant|digest|circulat|genetics|dna|ecosystem/i.test(allText)) {
     return {
       subject: 'Biology',
       subjectCode: '0610',
@@ -110,6 +123,7 @@ function inferSubjectFromQuestions(
     };
   }
 
+  // Physics
   if (/physics|force|velocity|acceleration|energy|wave|refraction|lens|magnet|circuit|current|voltage|radioactivity/i.test(allText)) {
     return {
       subject: 'Physics',
@@ -120,6 +134,40 @@ function inferSubjectFromQuestions(
     };
   }
 
+  // Mathematics
+  if (/math|algebra|geometry|calculus|trigonometry|matrix|fraction|probability|statistic|arithmetic|polynomial|vector/i.test(allText)) {
+    return {
+      subject: 'Mathematics',
+      subjectCode: '0580',
+      defaultTitle: 'IGCSE Mathematics Practice Assessment',
+      additionalMaterials: 'Scientific Calculator, ruler, protractor, compass',
+      instructions: 'Answer all questions. Write your answers in the spaces provided on the question paper. You must show all necessary working clearly.',
+    };
+  }
+
+  // Economics
+  if (/economic|business|account|inflation|gdp|finance|market|monopoly|trade|revenue|cost|elasticity|demand|supply/i.test(allText)) {
+    return {
+      subject: 'Economics',
+      subjectCode: '0455',
+      defaultTitle: 'IGCSE Economics Practice Assessment',
+      additionalMaterials: '',
+      instructions: 'Answer all questions. Write your answers in the spaces provided on the question paper. You may use a calculator.',
+    };
+  }
+
+  // History
+  if (/history|treaty|war|revolution|reich|cold war|league of nations|armistice|empire|colony/i.test(allText)) {
+    return {
+      subject: 'History',
+      subjectCode: '0470',
+      defaultTitle: 'IGCSE History Practice Assessment',
+      additionalMaterials: 'An Insert (enclosed)',
+      instructions: 'Answer all questions. Write your answers in the spaces provided on the question paper.',
+    };
+  }
+
+  // Chemistry (Fallback default)
   return {
     subject: 'Chemistry',
     subjectCode: '0620',
