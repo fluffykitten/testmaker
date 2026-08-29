@@ -4,6 +4,7 @@
 
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
+import { inferTopicFromContent } from './questionBankService';
 
 export interface ExamHeaderConfig {
   title: string;
@@ -237,46 +238,35 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 
   if (allQIds.length > 0) {
     try {
-      const { data: qData } = await supabase
+      const { data: qData, error: qError } = await supabase
         .from('questions')
-        .select(`
-          id,
-          topic,
-          sub_topic,
-          syllabus_id,
-          question_text,
-          syllabuses (
-            subject_name
-          )
-        `)
+        .select('id, topic, sub_topic, syllabus_id, question_text')
         .in('id', allQIds);
 
-      if (qData && Array.isArray(qData)) {
+      if (!qError && qData && Array.isArray(qData)) {
         qData.forEach((q: any) => {
           let subject = '';
-          // 1. Check embedded syllabuses join (handles object or array)
-          if (q.syllabuses) {
-            if (Array.isArray(q.syllabuses) && q.syllabuses.length > 0) {
-              subject = q.syllabuses[0]?.subject_name || '';
-            } else if (typeof q.syllabuses === 'object') {
-              subject = q.syllabuses.subject_name || '';
-            }
-          }
 
-          // 2. Check direct syllabus ID lookup
-          if (!subject && q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
+          // 1. Direct syllabus ID lookup
+          if (q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
             subject = syllabusMap.get(q.syllabus_id) || '';
           }
 
-          // 3. Check topic/text keyword inference
+          // 2. Topic/text keyword inference
           if (!subject || subject.toLowerCase() === 'general') {
             const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`);
             if (inferred) subject = inferred;
           }
 
+          // 3. Smart topic inference
+          let topic = q.topic?.trim() || '';
+          if (!topic || topic.toLowerCase() === 'general') {
+            topic = inferTopicFromContent(q.question_text, q.sub_topic);
+          }
+
           questionMetaMap.set(q.id, {
-            topic: q.topic || 'General',
-            subject: subject || 'Chemistry',
+            topic: topic || 'General',
+            subject: subject || 'General',
           });
         });
       }
@@ -304,22 +294,33 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
       }
     });
 
-    const uniqueTopics = Array.from(new Set(testTopics));
+    const nonGeneralTopics = testTopics.filter((top) => top && top.toLowerCase() !== 'general');
+    const uniqueTopics = Array.from(new Set(nonGeneralTopics));
     let primaryTopic = 'General';
 
     if (uniqueTopics.length === 1) {
       primaryTopic = uniqueTopics[0];
     } else if (uniqueTopics.length > 1) {
-      // Find highest frequency topic
+      // Find highest frequency non-general topic
       let maxCount = 0;
       for (const [top, count] of topicCounts.entries()) {
-        if (count > maxCount) {
+        if (top.toLowerCase() !== 'general' && count > maxCount) {
           maxCount = count;
           primaryTopic = top;
         }
       }
       if (uniqueTopics.length > 2 && maxCount <= qIds.length / 2) {
         primaryTopic = 'Multi-Topic';
+      }
+    } else if (testTopics.length > 0) {
+      primaryTopic = testTopics[0];
+    }
+
+    // Fallback: If primaryTopic is still General, try inferring from test title
+    if (!primaryTopic || primaryTopic === 'General') {
+      const titleTopic = inferTopicFromContent(t.title || '');
+      if (titleTopic && titleTopic !== 'General') {
+        primaryTopic = titleTopic;
       }
     }
 
