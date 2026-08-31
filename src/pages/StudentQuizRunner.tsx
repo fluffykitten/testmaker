@@ -4,7 +4,6 @@ import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz } from '../services/quizCodeService';
 import {
-  saveQuizSubmission,
   saveQuizSubmissionCloud,
   saveDeviceReceipt,
   generateResultPin,
@@ -19,7 +18,10 @@ import {
   extractMultiSelectTargetLetters,
 } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
-import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
+import {
+  exportIndividualStudentReportPdf,
+  exportStudentFeedbackReportPdf,
+} from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
 import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
@@ -210,6 +212,9 @@ export function StudentQuizRunner({
   const [currentIndex, setCurrentIndex] = useState<number>(() => savedExam?.currentIndex || 0);
   const [answers, setAnswers] = useState<Record<string | number, string | number>>(() => savedExam?.answers || {});
   const [flaggedIndices, setFlaggedIndices] = useState<Set<number>>(() => new Set(savedExam?.flaggedIndices || []));
+  const [audioProgress, setAudioProgress] = useState<Record<string, { currentTime: number; playedCount: number }>>(
+    () => savedExam?.audioProgress || {}
+  );
   const [isExamMode, setIsExamMode] = useState<boolean>(() => savedExam?.isExamMode ?? true); // true = Strict Timed Exam, false = Practice Mode
   const [isTeacherLocked, setIsTeacherLocked] = useState<boolean>(() => !!testIdOrCode);
   const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
@@ -783,7 +788,7 @@ export function StudentQuizRunner({
         topicBreakdown,
       };
 
-      saveQuizSubmission(submission);
+      await saveQuizSubmissionCloud(submission);
       setCompletedSubmission(submission);
 
       try {
@@ -813,6 +818,7 @@ export function StudentQuizRunner({
             currentIndex,
             answers,
             flaggedIndices: Array.from(flaggedIndices),
+            audioProgress,
             isExamMode,
             hasStarted,
             isSubmitted,
@@ -839,6 +845,7 @@ export function StudentQuizRunner({
     currentIndex,
     answers,
     flaggedIndices,
+    audioProgress,
     isExamMode,
     hasStarted,
     isSubmitted,
@@ -932,6 +939,24 @@ export function StudentQuizRunner({
     }
     return `Questions ${matchingNumbers.join(', ')}`;
   }, [currentAudioUrl, questions]);
+
+  const handleAudioTimeUpdate = (url: string, time: number) => {
+    setAudioProgress((prev) => {
+      const current = prev[url] || { currentTime: 0, playedCount: 0 };
+      if (Math.abs(current.currentTime - time) < 0.25) return prev;
+      return {
+        ...prev,
+        [url]: { ...current, currentTime: time },
+      };
+    });
+  };
+
+  const handleAudioPlayCountChange = (url: string, _rem: number | null, playedCount: number) => {
+    setAudioProgress((prev) => ({
+      ...prev,
+      [url]: { ...(prev[url] || { currentTime: 0, playedCount: 0 }), playedCount },
+    }));
+  };
 
   // Subject Domain Detection & Tool Visibility
   const isLanguageExam = useMemo(() => {
@@ -2108,14 +2133,68 @@ export function StudentQuizRunner({
 
           <div className="results-footer-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '24px', flexWrap: 'wrap' }}>
             <button
-              type="button"
               className="sq-btn"
               style={{
-                background: '#dc2626',
+                background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
                 color: '#ffffff',
                 fontWeight: 800,
-                padding: '10px 20px',
-                borderRadius: '8px',
+                padding: '12px 24px',
+                borderRadius: '10px',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.9375rem',
+                boxShadow: '0 4px 12px rgba(124, 58, 237, 0.3)',
+              }}
+              onClick={() => {
+                const results = calculateResults();
+                const submissionToExport: StudentSubmission = completedSubmission || {
+                  id: `sub_${Date.now()}`,
+                  quizId: testIdOrCode || 'direct_quiz',
+                  quizCode: testIdOrCode || 'EXAM',
+                  quizTitle: title,
+                  subject: headerConfig?.subject || 'Chemistry',
+                  studentName: candidateName.trim() || 'Candidate',
+                  submittedAt: new Date().toISOString(),
+                  durationSeconds: Math.floor((Date.now() - startTime) / 1000),
+                  score: results.mcqEarned,
+                  totalMarks: results.mcqTotal,
+                  percentage: results.percentage,
+                  violationsCount: violations.length,
+                  proctoringLogs: violations.map((v, i) => ({
+                    timestamp: v.timestamp,
+                    event: v.detail,
+                    strike: i + 1,
+                    severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+                  })),
+                  questionResults: results.questionResults,
+                  topicBreakdown: Object.fromEntries(
+                    Object.entries(results.topicStats).map(([topic, stat]) => [
+                      topic,
+                      {
+                        totalMarks: stat.total,
+                        earnedMarks: stat.earned,
+                        percentage: stat.total > 0 ? Math.round((stat.earned / stat.total) * 100) : 0,
+                      },
+                    ])
+                  ),
+                };
+                exportStudentFeedbackReportPdf(submissionToExport);
+              }}
+            >
+              🎓 1-Page Report Card (PDF)
+            </button>
+
+            <button
+              className="sq-btn sq-btn-secondary"
+              style={{
+                background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+                color: '#ffffff',
+                fontWeight: 800,
+                padding: '12px 24px',
+                borderRadius: '10px',
                 border: 'none',
                 cursor: 'pointer',
                 display: 'flex',
@@ -2160,7 +2239,7 @@ export function StudentQuizRunner({
                 exportIndividualStudentReportPdf(submissionToExport);
               }}
             >
-              📄 Download My Exam Report (PDF)
+              📄 Full Script PDF
             </button>
 
             {onExit && (
@@ -2381,6 +2460,10 @@ export function StudentQuizRunner({
               title={currentAudioMeta?.title || `${currentAudioQuestionRange || `Question ${currentIndex + 1}`} Listening Track`}
               isIeltsMode={true}
               questionRangeLabel={currentAudioQuestionRange}
+              initialCurrentTime={audioProgress[currentAudioUrl]?.currentTime || 0}
+              initialPlayedCount={audioProgress[currentAudioUrl]?.playedCount || 0}
+              onTimeUpdate={(time) => handleAudioTimeUpdate(currentAudioUrl, time)}
+              onPlayCountChange={(rem, count) => handleAudioPlayCountChange(currentAudioUrl, rem, count)}
               maxPlaysAllowed={
                 currentAudioMeta?.play_limit !== undefined
                   ? currentAudioMeta.play_limit
@@ -2500,17 +2583,6 @@ export function StudentQuizRunner({
                   <span>Open {currentQuestion.resource_ref || 'Figure / Map'} in Resource Booklet</span>
                   <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>↗</span>
                 </button>
-              </div>
-            )}
-
-            {/* Audio Listening Track Indicator */}
-            {currentQuestion?.audio_url && (
-              <div className="sq-q-audio-chip animate-fade-in" style={{ margin: '8px 0 12px' }}>
-                <span style={{ fontSize: '1rem' }}>🎧</span>
-                <span>
-                  <strong>Listening Comprehension Question</strong>
-                  {currentAudioQuestionRange ? ` (${currentAudioQuestionRange})` : ''} • Audio is active in the top persistent bar above.
-                </span>
               </div>
             )}
 

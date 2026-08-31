@@ -19,6 +19,7 @@ import {
   type DiagramCropItem,
 } from './diagramCropper';
 import type { ExtractionResult, ExtractedQuestion, SubQuestion } from '../types/database';
+import { compareQuestionNumbers } from '../services/questionBankService';
 
 // ─── Pipeline State ────────────────────────────────────────────────────────────
 
@@ -412,11 +413,7 @@ export async function runExtractionPipeline(
       const allQuestions = Array.from(questionMap.values());
 
       // Sort naturally by question number (1, 2, 3 ... 40)
-      allQuestions.sort((a, b) => {
-        const numA = parseInt(String(a.question_number).replace(/\D/g, ''), 10) || 0;
-        const numB = parseInt(String(b.question_number).replace(/\D/g, ''), 10) || 0;
-        return numA - numB;
-      });
+      allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(allQuestions);

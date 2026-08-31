@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import type { QuestionFilterParams } from '../services/questionBankService';
+import {
+  type QuestionFilterParams,
+  type PaperTypesSummary,
+  fetchPaperTypes,
+} from '../services/questionBankService';
 import type { Syllabus, QuestionDifficulty, QuestionStyle } from '../types/database';
 import { getBookmarkedQuestionIds } from '../services/questionBookmarkService';
 import { getDistinctCustomTags } from '../services/questionTagService';
@@ -23,6 +27,10 @@ export function QuestionFilters({
   const [searchInput, setSearchInput] = useState(filters.searchQuery || '');
   const [bookmarkCount, setBookmarkCount] = useState(() => getBookmarkedQuestionIds().size);
   const [customTags, setCustomTags] = useState(() => getDistinctCustomTags());
+  const [paperTypes, setPaperTypes] = useState<PaperTypesSummary>({
+    seriesOptions: [],
+    paperNumberOptions: [],
+  });
 
   useEffect(() => {
     const handleBookmarkUpdate = () => {
@@ -39,6 +47,33 @@ export function QuestionFilters({
       window.removeEventListener('tags_updated', handleTagUpdate);
     };
   }, []);
+
+  // Dynamically load available paper types & series for selected syllabus or all
+  useEffect(() => {
+    let isMounted = true;
+    const loadPaperTypes = async () => {
+      try {
+        const res = await fetchPaperTypes(filters.syllabusId);
+        if (isMounted) {
+          setPaperTypes(res);
+        }
+      } catch (err) {
+        console.error('Failed to load paper types:', err);
+      }
+    };
+
+    loadPaperTypes();
+
+    const handleQuestionsUpdate = () => {
+      loadPaperTypes();
+    };
+
+    window.addEventListener('questions_updated', handleQuestionsUpdate);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('questions_updated', handleQuestionsUpdate);
+    };
+  }, [filters.syllabusId]);
 
   // Debounce search input
   useEffect(() => {
@@ -83,6 +118,9 @@ export function QuestionFilters({
       syllabusId: val || undefined,
       topic: undefined, // reset topic when syllabus changes
       subTopic: undefined,
+      paperType: undefined, // reset paper type when syllabus changes
+      paperNumber: undefined,
+      series: undefined,
       page: 1,
     });
   };
@@ -105,12 +143,49 @@ export function QuestionFilters({
     });
   };
 
-  const handlePaperTypeClick = (paperType?: 'mcq' | 'theory' | 'atp') => {
-    onFilterChange({
-      ...filters,
-      paperNumber: filters.paperNumber === paperType ? undefined : paperType,
-      page: 1,
-    });
+  const handlePaperTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (!val) {
+      onFilterChange({
+        ...filters,
+        paperType: undefined,
+        paperNumber: undefined,
+        series: undefined,
+        page: 1,
+      });
+    } else if (val === 'mcq' || val === 'theory' || val === 'atp') {
+      onFilterChange({
+        ...filters,
+        paperType: val,
+        paperNumber: val,
+        series: undefined,
+        page: 1,
+      });
+    } else if (val.startsWith('series:')) {
+      const s = val.replace('series:', '').trim();
+      onFilterChange({
+        ...filters,
+        paperType: val,
+        series: s,
+        paperNumber: undefined,
+        page: 1,
+      });
+    } else if (val.startsWith('paper:')) {
+      const p = parseInt(val.replace('paper:', ''), 10);
+      onFilterChange({
+        ...filters,
+        paperType: val,
+        paperNumber: !isNaN(p) ? p : undefined,
+        series: undefined,
+        page: 1,
+      });
+    } else {
+      onFilterChange({
+        ...filters,
+        paperType: val,
+        page: 1,
+      });
+    }
   };
 
   const handleStyleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -147,12 +222,24 @@ export function QuestionFilters({
     filters.subTopic ||
     filters.difficulty ||
     filters.paperNumber ||
+    filters.paperType ||
+    filters.series ||
     filters.questionStyle ||
     filters.bookmarkedOnly ||
     filters.customTag ||
     filters.minMarks ||
     filters.maxMarks
   );
+
+  const selectedPaperTypeValue =
+    filters.paperType ||
+    (typeof filters.paperNumber === 'string'
+      ? filters.paperNumber
+      : filters.paperNumber
+      ? `paper:${filters.paperNumber}`
+      : filters.series
+      ? `series:${filters.series}`
+      : '');
 
   return (
     <aside className="filters-sidebar">
@@ -266,37 +353,43 @@ export function QuestionFilters({
 
       {/* Paper Type Selector */}
       <div className="filter-group">
-        <label className="filter-label">Paper Type</label>
-        <div className="filter-pills">
-          <button
-            type="button"
-            className={`filter-pill ${!filters.paperNumber ? 'filter-pill--active' : ''}`}
-            onClick={() => handlePaperTypeClick(undefined)}
-          >
-            All Papers
-          </button>
-          <button
-            type="button"
-            className={`filter-pill ${filters.paperNumber === 'mcq' ? 'filter-pill--active' : ''}`}
-            onClick={() => handlePaperTypeClick('mcq')}
-          >
-            P1/P2 MCQ
-          </button>
-          <button
-            type="button"
-            className={`filter-pill ${filters.paperNumber === 'theory' ? 'filter-pill--active' : ''}`}
-            onClick={() => handlePaperTypeClick('theory')}
-          >
-            P3/P4 Theory
-          </button>
-          <button
-            type="button"
-            className={`filter-pill ${filters.paperNumber === 'atp' ? 'filter-pill--active' : ''}`}
-            onClick={() => handlePaperTypeClick('atp')}
-          >
-            P6 ATP
-          </button>
-        </div>
+        <label className="filter-label" htmlFor="paper-type-select">
+          Paper Type
+        </label>
+        <select
+          id="paper-type-select"
+          className="filter-select"
+          value={selectedPaperTypeValue}
+          onChange={handlePaperTypeChange}
+        >
+          <option value="">All Paper Types</option>
+
+          <optgroup label="IGCSE Paper Presets">
+            <option value="mcq">P1 / P2 — Multiple Choice (MCQ)</option>
+            <option value="theory">P3 / P4 — Theory & Structured</option>
+            <option value="atp">P6 — Alternative to Practical (ATP)</option>
+          </optgroup>
+
+          {paperTypes.seriesOptions.length > 0 && (
+            <optgroup label="Exam Papers & Series">
+              {paperTypes.seriesOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+
+          {paperTypes.paperNumberOptions.length > 0 && (
+            <optgroup label="Specific Paper Numbers">
+              {paperTypes.paperNumberOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
       </div>
 
       {/* Difficulty Selector */}
@@ -346,8 +439,10 @@ export function QuestionFilters({
           <option value="">All Styles</option>
           <option value="Structured">Structured / Multi-part</option>
           <option value="Multiple Choice">Multiple Choice</option>
+          <option value="Multiple Select">Multiple Select (Tick All That Apply)</option>
           <option value="Calculation">Calculation</option>
           <option value="Short Answer">Short Answer</option>
+          <option value="Fill in the Blank">Fill in the Blank / Inline Gaps</option>
         </select>
       </div>
 
@@ -361,8 +456,11 @@ export function QuestionFilters({
           onChange={handleSortChange}
         >
           <option value="year_desc">Year (Newest First)</option>
+          <option value="question_number_asc">Question Number (1, 2, 3…)</option>
+          <option value="question_number_desc">Question Number (High to Low)</option>
           <option value="marks_desc">Marks (High to Low)</option>
           <option value="marks_asc">Marks (Low to High)</option>
+          <option value="difficulty">Difficulty (Easy to Hard)</option>
           <option value="created_at">Recently Added</option>
         </select>
       </div>

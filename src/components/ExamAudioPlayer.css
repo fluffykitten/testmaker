@@ -190,10 +190,49 @@
 .eap-time-row {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 0.75rem;
-  font-family: var(--font-mono, monospace);
   color: #475569;
+  margin-bottom: 3px;
+  gap: 8px;
+}
+
+.eap-track-scope-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  color: #0284c7;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eap-track-scope-label strong {
   font-weight: 700;
+  color: #0369a1;
+}
+
+.eap-scope-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.eap-time-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.eap-time-divider {
+  opacity: 0.5;
+  font-weight: 400;
 }
 
 .eap-slider-wrap {

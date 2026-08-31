@@ -21,6 +21,7 @@ import {
   exportClassQuizReportPdf,
   exportIndividualStudentReportPdf,
   exportStudentFeedbackReportPdf,
+  exportBatchStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import './OfflineGradingModal.css';
@@ -63,6 +64,7 @@ export function OfflineGradingModal({
   const [gradedSubmissions, setGradedSubmissions] = useState<StudentSubmission[]>([]);
   const [savedQuiz, setSavedQuiz] = useState<PublishedQuiz | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>('all');
+  const [showMarkSchemeInReports, setShowMarkSchemeInReports] = useState<boolean>(true);
 
   const availableClasses = useMemo(() => {
     const classes = new Set<string>();
@@ -761,6 +763,55 @@ export function OfflineGradingModal({
 
                 {/* Right: Export Reports & AI Grade Actions */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <label
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      color: '#334155',
+                      background: '#f8fafc',
+                      padding: '5px 9px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                    title="Toggle whether Mark Scheme solutions are included in student report cards"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showMarkSchemeInReports}
+                      onChange={(e) => setShowMarkSchemeInReports(e.target.checked)}
+                      style={{ accentColor: '#7c3aed', cursor: 'pointer', width: '13px', height: '13px' }}
+                    />
+                    <span>Show Mark Scheme</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    className="og-btn og-btn--secondary"
+                    style={{
+                      fontSize: '0.8125rem',
+                      padding: '0.45rem 0.85rem',
+                      background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+                      color: '#ffffff',
+                      borderColor: '#7c3aed',
+                    }}
+                    onClick={() => {
+                      exportBatchStudentFeedbackReportPdf(
+                        gradedSubmissions,
+                        headerConfig.title || 'Offline Exam Assessment',
+                        selectedClass,
+                        { showMarkScheme: showMarkSchemeInReports }
+                      );
+                    }}
+                    title={`Download 1-page student feedback report cards for all ${selectedClass === 'all' ? gradedSubmissions.length : gradedSubmissions.filter((s) => s.studentClass === selectedClass).length} candidates in 1 PDF`}
+                  >
+                    <span>🎓</span> Batch 1-Page Reports ({selectedClass === 'all' ? gradedSubmissions.length : gradedSubmissions.filter((s) => s.studentClass === selectedClass).length})
+                  </button>
+
                   <button
                     type="button"
                     className="og-btn og-btn--secondary"
@@ -871,7 +922,7 @@ export function OfflineGradingModal({
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
                               <button
                                 type="button"
-                                onClick={() => exportStudentFeedbackReportPdf(sub)}
+                                onClick={() => exportStudentFeedbackReportPdf(sub, undefined, { showMarkScheme: showMarkSchemeInReports })}
                                 style={{
                                   background: '#f5f3ff',
                                   color: '#6d28d9',
@@ -891,7 +942,7 @@ export function OfflineGradingModal({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => exportIndividualStudentReportPdf(sub)}
+                                onClick={() => exportIndividualStudentReportPdf(sub, { showMarkScheme: showMarkSchemeInReports })}
                                 style={{
                                   background: '#eff6ff',
                                   color: '#1d4ed8',
@@ -1055,6 +1106,23 @@ export function OfflineGradingModal({
                     <span>📊</span> Open in Central Gradebook & Analytics
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  className="og-btn og-btn--primary"
+                  style={{ background: 'linear-gradient(135deg, #7c3aed, #6d28d9)', color: '#ffffff' }}
+                  onClick={() => {
+                    exportBatchStudentFeedbackReportPdf(
+                      gradedSubmissions,
+                      headerConfig.title || 'Offline Exam Assessment',
+                      selectedClass,
+                      { showMarkScheme: showMarkSchemeInReports }
+                    );
+                  }}
+                  title="Generate 1-page student feedback report cards for all candidates in 1 single PDF"
+                >
+                  <span>🎓</span> Batch 1-Page Report Cards ({displayedSubmissions.length} Students — 1 PDF)
+                </button>
 
                 <button
                   type="button"

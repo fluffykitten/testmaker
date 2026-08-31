@@ -15,6 +15,9 @@ interface ExamAudioPlayerProps {
   maxPlaysAllowed?: number | null;
   allowTranscript?: boolean;
   autoPlay?: boolean;
+  initialCurrentTime?: number;
+  initialPlayedCount?: number;
+  onTimeUpdate?: (currentTime: number) => void;
   onPlayCountChange?: (remainingPlays: number | null, playedCount: number) => void;
   className?: string;
 }
@@ -31,6 +34,9 @@ export function ExamAudioPlayer({
   maxPlaysAllowed,
   allowTranscript = true,
   autoPlay = false,
+  initialCurrentTime = 0,
+  initialPlayedCount = 0,
+  onTimeUpdate,
   onPlayCountChange,
   className = '',
 }: ExamAudioPlayerProps) {
@@ -41,7 +47,7 @@ export function ExamAudioPlayer({
   const shouldDisableSpeed = isIeltsMode || disableSpeed;
 
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTime, setCurrentTime] = useState(initialCurrentTime);
   const [duration, setDuration] = useState(metadata?.duration || 0);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [volume, setVolume] = useState(1.0);
@@ -51,7 +57,7 @@ export function ExamAudioPlayer({
 
   // Play limit configuration (maxPlaysAllowed overrides metadata.play_limit if defined)
   const configuredLimit = maxPlaysAllowed !== undefined ? maxPlaysAllowed : (metadata?.play_limit ?? null);
-  const [playedCount, setPlayedCount] = useState(0);
+  const [playedCount, setPlayedCount] = useState(initialPlayedCount);
 
   const isLimitReached = configuredLimit !== null && configuredLimit > 0 && playedCount >= configuredLimit;
   const remainingPlays = configuredLimit !== null && configuredLimit > 0 ? Math.max(0, configuredLimit - playedCount) : null;
@@ -110,18 +116,20 @@ export function ExamAudioPlayer({
           if (duration > 0 && prev >= duration) {
             return prev;
           }
-          return prev + 0.25;
+          const next = prev + 0.25;
+          onTimeUpdate?.(next);
+          return next;
         });
       }, 250);
     }
     return () => {
       if (ticker) clearInterval(ticker);
     };
-  }, [isTts, isPlaying, duration]);
+  }, [isTts, isPlaying, duration, onTimeUpdate]);
 
   // When playback starts from beginning, count as a play
   const handlePlayStarted = () => {
-    if (currentTime < 1) {
+    if (currentTime < 1 && playedCount === 0) {
       const nextCount = playedCount + 1;
       setPlayedCount(nextCount);
       const nextRemaining = configuredLimit !== null ? Math.max(0, configuredLimit - nextCount) : null;
@@ -132,7 +140,9 @@ export function ExamAudioPlayer({
 
   const handleTimeUpdate = () => {
     if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
+      const cur = audioRef.current.currentTime;
+      setCurrentTime(cur);
+      onTimeUpdate?.(cur);
     }
   };
 
@@ -142,12 +152,18 @@ export function ExamAudioPlayer({
       if (!isNaN(dur) && dur > 0) {
         setDuration(dur);
       }
+      if (initialCurrentTime && initialCurrentTime > 0 && initialCurrentTime < (dur || Infinity)) {
+        try {
+          audioRef.current.currentTime = initialCurrentTime;
+        } catch {}
+      }
     }
   };
 
   const handleEnded = () => {
     setIsPlaying(false);
     setCurrentTime(0);
+    onTimeUpdate?.(0);
     if (isTts) stopTtsSpeech();
   };
 
@@ -162,16 +178,17 @@ export function ExamAudioPlayer({
     if (prevAudioUrlRef.current !== audioUrl) {
       prevAudioUrlRef.current = audioUrl;
       setIsPlaying(false);
-      setCurrentTime(0);
+      const initTime = initialCurrentTime || 0;
+      setCurrentTime(initTime);
       setDuration(metadata?.duration || 0);
-      setPlayedCount(0);
+      setPlayedCount(initialPlayedCount || 0);
       if (isTts) stopTtsSpeech();
       if (audioRef.current) {
         audioRef.current.pause();
-        audioRef.current.currentTime = 0;
+        audioRef.current.currentTime = initTime;
       }
     }
-  }, [audioUrl, metadata?.duration, isTts]);
+  }, [audioUrl, metadata?.duration, isTts, initialCurrentTime, initialPlayedCount]);
 
   // Cleanup speech synthesis on unmount
   useEffect(() => {
@@ -355,8 +372,18 @@ export function ExamAudioPlayer({
         {/* Timeline (Readonly in IELTS Mode or interactive scrubber in standard mode) */}
         <div className="eap-scrubber-group">
           <div className="eap-time-row">
-            <span className="eap-time-current">{formatAudioDuration(currentTime)}</span>
-            <span className="eap-time-total">{formatAudioDuration(duration)}</span>
+            <div className="eap-track-scope-label">
+              <span className="eap-scope-icon">🎧</span>
+              <span className="eap-scope-text">
+                <strong>Listening Comprehension Question</strong>
+                {questionRangeLabel ? ` (${questionRangeLabel})` : ''}
+              </span>
+            </div>
+            <div className="eap-time-display">
+              <span className="eap-time-current">{formatAudioDuration(currentTime)}</span>
+              <span className="eap-time-divider">/</span>
+              <span className="eap-time-total">{formatAudioDuration(duration)}</span>
+            </div>
           </div>
 
           <div className="eap-slider-wrap">

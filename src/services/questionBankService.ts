@@ -11,6 +11,7 @@ export interface QuestionFilterParams {
   subTopic?: string;
   difficulty?: QuestionDifficulty;
   paperNumber?: number | 'mcq' | 'theory' | 'atp'; // helper presets
+  paperType?: string; // e.g. 'mcq' | 'theory' | 'atp' | 'paper:1' | 'series:Try Out TKA 1' | 'Try Out TKA 1'
   year?: number;
   series?: string;
   minMarks?: number;
@@ -19,9 +20,14 @@ export interface QuestionFilterParams {
   hasAudio?: boolean;
   bookmarkedOnly?: boolean;
   customTag?: string;
-  sortBy?: 'created_at' | 'marks_desc' | 'marks_asc' | 'difficulty' | 'year_desc';
+  sortBy?: 'created_at' | 'marks_desc' | 'marks_asc' | 'difficulty' | 'year_desc' | 'question_number_asc' | 'question_number_desc';
   page?: number;
   pageSize?: number;
+}
+
+export interface PaperTypesSummary {
+  seriesOptions: { value: string; label: string; rawName: string; count: number }[];
+  paperNumberOptions: { value: string; label: string; paperNumber: number; count: number }[];
 }
 
 export interface QuestionQueryResult {
@@ -157,6 +163,72 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
     .sort((a, b) => a.topic.localeCompare(b.topic));
 }
 
+/**
+ * Fetches distinct paper types (exam series and paper numbers) from questions in the database
+ */
+export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSummary> {
+  let query = supabase
+    .from('questions')
+    .select('series, paper_number, syllabus_id');
+
+  if (syllabusId) {
+    query = query.eq('syllabus_id', syllabusId);
+  }
+
+  let { data, error } = await query;
+
+  // Fallback: If syllabusId filter yielded no results, fetch all questions to ensure options are available
+  if ((!data || data.length === 0) && syllabusId) {
+    const fallbackRes = await supabase
+      .from('questions')
+      .select('series, paper_number, syllabus_id');
+    if (fallbackRes.data && fallbackRes.data.length > 0) {
+      data = fallbackRes.data;
+    }
+  }
+
+  if (error || !data) {
+    console.error('Failed to fetch paper types:', error);
+    return { seriesOptions: [], paperNumberOptions: [] };
+  }
+
+  const seriesMap = new Map<string, number>();
+  const paperNumMap = new Map<number, number>();
+
+  data.forEach((row: any) => {
+    if (row.series && typeof row.series === 'string' && row.series.trim()) {
+      const s = row.series.trim();
+      seriesMap.set(s, (seriesMap.get(s) || 0) + 1);
+    }
+    if (row.paper_number !== null && row.paper_number !== undefined) {
+      const p = Number(row.paper_number);
+      if (!isNaN(p)) {
+        paperNumMap.set(p, (paperNumMap.get(p) || 0) + 1);
+      }
+    }
+  });
+
+  const seriesOptions = Array.from(seriesMap.entries())
+    .map(([series, count]) => ({
+      value: `series:${series}`,
+      label: `${series} (${count})`,
+      rawName: series,
+      count,
+    }))
+    .sort((a, b) => b.count - a.count || a.rawName.localeCompare(b.rawName));
+
+  const paperNumberOptions = Array.from(paperNumMap.entries())
+    .map(([num, count]) => ({
+      value: `paper:${num}`,
+      label: `Paper ${num} (${count})`,
+      paperNumber: num,
+      count,
+    }))
+    .sort((a, b) => a.paperNumber - b.paperNumber);
+
+  return { seriesOptions, paperNumberOptions };
+}
+
 export interface SubjectTopicSummary {
   syllabusId: string | null;
   subjectName: string;
@@ -247,7 +319,103 @@ export async function fetchUploadedSubjectTopics(): Promise<SubjectTopicSummary[
 }
 
 /**
- * Dynamic multi-filter question query with pagination and sorting
+ * Compares two question numbers naturally so that 1, 2, 3, ... 9, 10, 11
+ * are ordered numerically rather than alphabetically (1, 10, 11, 2, ...).
+ * Also handles subparts (e.g. 1(a), 1(b), 2(a)) and question prefixes (e.g. Q1, Q2, Question 10).
+ */
+export function compareQuestionNumbers(
+  a?: string | number | null,
+  b?: string | number | null
+): number {
+  if (a === b) return 0;
+  const strA = a !== undefined && a !== null ? String(a).trim() : '';
+  const strB = b !== undefined && b !== null ? String(b).trim() : '';
+  if (!strA && !strB) return 0;
+  if (!strA) return 1;
+  if (!strB) return -1;
+  return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/**
+ * Stably sorts a list of questions according to the specified sort criteria,
+ * applying natural alphanumeric ordering to question numbers (1, 2, 3... 10, 11).
+ */
+export function sortQuestionsList(
+  questions: Question[],
+  sortBy: string = 'year_desc'
+): Question[] {
+  const sorted = [...questions];
+
+  switch (sortBy) {
+    case 'question_number_asc':
+      sorted.sort((a, b) => {
+        const qDiff = compareQuestionNumbers(a.question_number, b.question_number);
+        if (qDiff !== 0) return qDiff;
+        return (b.year || 0) - (a.year || 0);
+      });
+      break;
+
+    case 'question_number_desc':
+      sorted.sort((a, b) => {
+        const qDiff = compareQuestionNumbers(b.question_number, a.question_number);
+        if (qDiff !== 0) return qDiff;
+        return (b.year || 0) - (a.year || 0);
+      });
+      break;
+
+    case 'marks_desc':
+      sorted.sort((a, b) => {
+        const mDiff = (b.marks || 0) - (a.marks || 0);
+        if (mDiff !== 0) return mDiff;
+        return compareQuestionNumbers(a.question_number, b.question_number);
+      });
+      break;
+
+    case 'marks_asc':
+      sorted.sort((a, b) => {
+        const mDiff = (a.marks || 0) - (b.marks || 0);
+        if (mDiff !== 0) return mDiff;
+        return compareQuestionNumbers(a.question_number, b.question_number);
+      });
+      break;
+
+    case 'difficulty': {
+      const rank = (d: string | null) => (d === 'Easy' ? 1 : d === 'Medium' ? 2 : d === 'Hard' ? 3 : 4);
+      sorted.sort((a, b) => {
+        const dDiff = rank(a.difficulty) - rank(b.difficulty);
+        if (dDiff !== 0) return dDiff;
+        return compareQuestionNumbers(a.question_number, b.question_number);
+      });
+      break;
+    }
+
+    case 'created_at':
+      sorted.sort((a, b) => {
+        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return timeB - timeA;
+      });
+      break;
+
+    case 'year_desc':
+    default:
+      sorted.sort((a, b) => {
+        if ((b.year || 0) !== (a.year || 0)) {
+          return (b.year || 0) - (a.year || 0);
+        }
+        if ((a.paper_number || 0) !== (b.paper_number || 0)) {
+          return (a.paper_number || 0) - (b.paper_number || 0);
+        }
+        return compareQuestionNumbers(a.question_number, b.question_number);
+      });
+      break;
+  }
+
+  return sorted;
+}
+
+/**
+ * Dynamic multi-filter question query with full dataset natural sorting and pagination
  */
 export async function fetchQuestions(
   params: QuestionFilterParams = {}
@@ -259,6 +427,7 @@ export async function fetchQuestions(
     subTopic,
     difficulty,
     paperNumber,
+    paperType,
     year,
     series,
     minMarks,
@@ -269,149 +438,154 @@ export async function fetchQuestions(
     pageSize = 12,
   } = params;
 
-  let query = supabase
-    .from('questions')
-    .select('*', { count: 'exact' });
+  // Build the base filtered query
+  const buildFilteredQuery = () => {
+    let q = supabase
+      .from('questions')
+      .select('*', { count: 'exact' });
 
-  // Filter: Syllabus
-  if (syllabusId) {
-    query = query.eq('syllabus_id', syllabusId);
-  }
-
-  // Filter: Topic
-  if (topic) {
-    query = query.eq('topic', topic);
-  }
-
-  // Filter: Sub-topic
-  if (subTopic) {
-    query = query.eq('sub_topic', subTopic);
-  }
-
-  // Filter: Difficulty
-  if (difficulty) {
-    query = query.eq('difficulty', difficulty);
-  }
-
-  // Filter: Paper Number or preset
-  if (paperNumber) {
-    if (typeof paperNumber === 'number') {
-      query = query.eq('paper_number', paperNumber);
-    } else if (paperNumber === 'mcq') {
-      // Paper 1 or 2 (MCQ variants)
-      query = query.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
-    } else if (paperNumber === 'theory') {
-      // Paper 3 or 4 (Theory/Structured)
-      query = query.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
-    } else if (paperNumber === 'atp') {
-      // Paper 6 (Alternative to Practical)
-      query = query.in('paper_number', [6, 61, 62, 63]);
+    // Filter: Syllabus
+    if (syllabusId) {
+      q = q.eq('syllabus_id', syllabusId);
     }
-  }
 
-  // Filter: Year
-  if (year) {
-    query = query.eq('year', year);
-  }
-
-  // Filter: Series
-  if (series) {
-    query = query.ilike('series', `%${series}%`);
-  }
-
-  // Filter: Marks Range
-  if (minMarks !== undefined) {
-    query = query.gte('marks', minMarks);
-  }
-  if (maxMarks !== undefined) {
-    query = query.lte('marks', maxMarks);
-  }
-  // Filter: Question Style
-  if (questionStyle) {
-    query = query.eq('question_style', questionStyle);
-  }
-
-  // Filter: Has Audio Track
-  if (params.hasAudio) {
-    query = query.not('audio_url', 'is', null).neq('audio_url', '');
-  }
-
-  // Filter: Bookmarks Only
-  if (params.bookmarkedOnly) {
-    const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
-    if (bookmarkedIds.length === 0) {
-      return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
+    // Filter: Topic
+    if (topic) {
+      q = q.eq('topic', topic);
     }
-    query = query.in('id', bookmarkedIds);
-  }
 
-  // Filter: Custom Teacher Tag
-  if (params.customTag) {
-    const tagMap = getAllQuestionTagsMap();
-    const targetTag = params.customTag.toLowerCase().trim().replace(/^#/, '');
-    const taggedIds = Object.keys(tagMap).filter((id) =>
-      tagMap[id].some((t) => t.toLowerCase() === targetTag)
-    );
-    if (taggedIds.length === 0) {
-      return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
+    // Filter: Sub-topic
+    if (subTopic) {
+      q = q.eq('sub_topic', subTopic);
     }
-    query = query.in('id', taggedIds);
-  }
 
-  // Filter: Full-text search with Chemical Formula & LaTeX Symbol Expansion
-  if (searchQuery && searchQuery.trim()) {
-    const term = searchQuery.trim();
-    const formulaExp = expandFormulaSearch(term);
+    // Filter: Difficulty
+    if (difficulty) {
+      q = q.eq('difficulty', difficulty);
+    }
 
-    const tokensToSearch = Array.from(
-      new Set(
-        [term, ...formulaExp.expandedTokens]
-          .map((t) => t.trim())
-          .filter((t) => t.length > 0)
-      )
-    );
+    // Filter: Paper Type (Presets, Specific Paper Number, or Exam Series e.g. "Try Out TKA 1")
+    const activePaperType = paperType || (typeof paperNumber === 'string' ? paperNumber : undefined);
 
-    if (tokensToSearch.length > 1) {
-      // Limit to top 20 distinct variations to avoid exceeding PostgREST query length
-      const orClauses = tokensToSearch
-        .slice(0, 20)
-        .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`)
-        .join(',');
-      query = query.or(orClauses);
+    if (activePaperType) {
+      if (activePaperType === 'mcq' || activePaperType === 'preset:mcq') {
+        q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
+      } else if (activePaperType === 'theory' || activePaperType === 'preset:theory') {
+        q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
+      } else if (activePaperType === 'atp' || activePaperType === 'preset:atp') {
+        q = q.in('paper_number', [6, 61, 62, 63]);
+      } else if (activePaperType.startsWith('series:')) {
+        const seriesVal = activePaperType.replace('series:', '').trim();
+        q = q.eq('series', seriesVal);
+      } else if (activePaperType.startsWith('paper:')) {
+        const pNum = parseInt(activePaperType.replace('paper:', ''), 10);
+        if (!isNaN(pNum)) {
+          q = q.eq('paper_number', pNum);
+        }
+      } else {
+        const parsedNum = Number(activePaperType);
+        if (!isNaN(parsedNum)) {
+          q = q.eq('paper_number', parsedNum);
+        } else {
+          q = q.ilike('series', `%${activePaperType.trim()}%`);
+        }
+      }
     } else {
-      query = query.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+      if (paperNumber) {
+        if (typeof paperNumber === 'number') {
+          q = q.eq('paper_number', paperNumber);
+        } else if (paperNumber === 'mcq') {
+          q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
+        } else if (paperNumber === 'theory') {
+          q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
+        } else if (paperNumber === 'atp') {
+          q = q.in('paper_number', [6, 61, 62, 63]);
+        }
+      }
+
+      if (series) {
+        q = q.ilike('series', `%${series}%`);
+      }
     }
+
+    // Filter: Year
+    if (year) {
+      q = q.eq('year', year);
+    }
+
+    // Filter: Marks Range
+    if (minMarks !== undefined) {
+      q = q.gte('marks', minMarks);
+    }
+    if (maxMarks !== undefined) {
+      q = q.lte('marks', maxMarks);
+    }
+    // Filter: Question Style
+    if (questionStyle) {
+      q = q.eq('question_style', questionStyle);
+    }
+
+    // Filter: Has Audio Track
+    if (params.hasAudio) {
+      q = q.not('audio_url', 'is', null).neq('audio_url', '');
+    }
+
+    // Filter: Bookmarks Only
+    if (params.bookmarkedOnly) {
+      const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
+      if (bookmarkedIds.length === 0) {
+        return null;
+      }
+      q = q.in('id', bookmarkedIds);
+    }
+
+    // Filter: Custom Teacher Tag
+    if (params.customTag) {
+      const tagMap = getAllQuestionTagsMap();
+      const targetTag = params.customTag.toLowerCase().trim().replace(/^#/, '');
+      const taggedIds = Object.keys(tagMap).filter((id) =>
+        tagMap[id].some((t) => t.toLowerCase() === targetTag)
+      );
+      if (taggedIds.length === 0) {
+        return null;
+      }
+      q = q.in('id', taggedIds);
+    }
+
+    // Filter: Full-text search with Chemical Formula & LaTeX Symbol Expansion
+    if (searchQuery && searchQuery.trim()) {
+      const term = searchQuery.trim();
+      const formulaExp = expandFormulaSearch(term);
+
+      const tokensToSearch = Array.from(
+        new Set(
+          [term, ...formulaExp.expandedTokens]
+            .map((t) => t.trim())
+            .filter((t) => t.length > 0)
+        )
+      );
+
+      if (tokensToSearch.length > 1) {
+        const orClauses = tokensToSearch
+          .slice(0, 20)
+          .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`)
+          .join(',');
+        q = q.or(orClauses);
+      } else {
+        q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+      }
+    }
+
+    return q;
+  };
+
+  const initialQuery = buildFilteredQuery();
+  if (initialQuery === null) {
+    return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
   }
 
-  // Sorting
-  switch (sortBy) {
-    case 'marks_desc':
-      query = query.order('marks', { ascending: false });
-      break;
-    case 'marks_asc':
-      query = query.order('marks', { ascending: true });
-      break;
-    case 'difficulty':
-      query = query.order('difficulty', { ascending: true });
-      break;
-    case 'created_at':
-      query = query.order('created_at', { ascending: false });
-      break;
-    case 'year_desc':
-    default:
-      query = query
-        .order('year', { ascending: false })
-        .order('paper_number', { ascending: true })
-        .order('question_number', { ascending: true });
-      break;
-  }
-
-  // Pagination
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
-  query = query.range(from, to);
-
-  const { data, error, count } = await query;
+  // Fetch initial batch (up to 1,000 questions)
+  const { data, error, count } = await initialQuery.range(0, 999);
 
   if (error) {
     console.error('Failed to fetch questions:', error);
@@ -423,13 +597,43 @@ export async function fetchQuestions(
     };
   }
 
-  const totalCount = count ?? 0;
+  const rawQuestions: any[] = Array.isArray(data) ? [...data] : [];
+  const totalCount = count ?? rawQuestions.length;
+
+  // If total matching records exceed 1,000, fetch remaining batches in parallel
+  if (totalCount > 1000) {
+    const batchPromises = [];
+    for (let offset = 1000; offset < totalCount && offset < 5000; offset += 1000) {
+      const batchQuery = buildFilteredQuery();
+      if (batchQuery) {
+        batchPromises.push(batchQuery.range(offset, Math.min(offset + 999, totalCount - 1)));
+      }
+    }
+    const batchResults = await Promise.all(batchPromises);
+    for (const res of batchResults) {
+      if (res.data && Array.isArray(res.data)) {
+        rawQuestions.push(...res.data);
+      }
+    }
+  }
+
+  // Normalize all fetched questions
+  const normalizedQuestions: Question[] = rawQuestions.map(normalizeQuestionRecord);
+
+  // Apply complete natural sorting across the ENTIRE result set
+  const sortedQuestions = sortQuestionsList(normalizedQuestions, sortBy);
+
+  // Paginate from the perfectly sorted master list
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const from = (safePage - 1) * pageSize;
+  const to = from + pageSize;
+  const pageQuestions = sortedQuestions.slice(from, to);
 
   return {
-    questions: ((data as any[]) || []).map(normalizeQuestionRecord),
+    questions: pageQuestions,
     totalCount,
-    page,
+    page: safePage,
     totalPages,
   };
 }

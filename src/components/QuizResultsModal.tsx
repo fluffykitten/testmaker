@@ -13,6 +13,7 @@ import {
   exportSingleSubmissionExcel,
   formatProctorTimestamp,
   formatSubmissionDateTime,
+  formatCandidateAnswer,
   type StudentSubmission,
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
@@ -23,6 +24,7 @@ import {
   exportClassQuizReportPdf,
   exportIndividualStudentReportPdf,
   exportStudentFeedbackReportPdf,
+  exportBatchStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
 import './QuizResultsModal.css';
@@ -40,6 +42,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'flagged'>('all');
   const [selectedClass, setSelectedClass] = useState<string>('all');
+  const [showMarkSchemeInReports, setShowMarkSchemeInReports] = useState<boolean>(true);
 
   // Teacher Mark Override State
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
@@ -422,6 +425,53 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           <div className="qrm-header-actions">
             {submissions.length > 0 && (
               <>
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    color: '#cbd5e1',
+                    background: 'rgba(255, 255, 255, 0.06)',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                  title="Toggle whether Mark Scheme answers are included in 1-page student feedback report cards"
+                >
+                  <input
+                    type="checkbox"
+                    checked={showMarkSchemeInReports}
+                    onChange={(e) => setShowMarkSchemeInReports(e.target.checked)}
+                    style={{ accentColor: '#7c3aed', cursor: 'pointer', width: '14px', height: '14px' }}
+                  />
+                  <span>Show Mark Scheme</span>
+                </label>
+                <button
+                  type="button"
+                  className="qrm-btn"
+                  style={{
+                    background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '0.8125rem',
+                    padding: '8px 14px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 8px rgba(124, 58, 237, 0.25)',
+                  }}
+                  onClick={() => exportBatchStudentFeedbackReportPdf(submissions, quiz.title, selectedClass, { showMarkScheme: showMarkSchemeInReports })}
+                  title={`Print 1-page feedback report cards for all candidates (${selectedClass === 'all' ? submissions.length : submissions.filter(s => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase()).length} students) in 1 PDF`}
+                >
+                  🎓 Batch 1-Page Reports (PDF)
+                </button>
                 <button
                   type="button"
                   className="qrm-btn"
@@ -946,7 +996,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         alignItems: 'center',
                         gap: '6px',
                       }}
-                      onClick={() => exportStudentFeedbackReportPdf(selectedSubmission)}
+                      onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { showMarkScheme: showMarkSchemeInReports })}
                       title="Print 1-page student feedback & improvement report card"
                     >
                       🎓 1-Page Report
@@ -968,7 +1018,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         alignItems: 'center',
                         gap: '6px',
                       }}
-                      onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
+                      onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { showMarkScheme: showMarkSchemeInReports })}
                       title="Export this candidate's full diagnostic script as PDF"
                     >
                       📄 Full Script
@@ -1196,9 +1246,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                             <div className="ans-block">
                               <span className="ans-lbl">Student Answer:</span>
                               <span className={`ans-val ${qr.isCorrect ? 'correct-text' : 'wrong-text'}`}>
-                                {typeof qr.studentAnswer === 'number'
-                                  ? `Option ${String.fromCharCode(65 + qr.studentAnswer)}`
-                                  : <ExamMathText content={String(qr.studentAnswer || '(No answer provided)')} />}
+                                <ExamMathText content={formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod)} />
                               </span>
                             </div>
                           )}
@@ -1214,7 +1262,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                             <div className="ans-block">
                               <span className="ans-lbl">Model Solution / Correct Answer:</span>
                               <div className="ans-val model-text">
-                                <ExamMathText content={qr.correctAnswer} />
+                                <ExamMathText content={formatCandidateAnswer(qr.correctAnswer, qr.options, qr.gradingMethod)} />
                               </div>
                             </div>
                           )}

@@ -107,6 +107,7 @@ export function UploadPage() {
         selectedFilesRef.current.insertFile
       );
       setSavedCount(count);
+      window.dispatchEvent(new Event('questions_updated'));
       setPipelineState({
         stage: 'complete',
         message: `Successfully saved ${count} questions!`,

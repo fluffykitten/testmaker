@@ -17,7 +17,7 @@ import {
   createDraftFromTest,
   type PublishedQuiz,
 } from '../services/quizManagerService';
-import { getSubmissionsForQuiz } from '../services/quizSubmissionService';
+import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import './QuizManagerPage.css';
@@ -40,6 +40,7 @@ export function QuizManagerPage({
   const [quizzes, setQuizzes] = useState<PublishedQuiz[]>([]);
   const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
+  const [, setSubmissionsVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
@@ -64,6 +65,14 @@ export function QuizManagerPage({
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
   useEffect(() => {
     loadData();
+
+    const handleSubmissionsUpdated = () => {
+      setSubmissionsVersion((v) => v + 1);
+    };
+    window.addEventListener('submissions_updated', handleSubmissionsUpdated);
+    return () => {
+      window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
+    };
   }, []);
 
   async function loadData() {
@@ -90,6 +99,10 @@ export function QuizManagerPage({
       // 3. Asynchronously load and sync quizzes from Supabase cloud
       const synced = await loadAndSyncPublishedQuizzes();
       setQuizzes(sanitize(synced));
+
+      // 4. Asynchronously load and sync all student submissions from Supabase cloud
+      await loadAndSyncAllSubmissions();
+      setSubmissionsVersion((v) => v + 1);
     } catch (err) {
       console.error('Error loading quiz manager data:', err);
     } finally {

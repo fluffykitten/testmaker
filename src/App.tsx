@@ -95,6 +95,14 @@ function App() {
     });
   };
 
+  const handleAddMultipleQuestionsToTest = (questionsToAdd: Question[]) => {
+    setSelectedQuestions((prev) => {
+      const next = new Map(prev);
+      questionsToAdd.forEach((q) => next.set(q.id, q));
+      return next;
+    });
+  };
+
   const handleRemoveQuestionFromTest = (questionId: string) => {
     setSelectedQuestions((prev) => {
       const next = new Map(prev);
@@ -321,6 +329,7 @@ function App() {
             <QuestionBankPage
               selectedQuestionIds={selectedIds}
               onToggleSelectQuestion={handleToggleSelectQuestion}
+              onAddQuestionsToTest={handleAddMultipleQuestionsToTest}
               onClearSelection={handleClearSelection}
               onRemoveQuestionsFromTest={handleRemoveQuestionsFromTest}
               onNavigateToUpload={() => setCurrentPage('upload')}

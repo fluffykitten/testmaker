@@ -7,7 +7,10 @@ import {
   formatCandidateAnswer,
   type StudentSubmission,
 } from '../services/quizSubmissionService';
-import { exportIndividualStudentReportPdf } from '../services/quizReportPdfService';
+import {
+  exportIndividualStudentReportPdf,
+  exportStudentFeedbackReportPdf,
+} from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
 import './StudentResultModal.css';
 
@@ -151,13 +154,27 @@ export function StudentResultModal({
                   </span>
                 )}
 
-                <button
-                  type="button"
-                  className="srm-download-pdf-btn"
-                  onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
-                >
-                  📄 Download Examiner PDF Report
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="srm-download-pdf-btn"
+                    style={{
+                      background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+                      borderColor: '#7c3aed',
+                      color: '#ffffff',
+                    }}
+                    onClick={() => exportStudentFeedbackReportPdf(selectedSubmission)}
+                  >
+                    🎓 1-Page Report Card
+                  </button>
+                  <button
+                    type="button"
+                    className="srm-download-pdf-btn"
+                    onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
+                  >
+                    📄 Full Script PDF
+                  </button>
+                </div>
               </div>
 
               {/* Score Summary Card */}

@@ -76,6 +76,7 @@ export interface Question {
   series: string | null;    // e.g. "May/June", "Oct/Nov"
   paper_number: number | null;
   question_number: string;  // e.g. "1(a)", "3(b)(ii)"
+  question_number_numeric?: number | null; // Generated numeric value for natural sorting
   parent_question_id: string | null; // e.g. "Q1" to group sub-parts
   question_text: string;    // LaTeX-enriched text
   question_style: QuestionStyle | null;

@@ -307,35 +307,15 @@ export function exportClassQuizReportPdf(
   }
 }
 
+export interface ReportCardOptions {
+  showMarkScheme?: boolean;
+}
+
 /**
- * ═══════════════════════════════════════════════════════════════════════════════
- * 2. INDIVIDUAL 1-PAGE CANDIDATE FEEDBACK & IMPROVEMENT REPORT (STUDENT COPY)
- * ═══════════════════════════════════════════════════════════════════════════════
+ * Helper to return shared CSS styles for 1-page student performance and improvement reports.
  */
-export async function exportStudentFeedbackReportPdf(
-  submission: StudentSubmission,
-  customPlan?: StudentImprovementPlan
-): Promise<void> {
-  if (!submission) return;
-
-  const plan = customPlan || (await generateStudentImprovementPlan(submission));
-  const { grade, color } = deriveGrade(submission.percentage);
-
-  const topicMastery: Array<{ topic: string; earned: number; total: number; pct: number }> = [];
-  if (submission.topicBreakdown) {
-    Object.entries(submission.topicBreakdown).forEach(([topic, d]) => {
-      topicMastery.push({ topic, earned: d.earnedMarks, total: d.totalMarks, pct: Math.round(d.percentage) });
-    });
-  }
-
-  const results = submission.questionResults || [];
-
-  const htmlContent = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Student Performance & Feedback Report - ${submission.studentName}</title>
-  <style>
+function getReportCardStyles(): string {
+  return `<style>
     @page {
       size: A4 portrait;
       margin: 7mm 8mm 7mm 8mm;
@@ -353,6 +333,17 @@ export async function exportStudentFeedbackReportPdf(
       padding: 0;
       font-size: 7.8pt;
       line-height: 1.32;
+    }
+    .student-page {
+      page-break-after: always;
+      break-after: page;
+      page-break-inside: avoid;
+      break-inside: avoid;
+      box-sizing: border-box;
+    }
+    .student-page:last-child {
+      page-break-after: avoid;
+      break-after: avoid;
     }
     .header-card {
       border: 1.5px solid #0f172a;
@@ -399,7 +390,6 @@ export async function exportStudentFeedbackReportPdf(
       margin-top: 2px;
     }
     .grade-badge {
-      background: ${color};
       color: #ffffff;
       font-size: 15pt;
       font-weight: 800;
@@ -480,19 +470,17 @@ export async function exportStudentFeedbackReportPdf(
       align-items: center;
       background: #f1f5f9;
       border: 1px solid #e2e8f0;
-      border-radius: 3px;
-      padding: 1.5px 5px;
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin: 1px 2px 1px 0;
       font-size: 6.8pt;
-      margin-right: 3px;
-      margin-bottom: 3px;
-      font-weight: 600;
     }
     .plan-card {
-      border-radius: 4px;
-      padding: 3.5px 6px;
-      margin-bottom: 4px;
       background: #ffffff;
-      border: 1px solid #e2e8f0;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 4px 6px;
+      margin-bottom: 4px;
     }
     .plan-card--strengths {
       border-left: 3px solid #16a34a;
@@ -559,190 +547,339 @@ export async function exportStudentFeedbackReportPdf(
       font-size: 6.8pt;
       color: #64748b;
     }
+    /* Dynamic Mark Scheme Visibility */
+    body.hide-mark-scheme .col-ms,
+    .student-page.hide-mark-scheme .col-ms {
+      display: none !important;
+    }
+    body.hide-mark-scheme .table-compact th.col-qnum,
+    body.hide-mark-scheme .table-compact td.col-qnum,
+    .student-page.hide-mark-scheme .table-compact th.col-qnum,
+    .student-page.hide-mark-scheme .table-compact td.col-qnum {
+      width: 10% !important;
+    }
+    body.hide-mark-scheme .table-compact th.col-topic,
+    body.hide-mark-scheme .table-compact td.col-topic,
+    .student-page.hide-mark-scheme .table-compact th.col-topic,
+    .student-page.hide-mark-scheme .table-compact td.col-topic {
+      width: 44% !important;
+    }
+    body.hide-mark-scheme .table-compact th.col-answer,
+    body.hide-mark-scheme .table-compact td.col-answer,
+    .student-page.hide-mark-scheme .table-compact th.col-answer,
+    .student-page.hide-mark-scheme .table-compact td.col-answer {
+      width: 32% !important;
+    }
+    body.hide-mark-scheme .table-compact th.col-result,
+    body.hide-mark-scheme .table-compact td.col-result,
+    .student-page.hide-mark-scheme .table-compact th.col-result,
+    .student-page.hide-mark-scheme .table-compact td.col-result {
+      width: 14% !important;
+    }
+    body.hide-mark-scheme .ms-heading-with-key,
+    .student-page.hide-mark-scheme .ms-heading-with-key {
+      display: none !important;
+    }
+    body.hide-mark-scheme .ms-heading-no-key,
+    .student-page.hide-mark-scheme .ms-heading-no-key {
+      display: inline !important;
+    }
+    body:not(.hide-mark-scheme) .student-page:not(.hide-mark-scheme) .ms-heading-no-key {
+      display: none !important;
+    }
+    body:not(.hide-mark-scheme) .student-page:not(.hide-mark-scheme) .ms-heading-with-key {
+      display: inline !important;
+    }
+    @media screen {
+      body {
+        background: #f1f5f9;
+        padding: 16px;
+      }
+      .student-page {
+        background: #ffffff;
+        max-width: 210mm;
+        margin: 0 auto 20px auto;
+        padding: 8mm;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+        border-radius: 6px;
+      }
+    }
     @media print {
       .no-print {
         display: none !important;
       }
+      body {
+        background: #ffffff;
+        padding: 0;
+        margin: 0;
+      }
+      .student-page {
+        box-shadow: none;
+        border-radius: 0;
+        padding: 0;
+        margin: 0;
+        height: 100vh;
+        max-height: 100vh;
+        overflow: hidden;
+      }
     }
-  </style>
-</head>
-<body>
+  </style>`;
+}
 
-  <!-- Non-Printing Print Button -->
-  <div class="no-print" style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 6px 14px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-    <div style="font-weight: 700; color: #1e293b; font-size: 11px;">
-      📄 1-Page Student Report Card: ${submission.studentName}
-    </div>
-    <button onclick="window.print()" style="background: #2563eb; color: #ffffff; border: none; padding: 5px 12px; border-radius: 4px; font-weight: 700; font-size: 11px; cursor: pointer;">
-      🖨️ Print Student Copy (1 Page)
-    </button>
-  </div>
+/**
+ * Renders the HTML markup for a single candidate's 1-page feedback report card.
+ */
+export function renderSingleStudentFeedbackReportHtml(
+  submission: StudentSubmission,
+  plan: StudentImprovementPlan,
+  options?: ReportCardOptions
+): string {
+  const showMarkScheme = options?.showMarkScheme !== false;
+  const { grade, color } = deriveGrade(submission.percentage);
 
-  <!-- Header Card -->
-  <div class="header-card">
-    <div class="header-title-box">
-      <h1>🎓 Student Performance & Improvement Report</h1>
-      <div class="header-sub">
-        ${submission.quizTitle} • ${submission.subject || 'General Assessment'}
-      </div>
-    </div>
-    <div class="score-grade-wrap">
-      <div class="score-box">
-        <div class="score-val">${submission.score} / ${submission.totalMarks}</div>
-        <div class="score-lbl">Total Score (${Math.round(submission.percentage)}%)</div>
-      </div>
-      <div class="grade-badge">${grade}</div>
-    </div>
-  </div>
+  const topicMastery: Array<{ topic: string; earned: number; total: number; pct: number }> = [];
+  if (submission.topicBreakdown) {
+    Object.entries(submission.topicBreakdown).forEach(([topic, d]) => {
+      topicMastery.push({ topic, earned: d.earnedMarks, total: d.totalMarks, pct: Math.round(d.percentage) });
+    });
+  }
 
-  <!-- Candidate Metadata -->
-  <div class="meta-bar">
-    <div class="meta-item">
-      <span>Candidate Name:</span>
-      <strong>${submission.studentName}</strong>
-    </div>
-    <div class="meta-item">
-      <span>Class / Section:</span>
-      <strong>${submission.studentClass || 'General'}</strong>
-    </div>
-    <div class="meta-item">
-      <span>Candidate ID:</span>
-      <strong style="font-family: monospace;">${submission.candidateNumber || '-'}</strong>
-    </div>
-    <div class="meta-item">
-      <span>Total Marks:</span>
-      <strong>${submission.score} / ${submission.totalMarks} (${Math.round(submission.percentage)}%)</strong>
-    </div>
-    <div class="meta-item">
-      <span>Date:</span>
-      <strong>${formatSubmissionDateTime(submission.submittedAt).split(',')[0]}</strong>
-    </div>
-  </div>
+  const results = submission.questionResults || [];
 
-  <!-- 2-Column Split: Left = Answer Matrix & Topics, Right = Improvement Plan & Encouragement -->
-  <div class="main-grid">
-    <!-- Left Column: Student Answers & Topic Breakdown -->
-    <div>
-      <!-- Topic Mastery Strip -->
-      ${topicMastery.length > 0 ? `
-      <div class="panel" style="margin-bottom: 5px;">
-        <div class="panel-heading">🎯 Topic Mastery Summary</div>
-        <div>
-          ${topicMastery.map((tm) => `
-            <div class="topic-pill">
-              <span>${tm.topic}:</span>
-              <strong style="margin-left: 3px; color: ${tm.pct >= 75 ? '#16a34a' : tm.pct >= 50 ? '#2563eb' : '#dc2626'};">${tm.earned}/${tm.total} (${tm.pct}%)</strong>
-            </div>
-          `).join('')}
+  return `
+  <div class="student-page ${showMarkScheme ? '' : 'hide-mark-scheme'}">
+    <!-- Header Card -->
+    <div class="header-card">
+      <div class="header-title-box">
+        <h1>🎓 Student Performance & Improvement Report</h1>
+        <div class="header-sub">
+          ${submission.quizTitle} • ${submission.subject || 'General Assessment'}
         </div>
       </div>
-      ` : ''}
-
-      <!-- Detailed Question Matrix -->
-      <div class="panel">
-        <div class="panel-heading">📝 Student Responses & Mark Scheme Key</div>
-        <table class="table-compact">
-          <thead>
-            <tr>
-              <th style="width: 8%; text-align: center;">Q#</th>
-              <th style="width: 30%;">Topic</th>
-              <th style="width: 26%; text-align: center;">Your Answer</th>
-              <th style="width: 24%; text-align: center;">Mark Scheme</th>
-              <th style="width: 12%; text-align: center;">Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${results.map((qr, idx) => {
-              const qNum = qr.questionNumber || idx + 1;
-              const isCorrect = qr.isCorrect;
-              const sAns = typeof qr.studentAnswer === 'string' && qr.studentAnswer.length > 18
-                ? qr.studentAnswer.substring(0, 16) + '…'
-                : String(qr.studentAnswer ?? '-');
-              const cAns = typeof qr.correctAnswer === 'string' && qr.correctAnswer.length > 18
-                ? qr.correctAnswer.substring(0, 16) + '…'
-                : String(qr.correctAnswer || (isCorrect ? sAns : 'See key'));
-
-              return `
-                <tr>
-                  <td style="text-align: center; font-weight: 700;">Q${qNum}</td>
-                  <td>${qr.topic || 'General'}</td>
-                  <td style="text-align: center;"><span style="font-weight: 600; color: ${isCorrect ? '#16a34a' : '#dc2626'};">${sAns}</span></td>
-                  <td style="text-align: center; color: #475569;">${cAns}</td>
-                  <td style="text-align: center;">
-                    <span class="${isCorrect ? 'status-correct' : 'status-incorrect'}">${isCorrect ? '✓' : '✗'}</span>
-                    <span style="font-size: 6.2pt; color: #64748b;">(${qr.earnedMarks}/${qr.maxMarks})</span>
-                  </td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
+      <div class="score-grade-wrap">
+        <div class="score-box">
+          <div class="score-val">${submission.score} / ${submission.totalMarks}</div>
+          <div class="score-lbl">Total Score (${Math.round(submission.percentage)}%)</div>
+        </div>
+        <div class="grade-badge" style="background: ${color};">${grade}</div>
       </div>
     </div>
 
-    <!-- Right Column: Personalized Diagnostics & Action Plan + Encouragement -->
-    <div>
-      <div class="panel">
-        <div class="panel-heading">📋 Personalized Diagnostic & Improvement Plan</div>
+    <!-- Candidate Metadata -->
+    <div class="meta-bar">
+      <div class="meta-item">
+        <span>Candidate Name:</span>
+        <strong>${submission.studentName}</strong>
+      </div>
+      <div class="meta-item">
+        <span>Class / Section:</span>
+        <strong>${submission.studentClass || 'General'}</strong>
+      </div>
+      <div class="meta-item">
+        <span>Candidate ID:</span>
+        <strong style="font-family: monospace;">${submission.candidateNumber || '-'}</strong>
+      </div>
+      <div class="meta-item">
+        <span>Total Marks:</span>
+        <strong>${submission.score} / ${submission.totalMarks} (${Math.round(submission.percentage)}%)</strong>
+      </div>
+      <div class="meta-item">
+        <span>Date:</span>
+        <strong>${formatSubmissionDateTime(submission.submittedAt).split(',')[0]}</strong>
+      </div>
+    </div>
 
-        <!-- Encouraging Words Box -->
-        <div class="encouragement-box">
-          <div class="encouragement-title">💖 Words of Encouragement</div>
-          <div>${plan.encouragingWords || 'Great effort on this assessment! Keep practicing and believing in your potential.'}</div>
-          ${plan.teacherSummary ? `<div class="mentor-note"><strong>Examiner Guidance:</strong> ${plan.teacherSummary}</div>` : ''}
-        </div>
-
-        <!-- Strengths -->
-        <div class="plan-card plan-card--strengths">
-          <div class="plan-card-title" style="color: #166534;">🌟 What Went Well</div>
-          <ul class="plan-list" style="color: #14532d;">
-            ${plan.strengths.map((s) => `<li>${s}</li>`).join('')}
-          </ul>
-        </div>
-
-        <!-- Areas for Focus -->
-        ${plan.weaknesses.length > 0 ? `
-        <div class="plan-card plan-card--weaknesses">
-          <div class="plan-card-title" style="color: #991b1b;">⚠️ Priority Focus Areas</div>
-          <ul class="plan-list" style="color: #7f1d1d;">
-            ${plan.weaknesses.map((w) => `<li>${w}</li>`).join('')}
-          </ul>
+    <!-- 2-Column Split: Left = Answer Matrix & Topics, Right = Improvement Plan & Encouragement -->
+    <div class="main-grid">
+      <!-- Left Column: Student Answers & Topic Breakdown -->
+      <div>
+        <!-- Topic Mastery Strip -->
+        ${topicMastery.length > 0 ? `
+        <div class="panel" style="margin-bottom: 5px;">
+          <div class="panel-heading">🎯 Topic Mastery Summary</div>
+          <div>
+            ${topicMastery.map((tm) => `
+              <div class="topic-pill">
+                <span>${tm.topic}:</span>
+                <strong style="margin-left: 3px; color: ${tm.pct >= 75 ? '#16a34a' : tm.pct >= 50 ? '#2563eb' : '#dc2626'};">${tm.earned}/${tm.total} (${tm.pct}%)</strong>
+              </div>
+            `).join('')}
+          </div>
         </div>
         ` : ''}
 
-        <!-- Targeted Next Steps -->
-        <div class="plan-card plan-card--action">
-          <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Next Steps</div>
-          <ul class="plan-list" style="color: #1e3a8a;">
-            ${plan.improvementSteps.map((step) => `<li>${step}</li>`).join('')}
-          </ul>
-        </div>
+        <!-- Detailed Question Matrix -->
+        <div class="panel">
+          <div class="panel-heading">
+            <span class="ms-heading-with-key">📝 Student Responses & Mark Scheme Key</span>
+            <span class="ms-heading-no-key" style="display: ${showMarkScheme ? 'none' : 'inline'};">📝 Student Responses Summary</span>
+          </div>
+          <table class="table-compact">
+            <thead>
+              <tr>
+                <th class="col-qnum" style="width: 8%; text-align: center;">Q#</th>
+                <th class="col-topic" style="width: 30%;">Topic</th>
+                <th class="col-answer" style="width: 26%; text-align: center;">Your Answer</th>
+                <th class="col-ms" style="width: 24%; text-align: center;">Mark Scheme</th>
+                <th class="col-result" style="width: 12%; text-align: center;">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${results.map((qr, idx) => {
+                const qNum = qr.questionNumber || idx + 1;
+                const isCorrect = qr.isCorrect;
+                const sAns = formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, true);
+                const cAns = formatCandidateAnswer(
+                  qr.correctAnswer || (isCorrect ? qr.studentAnswer : undefined),
+                  qr.options,
+                  qr.gradingMethod,
+                  true
+                );
 
-        <!-- Signatures for Subject Teacher and Parents under Improvement Plan -->
-        <div style="margin-top: 6px; padding: 6px 8px; border: 1.5px solid #cbd5e1; border-radius: 5px; background: #ffffff;">
-          <div style="font-weight: 800; font-size: 7.2pt; text-transform: uppercase; margin-bottom: 5px; color: #0f172a; display: flex; align-items: center; gap: 4px;">
-            ✍️ Review Signatures & Acknowledgment
+                return `
+                  <tr>
+                    <td class="col-qnum" style="text-align: center; font-weight: 700;">Q${qNum}</td>
+                    <td class="col-topic">${qr.topic || 'General'}</td>
+                    <td class="col-answer" style="text-align: center;"><span style="font-weight: 600; color: ${isCorrect ? '#16a34a' : '#dc2626'};">${sAns}</span></td>
+                    <td class="col-ms" style="text-align: center; color: #475569;">${cAns}</td>
+                    <td class="col-result" style="text-align: center;">
+                      <span class="${isCorrect ? 'status-correct' : 'status-incorrect'}">${isCorrect ? '✓' : '✗'}</span>
+                      <span style="font-size: 6.2pt; color: #64748b;">(${qr.earnedMarks}/${qr.maxMarks})</span>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right Column: Personalized Diagnostics & Action Plan + Encouragement -->
+      <div>
+        <div class="panel">
+          <div class="panel-heading">📋 Personalized Diagnostic & Improvement Plan</div>
+
+          <!-- Encouraging Words Box -->
+          <div class="encouragement-box">
+            <div class="encouragement-title">💖 Words of Encouragement</div>
+            <div>${plan.encouragingWords || 'Great effort on this assessment! Keep practicing and believing in your potential.'}</div>
+            ${plan.teacherSummary ? `<div class="mentor-note"><strong>Examiner Guidance:</strong> ${plan.teacherSummary}</div>` : ''}
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 6.8pt; color: #334155;">
-            <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
-              <span style="font-weight: 700; color: #0f172a;">Subject Teacher Signature:</span>
-              <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
-            </div>
-            <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
-              <span style="font-weight: 700; color: #0f172a;">Parent / Guardian Signature:</span>
-              <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
-            </div>
+
+          <!-- Strengths -->
+          <div class="plan-card plan-card--strengths">
+            <div class="plan-card-title" style="color: #166534;">🌟 What Went Well</div>
+            <ul class="plan-list" style="color: #14532d;">
+              ${plan.strengths.map((s) => `<li>${s}</li>`).join('')}
+            </ul>
           </div>
-          <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 6.6pt; color: #64748b;">
-            <div><strong>Date:</strong> ____________________</div>
-            <div><strong>Student Acknowledgment:</strong> ____________________</div>
+
+          <!-- Areas for Focus -->
+          ${plan.weaknesses.length > 0 ? `
+          <div class="plan-card plan-card--weaknesses">
+            <div class="plan-card-title" style="color: #991b1b;">⚠️ Priority Focus Areas</div>
+            <ul class="plan-list" style="color: #7f1d1d;">
+              ${plan.weaknesses.map((w) => `<li>${w}</li>`).join('')}
+            </ul>
+          </div>
+          ` : ''}
+
+          <!-- Targeted Next Steps -->
+          <div class="plan-card plan-card--action">
+            <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Next Steps</div>
+            <ul class="plan-list" style="color: #1e3a8a;">
+              ${plan.improvementSteps.map((step) => `<li>${step}</li>`).join('')}
+            </ul>
+          </div>
+
+          <!-- Signatures for Subject Teacher and Parents under Improvement Plan -->
+          <div style="margin-top: 6px; padding: 6px 8px; border: 1.5px solid #cbd5e1; border-radius: 5px; background: #ffffff;">
+            <div style="font-weight: 800; font-size: 7.2pt; text-transform: uppercase; margin-bottom: 5px; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+              ✍️ Review Signatures & Acknowledgment
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 6.8pt; color: #334155;">
+              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+                <span style="font-weight: 700; color: #0f172a;">Subject Teacher Signature:</span>
+                <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+              </div>
+              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+                <span style="font-weight: 700; color: #0f172a;">Parent / Guardian Signature:</span>
+                <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+              </div>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 6.6pt; color: #64748b;">
+              <div><strong>Date:</strong> ____________________</div>
+              <div><strong>Student Acknowledgment:</strong> ____________________</div>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  </div>`;
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 2. INDIVIDUAL 1-PAGE CANDIDATE FEEDBACK & IMPROVEMENT REPORT (STUDENT COPY)
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+export async function exportStudentFeedbackReportPdf(
+  submission: StudentSubmission,
+  customPlan?: StudentImprovementPlan,
+  options?: ReportCardOptions
+): Promise<void> {
+  if (!submission) return;
+
+  const showMarkScheme = options?.showMarkScheme !== false;
+  const plan = customPlan || (await generateStudentImprovementPlan(submission));
+  const studentPageHtml = renderSingleStudentFeedbackReportHtml(submission, plan, options);
+
+  const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Student Performance & Feedback Report - ${submission.studentName}</title>
+  ${getReportCardStyles()}
+</head>
+<body class="${showMarkScheme ? '' : 'hide-mark-scheme'}">
+
+  <!-- Non-Printing Control Bar -->
+  <div class="no-print" style="position: sticky; top: 0; z-index: 1000; background: #0f172a; color: #ffffff; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
+    <div style="font-weight: 800; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+      <span>📄</span> 1-Page Student Report Card: <strong>${submission.studentName}</strong> (${submission.studentClass || 'General'})
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; cursor: pointer; user-select: none; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);">
+        <input type="checkbox" id="toggleMarkScheme" ${showMarkScheme ? 'checked' : ''} onchange="toggleMarkScheme(this.checked)" style="cursor: pointer; accent-color: #3b82f6; width: 14px; height: 14px;" />
+        <span>Show Mark Scheme</span>
+      </label>
+      <button onclick="window.print()" style="background: #2563eb; color: #ffffff; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        🖨️ Print Student Copy (1 Page)
+      </button>
+      <button onclick="window.close()" style="background: rgba(255,255,255,0.1); color: #ffffff; border: 1px solid rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 11px; cursor: pointer;">
+        ✕ Close
+      </button>
+    </div>
   </div>
 
+  <!-- Candidate Report Page -->
+  ${studentPageHtml}
+
   <script>
+    function toggleMarkScheme(show) {
+      if (show) {
+        document.body.classList.remove('hide-mark-scheme');
+        document.querySelectorAll('.student-page').forEach(function(el) {
+          el.classList.remove('hide-mark-scheme');
+        });
+      } else {
+        document.body.classList.add('hide-mark-scheme');
+        document.querySelectorAll('.student-page').forEach(function(el) {
+          el.classList.add('hide-mark-scheme');
+        });
+      }
+    }
+
     window.addEventListener('load', () => {
       setTimeout(() => {
         window.print();
@@ -753,10 +890,131 @@ export async function exportStudentFeedbackReportPdf(
 </html>`;
 
   const printWindow = window.open('', '_blank');
-  if (printWindow) {
-    printWindow.document.write(htmlContent);
-    printWindow.document.close();
+  if (!printWindow) {
+    alert('Please allow popups to open the report window.');
+    return;
   }
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 2B. BATCH 1-PAGE CANDIDATE FEEDBACK & IMPROVEMENT REPORTS (ENTIRE CLASS IN 1 PDF)
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+export async function exportBatchStudentFeedbackReportPdf(
+  submissions: StudentSubmission[],
+  quizTitle?: string,
+  selectedClass: string = 'all',
+  options?: ReportCardOptions
+): Promise<void> {
+  if (!submissions || submissions.length === 0) {
+    alert('No student submissions available to generate report cards.');
+    return;
+  }
+
+  const showMarkScheme = options?.showMarkScheme !== false;
+
+  // Filter by selected class if specified
+  const filteredSubmissions = selectedClass === 'all'
+    ? submissions
+    : submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase());
+
+  if (filteredSubmissions.length === 0) {
+    alert(`No student submissions found for class "${selectedClass}".`);
+    return;
+  }
+
+  // Generate improvement plans for all candidates concurrently
+  const plans = await Promise.all(
+    filteredSubmissions.map(async (sub) => {
+      try {
+        return await generateStudentImprovementPlan(sub);
+      } catch {
+        return undefined;
+      }
+    })
+  );
+
+  const studentPagesHtml = filteredSubmissions.map((sub, idx) => {
+    return renderSingleStudentFeedbackReportHtml(sub, plans[idx] || ({} as any), options);
+  }).join('\n');
+
+  const titleText = quizTitle || filteredSubmissions[0]?.quizTitle || 'Class Assessment';
+  const classLabel = selectedClass === 'all' ? 'All Candidates' : `Class ${selectedClass}`;
+
+  const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Batch Student Report Cards - ${titleText} (${classLabel})</title>
+  ${getReportCardStyles()}
+</head>
+<body class="${showMarkScheme ? '' : 'hide-mark-scheme'}">
+
+  <!-- Non-Printing Control Bar -->
+  <div class="no-print" style="position: sticky; top: 0; z-index: 1000; background: #0f172a; color: #ffffff; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span style="font-size: 16px;">🎓</span>
+      <div>
+        <div style="font-weight: 800; font-size: 13px;">
+          Batch Student Report Cards (${filteredSubmissions.length} Candidates — 1 Page Each)
+        </div>
+        <div style="font-size: 10px; color: #94a3b8;">
+          ${titleText} • ${classLabel}
+        </div>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; cursor: pointer; user-select: none; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);">
+        <input type="checkbox" id="toggleMarkScheme" ${showMarkScheme ? 'checked' : ''} onchange="toggleMarkScheme(this.checked)" style="cursor: pointer; accent-color: #3b82f6; width: 14px; height: 14px;" />
+        <span>Show Mark Scheme</span>
+      </label>
+      <button onclick="window.print()" style="background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff; border: none; padding: 7px 16px; border-radius: 6px; font-weight: 800; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 2px 8px rgba(37,99,235,0.4);">
+        🖨️ Print / Save as PDF (${filteredSubmissions.length} Pages)
+      </button>
+      <button onclick="window.close()" style="background: rgba(255,255,255,0.1); color: #ffffff; border: 1px solid rgba(255,255,255,0.2); padding: 7px 12px; border-radius: 6px; font-weight: 600; font-size: 11px; cursor: pointer;">
+        ✕ Close
+      </button>
+    </div>
+  </div>
+
+  ${studentPagesHtml}
+
+  <script>
+    function toggleMarkScheme(show) {
+      if (show) {
+        document.body.classList.remove('hide-mark-scheme');
+        document.querySelectorAll('.student-page').forEach(function(el) {
+          el.classList.remove('hide-mark-scheme');
+        });
+      } else {
+        document.body.classList.add('hide-mark-scheme');
+        document.querySelectorAll('.student-page').forEach(function(el) {
+          el.classList.add('hide-mark-scheme');
+        });
+      }
+    }
+
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        window.print();
+      }, 400);
+    });
+  </script>
+</body>
+</html>`;
+
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Please allow popups to open the batch PDF report window.');
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
 }
 
 /**
@@ -764,9 +1022,13 @@ export async function exportStudentFeedbackReportPdf(
  * 3. INDIVIDUAL DETAILED SCRIPT REPORT (FULL MULTI-PAGE SCRIPT BREAKDOWN)
  * ═══════════════════════════════════════════════════════════════════════════════
  */
-export function exportIndividualStudentReportPdf(submission: StudentSubmission): void {
+export function exportIndividualStudentReportPdf(
+  submission: StudentSubmission,
+  options?: ReportCardOptions
+): void {
   if (!submission) return;
 
+  const showMarkScheme = options?.showMarkScheme !== false;
   const isOffline =
     !submission.quizCode ||
     submission.quizCode.toUpperCase().startsWith('OFFLINE') ||
@@ -785,7 +1047,7 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
   <title>Candidate Diagnostic Report - ${submission.studentName}</title>
   <style>
     @page { size: A4 portrait; margin: 12mm; }
-    body { font-family: sans-serif; color: #0f172a; font-size: 9pt; line-height: 1.45; }
+    body { font-family: sans-serif; color: #0f172a; font-size: 9pt; line-height: 1.45; margin: 0; padding: 0; }
     .cand-header-card { border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 14px; background: #f8fafc; display: flex; justify-content: space-between; }
     .cand-grade-tag { background: ${color}; color: #ffffff; font-weight: 800; font-size: 18pt; padding: 6px 14px; border-radius: 6px; }
     .meta-bar { display: grid; grid-template-columns: repeat(${isOffline ? 3 : 5}, 1fr); gap: 8px; background: #f1f5f9; border-radius: 6px; padding: 8px; margin-bottom: 14px; font-size: 8pt; }
@@ -796,9 +1058,37 @@ export function exportIndividualStudentReportPdf(submission: StudentSubmission):
     .score-partial { background: rgba(234, 179, 8, 0.15); color: #ca8a04; }
     .score-zero { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .model-ans-box { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 6px; margin-top: 6px; font-size: 8pt; }
+    body.hide-mark-scheme .model-ans-box,
+    body.hide-mark-scheme .criteria-box {
+      display: none !important;
+    }
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+    }
   </style>
 </head>
-<body>
+<body class="${showMarkScheme ? '' : 'hide-mark-scheme'}">
+  <!-- Non-Printing Control Bar -->
+  <div class="no-print" style="position: sticky; top: 0; z-index: 1000; background: #0f172a; color: #ffffff; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
+    <div style="font-weight: 800; font-size: 12px;">
+      📄 Candidate Diagnostic Script: ${submission.studentName} (${submission.quizCode || 'General'})
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; cursor: pointer; user-select: none; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);">
+        <input type="checkbox" id="toggleMarkScheme" ${showMarkScheme ? 'checked' : ''} onchange="document.body.classList.toggle('hide-mark-scheme', !this.checked)" style="cursor: pointer; accent-color: #3b82f6; width: 14px; height: 14px;" />
+        <span>Show Mark Scheme</span>
+      </label>
+      <button onclick="window.print()" style="background: #2563eb; color: #ffffff; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 800; font-size: 11px; cursor: pointer;">
+        🖨️ Print Script
+      </button>
+      <button onclick="window.close()" style="background: rgba(255,255,255,0.1); color: #ffffff; border: 1px solid rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 11px; cursor: pointer;">
+        ✕ Close
+      </button>
+    </div>
+  </div>
+
   <div class="cand-header-card">
     <div>
       <h1 style="font-size: 15pt; font-weight: 800; margin: 0 0 2px 0;">👤 ${submission.studentName}</h1>

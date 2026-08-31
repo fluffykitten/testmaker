@@ -75,14 +75,15 @@ export function cleanMcqOptionContent(text: string, oIdx?: number): string {
 export const cleanOptionText = cleanMcqOptionContent;
 
 /**
- * Formats a student's answer into a human-readable string.
- * Translates MCQ option indices (e.g. 0, 1, 2, 3 or "2") into "Option C: [Text]" or "Option C".
+ * Formats a student's answer or mark scheme answer into a human-readable string.
+ * Translates MCQ option indices (e.g. 0, 1, 2, 3 or "0", "1", "2", "3") into "Option A", "Option B" or "Option A: [Text]".
  * Ensures no duplicate option letters (e.g. "Option A: A ...") occur.
  */
 export function formatCandidateAnswer(
   ans: string | number | undefined,
   options?: string[] | null,
-  gradingMethod?: string
+  gradingMethod?: string,
+  compact: boolean = false
 ): string {
   if (ans === undefined || ans === null || String(ans).trim() === '') {
     return '(No response)';
@@ -92,31 +93,47 @@ export function formatCandidateAnswer(
   // If already formatted like "Option A: A ...", clean duplicate option letter
   str = str.replace(/^Option\s+([A-D]):\s+[A-D][\.\)\s:-]+\s*/i, 'Option $1: ');
 
+  // Check if string is already formatted like "Option A" or "Option A: [text]"
+  const optMatch = str.match(/^Option\s+([A-Z])(?::\s*(.*))?$/i);
+  if (optMatch) {
+    const letter = optMatch[1].toUpperCase();
+    if (compact) return `Option ${letter}`;
+    const content = optMatch[2] ? cleanMcqOptionContent(optMatch[2]) : '';
+    return content ? `Option ${letter}: ${content}` : `Option ${letter}`;
+  }
+
   const num = Number(str);
   const isNumericIndex = !isNaN(num) && Number.isInteger(num) && num >= 0 && num <= 25;
-  // Numerical answers should only be treated as MCQ option letters if options are provided OR gradingMethod is explicitly 'mcq'
-  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0);
+  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0) || (isNumericIndex && num <= 3);
 
   if (isMcq && isNumericIndex) {
+    const letter = String.fromCharCode(65 + num);
+    if (compact) {
+      return `Option ${letter}`;
+    }
     if (options && options.length > 0 && num < options.length) {
-      const letter = String.fromCharCode(65 + num);
       const cleanContent = cleanMcqOptionContent(options[num], num);
       return `Option ${letter}: ${cleanContent || options[num]}`;
     }
-    if (gradingMethod === 'mcq') {
-      const letter = String.fromCharCode(65 + num);
-      return `Option ${letter}`;
-    }
+    return `Option ${letter}`;
   }
 
-  // If ans is just a single letter like "A", "B", "C", "D" and question has MCQ options
-  if (isMcq && str.length === 1 && str >= 'A' && str <= 'Z') {
-    const idx = str.charCodeAt(0) - 65;
+  // If ans is a single letter like "A", "B", "C", "D"
+  if (str.length === 1 && str.toUpperCase() >= 'A' && str.toUpperCase() <= 'Z' && (isMcq || str.toUpperCase() <= 'D')) {
+    const letter = str.toUpperCase();
+    if (compact) {
+      return `Option ${letter}`;
+    }
+    const idx = letter.charCodeAt(0) - 65;
     if (options && options[idx]) {
       const cleanContent = cleanMcqOptionContent(options[idx], idx);
-      return `Option ${str}: ${cleanContent || options[idx]}`;
+      return `Option ${letter}: ${cleanContent || options[idx]}`;
     }
-    return `Option ${str}`;
+    return `Option ${letter}`;
+  }
+
+  if (compact && str.length > 22) {
+    return str.substring(0, 20) + '…';
   }
 
   return str;
@@ -184,13 +201,57 @@ export function saveQuizSubmission(submission: StudentSubmission): void {
 }
 
 /**
- * Saves or updates submission both locally and asynchronously in Supabase cloud.
+ * Fetches all submissions backed up in app_config key-value store.
+ */
+export async function fetchSubmissionsFromAppConfig(): Promise<StudentSubmission[]> {
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'quiz_submissions')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Could not fetch submissions from app_config:', err);
+  }
+  return [];
+}
+
+/**
+ * Backs up submissions list to app_config key-value store.
+ */
+export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any)
+      .upsert({
+        key: 'quiz_submissions',
+        value: JSON.stringify(submissions),
+      });
+    if (error) {
+      console.warn('app_config submissions sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('app_config sync error:', err);
+    return false;
+  }
+}
+
+/**
+ * Saves or updates submission both locally and asynchronously in Supabase cloud (dual-tier table + app_config).
  */
 export async function saveQuizSubmissionCloud(submission: StudentSubmission): Promise<boolean> {
   // 1. Always save to local storage immediately
   saveQuizSubmission(submission);
+  window.dispatchEvent(new Event('submissions_updated'));
 
-  // 2. Upsert to Supabase
+  let tableSuccess = false;
+
+  // 2. Upsert to Supabase dedicated table
   try {
     const row = {
       id: submission.id,
@@ -220,19 +281,31 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
 
     const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
 
-    if (error) {
-      console.warn('Could not sync submission to Supabase cloud:', error.message);
-      return false;
+    if (!error) {
+      tableSuccess = true;
+    } else {
+      console.warn('Could not sync submission to Supabase table:', error.message);
     }
-    return true;
   } catch (err) {
-    console.warn('Error pushing submission to Supabase:', err);
-    return false;
+    console.warn('Error pushing submission to Supabase table:', err);
   }
+
+  // 3. Always mirror to app_config key-value store for resilience
+  try {
+    const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
+    const mergedMap = new Map<string, StudentSubmission>();
+    cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
+    mergedMap.set(submission.id, submission);
+    await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
+  } catch (err) {
+    console.warn('Could not mirror submission to app_config:', err);
+  }
+
+  return tableSuccess;
 }
 
 /**
- * Saves a batch of submissions both locally and asynchronously in Supabase cloud.
+ * Saves a batch of submissions both locally and asynchronously in Supabase cloud (dual-tier table + app_config).
  */
 export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmission[]): Promise<boolean> {
   if (submissions.length === 0) return true;
@@ -244,11 +317,14 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
     const filtered = existing.filter((s) => !subIds.has(s.id));
     const updated = [...submissions, ...filtered];
     localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to batch save submissions locally:', err);
   }
 
-  // 2. Batch upsert to Supabase
+  let tableSuccess = false;
+
+  // 2. Batch upsert to Supabase dedicated table
   try {
     const rows = submissions.map((submission) => ({
       id: submission.id,
@@ -278,15 +354,28 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
 
     const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(rows);
 
-    if (error) {
-      console.warn('Could not batch sync submissions to Supabase cloud:', error.message);
-      return false;
+    if (!error) {
+      tableSuccess = true;
+    } else {
+      console.warn('Could not batch sync submissions to quiz_submissions table:', error.message);
     }
-    return true;
   } catch (err) {
-    console.warn('Error batch pushing submissions to Supabase:', err);
-    return false;
+    console.warn('Error batch pushing submissions to quiz_submissions table:', err);
   }
+
+  // 3. Dual-tier cloud backup: Always sync to app_config to ensure results survive between localhost and Netlify
+  try {
+    const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
+    const mergedMap = new Map<string, StudentSubmission>();
+    cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
+    submissions.forEach((s) => mergedMap.set(s.id, s));
+    const mergedList = Array.from(mergedMap.values());
+    await syncSubmissionsToAppConfig(mergedList);
+  } catch (err) {
+    console.warn('Could not backup submissions to app_config:', err);
+  }
+
+  return tableSuccess;
 }
 
 export async function updateSubmission(submission: StudentSubmission): Promise<boolean> {
@@ -298,6 +387,7 @@ export async function deleteSubmission(id: string): Promise<void> {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.id !== id);
     localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to delete submission from localStorage:', err);
   }
@@ -306,52 +396,163 @@ export async function deleteSubmission(id: string): Promise<void> {
     const { error } = await (supabase.from('quiz_submissions' as any) as any)
       .delete()
       .eq('id', id);
-    if (error) console.warn('Could not delete from cloud:', error.message);
+    if (error) console.warn('Could not delete from table:', error.message);
   } catch (err) {
     console.warn('Cloud delete error:', err);
   }
+
+  try {
+    const appConfigSubs = await fetchSubmissionsFromAppConfig();
+    const updatedAppConfig = appConfigSubs.filter((s) => s.id !== id);
+    await syncSubmissionsToAppConfig(updatedAppConfig);
+  } catch {}
 }
 
 export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string): Promise<void> {
+  const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
   try {
     const existing = getAllSubmissions();
-    const updated = existing.filter((s) => s.quizId !== quizId && (!quizCode || s.quizCode.toUpperCase() !== quizCode.toUpperCase()));
+    const updated = existing.filter((s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode));
     localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to clear submissions from localStorage:', err);
   }
 
   try {
     let q = (supabase.from('quiz_submissions' as any) as any).delete();
-    if (quizCode) {
-      q = q.or(`quiz_id.eq.${quizId},quiz_code.eq.${quizCode.toUpperCase()}`);
+    if (cleanCode) {
+      q = q.or(`quiz_id.eq.${quizId},quiz_code.eq.${cleanCode}`);
     } else {
       q = q.eq('quiz_id', quizId);
     }
     const { error } = await q;
-    if (error) console.warn('Could not clear from cloud:', error.message);
+    if (error) console.warn('Could not clear from table:', error.message);
   } catch (err) {
     console.warn('Cloud clear error:', err);
+  }
+
+  try {
+    const appConfigSubs = await fetchSubmissionsFromAppConfig();
+    const updatedAppConfig = appConfigSubs.filter(
+      (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
+    );
+    await syncSubmissionsToAppConfig(updatedAppConfig);
+  } catch {}
+}
+
+/**
+ * Fetches all student submissions across all quizzes from Supabase cloud (table or app_config).
+ */
+export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmission[]> {
+  try {
+    // 1. Try dedicated table first
+    const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
+      .select('*')
+      .order('submitted_at', { ascending: false });
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map((row: any) => ({
+        id: row.id,
+        quizId: row.quiz_id,
+        quizCode: row.quiz_code,
+        quizTitle: row.quiz_title,
+        subject: row.subject,
+        studentName: row.student_name,
+        studentClass: row.student_class,
+        candidateNumber: row.candidate_number,
+        submittedAt: row.submitted_at,
+        durationSeconds: row.duration_seconds,
+        score: Number(row.score) || 0,
+        totalMarks: Number(row.total_marks) || 0,
+        percentage: Number(row.percentage) || 0,
+        violationsCount: Number(row.violations_count) || 0,
+        proctoringLogs: row.proctoring_logs || [],
+        rawAnswers: row.raw_answers || {},
+        questionResults: row.question_results || [],
+        topicBreakdown: row.topic_breakdown || {},
+        status: (row.status as SubmissionStatus) || 'submitted',
+        teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+        teacherNotes: row.teacher_notes || '',
+        resultPin: row.result_pin || '',
+      }));
+    }
+  } catch (err) {
+    console.warn('Could not fetch from quiz_submissions table, trying app_config:', err);
+  }
+
+  // 2. Fallback to app_config
+  return await fetchSubmissionsFromAppConfig();
+}
+
+/**
+ * Loads all submissions from local storage, merges with Supabase Cloud,
+ * syncs any local-only submissions back to the cloud, and updates localStorage.
+ */
+export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> {
+  const localList = getAllSubmissions();
+
+  try {
+    const cloudList = await fetchAllSubmissionsFromSupabase();
+
+    const mergedMap = new Map<string, StudentSubmission>();
+
+    // 1. Cloud submissions
+    cloudList.forEach((s) => mergedMap.set(s.id, s));
+
+    // 2. Local submissions - preserve newer/exclusive
+    let hasLocalExclusiveOrNewer = false;
+    localList.forEach((localS) => {
+      const existing = mergedMap.get(localS.id);
+      if (!existing) {
+        mergedMap.set(localS.id, localS);
+        hasLocalExclusiveOrNewer = true;
+      } else {
+        const localTime = new Date(localS.submittedAt || 0).getTime();
+        const cloudTime = new Date(existing.submittedAt || 0).getTime();
+        if (localTime >= cloudTime) {
+          mergedMap.set(localS.id, localS);
+        }
+      }
+    });
+
+    const merged = Array.from(mergedMap.values());
+
+    // 3. Update localStorage
+    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(merged));
+    window.dispatchEvent(new Event('submissions_updated'));
+
+    // 4. If local had items not yet in cloud (e.g. graded on localhost), sync to cloud
+    if (hasLocalExclusiveOrNewer || cloudList.length < merged.length) {
+      await saveBatchQuizSubmissionsCloud(merged);
+    }
+
+    return merged;
+  } catch (err) {
+    console.warn('Could not sync submissions with cloud, using local cache:', err);
+    return localList;
   }
 }
 
 /**
- * Fetches all student submissions for a quiz from Supabase, merging with local storage.
+ * Fetches all student submissions for a specific quiz from Supabase (with table + app_config fallback),
+ * merging with local storage.
  */
 export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: string): Promise<StudentSubmission[]> {
+  const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
   try {
     let query = (supabase.from('quiz_submissions' as any) as any)
       .select('*')
       .order('submitted_at', { ascending: false });
 
-    if (quizCode) {
-      query = query.or(`quiz_id.eq.${quizId},quiz_code.eq.${quizCode.toUpperCase()}`);
+    if (cleanCode) {
+      query = query.or(`quiz_id.eq.${quizId},quiz_code.eq.${cleanCode}`);
     } else {
       query = query.eq('quiz_id', quizId);
     }
 
     const { data, error } = await query;
-    if (!error && Array.isArray(data)) {
+    if (!error && Array.isArray(data) && data.length > 0) {
       const cloudSubs: StudentSubmission[] = data.map((row: any) => ({
         id: row.id,
         quizId: row.quiz_id,
@@ -388,7 +589,7 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
       const merged = Array.from(map.values());
       try {
         const allLocal = getAllSubmissions().filter(
-          (s) => s.quizId !== quizId && (!quizCode || s.quizCode.toUpperCase() !== quizCode.toUpperCase())
+          (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
         );
         localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
       } catch {}
@@ -396,7 +597,33 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
       return merged;
     }
   } catch (err) {
-    console.warn('Could not fetch cloud submissions:', err);
+    console.warn('Could not fetch cloud submissions from table:', err);
+  }
+
+  // Fallback to app_config if table returned no results or errored
+  try {
+    const appConfigSubs = await fetchSubmissionsFromAppConfig();
+    const matching = appConfigSubs.filter(
+      (s) => s.quizId === quizId || (cleanCode && s.quizCode.toUpperCase() === cleanCode)
+    );
+    if (matching.length > 0) {
+      const local = getSubmissionsForQuiz(quizId, quizCode);
+      const map = new Map<string, StudentSubmission>();
+      matching.forEach((s) => map.set(s.id, s));
+      local.forEach((s) => {
+        if (!map.has(s.id)) map.set(s.id, s);
+      });
+      const merged = Array.from(map.values());
+      try {
+        const allLocal = getAllSubmissions().filter(
+          (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
+        );
+        localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
+      } catch {}
+      return merged;
+    }
+  } catch (err) {
+    console.warn('Could not fetch cloud submissions from app_config:', err);
   }
 
   return getSubmissionsForQuiz(quizId, quizCode);
@@ -415,88 +642,96 @@ export async function fetchStudentResultsCloud(
   const cleanId = identifier.trim().toLowerCase();
   const cleanPin = (pin || '').trim();
 
+  // 1. Try quiz_submissions table
   try {
     const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
       .select('*')
       .eq('quiz_code', cleanCode)
       .order('submitted_at', { ascending: false });
 
-    if (!error && Array.isArray(data)) {
-      // Exact name or candidate number match (no partial matching)
+    if (!error && Array.isArray(data) && data.length > 0) {
       const matchingRows = data.filter((row: any) => {
         const sName = (row.student_name || '').toLowerCase().trim();
         const cNum = (row.candidate_number || '').toLowerCase().trim();
         return sName === cleanId || cNum === cleanId;
       });
 
-      if (matchingRows.length === 0) {
-        return { submissions: [], hasUnreleased: false };
-      }
-
-      // Verify PIN against the first matching row's stored PIN
-      const storedPin = (matchingRows[0].result_pin || '').trim();
-      if (storedPin && cleanPin !== storedPin) {
-        return { submissions: [], hasUnreleased: false, pinMismatch: true };
-      }
-
-      const published: StudentSubmission[] = [];
-      let hasUnreleased = false;
-
-      matchingRows.forEach((row: any) => {
-        const sub: StudentSubmission = {
-          id: row.id,
-          quizId: row.quiz_id,
-          quizCode: row.quiz_code,
-          quizTitle: row.quiz_title,
-          subject: row.subject,
-          studentName: row.student_name,
-          studentClass: row.student_class,
-          candidateNumber: row.candidate_number,
-          submittedAt: row.submitted_at,
-          durationSeconds: row.duration_seconds,
-          score: Number(row.score) || 0,
-          totalMarks: Number(row.total_marks) || 0,
-          percentage: Number(row.percentage) || 0,
-          violationsCount: Number(row.violations_count) || 0,
-          proctoringLogs: row.proctoring_logs || [],
-          rawAnswers: row.raw_answers || {},
-          questionResults: row.question_results || [],
-          topicBreakdown: row.topic_breakdown || {},
-          status: (row.status as SubmissionStatus) || 'submitted',
-          teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-          teacherNotes: row.teacher_notes || '',
-          resultPin: row.result_pin || '',
-        };
-
-        if (row.status === 'published') {
-          published.push(sub);
-        } else {
-          hasUnreleased = true;
+      if (matchingRows.length > 0) {
+        const storedPin = (matchingRows[0].result_pin || '').trim();
+        if (storedPin && cleanPin !== storedPin) {
+          return { submissions: [], hasUnreleased: false, pinMismatch: true };
         }
-      });
 
-      return { submissions: published, hasUnreleased };
+        const published: StudentSubmission[] = [];
+        let hasUnreleased = false;
+
+        matchingRows.forEach((row: any) => {
+          const sub: StudentSubmission = {
+            id: row.id,
+            quizId: row.quiz_id,
+            quizCode: row.quiz_code,
+            quizTitle: row.quiz_title,
+            subject: row.subject,
+            studentName: row.student_name,
+            studentClass: row.student_class,
+            candidateNumber: row.candidate_number,
+            submittedAt: row.submitted_at,
+            durationSeconds: row.duration_seconds,
+            score: Number(row.score) || 0,
+            totalMarks: Number(row.total_marks) || 0,
+            percentage: Number(row.percentage) || 0,
+            violationsCount: Number(row.violations_count) || 0,
+            proctoringLogs: row.proctoring_logs || [],
+            rawAnswers: row.raw_answers || {},
+            questionResults: row.question_results || [],
+            topicBreakdown: row.topic_breakdown || {},
+            status: (row.status as SubmissionStatus) || 'submitted',
+            teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+            teacherNotes: row.teacher_notes || '',
+            resultPin: row.result_pin || '',
+          };
+
+          if (sub.status === 'published') {
+            published.push(sub);
+          } else {
+            hasUnreleased = true;
+          }
+        });
+
+        return { submissions: published, hasUnreleased };
+      }
     }
   } catch (err) {
-    console.warn('Cloud fetch student results error:', err);
+    console.warn('Table fetch error for student results:', err);
   }
 
-  // Fallback to local storage (exact match + PIN)
-  const local = getAllSubmissions().filter((s) => {
-    const codeMatch = s.quizCode.toUpperCase() === cleanCode;
-    const nameMatch =
-      s.studentName.toLowerCase().trim() === cleanId ||
-      (s.candidateNumber && s.candidateNumber.toLowerCase().trim() === cleanId);
-    return codeMatch && nameMatch;
-  });
+  // 2. Fallback to app_config / local
+  try {
+    const allSubs = await loadAndSyncAllSubmissions();
+    const matching = allSubs.filter((s) => {
+      const codeMatch = s.quizCode.trim().toUpperCase() === cleanCode;
+      const sName = (s.studentName || '').toLowerCase().trim();
+      const cNum = (s.candidateNumber || '').toLowerCase().trim();
+      return codeMatch && (sName === cleanId || cNum === cleanId);
+    });
 
-  if (local.length > 0 && local[0].resultPin && cleanPin !== local[0].resultPin) {
-    return { submissions: [], hasUnreleased: false, pinMismatch: true };
+    if (matching.length === 0) {
+      return { submissions: [], hasUnreleased: false };
+    }
+
+    const storedPin = (matching[0].resultPin || '').trim();
+    if (storedPin && cleanPin !== storedPin) {
+      return { submissions: [], hasUnreleased: false, pinMismatch: true };
+    }
+
+    const published = matching.filter((s) => s.status === 'published');
+    const hasUnreleased = matching.some((s) => s.status !== 'published');
+
+    return { submissions: published, hasUnreleased };
+  } catch (err) {
+    console.warn('Fallback error fetching student results:', err);
+    return { submissions: [], hasUnreleased: false };
   }
-
-  const published = local.filter((s) => s.status === 'published' || !s.status);
-  const hasUnreleased = local.some((s) => s.status === 'submitted' || s.status === 'grading');
-  return { submissions: published, hasUnreleased };
 }
 
 /**

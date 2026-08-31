@@ -20,6 +20,7 @@ import './QuestionBankPage.css';
 interface QuestionBankPageProps {
   selectedQuestionIds: Set<string>;
   onToggleSelectQuestion: (question: Question) => void;
+  onAddQuestionsToTest?: (questions: Question[]) => void;
   onClearSelection: () => void;
   onRemoveQuestionsFromTest?: (ids: string[]) => void;
   onNavigateToUpload: () => void;
@@ -29,6 +30,7 @@ interface QuestionBankPageProps {
 export function QuestionBankPage({
   selectedQuestionIds,
   onToggleSelectQuestion,
+  onAddQuestionsToTest,
   onClearSelection,
   onRemoveQuestionsFromTest,
   onNavigateToUpload,
@@ -204,6 +206,7 @@ export function QuestionBankPage({
 
       // Close modal and refresh list
       setDeleteModalState({ isOpen: false, title: '', message: '', ids: [] });
+      window.dispatchEvent(new Event('questions_updated'));
       await loadQuestions();
     } catch (err: any) {
       setActionToast({
@@ -218,6 +221,41 @@ export function QuestionBankPage({
 
   // Calculate selected statistics
   const selectedCount = selectedQuestionIds.size;
+  const areAllDisplayedSelected =
+    questions.length > 0 && questions.every((q) => selectedQuestionIds.has(q.id));
+
+  const handleAddAllToTest = async () => {
+    if (questions.length === 0) return;
+
+    let targetQuestions = questions;
+    // If total filtered count is <= 50 and exceeds the single page size, fetch all matching
+    if (totalCount <= 50 && totalCount > questions.length) {
+      try {
+        const allMatching = await fetchQuestions({ ...filters, page: 1, pageSize: 50 });
+        if (allMatching.questions.length > 0) {
+          targetQuestions = allMatching.questions;
+        }
+      } catch (err) {
+        console.warn('Could not fetch all matching questions, using current page:', err);
+      }
+    }
+
+    if (onAddQuestionsToTest) {
+      onAddQuestionsToTest(targetQuestions);
+    } else {
+      targetQuestions.forEach((q) => {
+        if (!selectedQuestionIds.has(q.id)) {
+          onToggleSelectQuestion(q);
+        }
+      });
+    }
+
+    setActionToast({
+      message: `⚡ Added ${targetQuestions.length} questions to Test Builder basket!`,
+      type: 'success',
+    });
+    setTimeout(() => setActionToast(null), 3000);
+  };
 
   return (
     <div className="bank-page">
@@ -293,9 +331,24 @@ export function QuestionBankPage({
           <main className="bank-catalog">
             {/* Catalog Toolbar */}
             <div className="bank-toolbar">
-              <span className="bank-results-count">
-                Showing {questions.length} of <strong>{totalCount}</strong> question{totalCount !== 1 ? 's' : ''}
-              </span>
+              <div className="bank-toolbar-left">
+                <span className="bank-results-count">
+                  Showing {questions.length} of <strong>{totalCount}</strong> question{totalCount !== 1 ? 's' : ''}
+                </span>
+
+                {questions.length > 0 && questions.length <= 50 && (
+                  <button
+                    type="button"
+                    className={`bank-add-all-btn ${areAllDisplayedSelected ? 'bank-add-all-btn--active' : ''}`}
+                    onClick={handleAddAllToTest}
+                    title="Add all displayed questions to Test Builder basket"
+                  >
+                    {areAllDisplayedSelected
+                      ? `✓ All ${questions.length} in Test Builder`
+                      : `➕ Add All (${totalCount <= 50 && totalCount > questions.length ? totalCount : questions.length}) to Test Builder`}
+                  </button>
+                )}
+              </div>
 
               {selectedCount > 0 && (
                 <div className="bank-toolbar-selection animate-fade-in">
@@ -491,6 +544,7 @@ export function QuestionBankPage({
             return [newQuestion, ...prev];
           });
           setTotalCount((c) => c + 1);
+          window.dispatchEvent(new Event('questions_updated'));
           setActionToast({
             message: `✨ Variant question ${newQuestion.question_number} saved to Question Bank!`,
             type: 'success',
@@ -501,6 +555,7 @@ export function QuestionBankPage({
           if (!selectedQuestionIds.has(newQuestion.id)) {
             onToggleSelectQuestion(newQuestion);
           }
+          window.dispatchEvent(new Event('questions_updated'));
           setActionToast({
             message: `✨ Variant question ${newQuestion.question_number} added to custom test!`,
             type: 'success',
@@ -562,6 +617,7 @@ export function QuestionBankPage({
             setTotalCount((c) => c + 1);
           }
 
+          window.dispatchEvent(new Event('questions_updated'));
           setActionToast({
             message: editorState.question?.id
               ? `Question ${savedQuestion.question_number} updated!`

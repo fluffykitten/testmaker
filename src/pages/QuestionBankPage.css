@@ -190,6 +190,54 @@
   color: var(--color-text-primary);
 }
 
+.bank-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.bank-add-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--color-primary-600);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+:root.dark .bank-add-all-btn {
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.bank-add-all-btn:hover {
+  background: var(--color-primary-600);
+  color: white;
+  border-color: var(--color-primary-600);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
+.bank-add-all-btn--active {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: var(--color-accent-600);
+}
+
+:root.dark .bank-add-all-btn--active {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
 .bank-toolbar-selection {
   display: flex;
   align-items: center;

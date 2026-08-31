@@ -238,38 +238,51 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 
   if (allQIds.length > 0) {
     try {
-      const { data: qData, error: qError } = await supabase
-        .from('questions')
-        .select('id, topic, sub_topic, syllabus_id, question_text')
-        .in('id', allQIds);
-
-      if (!qError && qData && Array.isArray(qData)) {
-        qData.forEach((q: any) => {
-          let subject = '';
-
-          // 1. Direct syllabus ID lookup
-          if (q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
-            subject = syllabusMap.get(q.syllabus_id) || '';
-          }
-
-          // 2. Topic/text keyword inference
-          if (!subject || subject.toLowerCase() === 'general') {
-            const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`);
-            if (inferred) subject = inferred;
-          }
-
-          // 3. Smart topic inference
-          let topic = q.topic?.trim() || '';
-          if (!topic || topic.toLowerCase() === 'general') {
-            topic = inferTopicFromContent(q.question_text, q.sub_topic);
-          }
-
-          questionMetaMap.set(q.id, {
-            topic: topic || 'General',
-            subject: subject || 'General',
-          });
-        });
+      // Chunk queries in batches of 50 to prevent URL length limits in production/deployed environments
+      const chunkSize = 50;
+      const chunks: string[][] = [];
+      for (let i = 0; i < allQIds.length; i += chunkSize) {
+        chunks.push(allQIds.slice(i, i + chunkSize));
       }
+
+      const results = await Promise.all(
+        chunks.map((chunk) =>
+          supabase
+            .from('questions')
+            .select('id, topic, sub_topic, syllabus_id, question_text')
+            .in('id', chunk)
+        )
+      );
+
+      results.forEach(({ data: qData, error: qError }) => {
+        if (!qError && qData && Array.isArray(qData)) {
+          qData.forEach((q: any) => {
+            let subject = '';
+
+            // 1. Direct syllabus ID lookup
+            if (q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
+              subject = syllabusMap.get(q.syllabus_id) || '';
+            }
+
+            // 2. Topic/text keyword inference
+            if (!subject || subject.toLowerCase() === 'general') {
+              const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`);
+              if (inferred) subject = inferred;
+            }
+
+            // 3. Smart topic inference
+            let topic = q.topic?.trim() || '';
+            if (!topic || topic.toLowerCase() === 'general') {
+              topic = inferTopicFromContent(q.question_text, q.sub_topic);
+            }
+
+            questionMetaMap.set(q.id, {
+              topic: topic || 'General',
+              subject: subject || 'General',
+            });
+          });
+        }
+      });
     } catch (err) {
       console.warn('Could not fetch question metadata for tests:', err);
     }
@@ -295,7 +308,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
     });
 
     const nonGeneralTopics = testTopics.filter((top) => top && top.toLowerCase() !== 'general');
-    const uniqueTopics = Array.from(new Set(nonGeneralTopics));
+    let uniqueTopics = Array.from(new Set(nonGeneralTopics));
     let primaryTopic = 'General';
 
     if (uniqueTopics.length === 1) {
@@ -316,7 +329,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
       primaryTopic = testTopics[0];
     }
 
-    // Fallback: If primaryTopic is still General, try inferring from test title
+    // Fallback: If primaryTopic is still General, try inferring from test title or header
     if (!primaryTopic || primaryTopic === 'General') {
       const titleTopic = inferTopicFromContent(t.title || '');
       if (titleTopic && titleTopic !== 'General') {
@@ -324,11 +337,16 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
       }
     }
 
+    // If uniqueTopics was empty, populate with primaryTopic if non-general
+    if (uniqueTopics.length === 0 && primaryTopic && primaryTopic !== 'General') {
+      uniqueTopics = [primaryTopic];
+    }
+
     // Resolve primary subject with multi-tier hierarchy:
     // 1. Explicit header config subject (if present and not "General")
-    // 2. Title keyword inference (e.g. "Chemistry Paper 4 Practice")
+    // 2. Title keyword inference (e.g. "Chemistry Paper 4 Practice", "IGCSE Biology")
     // 3. Predominant question subject
-    // 4. Default fallback to 'Chemistry'
+    // 4. Inferred subject from topics
     let primarySubject = '';
     const headerSubject = t.header_config?.subject;
     if (headerSubject && headerSubject.trim() && headerSubject.toLowerCase() !== 'general') {
@@ -345,20 +363,22 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
     }
 
     if (!primarySubject) {
-      primarySubject = inferSubjectFromText(testTopics.join(' ')) || 'General';
+      primarySubject = inferSubjectFromText(testTopics.join(' ') + ' ' + (t.title || '')) || 'General';
     }
 
     const finalSubjects = testSubjects.filter((s) => s.toLowerCase() !== 'general');
-    if (finalSubjects.length === 0) {
+    if (finalSubjects.length === 0 && primarySubject && primarySubject !== 'General') {
       finalSubjects.push(primarySubject);
+    } else if (finalSubjects.length === 0) {
+      finalSubjects.push('General');
     }
 
     return {
       ...t,
-      topics: uniqueTopics.length > 0 ? uniqueTopics : ['General'],
+      topics: uniqueTopics.length > 0 ? uniqueTopics : [primaryTopic || 'General'],
       subjects: finalSubjects,
-      primaryTopic,
-      primarySubject,
+      primaryTopic: primaryTopic || 'General',
+      primarySubject: primarySubject || 'General',
     };
   });
 }

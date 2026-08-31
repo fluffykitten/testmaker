@@ -105,7 +105,7 @@ export function exportOfflineInteractiveHtmlQuiz(
     .nav-cell { aspect-ratio: 1; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.875rem; cursor: pointer; background: var(--surface-elevated); border: 1px solid var(--border); color: var(--text-muted); }
     .nav-cell.current { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
     .nav-cell.answered { background: var(--primary); color: white; border-color: var(--primary); }
-    .nav-cell.flagged { border-color: #fbbf24; color: #fbbf24; }
+    .nav-cell.flagged { background: #f59e0b; border-color: #d97706; color: #ffffff; }
 
     /* Results Screen */
     .results-wrap { max-width: 800px; margin: 40px auto; padding: 30px; background: var(--surface); border-radius: 20px; border: 1px solid var(--border); text-align: center; }
