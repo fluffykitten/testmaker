@@ -8,6 +8,16 @@ import { supabase } from '../lib/supabase';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
+export interface SubmissionOutboxItem {
+  submission: StudentSubmission;
+  status: 'pending' | 'synced' | 'failed';
+  queuedAt: string;
+  retryCount: number;
+  lastError?: string;
+}
+
+const OUTBOX_STORAGE_KEY = 'fluffykitten_submission_outbox';
+
 export interface DeviceExamReceipt {
   quizCode: string;
   quizTitle: string;
@@ -15,6 +25,196 @@ export interface DeviceExamReceipt {
   candidateNumber?: string;
   submittedAt: string;
   resultPin?: string;
+}
+
+/**
+ * Retrieves all queued outbox submissions.
+ */
+export function getSubmissionOutbox(): SubmissionOutboxItem[] {
+  try {
+    const raw = localStorage.getItem(OUTBOX_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (err) {
+    console.error('Failed to load submission outbox:', err);
+    return [];
+  }
+}
+
+/**
+ * Retrieves only pending (un-synced) outbox submissions.
+ */
+export function getPendingOutboxSubmissions(): SubmissionOutboxItem[] {
+  return getSubmissionOutbox().filter((item) => item.status === 'pending');
+}
+
+/**
+ * Saves or updates a submission in the offline outbox.
+ */
+export function saveToSubmissionOutbox(
+  submission: StudentSubmission,
+  status: 'pending' | 'synced' | 'failed' = 'pending',
+  lastError?: string
+): void {
+  try {
+    const outbox = getSubmissionOutbox();
+    const existingIdx = outbox.findIndex((item) => item.submission.id === submission.id);
+    if (existingIdx >= 0) {
+      outbox[existingIdx] = {
+        submission,
+        status,
+        queuedAt: outbox[existingIdx].queuedAt || new Date().toISOString(),
+        retryCount: (outbox[existingIdx].retryCount || 0) + 1,
+        lastError: lastError || outbox[existingIdx].lastError,
+      };
+    } else {
+      outbox.unshift({
+        submission,
+        status,
+        queuedAt: new Date().toISOString(),
+        retryCount: 0,
+        lastError,
+      });
+    }
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(outbox));
+  } catch (err) {
+    console.warn('Could not save to submission outbox:', err);
+  }
+}
+
+/**
+ * Marks a submission as verified synced in the outbox.
+ */
+export function markOutboxSynced(submissionId: string): void {
+  try {
+    const outbox = getSubmissionOutbox();
+    const updated = outbox.map((item) =>
+      item.submission.id === submissionId ? { ...item, status: 'synced' as const, lastError: undefined } : item
+    );
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(updated));
+  } catch (err) {
+    console.warn('Could not mark outbox item synced:', err);
+  }
+}
+
+/**
+ * Exports a student submission to a signed, downloadable .exam JSON file for emergency offline backups.
+ */
+export function exportSubmissionToFile(submission: StudentSubmission): void {
+  try {
+    const payload = {
+      _format: 'fluffykitten_exam_v1',
+      exportedAt: new Date().toISOString(),
+      submission,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const cleanStudent = (submission.studentName || 'candidate').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const cleanCode = (submission.quizCode || 'EXAM').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const fileName = `${cleanCode}_${cleanStudent}_exam_backup.exam`;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Failed to export submission file:', err);
+  }
+}
+
+/**
+ * Encodes a student submission into a compact base64 token string for easy copying / manual submission.
+ */
+export function exportSubmissionToken(submission: StudentSubmission): string {
+  try {
+    const payload = {
+      _f: 'fke_v1',
+      s: submission,
+      t: Date.now(),
+    };
+    const jsonStr = JSON.stringify(payload);
+    // Universal utf-8 safe base64 encoding
+    const b64 = btoa(encodeURIComponent(jsonStr).replace(/%([0-9A-F]{2})/g, (_, p1) =>
+      String.fromCharCode(parseInt(p1, 16))
+    ));
+    return `EXAM_TOKEN:${b64}`;
+  } catch (err) {
+    console.error('Failed to generate submission token:', err);
+    return '';
+  }
+}
+
+/**
+ * Decodes, validates, and imports a student submission from a token string or JSON string.
+ */
+export async function importSubmissionToken(
+  tokenOrJson: string
+): Promise<{ success: boolean; submission?: StudentSubmission; error?: string }> {
+  try {
+    const raw = tokenOrJson.trim();
+    if (!raw) return { success: false, error: 'Empty token input' };
+
+    let parsedSub: StudentSubmission | null = null;
+
+    if (raw.startsWith('EXAM_TOKEN:')) {
+      const b64 = raw.substring('EXAM_TOKEN:'.length).trim();
+      const decoded = decodeURIComponent(
+        Array.prototype.map
+          .call(atob(b64), (c: string) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+          .join('')
+      );
+      const parsed = JSON.parse(decoded);
+      parsedSub = parsed.s || parsed;
+    } else if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw);
+      parsedSub = parsed.submission || parsed;
+    }
+
+    if (!parsedSub || !parsedSub.id || !parsedSub.studentName || !parsedSub.quizCode) {
+      return { success: false, error: 'Invalid exam token structure. Missing required student identifiers.' };
+    }
+
+    // Save locally and push to cloud
+    saveQuizSubmission(parsedSub);
+    markOutboxSynced(parsedSub.id);
+    await saveQuizSubmissionCloud(parsedSub);
+    window.dispatchEvent(new Event('submissions_updated'));
+
+    return { success: true, submission: parsedSub };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to decode exam token' };
+  }
+}
+
+/**
+ * Flushes all pending outbox submissions to Supabase cloud.
+ */
+export async function flushSubmissionOutbox(): Promise<{ syncedCount: number; failedCount: number }> {
+  const pending = getPendingOutboxSubmissions();
+  if (pending.length === 0) return { syncedCount: 0, failedCount: 0 };
+
+  let syncedCount = 0;
+  let failedCount = 0;
+
+  for (const item of pending) {
+    try {
+      const success = await saveQuizSubmissionCloud(item.submission);
+      if (success) {
+        markOutboxSynced(item.submission.id);
+        syncedCount++;
+      } else {
+        saveToSubmissionOutbox(item.submission, 'failed', 'Cloud endpoint did not confirm receipt');
+        failedCount++;
+      }
+    } catch (err: any) {
+      saveToSubmissionOutbox(item.submission, 'failed', err?.message || 'Network error during flush');
+      failedCount++;
+    }
+  }
+
+  return { syncedCount, failedCount };
 }
 
 /**
@@ -184,9 +384,20 @@ export function getAllSubmissions(): StudentSubmission[] {
   }
 }
 
-export function getSubmissionsForQuiz(quizId: string, quizCode?: string): StudentSubmission[] {
+export function getSubmissionsForQuiz(quizId: string, quizCode?: string, testId?: string): StudentSubmission[] {
   const all = getAllSubmissions();
-  return all.filter((s) => s.quizId === quizId || (quizCode && s.quizCode.toUpperCase() === quizCode.toUpperCase()));
+  const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
+  const cleanTestId = testId ? testId.toUpperCase() : undefined;
+
+  return all.filter((s) => {
+    const sQuizId = (s.quizId || '').toUpperCase();
+    const sCode = (s.quizCode || '').toUpperCase();
+    return (
+      s.quizId === quizId ||
+      (cleanCode && sCode === cleanCode) ||
+      (cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId))
+    );
+  });
 }
 
 export function saveQuizSubmission(submission: StudentSubmission): void {
@@ -247,6 +458,7 @@ export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[
 export async function saveQuizSubmissionCloud(submission: StudentSubmission): Promise<boolean> {
   // 1. Always save to local storage immediately
   saveQuizSubmission(submission);
+  saveToSubmissionOutbox(submission, 'pending');
   window.dispatchEvent(new Event('submissions_updated'));
 
   let tableSuccess = false;
@@ -283,6 +495,7 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
 
     if (!error) {
       tableSuccess = true;
+      markOutboxSynced(submission.id);
     } else {
       console.warn('Could not sync submission to Supabase table:', error.message);
     }
@@ -296,12 +509,54 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
     const mergedMap = new Map<string, StudentSubmission>();
     cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
     mergedMap.set(submission.id, submission);
-    await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
+    const appConfigSuccess = await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
+    if (appConfigSuccess && !tableSuccess) {
+      markOutboxSynced(submission.id);
+    }
   } catch (err) {
     console.warn('Could not mirror submission to app_config:', err);
   }
 
   return tableSuccess;
+}
+
+/**
+ * Saves a submission with verified exponential-backoff retries.
+ * Returns detailed attempt and success verification information.
+ */
+export async function saveQuizSubmissionWithVerification(
+  submission: StudentSubmission,
+  maxRetries: number = 3,
+  onAttempt?: (attempt: number, total: number) => void
+): Promise<{ success: boolean; attempts: number; error?: string }> {
+  // Always save locally immediately
+  saveQuizSubmission(submission);
+  saveToSubmissionOutbox(submission, 'pending');
+  window.dispatchEvent(new Event('submissions_updated'));
+
+  let lastErr = '';
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (onAttempt) onAttempt(attempt, maxRetries);
+    try {
+      const success = await saveQuizSubmissionCloud(submission);
+      if (success) {
+        markOutboxSynced(submission.id);
+        return { success: true, attempts: attempt };
+      }
+      lastErr = 'Cloud database returned non-success response';
+    } catch (err: any) {
+      lastErr = err?.message || 'Network error during cloud save';
+    }
+
+    // Wait with exponential backoff (e.g. 500ms, 1200ms, 2000ms)
+    if (attempt < maxRetries) {
+      await new Promise((res) => setTimeout(res, 400 * Math.pow(1.8, attempt - 1)));
+    }
+  }
+
+  saveToSubmissionOutbox(submission, 'failed', lastErr);
+  return { success: false, attempts: maxRetries, error: lastErr };
 }
 
 /**
@@ -536,17 +791,30 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
 
 /**
  * Fetches all student submissions for a specific quiz from Supabase (with table + app_config fallback),
- * merging with local storage.
+ * merging with local storage. Supports resilient matching across published ID, Quiz Code, and underlying Test UUID.
  */
-export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: string): Promise<StudentSubmission[]> {
+export async function fetchSubmissionsFromSupabase(
+  quizId: string,
+  quizCode?: string,
+  testId?: string
+): Promise<StudentSubmission[]> {
   const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
+  const cleanTestId = testId ? testId.toUpperCase() : undefined;
+
   try {
     let query = (supabase.from('quiz_submissions' as any) as any)
       .select('*')
       .order('submitted_at', { ascending: false });
 
-    if (cleanCode) {
-      query = query.or(`quiz_id.eq.${quizId},quiz_code.eq.${cleanCode}`);
+    const conditions: string[] = [`quiz_id.eq.${quizId}`];
+    if (cleanCode) conditions.push(`quiz_code.eq.${cleanCode}`);
+    if (cleanTestId) {
+      conditions.push(`quiz_id.eq.${cleanTestId}`);
+      conditions.push(`quiz_code.eq.${cleanTestId}`);
+    }
+
+    if (conditions.length > 1) {
+      query = query.or(conditions.join(','));
     } else {
       query = query.eq('quiz_id', quizId);
     }
@@ -579,7 +847,7 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
       }));
 
       // Merge with local storage
-      const local = getSubmissionsForQuiz(quizId, quizCode);
+      const local = getSubmissionsForQuiz(quizId, quizCode, testId);
       const map = new Map<string, StudentSubmission>();
       cloudSubs.forEach((s) => map.set(s.id, s));
       local.forEach((s) => {
@@ -588,9 +856,14 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
 
       const merged = Array.from(map.values());
       try {
-        const allLocal = getAllSubmissions().filter(
-          (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
-        );
+        const allLocal = getAllSubmissions().filter((s) => {
+          const sQuizId = (s.quizId || '').toUpperCase();
+          const sCode = (s.quizCode || '').toUpperCase();
+          const matchPubId = s.quizId === quizId;
+          const matchCode = cleanCode && sCode === cleanCode;
+          const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
+          return !matchPubId && !matchCode && !matchTestId;
+        });
         localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
       } catch {}
 
@@ -603,11 +876,18 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
   // Fallback to app_config if table returned no results or errored
   try {
     const appConfigSubs = await fetchSubmissionsFromAppConfig();
-    const matching = appConfigSubs.filter(
-      (s) => s.quizId === quizId || (cleanCode && s.quizCode.toUpperCase() === cleanCode)
-    );
+    const matching = appConfigSubs.filter((s) => {
+      const sQuizId = (s.quizId || '').toUpperCase();
+      const sCode = (s.quizCode || '').toUpperCase();
+      return (
+        s.quizId === quizId ||
+        (cleanCode && sCode === cleanCode) ||
+        (cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId))
+      );
+    });
+
     if (matching.length > 0) {
-      const local = getSubmissionsForQuiz(quizId, quizCode);
+      const local = getSubmissionsForQuiz(quizId, quizCode, testId);
       const map = new Map<string, StudentSubmission>();
       matching.forEach((s) => map.set(s.id, s));
       local.forEach((s) => {
@@ -615,9 +895,14 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
       });
       const merged = Array.from(map.values());
       try {
-        const allLocal = getAllSubmissions().filter(
-          (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
-        );
+        const allLocal = getAllSubmissions().filter((s) => {
+          const sQuizId = (s.quizId || '').toUpperCase();
+          const sCode = (s.quizCode || '').toUpperCase();
+          const matchPubId = s.quizId === quizId;
+          const matchCode = cleanCode && sCode === cleanCode;
+          const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
+          return !matchPubId && !matchCode && !matchTestId;
+        });
         localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
       } catch {}
       return merged;
@@ -626,7 +911,7 @@ export async function fetchSubmissionsFromSupabase(quizId: string, quizCode?: st
     console.warn('Could not fetch cloud submissions from app_config:', err);
   }
 
-  return getSubmissionsForQuiz(quizId, quizCode);
+  return getSubmissionsForQuiz(quizId, quizCode, testId);
 }
 
 /**

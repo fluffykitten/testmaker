@@ -195,31 +195,63 @@ export async function saveExtractedQuestions(
 
 /**
  * Ensures every question that refers to a reading passage contains the full passage text.
- * If Question 1 has "### Text 1: [Body]\n\n1. [Prompt]", and Question 2 only has "2. [Prompt]",
- * this automatically prepends "### Text 1: [Body]\n\n" to Question 2, 3, 4 until the next "### Text 2:".
+ * Detects all passage formats (### Text 1, ### Passage A, "Read the following text...", multi-paragraph stimulus)
+ * and automatically attaches the complete passage to subsequent questions in that group.
  */
 export function propagateReadingPassages(questions: ExtractedQuestion[]): ExtractedQuestion[] {
-  let activePassage = '';
+  let activePassageBody = '';
+  let activePassageHeading = '';
+
+  const detectPassageContent = (text: string): string | null => {
+    if (!text || text.length < 100) return null;
+
+    // Pattern 1: Explicit markdown section heading (e.g. ### Text 1, ### Passage A, ### Reading Text, etc.)
+    const headerMatch = text.match(/^(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part)\s*[A-Za-z0-9.:\-_ ]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-E]\.|\n\s*No\.?\s*\d+|$))/i);
+    if (headerMatch && headerMatch[1] && headerMatch[1].trim().length > 80) {
+      return headerMatch[1].trim();
+    }
+
+    // Pattern 2: Natural exam passage prompt (e.g. "Read the following text...", "The following text is for questions 1 to 5...")
+    const promptIntroMatch = text.match(/^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-E]\.|$))/i);
+    if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 80) {
+      return promptIntroMatch[1].trim();
+    }
+
+    // Pattern 3: Multi-paragraph stimulus (> 250 chars) where the last paragraph is the actual question prompt
+    const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length >= 2 && text.length > 250) {
+      const lastP = paragraphs[paragraphs.length - 1];
+      const isQuestionPrompt =
+        lastP.includes('?') ||
+        /^(?:\d+\.|\*\*Question|Question \d+|Which|What|How|Why|Where|When|Who|Explain|The text|According to|Based on|In the text)/i.test(lastP);
+      if (isQuestionPrompt) {
+        return paragraphs.slice(0, -1).join('\n\n');
+      }
+    }
+
+    return null;
+  };
 
   return questions.map((q) => {
     const text = q.question_text || '';
+    const detected = detectPassageContent(text);
 
-    // Check if this question defines a new reading passage (e.g. "### Text 1:", "### Passage 1:", "Text 1: ...")
-    const passageMatch = text.match(/(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i);
-
-    if (passageMatch && passageMatch[1]) {
-      // New active passage found
-      activePassage = passageMatch[1].trim();
+    if (detected) {
+      activePassageBody = detected;
+      activePassageHeading = detected.split('\n')[0].replace(/^###\s*/, '').trim();
       return q;
     }
 
-    // If there's an active passage and current question does NOT already include it
-    if (activePassage) {
-      const firstLine = activePassage.split('\n')[0].trim();
-      if (!text.includes(firstLine)) {
+    // If there is an active passage and current question does NOT already contain it
+    if (activePassageBody) {
+      const alreadyHasPassage =
+        (activePassageHeading && text.includes(activePassageHeading)) ||
+        (text.length > 200 && text.includes(activePassageBody.slice(0, 60)));
+
+      if (!alreadyHasPassage) {
         return {
           ...q,
-          question_text: `${activePassage}\n\n${text}`,
+          question_text: `${activePassageBody}\n\n${text}`,
         };
       }
     }
@@ -399,6 +431,14 @@ export async function runExtractionPipeline(
                 adjustedQ.question_text && adjustedQ.question_text.length > existing.question_text.length
                   ? adjustedQ.question_text
                   : existing.question_text,
+              options:
+                adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
+                  ? adjustedQ.options
+                  : existing.options,
+              mark_scheme:
+                adjustedQ.mark_scheme && Object.keys(adjustedQ.mark_scheme).length > 0
+                  ? adjustedQ.mark_scheme
+                  : existing.mark_scheme,
               total_marks: Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0, totalSubMarks),
               sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
               has_diagram: existing.has_diagram || adjustedQ.has_diagram,

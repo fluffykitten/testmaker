@@ -609,18 +609,19 @@ Analyze the attached exam paper PDF page(s) and any mark scheme / answer key con
 Extract every numbered question (e.g. Question 1, 2, 3... 30) as a structured JSON object.
 
 CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
-1. CRITICAL MANDATORY PASSAGE PRESERVATION RULE (FULL VERBATIM EXTRACTION - ZERO TRUNCATION / NO ELLIPSIS):
+1. FULL VERBATIM PASSAGE PRESERVATION & SECTION LINKING (NO TRUNCATION / NO ELLIPSIS):
    - ABSOLUTELY NEVER USE ELLIPSIS (...) OR TRUNCATE A READING TEXT!
    - You MUST extract and transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom.
    - When a reading passage / stimulus text applies to a group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
-   - You MUST include the complete reading text heading and FULL body paragraphs inside the "question_text" of EVERY SINGLE QUESTION belonging to that text.
-   - NEVER drop or omit paragraphs on subsequent questions (e.g. Q2, Q3, Q4 must contain the exact same complete text as Q1).
+     * On the FIRST question of that passage group (e.g. Question 1): provide the complete reading text heading and ALL body paragraphs verbatim in "question_text", followed by the Question 1 prompt.
+     * On subsequent questions in that group (e.g. Questions 2, 3, 4): include the passage header reference (e.g. "### Text 1: Exploring Komodo National Park\n\n**Question 2:** The text primarily discusses...") and the specific question stem/options. Our system automatically propagates the complete body paragraphs to all linked questions in the group!
+     * NEVER omit, shorten, or summarize any paragraph from the reading passage.
    - Format "question_text" cleanly with Markdown:
-     "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n**Question 2:** The text primarily discusses..."
+     "### Text 1: Exploring Komodo National Park (KNP)\n(Descriptive/Expository Text, 4 Questions)\n\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\n\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\n\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\n\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!"
 
 2. EXTRACT 100% OF ALL QUESTIONS WITHOUT SKIPPING ANY:
-   - You MUST extract every numbered question (e.g. Question 1 to Question 30) present across all pages.
-   - Never skip, merge, or omit any question.
+   - You MUST extract every numbered question (e.g. Question 1 to Question 30+) present across all pages.
+   - Never skip, merge, or omit any question. Maintain sequential order.
 
 3. 5-OPTION MULTIPLE CHOICE QUESTIONS (A, B, C, D, E or a, b, c, d, e):
    - When a question has 5 options (A–E or a–e) and exactly 1 correct answer:

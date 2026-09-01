@@ -18,6 +18,7 @@ import {
   type PublishedQuiz,
 } from '../services/quizManagerService';
 import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
+import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import './QuizManagerPage.css';
@@ -157,7 +158,8 @@ export function QuizManagerPage({
 
     const firstTest = savedTests[0];
     setSelectedTestId(firstTest.id);
-    const draft = createDraftFromTest(firstTest);
+    const existing = quizzes.find((q) => q.testId === firstTest.id);
+    const draft = createDraftFromTest(firstTest, undefined, undefined, existing);
     draft.quizMode = initialMode;
     setActiveQuizDraft(draft);
     setIsConfigModalOpen(true);
@@ -206,7 +208,8 @@ export function QuizManagerPage({
     setSelectedTestId(testId);
     const selected = savedTests.find((t) => t.id === testId);
     if (selected) {
-      const draft = createDraftFromTest(selected);
+      const existing = quizzes.find((q) => q.testId === testId);
+      const draft = createDraftFromTest(selected, undefined, undefined, existing);
       if (activeQuizDraft?.quizMode) {
         draft.quizMode = activeQuizDraft.quizMode;
       }
@@ -292,13 +295,19 @@ export function QuizManagerPage({
 
   const handleRunQuizSimulation = async (quiz: PublishedQuiz) => {
     const res = await fetchCustomTestWithQuestions(quiz.testId);
-    const questions = res?.questions || [];
+    let questions = res?.questions || [];
+    if (questions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
+      questions = await fetchQuestionsByIds(quiz.questionIds);
+    }
     onLaunchTestRun(questions, quiz.headerConfig);
   };
 
   const handleStartLiveGame = async (quiz: PublishedQuiz) => {
     const res = await fetchCustomTestWithQuestions(quiz.testId);
-    const questions = res?.questions || [];
+    let questions = res?.questions || [];
+    if (questions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
+      questions = await fetchQuestionsByIds(quiz.questionIds);
+    }
     if (onLaunchGameHost) {
       onLaunchGameHost(quiz, questions);
     } else {
@@ -309,7 +318,7 @@ export function QuizManagerPage({
   // Helper function to render a quiz card
   const renderQuizCard = (quiz: PublishedQuiz) => {
     const directLink = `${window.location.origin}${window.location.pathname}?quiz=${quiz.quizCode}`;
-    const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode).length;
+    const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
     const isGame = quiz.quizMode === 'game';
 
     return (

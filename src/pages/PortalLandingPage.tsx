@@ -1,5 +1,12 @@
-import { useState, useEffect } from 'react';
-import { getDeviceReceipts, type DeviceExamReceipt } from '../services/quizSubmissionService';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  getDeviceReceipts,
+  getPendingOutboxSubmissions,
+  flushSubmissionOutbox,
+  exportSubmissionToFile,
+  type DeviceExamReceipt,
+  type SubmissionOutboxItem,
+} from '../services/quizSubmissionService';
 import { StudentResultModal } from '../components/StudentResultModal';
 import './PortalLandingPage.css';
 
@@ -102,8 +109,40 @@ export function PortalLandingPage({
   // Recent Device Receipts
   const [recentReceipts, setRecentReceipts] = useState<DeviceExamReceipt[]>([]);
 
+  // Outbox Recovery State
+  const [pendingOutbox, setPendingOutbox] = useState<SubmissionOutboxItem[]>(() => getPendingOutboxSubmissions());
+  const [isFlushingOutbox, setIsFlushingOutbox] = useState<boolean>(false);
+  const [outboxSyncMsg, setOutboxSyncMsg] = useState<string | null>(null);
+
   // Result PIN Input
   const [resultPinInput, setResultPinInput] = useState('');
+
+  const refreshPendingOutbox = useCallback(() => {
+    const pending = getPendingOutboxSubmissions();
+    setPendingOutbox(pending);
+  }, []);
+
+  const handleFlushPendingOutbox = useCallback(async () => {
+    if (isFlushingOutbox) return;
+    setIsFlushingOutbox(true);
+    setOutboxSyncMsg('Syncing pending exam submissions with teacher server...');
+    try {
+      const res = await flushSubmissionOutbox();
+      if (res.syncedCount > 0) {
+        setOutboxSyncMsg(`✅ Successfully synced ${res.syncedCount} exam submission(s) to server!`);
+        setTimeout(() => setOutboxSyncMsg(null), 4000);
+      } else if (res.failedCount > 0) {
+        setOutboxSyncMsg('⚠️ Sync attempt failed. Will retry automatically when connection improves.');
+      } else {
+        setOutboxSyncMsg(null);
+      }
+    } catch {
+      setOutboxSyncMsg('⚠️ Network error during sync. Will retry automatically.');
+    } finally {
+      setIsFlushingOutbox(false);
+      refreshPendingOutbox();
+    }
+  }, [isFlushingOutbox, refreshPendingOutbox]);
 
   useEffect(() => {
     const receipts = getDeviceReceipts();
@@ -113,7 +152,32 @@ export function PortalLandingPage({
       setResultCandidateInput(receipts[0].studentName || receipts[0].candidateNumber || '');
       setResultPinInput(receipts[0].resultPin || '');
     }
-  }, []);
+
+    refreshPendingOutbox();
+
+    // Auto-attempt flush on page mount if online
+    if (navigator.onLine && getPendingOutboxSubmissions().length > 0) {
+      handleFlushPendingOutbox();
+    }
+
+    const handleOnline = () => {
+      if (getPendingOutboxSubmissions().length > 0) {
+        handleFlushPendingOutbox();
+      }
+    };
+
+    const handleSubmissionsUpdated = () => {
+      refreshPendingOutbox();
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('submissions_updated', handleSubmissionsUpdated);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
+    };
+  }, [handleFlushPendingOutbox, refreshPendingOutbox]);
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,6 +243,82 @@ export function PortalLandingPage({
             Interactive Student Assessment Portal & Teacher Examination Suite
           </p>
         </header>
+
+        {/* ─── Pending Offline Exam Outbox Banner ─── */}
+        {pendingOutbox.length > 0 && (
+          <div
+            style={{
+              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.1))',
+              border: '1.5px solid #f59e0b',
+              borderRadius: '14px',
+              padding: '16px 20px',
+              marginBottom: '24px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '14px',
+              boxShadow: '0 4px 15px rgba(245, 158, 11, 0.12)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', textAlign: 'left' }}>
+              <span style={{ fontSize: '1.6rem' }}>⚠️</span>
+              <div>
+                <strong style={{ color: '#fbbf24', fontSize: '0.95rem', display: 'block' }}>
+                  {pendingOutbox.length} Pending Exam Submission{pendingOutbox.length > 1 ? 's' : ''} Stored Locally
+                </strong>
+                <span style={{ fontSize: '0.8125rem', color: '#cbd5e1' }}>
+                  {pendingOutbox.map((i) => `${i.submission.quizCode} (${i.submission.studentName})`).join(' • ')}
+                </span>
+                {outboxSyncMsg && (
+                  <div style={{ fontSize: '0.8125rem', color: '#6ee7b7', marginTop: '4px', fontWeight: 600 }}>
+                    {outboxSyncMsg}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={handleFlushPendingOutbox}
+                disabled={isFlushingOutbox}
+                style={{
+                  background: '#f59e0b',
+                  color: '#0f172a',
+                  border: 'none',
+                  padding: '8px 14px',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 800,
+                  cursor: isFlushingOutbox ? 'not-allowed' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                {isFlushingOutbox ? '⏳ Syncing...' : '🔄 Sync Now'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => exportSubmissionToFile(pendingOutbox[0].submission)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  color: '#ffffff',
+                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  padding: '8px 14px',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                📥 Backup (.exam)
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Dual Portal Cards Grid - Positioned at Top */}
         <div className="portal-cards-grid">

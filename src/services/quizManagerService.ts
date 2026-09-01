@@ -40,10 +40,64 @@ export interface PublishedQuiz {
 
 const STORAGE_KEY = 'fluffykitten_published_quizzes';
 
+/**
+ * Deduplicates a list of PublishedQuiz records by ID, Quiz Code, and Test ID.
+ * When collisions occur, the record with the newest timestamp is preserved.
+ */
+export function deduplicateQuizzes(quizzes: PublishedQuiz[]): PublishedQuiz[] {
+  if (!Array.isArray(quizzes)) return [];
+  const valid = quizzes.filter((q) => q && typeof q === 'object');
+  if (valid.length <= 1) return valid;
+
+  // Sort newest first so that recent edits/updates take precedence
+  const sorted = [...valid].sort((a, b) => {
+    const timeA = new Date((a && (a.updatedAt || a.createdAt)) || 0).getTime();
+    const timeB = new Date((b && (b.updatedAt || b.createdAt)) || 0).getTime();
+    return timeB - timeA;
+  });
+
+  const seenIds = new Set<string>();
+  const seenCodes = new Set<string>();
+  const seenTestIds = new Set<string>();
+  const cleanList: PublishedQuiz[] = [];
+
+  for (const q of sorted) {
+    if (!q) continue;
+    const cleanId = String(q.id || '').trim();
+    const cleanCode = String(q.quizCode || '').trim().toUpperCase();
+    const cleanTestId = String(q.testId || '').trim();
+    const isOffline = cleanCode.startsWith('OFFLINE_') || cleanTestId.startsWith('OFFLINE_') || Boolean((q as any).isOffline);
+
+    // Check duplicate by ID
+    if (cleanId && seenIds.has(cleanId)) {
+      continue;
+    }
+
+    // Check duplicate by Quiz Code
+    if (cleanCode && seenCodes.has(cleanCode)) {
+      continue;
+    }
+
+    // Check duplicate by Test ID (for standard custom tests, 1 test = 1 published quiz)
+    if (!isOffline && cleanTestId && seenTestIds.has(cleanTestId)) {
+      continue;
+    }
+
+    if (cleanId) seenIds.add(cleanId);
+    if (cleanCode) seenCodes.add(cleanCode);
+    if (!isOffline && cleanTestId) seenTestIds.add(cleanTestId);
+
+    cleanList.push(q);
+  }
+
+  return cleanList;
+}
+
 export function getPublishedQuizzes(): PublishedQuiz[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const list: PublishedQuiz[] = raw ? JSON.parse(raw) : [];
+    return deduplicateQuizzes(list);
   } catch (err) {
     console.error('Failed to load published quizzes from localStorage:', err);
     return [];
@@ -59,7 +113,7 @@ export async function fetchPublishedQuizzesFromSupabase(): Promise<PublishedQuiz
 
     if (!error && data?.value) {
       const parsed = JSON.parse(data.value);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return deduplicateQuizzes(parsed);
     }
   } catch (err) {
     console.warn('Could not fetch published quizzes from Supabase cloud:', err);
@@ -69,10 +123,11 @@ export async function fetchPublishedQuizzesFromSupabase(): Promise<PublishedQuiz
 
 export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Promise<boolean> {
   try {
+    const deduplicated = deduplicateQuizzes(quizzes);
     const { error } = await (supabase.from('app_config' as any) as any)
       .upsert({
         key: 'published_quizzes',
-        value: JSON.stringify(quizzes),
+        value: JSON.stringify(deduplicated),
       });
     if (error) {
       console.warn('Supabase cloud sync notice:', error.message);
@@ -87,7 +142,7 @@ export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Pro
 
 /**
  * Loads published quizzes from localStorage immediately, then fetches from Supabase Cloud,
- * merges both lists safely by ID & quizCode, updates localStorage, and returns the merged list.
+ * merges both lists safely by ID, quizCode, and testId, updates localStorage, and returns the merged list.
  */
 export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
   const localList = getPublishedQuizzes();
@@ -95,38 +150,15 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
   try {
     const cloudList = await fetchPublishedQuizzesFromSupabase();
 
-    // Map to merge local and cloud quizzes without dropping items
-    const mergedMap = new Map<string, PublishedQuiz>();
+    // Authoritatively merge and deduplicate both cloud and local lists
+    const combined = [...localList, ...cloudList];
+    const merged = deduplicateQuizzes(combined);
 
-    // 1. Populate with cloud quizzes first
-    cloudList.forEach((q) => {
-      mergedMap.set(q.id, q);
-    });
-
-    // 2. Merge local quizzes — if collision, preserve the newest record
-    let hasLocalExclusiveOrNewer = false;
-    localList.forEach((localQ) => {
-      const existing = mergedMap.get(localQ.id);
-      if (!existing) {
-        mergedMap.set(localQ.id, localQ);
-        hasLocalExclusiveOrNewer = true;
-      } else {
-        const localTime = new Date(localQ.updatedAt || localQ.createdAt || 0).getTime();
-        const cloudTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
-        if (localTime > cloudTime) {
-          mergedMap.set(localQ.id, localQ);
-          hasLocalExclusiveOrNewer = true;
-        }
-      }
-    });
-
-    const merged = Array.from(mergedMap.values());
-
-    // 3. Update localStorage with authoritative merged list
+    // Update localStorage with authoritative merged list
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
 
-    // 4. If local had newer items not yet in cloud, sync back to Supabase
-    if (hasLocalExclusiveOrNewer || cloudList.length < merged.length) {
+    // If local and cloud had differences or duplicates, sync clean list back to Supabase
+    if (cloudList.length !== merged.length || localList.length !== merged.length) {
       await syncPublishedQuizzesToCloud(merged);
     }
 
@@ -139,20 +171,21 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
 
 export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQuiz[]> {
   try {
+    const cleanQuiz: PublishedQuiz = {
+      ...quiz,
+      quizCode: quiz.quizCode.trim().toUpperCase(),
+      updatedAt: new Date().toISOString(),
+    };
+
     // 1. Update local storage immediately for zero-lag UI
     const existing = getPublishedQuizzes();
-    const filtered = existing.filter((q) => q.id !== quiz.id && q.quizCode.toUpperCase() !== quiz.quizCode.toUpperCase());
-    const updated = [quiz, ...filtered];
+    const updated = deduplicateQuizzes([cleanQuiz, ...existing]);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
     // 2. Fetch current cloud state and merge to avoid overwriting quizzes from other devices
     const cloudList = await fetchPublishedQuizzesFromSupabase();
-    const mergedMap = new Map<string, PublishedQuiz>();
-    cloudList.forEach((q) => mergedMap.set(q.id, q));
-    updated.forEach((q) => mergedMap.set(q.id, q));
-    mergedMap.set(quiz.id, quiz); // authoritatively keep current quiz
-
-    const finalMerged = Array.from(mergedMap.values());
+    const finalMerged = deduplicateQuizzes([cleanQuiz, ...updated, ...cloudList]);
+    
     localStorage.setItem(STORAGE_KEY, JSON.stringify(finalMerged));
     await syncPublishedQuizzesToCloud(finalMerged);
 
@@ -165,12 +198,37 @@ export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQ
 
 export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> {
   try {
+    const cleanId = id.trim();
     const existing = getPublishedQuizzes();
-    const updated = existing.filter((q) => q.id !== id);
+    const target = existing.find(
+      (q) =>
+        q.id === cleanId ||
+        q.testId === cleanId ||
+        q.quizCode.toUpperCase() === cleanId.toUpperCase()
+    );
+    const targetId = target?.id || cleanId;
+    const targetCode = (target?.quizCode || cleanId).toUpperCase();
+    const targetTestId = target?.testId || cleanId;
+
+    const matchesTarget = (q: PublishedQuiz) => {
+      const qId = q.id;
+      const qCode = q.quizCode.toUpperCase();
+      const qTestId = q.testId;
+      return (
+        qId === cleanId ||
+        qId === targetId ||
+        qTestId === cleanId ||
+        qTestId === targetTestId ||
+        qCode === cleanId.toUpperCase() ||
+        qCode === targetCode
+      );
+    };
+
+    const updated = existing.filter((q) => !matchesTarget(q));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
     const cloudList = await fetchPublishedQuizzesFromSupabase();
-    const updatedCloud = cloudList.filter((q) => q.id !== id);
+    const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
     await syncPublishedQuizzesToCloud(updatedCloud);
 
     return updated;
@@ -207,20 +265,24 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
 }
 
 /**
- * Creates a PublishedQuiz draft from a CustomTest
+ * Creates or retrieves a PublishedQuiz draft from a CustomTest.
+ * If an existing quiz already exists for this test, reuses its ID, code, and settings to prevent duplicates.
  */
 export function createDraftFromTest(
   test: CustomTest,
   questions?: Question[],
-  customCode?: string
+  customCode?: string,
+  existingQuiz?: PublishedQuiz
 ): PublishedQuiz {
-  const generated = customCode?.trim().toUpperCase() || generateQuizCode(test);
-  const header = test.header_config;
-  const qCount = questions?.length || test.question_ids?.length || 0;
-  const tMarks = test.total_marks || (questions ? questions.reduce((s, q) => s + (q.marks || 0), 0) : 0);
+  // If an existing published quiz already exists for this test, preserve its ID and configuration
+  const existing = existingQuiz || getPublishedQuizzes().find((q) => q.testId === test.id);
+  const generated = customCode?.trim().toUpperCase() || existing?.quizCode || generateQuizCode(test);
+  const header = test.header_config || existing?.headerConfig;
+  const qCount = questions?.length || test.question_ids?.length || existing?.questionCount || 0;
+  const tMarks = test.total_marks || (questions ? questions.reduce((s, q) => s + (q.marks || 0), 0) : existing?.totalMarks || 0);
 
-  // Intelligent Subject Resolution: Header -> Primary Subject -> Question Syllabus -> Chemistry
-  let resolvedSubject = header?.subject?.trim() || '';
+  // Intelligent Subject Resolution: Existing -> Header -> Primary Subject -> Question Syllabus -> Chemistry
+  let resolvedSubject = existing?.subject || header?.subject?.trim() || '';
   if (!resolvedSubject || resolvedSubject.toLowerCase() === 'assessment') {
     resolvedSubject =
       (test as any).primarySubject ||
@@ -230,34 +292,34 @@ export function createDraftFromTest(
   }
 
   return {
-    id: `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    id: existing?.id || `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     testId: test.id,
-    title: test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
+    title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
     quizCode: generated,
     subject: resolvedSubject,
     totalMarks: tMarks,
     questionCount: qCount,
-    questionIds: test.question_ids || (questions ? questions.map((q) => q.id) : []),
+    questionIds: test.question_ids || (questions ? questions.map((q) => q.id) : existing?.questionIds || []),
     headerConfig: header,
-    durationMinutes: header?.durationMinutes || 45,
-    isExamMode: true,
-    securityEnabled: true,
-    requireTeacherUnlock: true,
-    teacherPin: '1234',
-    maxViolations: 3,
-    showInstantSolutions: false,
-    isActive: true,
-    createdAt: new Date().toISOString(),
+    durationMinutes: existing?.durationMinutes || header?.durationMinutes || 45,
+    isExamMode: existing?.isExamMode ?? true,
+    securityEnabled: existing?.securityEnabled ?? true,
+    requireTeacherUnlock: existing?.requireTeacherUnlock ?? true,
+    teacherPin: existing?.teacherPin || '1234',
+    maxViolations: existing?.maxViolations || 3,
+    showInstantSolutions: existing?.showInstantSolutions ?? false,
+    isActive: existing?.isActive ?? true,
+    createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     // Game mode defaults
-    quizMode: 'exam',
-    enablePowerUps: true,
-    enableStreaks: true,
-    enableFunSounds: true,
-    enableMemes: true,
-    pointsPerQuestion: 1000,
-    questionTimerSeconds: 20,
-    shuffleQuestions: true,
-    shuffleOptions: true,
+    quizMode: existing?.quizMode || 'exam',
+    enablePowerUps: existing?.enablePowerUps ?? true,
+    enableStreaks: existing?.enableStreaks ?? true,
+    enableFunSounds: existing?.enableFunSounds ?? true,
+    enableMemes: existing?.enableMemes ?? true,
+    pointsPerQuestion: existing?.pointsPerQuestion || 1000,
+    questionTimerSeconds: existing?.questionTimerSeconds || 20,
+    shuffleQuestions: existing?.shuffleQuestions ?? true,
+    shuffleOptions: existing?.shuffleOptions ?? true,
   };
 }

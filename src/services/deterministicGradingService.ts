@@ -797,9 +797,21 @@ export function parseStudentGapAnswers(rawAnswer: string | number | undefined): 
           const numKey = k.replace(/^gap_?/i, '').trim();
           result[numKey] = String(v || '').trim();
         });
-        return result;
+        if (Object.keys(result).length > 0) return result;
       }
-    } catch {}
+    } catch {
+      // Robust regex fallback for unescaped LaTeX backslashes or quotation marks
+      const kvRegex = /"([^"]+)"\s*:\s*(?:"([^"]*)"|([^\s,}]+))/g;
+      let kvMatch: RegExpExecArray | null;
+      let foundKv = false;
+      while ((kvMatch = kvRegex.exec(str)) !== null) {
+        foundKv = true;
+        const k = kvMatch[1].replace(/^gap_?/i, '').trim();
+        const v = (kvMatch[2] !== undefined ? kvMatch[2] : kvMatch[3] || '').trim();
+        result[k] = v;
+      }
+      if (foundKv && Object.keys(result).length > 0) return result;
+    }
   }
 
   // 2. Structured string e.g. "[1] Paris; [2] 1998" or "1. Paris; 2. 1998"

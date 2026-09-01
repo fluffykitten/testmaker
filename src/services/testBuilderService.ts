@@ -449,5 +449,13 @@ export async function deleteCustomTest(testId: string): Promise<boolean> {
     // ignore
   }
 
+  // Also clean up any associated published interactive quiz (both local & cloud)
+  try {
+    const { deletePublishedQuiz } = await import('./quizManagerService');
+    await deletePublishedQuiz(testId);
+  } catch {
+    // ignore
+  }
+
   return true;
 }

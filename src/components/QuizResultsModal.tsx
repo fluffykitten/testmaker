@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { PublishedQuiz } from '../services/quizManagerService';
@@ -9,6 +9,7 @@ import {
   deleteSubmission,
   clearSubmissionsForQuiz,
   updateSubmission,
+  importSubmissionToken,
   exportAllSubmissionsExcel,
   exportSingleSubmissionExcel,
   formatProctorTimestamp,
@@ -26,6 +27,7 @@ import {
   exportStudentFeedbackReportPdf,
   exportBatchStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
+import { supabase } from '../lib/supabase';
 import { ExamMathText } from './ExamMathText';
 import './QuizResultsModal.css';
 
@@ -36,13 +38,25 @@ interface QuizResultsModalProps {
 
 export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [submissions, setSubmissions] = useState<StudentSubmission[]>(() =>
-    getSubmissionsForQuiz(quiz.id, quiz.quizCode)
+    getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId)
   );
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'flagged'>('all');
   const [selectedClass, setSelectedClass] = useState<string>('all');
   const [showMarkSchemeInReports, setShowMarkSchemeInReports] = useState<boolean>(true);
+
+  // Live Connection State
+  const [isLiveConnected, setIsLiveConnected] = useState<boolean>(true);
+
+  // Manual Paper Import State
+  const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
+  const [importTokenInput, setImportTokenInput] = useState<string>('');
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const importModalDismiss = useBackdropDismiss(() => setIsImportModalOpen(false));
 
   // Teacher Mark Override State
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
@@ -59,18 +73,94 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     text: '',
   });
 
-  const refreshSubmissions = async () => {
+  const refreshSubmissions = useCallback(async () => {
     try {
-      const subs = await fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode);
+      const subs = await fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode, quiz.testId);
       setSubmissions(subs);
     } catch (e) {
       console.warn('Failed to refresh submissions:', e);
     }
-  };
+  }, [quiz.id, quiz.quizCode, quiz.testId]);
 
   useEffect(() => {
     refreshSubmissions();
-  }, [quiz.id, quiz.quizCode]);
+
+    // 1. Listen for local window events
+    const handleSubmissionsUpdated = () => {
+      refreshSubmissions();
+    };
+    window.addEventListener('submissions_updated', handleSubmissionsUpdated);
+
+    // 2. Real-time Supabase Subscription for live submissions
+    const cleanCode = (quiz.quizCode || '').toUpperCase();
+    const channelName = `quiz_results_${cleanCode || quiz.id}_${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'quiz_submissions',
+        },
+        () => {
+          refreshSubmissions();
+        }
+      )
+      .subscribe((status) => {
+        setIsLiveConnected(status === 'SUBSCRIBED');
+      });
+
+    return () => {
+      window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
+      supabase.removeChannel(channel);
+    };
+  }, [quiz.id, quiz.quizCode, refreshSubmissions]);
+
+  const handleImportSubmit = async (rawText: string) => {
+    const clean = rawText.trim();
+    if (!clean) {
+      setImportError('Please enter a valid exam token or JSON string.');
+      return;
+    }
+    setIsImporting(true);
+    setImportError(null);
+    setImportSuccessMsg(null);
+    try {
+      const res = await importSubmissionToken(clean);
+      if (res.success && res.submission) {
+        setImportSuccessMsg(
+          `✅ Successfully imported paper for candidate: ${res.submission.studentName} (${res.submission.score}/${res.submission.totalMarks} marks)!`
+        );
+        setImportTokenInput('');
+        await refreshSubmissions();
+        setTimeout(() => {
+          setIsImportModalOpen(false);
+          setImportSuccessMsg(null);
+        }, 1800);
+      } else {
+        setImportError(res.error || 'Failed to import exam submission.');
+      }
+    } catch (err: any) {
+      setImportError(err?.message || 'Error parsing submission token');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = evt.target?.result as string;
+      if (text) {
+        handleImportSubmit(text);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
   const unanalyzedCount = useMemo(() => {
     return submissions.filter((s) => s.status === 'submitted' || !s.status).length;
@@ -503,6 +593,65 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 </button>
               </>
             )}
+
+            {/* Manual Paper Import Action */}
+            <button
+              type="button"
+              className="qrm-btn"
+              style={{
+                background: 'linear-gradient(135deg, #0284c7, #0369a1)',
+                color: '#ffffff',
+                fontWeight: 700,
+                fontSize: '0.8125rem',
+                padding: '8px 14px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: '0 2px 8px rgba(2, 132, 199, 0.25)',
+              }}
+              onClick={() => {
+                setIsImportModalOpen(true);
+                setImportError(null);
+                setImportSuccessMsg(null);
+                setImportTokenInput('');
+              }}
+              title="Import offline student submission from backup .exam file or token string"
+            >
+              📥 Import Paper
+            </button>
+
+            {/* Live Sync Status Indicator */}
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                color: isLiveConnected ? '#4ade80' : '#facc15',
+                background: 'rgba(255, 255, 255, 0.06)',
+                padding: '5px 10px',
+                borderRadius: '999px',
+                border: `1px solid ${isLiveConnected ? 'rgba(34, 197, 94, 0.25)' : 'rgba(234, 179, 8, 0.25)'}`,
+              }}
+              title={isLiveConnected ? 'Connected to live database. Submissions appear in real-time.' : 'Connecting to database...'}
+            >
+              <span
+                style={{
+                  width: '7px',
+                  height: '7px',
+                  borderRadius: '50%',
+                  background: isLiveConnected ? '#22c55e' : '#eab308',
+                  display: 'inline-block',
+                  boxShadow: isLiveConnected ? '0 0 6px #22c55e' : 'none',
+                }}
+              />
+              {isLiveConnected ? 'Live Synced' : 'Connecting...'}
+            </div>
+
             <button type="button" className="qrm-close-btn" onClick={onClose}>
               ✕
             </button>
@@ -1287,6 +1436,171 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         </div>
       </div>
+
+      {/* ─── Manual Exam Paper Import Modal ─── */}
+      {isImportModalOpen && (
+        <div
+          className="qrm-import-backdrop animate-fade-in"
+          {...importModalDismiss}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '20px',
+          }}
+        >
+          <div
+            className="qrm-import-modal animate-scale-up"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#0f172a',
+              border: '1px solid rgba(255, 255, 255, 0.15)',
+              borderRadius: '16px',
+              maxWidth: '560px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
+              color: '#f8fafc',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>📥</span> Import Student Exam Submission
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '1.2rem', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.875rem', color: '#94a3b8', marginTop: 0, marginBottom: '16px', lineHeight: 1.5 }}>
+              Recover or manually upload candidate papers saved offline on student laptops or tablets.
+            </p>
+
+            {/* Option 1: File Upload */}
+            <div
+              style={{
+                border: '2px dashed rgba(255, 255, 255, 0.2)',
+                borderRadius: '12px',
+                padding: '20px',
+                textAlign: 'center',
+                marginBottom: '16px',
+                background: 'rgba(255, 255, 255, 0.03)',
+              }}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".exam,.json"
+                onChange={handleFileUpload}
+                style={{ display: 'none' }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  background: '#3b82f6',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                📁 Select .exam or .json File
+              </button>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '8px' }}>
+                Uploads backup file downloaded by candidate upon exam completion
+              </div>
+            </div>
+
+            <div style={{ textAlign: 'center', margin: '12px 0', color: '#64748b', fontSize: '0.8125rem', fontWeight: 700 }}>
+              — OR PASTE EXAM TOKEN STRING —
+            </div>
+
+            {/* Option 2: Paste Token / JSON */}
+            <textarea
+              placeholder="Paste EXAM_TOKEN:... or raw JSON payload here"
+              value={importTokenInput}
+              onChange={(e) => setImportTokenInput(e.target.value)}
+              rows={4}
+              style={{
+                width: '100%',
+                background: '#1e293b',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '8px',
+                padding: '10px',
+                color: '#ffffff',
+                fontFamily: 'monospace',
+                fontSize: '0.8125rem',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+              }}
+            />
+
+            {importError && (
+              <div style={{ color: '#ef4444', fontSize: '0.8125rem', marginTop: '8px', fontWeight: 600 }}>
+                ⚠️ {importError}
+              </div>
+            )}
+
+            {importSuccessMsg && (
+              <div style={{ color: '#22c55e', fontSize: '0.8125rem', marginTop: '8px', fontWeight: 600 }}>
+                {importSuccessMsg}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleImportSubmit(importTokenInput)}
+                disabled={isImporting || !importTokenInput.trim()}
+                style={{
+                  background: '#10b981',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '8px 18px',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
+                  fontWeight: 700,
+                  cursor: isImporting || !importTokenInput.trim() ? 'not-allowed' : 'pointer',
+                  opacity: isImporting || !importTokenInput.trim() ? 0.6 : 1,
+                }}
+              >
+                {isImporting ? 'Importing...' : '📥 Import Submission'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );

@@ -173,18 +173,21 @@ function App() {
   // ─── Route 2: Student Interactive Quiz Runner (Automatic Exam vs Game Mode) ───
   if (appMode === 'student_quiz') {
     return (
-      <StudentQuizDispatcher
-        codeOrId={activeQuizCode}
-        initialQuestions={testRunQuestions}
-        initialHeaderConfig={testRunHeaderConfig}
-        initialMode={testRunInitialMode}
-        onExit={() => {
-          setAppMode('portal');
-          setTestRunQuestions(undefined);
-          setTestRunHeaderConfig(undefined);
-          window.history.replaceState({}, '', window.location.pathname);
-        }}
-      />
+      <ErrorBoundary onReset={() => setAppMode('portal')}>
+        <StudentQuizDispatcher
+          codeOrId={activeQuizCode}
+          initialQuestions={testRunQuestions}
+          initialHeaderConfig={testRunHeaderConfig}
+          initialMode={testRunInitialMode}
+          onExit={() => {
+            setAppMode('portal');
+            setActiveQuizCode('');
+            setTestRunQuestions(undefined);
+            setTestRunHeaderConfig(undefined);
+            window.history.replaceState({}, '', window.location.pathname);
+          }}
+        />
+      </ErrorBoundary>
     );
   }
 
@@ -754,8 +757,8 @@ function StudentQuizDispatcher({
   const [gameConfig, setGameConfig] = useState<any>(null);
 
   useEffect(() => {
-    // If questions were passed directly (e.g. test-run from builder)
-    if (!codeOrId && initialQuestions) {
+    // If questions were passed directly (e.g. test-run from builder or simulation)
+    if (initialQuestions && initialQuestions.length > 0) {
       setResolvedMode(initialMode || 'exam');
       return;
     }

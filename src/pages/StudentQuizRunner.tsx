@@ -4,7 +4,9 @@ import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz } from '../services/quizCodeService';
 import {
-  saveQuizSubmissionCloud,
+  saveQuizSubmissionWithVerification,
+  exportSubmissionToFile,
+  exportSubmissionToken,
   saveDeviceReceipt,
   generateResultPin,
   formatProctorTimestamp,
@@ -176,6 +178,69 @@ function renderStructuredModelAnswer(markScheme: any) {
   );
 }
 
+// ─── Module-Level Pure Text Parsing Helpers (Zero TDZ) ─────────────────────
+function cleanQuestionStem(stem: string, options?: string[] | null): string {
+  if (!stem) return '';
+  if (!options || options.length === 0) return stem;
+  const lines = stem.split('\n');
+  const optStartIdx = lines.findIndex((l) => /^\s*A[.)\s:-]/.test(l));
+  if (optStartIdx > 0 && lines.length - optStartIdx <= 6) {
+    const remaining = lines.slice(optStartIdx).join('\n');
+    if (/\bB[.)\s:-]/.test(remaining) && /\bC[.)\s:-]/.test(remaining)) {
+      return lines.slice(0, optStartIdx).join('\n').trim();
+    }
+  }
+  return stem || '';
+}
+
+function cleanOptionText(text: string, oIdx: number): string {
+  return cleanMcqOptionContent(text, oIdx);
+}
+
+interface QuestionParts {
+  passageText: string | null;
+  promptText: string;
+}
+
+function splitPassageAndPrompt(text: string, options?: string[] | null): QuestionParts {
+  if (!text) return { passageText: null, promptText: '' };
+  const clean = cleanQuestionStem(text, options);
+
+  // If text is short (< 180 chars), it's just a direct question
+  if (clean.length < 180) {
+    return { passageText: null, promptText: clean };
+  }
+
+  // 1. Explicit Header Split (e.g. ### Text 1 / ### Passage / etc.)
+  const headerMatch = clean.match(/^([\s\S]*?(?:###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i);
+  if (headerMatch && headerMatch[1] && headerMatch[2]) {
+    return {
+      passageText: headerMatch[1].trim(),
+      promptText: headerMatch[2].trim(),
+    };
+  }
+
+  // 2. Paragraph Split for multi-paragraph questions (> 220 chars)
+  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  if (paragraphs.length >= 2) {
+    const lastP = paragraphs[paragraphs.length - 1];
+    const isPrompt =
+      lastP.includes('?') ||
+      /^(?:which|what|how|why|where|when|who|explain|calculate|state|describe|determine|identify|suggest|compare|evaluate|discuss|complete|select|choose|berdasarkan|mengapa|apakah|bagaimana|jelaskan|hitunglah|carilah)/i.test(lastP) ||
+      lastP.length < 200;
+
+    if (isPrompt) {
+      const passage = paragraphs.slice(0, -1).join('\n\n');
+      return {
+        passageText: passage,
+        promptText: lastP,
+      };
+    }
+  }
+
+  return { passageText: null, promptText: clean };
+}
+
 export function StudentQuizRunner({
   testIdOrCode,
   initialQuestions,
@@ -219,7 +284,20 @@ export function StudentQuizRunner({
   const [isTeacherLocked, setIsTeacherLocked] = useState<boolean>(() => !!testIdOrCode);
   const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(() => savedExam?.isSubmitted || false);
-  const [timeLeft, setTimeLeft] = useState<number>(() => savedExam?.timeLeft ?? (45 * 60));
+  const examDurationSec = ((headerConfig?.durationMinutes || 45) * 60);
+  const [targetEndTime, setTargetEndTime] = useState<number | null>(() => {
+    if (savedExam?.targetEndTime) return savedExam.targetEndTime;
+    if (savedExam?.hasStarted && savedExam?.startTime) {
+      return savedExam.startTime + ((savedExam?.timeLeft ?? examDurationSec) * 1000);
+    }
+    return null;
+  });
+  const [timeLeft, setTimeLeft] = useState<number>(() => {
+    if (savedExam?.targetEndTime) {
+      return Math.max(0, Math.round((savedExam.targetEndTime - Date.now()) / 1000));
+    }
+    return savedExam?.timeLeft ?? examDurationSec;
+  });
 
   // Reference & Tool Drawers
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
@@ -228,10 +306,16 @@ export function StudentQuizRunner({
   const [showMobileNav, setShowMobileNav] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
 
-  // Grading & AI Evaluation State
+  // Grading, Verification & AI Evaluation State
   const [isGrading, setIsGrading] = useState<boolean>(false);
   const [gradingProgressText, setGradingProgressText] = useState<string>('');
   const [completedSubmission, setCompletedSubmission] = useState<StudentSubmission | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'offline_failed'>('idle');
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+  const [hasCopiedToken, setHasCopiedToken] = useState<boolean>(false);
+  const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
+  const [resolvedQuizCode, setResolvedQuizCode] = useState<string>(() => (testIdOrCode || 'EXAM').toUpperCase());
+  const [resolvedTestId, setResolvedTestId] = useState<string>(() => testIdOrCode || 'direct_quiz');
 
   // 🔒 Security & Anti-Cheating State
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
@@ -251,6 +335,10 @@ export function StudentQuizRunner({
   // Diagram Zoom
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [hasCopiedPin, setHasCopiedPin] = useState<boolean>(false);
+
+  // 📌 Question references for scroll navigation
+  const questionTargetRef = useRef<HTMLDivElement>(null);
+  const questionCardRef = useRef<HTMLDivElement>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
@@ -314,6 +402,8 @@ export function StudentQuizRunner({
         if (!data || data.questions.length === 0) {
           setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
         } else {
+          if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
+          if (data.testId) setResolvedTestId(data.testId);
           setTitle(data.title);
           setHeaderConfig(data.headerConfig);
           setQuestions(data.questions);
@@ -592,10 +682,13 @@ export function StudentQuizRunner({
           item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
         });
 
+        const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
+        const finalQuizId = resolvedTestId || testIdOrCode || 'direct_quiz';
+
         const submission: StudentSubmission = {
           id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          quizId: testIdOrCode || 'direct_quiz',
-          quizCode: (testIdOrCode || 'EXAM').toUpperCase(),
+          quizId: finalQuizId,
+          quizCode: finalQuizCode,
           quizTitle: title,
           subject: headerConfig?.subject || 'Chemistry',
           studentName: candidateName.trim() || 'Candidate',
@@ -620,9 +713,8 @@ export function StudentQuizRunner({
           resultPin: generateResultPin(),
         };
 
-        await saveQuizSubmissionCloud(submission);
         saveDeviceReceipt({
-          quizCode: (testIdOrCode || 'EXAM').toUpperCase(),
+          quizCode: finalQuizCode,
           quizTitle: title,
           studentName: candidateName.trim() || 'Candidate',
           candidateNumber: candidateNumber.trim() || undefined,
@@ -632,13 +724,30 @@ export function StudentQuizRunner({
 
         setCompletedSubmission(submission);
 
-        try {
-          sessionStorage.removeItem(sessionKey);
-        } catch {}
+        const syncResult = await saveQuizSubmissionWithVerification(
+          submission,
+          3,
+          (attempt, total) => setGradingProgressText(`Syncing responses with server... (Attempt ${attempt} of ${total})`)
+        );
+
+        if (syncResult.success) {
+          setSyncStatus('synced');
+          setSyncErrorMessage(null);
+          try {
+            sessionStorage.removeItem(sessionKey);
+          } catch {}
+        } else {
+          setSyncStatus('offline_failed');
+          setSyncErrorMessage(
+            syncResult.error || 'Server did not acknowledge upload. Responses are safely preserved in this browser.'
+          );
+        }
 
         setIsSubmitted(true);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to submit exam:', err);
+        setSyncStatus('offline_failed');
+        setSyncErrorMessage(err?.message || 'Network error occurred during submission.');
         setIsSubmitted(true);
       } finally {
         setIsGrading(false);
@@ -671,68 +780,88 @@ export function StudentQuizRunner({
         let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
         const subResults: any[] = [];
 
-        // Case A: Multi-Part Structured Question (excluding MCQ/Multiple Select)
-        const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
-        if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
-          let totalSubEarned = 0;
-          for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
-            const sq = q.sub_questions[sIdx];
-            const subKey = `${idx}_${sIdx}`;
-            const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
-            const subMarks = sq.marks || 1;
+        try {
+          // Case A: Multi-Part Structured Question (excluding MCQ/Multiple Select)
+          const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
+          if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
+            let totalSubEarned = 0;
+            for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
+              const sq = q.sub_questions[sIdx];
+              const subKey = `${idx}_${sIdx}`;
+              const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              const subMarks = sq.marks || 1;
 
-            // Fast deterministic evaluation first
-            const det = gradeDeterministicAnswer(subAns, q, sIdx);
+              try {
+                // Fast deterministic evaluation first
+                const det = gradeDeterministicAnswer(subAns, q, sIdx);
+                if (det.isHandled) {
+                  totalSubEarned += det.earnedMarks;
+                  subResults.push({
+                    subId: sq.sub_id,
+                    studentAnswer: subAns,
+                    earnedMarks: det.earnedMarks,
+                    maxMarks: subMarks,
+                    isCorrect: det.isCorrect,
+                    feedback: det.feedback,
+                  });
+                } else {
+                  // Descriptive sub-part -> evaluate with Gemini AI Examiner
+                  setGradingProgressText(`AI Examiner evaluating Q${idx + 1}(${sq.sub_id})...`);
+                  const aiRes = await evaluateAnswerWithGemini(q, sIdx, String(subAns));
+                  totalSubEarned += aiRes.earnedMarks;
+                  gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+                  subResults.push({
+                    subId: sq.sub_id,
+                    studentAnswer: subAns,
+                    earnedMarks: aiRes.earnedMarks,
+                    maxMarks: subMarks,
+                    isCorrect: aiRes.isCorrect,
+                    feedback: aiRes.feedback,
+                    criteria: aiRes.criteriaResults,
+                  });
+                }
+              } catch (subErr) {
+                console.warn(`Sub-question evaluation fallback for Q${idx + 1}(${sq.sub_id}):`, subErr);
+                subResults.push({
+                  subId: sq.sub_id,
+                  studentAnswer: subAns,
+                  earnedMarks: 0,
+                  maxMarks: subMarks,
+                  isCorrect: false,
+                  feedback: 'Saved for manual examiner review.',
+                });
+              }
+            }
+
+            qEarned = Math.min(totalSubEarned, qMarks);
+            isCorrect = qEarned === qMarks;
+          }
+          // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
+          else {
+            const userAns = answers[idx] ?? '';
+            const det = gradeDeterministicAnswer(userAns, q);
             if (det.isHandled) {
-              totalSubEarned += det.earnedMarks;
-              subResults.push({
-                subId: sq.sub_id,
-                studentAnswer: subAns,
-                earnedMarks: det.earnedMarks,
-                maxMarks: subMarks,
-                isCorrect: det.isCorrect,
-                feedback: det.feedback,
-              });
+              qEarned = det.earnedMarks;
+              isCorrect = det.isCorrect;
+              aiFeedback = det.feedback;
+              gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
             } else {
-              // Descriptive sub-part -> evaluate with Gemini AI Examiner
-              setGradingProgressText(`AI Examiner evaluating Q${idx + 1}(${sq.sub_id})...`);
-              const aiRes = await evaluateAnswerWithGemini(q, sIdx, String(subAns));
-              totalSubEarned += aiRes.earnedMarks;
+              setGradingProgressText(`AI Examiner evaluating Question ${idx + 1}...`);
+              const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
+              qEarned = aiRes.earnedMarks;
+              isCorrect = aiRes.isCorrect;
+              aiFeedback = aiRes.feedback;
+              missingPoints = aiRes.missingKeyPoints;
+              criteriaBreakdown = aiRes.criteriaResults;
               gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
-              subResults.push({
-                subId: sq.sub_id,
-                studentAnswer: subAns,
-                earnedMarks: aiRes.earnedMarks,
-                maxMarks: subMarks,
-                isCorrect: aiRes.isCorrect,
-                feedback: aiRes.feedback,
-                criteria: aiRes.criteriaResults,
-              });
             }
           }
-
-          qEarned = Math.min(totalSubEarned, qMarks);
-          isCorrect = qEarned === qMarks;
-        }
-        // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
-        else {
-          const userAns = answers[idx] ?? '';
-          const det = gradeDeterministicAnswer(userAns, q);
-          if (det.isHandled) {
-            qEarned = det.earnedMarks;
-            isCorrect = det.isCorrect;
-            aiFeedback = det.feedback;
-            gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
-          } else {
-            setGradingProgressText(`AI Examiner evaluating Question ${idx + 1}...`);
-            const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
-            qEarned = aiRes.earnedMarks;
-            isCorrect = aiRes.isCorrect;
-            aiFeedback = aiRes.feedback;
-            missingPoints = aiRes.missingKeyPoints;
-            criteriaBreakdown = aiRes.criteriaResults;
-            gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
-          }
+        } catch (qErr) {
+          console.warn(`Question evaluation fallback for Question ${idx + 1}:`, qErr);
+          qEarned = 0;
+          isCorrect = false;
+          aiFeedback = 'Automated evaluation fallback applied. Response saved for teacher review.';
+          gradingMethod = 'rule_fallback';
         }
 
         earnedMarks += qEarned;
@@ -763,10 +892,13 @@ export function StudentQuizRunner({
         item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
       });
 
+      const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
+      const finalQuizId = resolvedTestId || testIdOrCode || 'direct_quiz';
+
       const submission: StudentSubmission = {
         id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-        quizId: testIdOrCode || 'direct_quiz',
-        quizCode: testIdOrCode || 'EXAM',
+        quizId: finalQuizId,
+        quizCode: finalQuizCode,
         quizTitle: title,
         subject: headerConfig?.subject || 'Chemistry',
         studentName: candidateName.trim() || 'Candidate',
@@ -788,21 +920,58 @@ export function StudentQuizRunner({
         topicBreakdown,
       };
 
-      await saveQuizSubmissionCloud(submission);
       setCompletedSubmission(submission);
 
-      try {
-        sessionStorage.removeItem(sessionKey);
-      } catch {}
+      const syncResult = await saveQuizSubmissionWithVerification(
+        submission,
+        3,
+        (attempt, total) => setGradingProgressText(`Syncing responses with server... (Attempt ${attempt} of ${total})`)
+      );
+
+      if (syncResult.success) {
+        setSyncStatus('synced');
+        setSyncErrorMessage(null);
+        try {
+          sessionStorage.removeItem(sessionKey);
+        } catch {}
+      } else {
+        setSyncStatus('offline_failed');
+        setSyncErrorMessage(
+          syncResult.error || 'Server did not acknowledge upload. Responses are safely preserved in this browser.'
+        );
+      }
 
       setIsSubmitted(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to grade student submission:', err);
+      setSyncStatus('offline_failed');
+      setSyncErrorMessage(err?.message || 'Grading evaluation error');
       setIsSubmitted(true);
     } finally {
       setIsGrading(false);
     }
-  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey]);
+  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, resolvedQuizCode, resolvedTestId, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey]);
+
+  const handleRetryCloudSync = useCallback(async () => {
+    if (!completedSubmission || isRetryingSync) return;
+    setIsRetryingSync(true);
+    try {
+      const syncResult = await saveQuizSubmissionWithVerification(completedSubmission, 3);
+      if (syncResult.success) {
+        setSyncStatus('synced');
+        setSyncErrorMessage(null);
+        try {
+          sessionStorage.removeItem(sessionKey);
+        } catch {}
+      } else {
+        setSyncErrorMessage(syncResult.error || 'Retry attempt failed. Please check internet connection.');
+      }
+    } catch (err: any) {
+      setSyncErrorMessage(err?.message || 'Sync error');
+    } finally {
+      setIsRetryingSync(false);
+    }
+  }, [completedSubmission, isRetryingSync, sessionKey]);
 
   // Auto-persist exam state to sessionStorage across page refreshes
   useEffect(() => {
@@ -815,6 +984,7 @@ export function StudentQuizRunner({
             candidateClass,
             candidateNumber,
             startTime,
+            targetEndTime,
             currentIndex,
             answers,
             flaggedIndices: Array.from(flaggedIndices),
@@ -842,6 +1012,7 @@ export function StudentQuizRunner({
     candidateClass,
     candidateNumber,
     startTime,
+    targetEndTime,
     currentIndex,
     answers,
     flaggedIndices,
@@ -859,39 +1030,83 @@ export function StudentQuizRunner({
     violations,
   ]);
 
-  // ─── 5. Countdown Timer & Time Remaining Warnings ──────────────────────────
+  // ─── 5. Absolute Epoch Countdown Timer & Device Sleep / Tab Sync ─────────
   useEffect(() => {
-    if (!hasStarted || isSubmitted || !isExamMode) return;
-    if (timeLeft <= 0) {
-      handleSubmitExam();
-      return;
+    if (!hasStarted || isSubmitted || !isExamMode || !targetEndTime) return;
+
+    const syncRemainingTime = () => {
+      const now = Date.now();
+      const remainingSec = Math.max(0, Math.round((targetEndTime - now) / 1000));
+      setTimeLeft(remainingSec);
+
+      if (remainingSec <= 0) {
+        handleSubmitExam();
+      } else if (remainingSec === 300) {
+        setTimeWarning('⚠️ 5 Minutes Remaining! Please review and finalize your answers.');
+        setTimeout(() => setTimeWarning(null), 6000);
+      } else if (remainingSec === 60) {
+        setTimeWarning('🚨 1 Minute Remaining! Examination will auto-submit when the countdown reaches zero.');
+        setTimeout(() => setTimeWarning(null), 6000);
+      }
+    };
+
+    syncRemainingTime();
+    const timer = setInterval(syncRemainingTime, 1000);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncRemainingTime();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
+  }, [hasStarted, isSubmitted, isExamMode, targetEndTime, handleSubmitExam]);
+
+  // ─── 5b. Prevent Accidental Tab Closure & Back Navigation ───────────────
+  useEffect(() => {
+    if (!hasStarted || isSubmitted) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = 'An assessment is currently in progress. Your answers remain saved locally, but your timer continues running.';
+      return e.returnValue;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    try {
+      window.history.pushState(null, '', window.location.href);
+      const handlePopState = () => {
+        window.history.pushState(null, '', window.location.href);
+        setTimeWarning('⚠️ Back navigation is blocked during an active assessment. Use the Question Navigator to switch questions.');
+        setTimeout(() => setTimeWarning(null), 5000);
+      };
+      window.addEventListener('popstate', handlePopState);
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        window.removeEventListener('popstate', handlePopState);
+      };
+    } catch {
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      };
     }
-
-    if (timeLeft === 300) {
-      setTimeWarning('⚠️ 5 Minutes Remaining! Please review and finalize your answers.');
-      setTimeout(() => setTimeWarning(null), 6000);
-    } else if (timeLeft === 60) {
-      setTimeWarning('🚨 1 Minute Remaining! Examination will auto-submit when the countdown reaches zero.');
-      setTimeout(() => setTimeWarning(null), 6000);
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          handleSubmitExam();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [hasStarted, isSubmitted, isExamMode, timeLeft, handleSubmitExam]);
+  }, [hasStarted, isSubmitted]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleStartExam = async () => {
-    setStartTime(Date.now());
+    const now = Date.now();
+    const end = now + (examDurationSec * 1000);
+    setStartTime(now);
+    setTargetEndTime(end);
+    setTimeLeft(examDurationSec);
     if (securityEnabled && containerRef.current) {
       try {
         if (document.documentElement.requestFullscreen) {
@@ -1053,25 +1268,13 @@ export function StudentQuizRunner({
     return null;
   }, [questions, currentIndex]);
 
-  const isMultiSelect = useMemo(() => {
-    if (!currentQuestion) return false;
-    const stem = (currentQuestion.question_text || '').toLowerCase();
-    const markPoints = (currentQuestion.mark_scheme as any)?.marking_points || [];
-    const acceptable = (currentQuestion.mark_scheme as any)?.acceptable_answers || [];
-    const allCand = [...(Array.isArray(markPoints) ? markPoints : []), ...(Array.isArray(acceptable) ? acceptable : [])];
-    const targetLetters = extractMultiSelectTargetLetters(allCand);
-    return (
-      currentQuestion.question_style === 'Multiple Select' ||
-      targetLetters.length >= 2 ||
-      stem.includes('[multiple select]') ||
-      stem.includes('multiple select') ||
-      stem.includes('more than one correct answer') ||
-      stem.includes('more than one answer') ||
-      stem.includes('tick (✓) on every correct answer') ||
-      stem.includes('pilihan ganda kompleks') ||
-      stem.includes('select all that apply')
-    );
-  }, [currentQuestion]);
+  const handleScrollToQuestionStem = () => {
+    if (questionTargetRef.current) {
+      const yOffset = -76;
+      const y = questionTargetRef.current.getBoundingClientRect().top + window.pageYOffset + yOffset;
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    }
+  };
 
   // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
   const currentTable = useMemo(() => {
@@ -1139,6 +1342,35 @@ export function StudentQuizRunner({
       preTableText: preLines.join('\n').trim(),
     };
   }, [currentQuestion]);
+
+  const isMultiSelect = useMemo(() => {
+    if (!currentQuestion) return false;
+    const stem = (currentQuestion.question_text || '').toLowerCase();
+    const markPoints = (currentQuestion.mark_scheme as any)?.marking_points || [];
+    const acceptable = (currentQuestion.mark_scheme as any)?.acceptable_answers || [];
+    const allCand = [...(Array.isArray(markPoints) ? markPoints : []), ...(Array.isArray(acceptable) ? acceptable : [])];
+    const targetLetters = extractMultiSelectTargetLetters(allCand);
+    return (
+      currentQuestion.question_style === 'Multiple Select' ||
+      targetLetters.length >= 2 ||
+      stem.includes('[multiple select]') ||
+      stem.includes('multiple select') ||
+      stem.includes('more than one correct answer') ||
+      stem.includes('more than one answer') ||
+      stem.includes('tick (✓) on every correct answer') ||
+      stem.includes('pilihan ganda kompleks') ||
+      stem.includes('select all that apply')
+    );
+  }, [currentQuestion]);
+
+  // ─── Reading Passage and Question Prompt Separation ──────────────────────
+  const { passageText, promptText } = useMemo(() => {
+    if (!currentQuestion) return { passageText: null, promptText: '' };
+    const rawStem = currentTable ? currentTable.preTableText : currentQuestion.question_text || '';
+    return splitPassageAndPrompt(rawStem, currentQuestion.options);
+  }, [currentQuestion, currentTable]);
+
+  const activeReadingPassage = activeStimulusPassage || passageText;
 
   const currentTableSelections = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1260,23 +1492,7 @@ export function StudentQuizRunner({
     return { mcqEarned, mcqTotal, percentage, topicStats, questionResults: [] };
   };
 
-  // ─── Clean MCQ Option Text & Stem ─────────────────────────────────────────
-  const cleanOptionText = (text: string, oIdx: number) => {
-    return cleanMcqOptionContent(text, oIdx);
-  };
 
-  const cleanQuestionStem = (stem: string, options?: string[] | null) => {
-    if (!stem || !options || options.length === 0) return stem;
-    const lines = stem.split('\n');
-    const optStartIdx = lines.findIndex((l) => /^\s*A[.)\s:-]/.test(l));
-    if (optStartIdx > 0 && lines.length - optStartIdx <= 6) {
-      const remaining = lines.slice(optStartIdx).join('\n');
-      if (/\bB[.)\s:-]/.test(remaining) && /\bC[.)\s:-]/.test(remaining)) {
-        return lines.slice(0, optStartIdx).join('\n').trim();
-      }
-    }
-    return stem;
-  };
 
   // Format mm:ss
   const formatTimer = (seconds: number) => {
@@ -1306,12 +1522,12 @@ export function StudentQuizRunner({
     );
   }
 
-  if (error) {
+  if (error || (!loading && questions.length === 0)) {
     return (
       <div className="student-quiz-error-screen">
         <div className="error-icon">⚠️</div>
         <h2>Assessment Unavailable</h2>
-        <p>{error}</p>
+        <p>{error || `No questions found for this exam. Please check your quiz code with your teacher.`}</p>
         {onExit && (
           <button className="sq-btn sq-btn-primary" onClick={onExit} style={{ marginTop: 16 }}>
             ← Back to Portal
@@ -1783,49 +1999,164 @@ export function StudentQuizRunner({
               </div>
             )}
 
-            {/* Examiner Evaluation Card — High-contrast alert */}
-            <div
-              style={{
-                background: 'rgba(37, 99, 235, 0.07)',
-                border: '1.5px solid rgba(37, 99, 235, 0.25)',
-                borderRadius: '14px',
-                padding: '18px 20px',
-                margin: '20px 0',
-                textAlign: 'left',
-                display: 'flex',
-                gap: '14px',
-                alignItems: 'flex-start',
-              }}
-            >
-              <span style={{ fontSize: '1.75rem', lineHeight: 1 }}>ℹ️</span>
-              <div style={{ fontSize: '0.875rem', lineHeight: '1.6', color: 'var(--color-text-primary, #0f172a)' }}>
-                <strong style={{ fontSize: '0.95rem', display: 'block', marginBottom: '4px', color: 'var(--color-text-primary, #1e3a8a)' }}>
-                  Examiner Evaluation in Progress
-                </strong>
-                <span style={{ color: 'var(--color-text-secondary, #334155)', display: 'block', marginBottom: '10px' }}>
-                  Your responses have been securely recorded and synced to the examiner's database. In accordance with formal exam standards, marks, model solutions, and Cambridge advice will be released after teacher review.
-                </span>
+            {/* Verified Cloud Sync vs Offline Pending Card */}
+            {syncStatus === 'offline_failed' ? (
+              <div
+                style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '2px solid #ef4444',
+                  borderRadius: '14px',
+                  padding: '20px',
+                  margin: '20px 0',
+                  textAlign: 'left',
+                  boxShadow: '0 4px 20px rgba(239, 68, 68, 0.15)',
+                }}
+              >
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '1.75rem' }}>⚠️</span>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#ef4444' }}>
+                      Cloud Sync Pending — Responses Saved on Device
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '0.84rem', color: 'var(--color-text-secondary, #475569)' }}>
+                      {syncErrorMessage || 'Could not upload to examiner cloud. Your responses are safely stored on this computer.'}
+                    </p>
+                  </div>
+                </div>
+
                 <div
                   style={{
-                    background: 'rgba(37, 99, 235, 0.1)',
-                    border: '1px solid rgba(37, 99, 235, 0.2)',
-                    borderRadius: '8px',
-                    padding: '8px 12px',
-                    color: '#1d4ed8',
-                    fontWeight: 700,
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    margin: '12px 0 16px',
                     fontSize: '0.8125rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
+                    color: 'var(--color-text-primary, #0f172a)',
+                    lineHeight: '1.5',
                   }}
                 >
-                  <span>🔑</span>
-                  <span>
-                    When results are published, enter Exam Code <strong>({testIdOrCode || 'EXAM'})</strong> on the portal to view your marked paper and download your official PDF report.
-                  </span>
+                  🛡️ <strong>Safety Instructions:</strong> Please click <strong>Retry Cloud Sync</strong> once your internet reconnects, or click <strong>Download Backup File</strong> and hand it to your teacher.
+                </div>
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={handleRetryCloudSync}
+                    disabled={isRetryingSync}
+                    style={{
+                      background: '#3b82f6',
+                      border: 'none',
+                      color: '#ffffff',
+                      padding: '10px 18px',
+                      borderRadius: '8px',
+                      fontSize: '0.875rem',
+                      fontWeight: 700,
+                      cursor: isRetryingSync ? 'not-allowed' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
+                    }}
+                  >
+                    {isRetryingSync ? '⏳ Syncing...' : '🔄 Retry Cloud Sync'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (completedSubmission) exportSubmissionToFile(completedSubmission);
+                    }}
+                    style={{
+                      background: '#10b981',
+                      border: 'none',
+                      color: '#ffffff',
+                      padding: '10px 18px',
+                      borderRadius: '8px',
+                      fontSize: '0.875rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                    }}
+                  >
+                    📥 Download Backup File (.exam)
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (completedSubmission) {
+                        const token = exportSubmissionToken(completedSubmission);
+                        navigator.clipboard?.writeText(token);
+                        setHasCopiedToken(true);
+                        setTimeout(() => setHasCopiedToken(false), 2500);
+                      }
+                    }}
+                    style={{
+                      background: hasCopiedToken ? '#16a34a' : 'rgba(255, 255, 255, 0.1)',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      color: 'var(--color-text-primary, #ffffff)',
+                      padding: '10px 16px',
+                      borderRadius: '8px',
+                      fontSize: '0.875rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    {hasCopiedToken ? '✅ Token Copied!' : '📋 Copy Token String'}
+                  </button>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div
+                style={{
+                  background: 'rgba(37, 99, 235, 0.07)',
+                  border: '1.5px solid rgba(37, 99, 235, 0.25)',
+                  borderRadius: '14px',
+                  padding: '18px 20px',
+                  margin: '20px 0',
+                  textAlign: 'left',
+                  display: 'flex',
+                  gap: '14px',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <span style={{ fontSize: '1.75rem', lineHeight: 1 }}>✅</span>
+                <div style={{ fontSize: '0.875rem', lineHeight: '1.6', color: 'var(--color-text-primary, #0f172a)' }}>
+                  <strong style={{ fontSize: '0.95rem', display: 'block', marginBottom: '4px', color: 'var(--color-text-primary, #1e3a8a)' }}>
+                    Examiner Delivery Verified
+                  </strong>
+                  <span style={{ color: 'var(--color-text-secondary, #334155)', display: 'block', marginBottom: '10px' }}>
+                    Your responses have been securely recorded and synced to the examiner's database. In accordance with formal exam standards, marks, model solutions, and Cambridge advice will be released after teacher review.
+                  </span>
+                  <div
+                    style={{
+                      background: 'rgba(37, 99, 235, 0.1)',
+                      border: '1px solid rgba(37, 99, 235, 0.2)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: '#1d4ed8',
+                      fontWeight: 700,
+                      fontSize: '0.8125rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                    }}
+                  >
+                    <span>🔑</span>
+                    <span>
+                      When results are published, enter Exam Code <strong>({resolvedQuizCode || testIdOrCode || 'EXAM'})</strong> on the portal to view your marked paper and download your official PDF report.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '24px' }}>
               {onExit && (
@@ -2475,86 +2806,82 @@ export function StudentQuizRunner({
         </div>
       )}
 
+
+
       {/* Main Runner Body */}
       <main className="sq-runner-body">
         {/* Left / Center: Question View */}
         <section className="sq-question-panel">
-          <div className="sq-question-card animate-scale-up" key={currentIndex}>
+          <div className="sq-question-card animate-scale-up" ref={questionCardRef} key={currentIndex}>
             <div className="sq-q-top-row">
-              <div className="sq-q-badge-wrap">
-                <span className="sq-q-number-badge">Question {currentIndex + 1} of {questions.length}</span>
-                {currentQuestion?.topic && (
-                  <span className="sq-q-topic-badge">{currentQuestion.topic}</span>
+                <div className="sq-q-badge-wrap">
+                  <span className="sq-q-number-badge">Question {currentIndex + 1} of {questions.length}</span>
+                  {currentQuestion?.topic && (
+                    <span className="sq-q-topic-badge">{currentQuestion.topic}</span>
+                  )}
+                </div>
+                <span className="sq-q-marks-pill">[{currentQuestion?.marks || 1} mark{currentQuestion?.marks !== 1 ? 's' : ''}]</span>
+              </div>
+
+              {/* Active Stimulus / Reading Passage for Multi-Question Sections (e.g. Text 1 for Q1-Q4) */}
+              {activeReadingPassage && (
+                <div
+                  className="sq-stimulus-card animate-fade-in"
+                  style={{
+                    marginBottom: '16px',
+                    padding: '16px 20px',
+                    background: 'rgba(59, 130, 246, 0.06)',
+                    border: '1px solid rgba(59, 130, 246, 0.25)',
+                    borderRadius: '12px',
+                    borderLeft: '4px solid #3b82f6',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      📖 Reference Reading Passage
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.9375rem', lineHeight: '1.65', color: 'var(--color-text-primary)' }}>
+                    <ExamMathText content={activeReadingPassage} />
+                  </div>
+                </div>
+              )}
+
+              {/* Question Stem & Interactive Target Area */}
+              <div ref={questionTargetRef} className="sq-question-interactive-target">
+                <div className="sq-q-stem">
+                {currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(promptText) ? (
+                  <InlineGapText
+                    content={promptText}
+                    values={(() => {
+                      const raw = answers[currentIndex];
+                      if (!raw) return {};
+                      if (typeof raw === 'object') return raw;
+                      const str = String(raw).trim();
+                      if (str.startsWith('{')) {
+                        try { return JSON.parse(str); } catch {}
+                      }
+                      return { 'gap_1': str, '1': str };
+                    })()}
+                    onGapChange={(gapId, val) => {
+                      const raw = answers[currentIndex];
+                      let currentMap: Record<string, string> = {};
+                      if (typeof raw === 'string' && raw.startsWith('{')) {
+                        try { currentMap = JSON.parse(raw); } catch {}
+                      } else if (raw) {
+                        currentMap['gap_1'] = String(raw);
+                      }
+                      currentMap[gapId] = val;
+                      setAnswers((prev) => ({
+                        ...prev,
+                        [currentIndex]: JSON.stringify(currentMap),
+                      }));
+                    }}
+                  />
+                ) : (
+                  <ExamMathText content={promptText} />
                 )}
               </div>
-              <span className="sq-q-marks-pill">[{currentQuestion?.marks || 1} mark{currentQuestion?.marks !== 1 ? 's' : ''}]</span>
-            </div>
-
-            {/* Active Stimulus / Reading Passage for Multi-Question Sections (e.g. Text 1 for Q1-Q4) */}
-            {activeStimulusPassage && (
-              <div
-                className="sq-stimulus-card animate-fade-in"
-                style={{
-                  marginBottom: '16px',
-                  padding: '16px 20px',
-                  background: 'rgba(59, 130, 246, 0.06)',
-                  border: '1px solid rgba(59, 130, 246, 0.25)',
-                  borderRadius: '12px',
-                  borderLeft: '4px solid #3b82f6',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    📖 Reference Reading Passage
-                  </span>
-                </div>
-                <div style={{ fontSize: '0.9375rem', lineHeight: '1.65', color: 'var(--color-text-primary)' }}>
-                  <ExamMathText content={activeStimulusPassage} />
-                </div>
-              </div>
-            )}
-
-            {/* Question Stem */}
-            <div className="sq-q-stem">
-              {currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(currentQuestion?.question_text || '') ? (
-                <InlineGapText
-                  content={cleanQuestionStem(
-                    (currentTable ? currentTable.preTableText : currentQuestion?.question_text) || '',
-                    currentQuestion?.options
-                  )}
-                  values={(() => {
-                    const raw = answers[currentIndex];
-                    if (!raw) return {};
-                    if (typeof raw === 'object') return raw;
-                    const str = String(raw).trim();
-                    if (str.startsWith('{')) {
-                      try { return JSON.parse(str); } catch {}
-                    }
-                    return { 'gap_1': str, '1': str };
-                  })()}
-                  onGapChange={(gapId, val) => {
-                    const raw = answers[currentIndex];
-                    let currentMap: Record<string, string> = {};
-                    if (typeof raw === 'string' && raw.startsWith('{')) {
-                      try { currentMap = JSON.parse(raw); } catch {}
-                    } else if (raw) {
-                      currentMap['gap_1'] = String(raw);
-                    }
-                    currentMap[gapId] = val;
-                    setAnswers((prev) => ({
-                      ...prev,
-                      [currentIndex]: JSON.stringify(currentMap),
-                    }));
-                  }}
-                />
-              ) : (
-                <ExamMathText
-                  content={cleanQuestionStem(
-                    (currentTable ? currentTable.preTableText : currentQuestion?.question_text) || '',
-                    currentQuestion?.options
-                  )}
-                />
-              )}
             </div>
 
             {/* Insert / Resource Booklet Trigger Button */}
@@ -2972,6 +3299,166 @@ export function StudentQuizRunner({
               <div className="legend-item"><span className="legend-box unanswered" /> Unanswered</div>
             </div>
           </div>
+
+          {/* ─── Question Context & Choices Card (Under Question Navigator) ─── */}
+          {currentQuestion && (
+            <div className="sq-sidebar-context-card animate-fade-in">
+              <div className="sq-sidebar-context-header">
+                <div className="sq-sidebar-context-title-group">
+                  <span className="sq-sidebar-context-pin">📌</span>
+                  <strong className="sq-sidebar-context-title">
+                    Question {currentIndex + 1}
+                  </strong>
+                </div>
+                <div className="sq-sidebar-context-actions">
+                  <button
+                    type="button"
+                    className="sq-sidebar-context-btn"
+                    onClick={handleScrollToQuestionStem}
+                    title="Jump down to answer this question"
+                  >
+                    ⬇️ Answer
+                  </button>
+                </div>
+              </div>
+
+              <div className="sq-sidebar-context-body">
+                {/* Question Stem / Prompt Text */}
+                <div className="sq-sidebar-stem-snippet">
+                  <ExamMathText content={promptText} />
+                </div>
+
+                {/* 1. If MCQ / Multiple Select: Show Choices (A, B, C, D) */}
+                {(currentQuestion.question_style === 'Multiple Choice' ||
+                  currentQuestion.question_style === 'Multiple Select' ||
+                  (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
+                currentQuestion.options &&
+                currentQuestion.options.length > 0 ? (
+                  <div className="sq-sidebar-choices-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: isMultiSelect ? '#38bdf8' : 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      {isMultiSelect ? '☑ Multiple Select Choices:' : 'Choices:'}
+                    </div>
+                    {currentQuestion.options.map((opt, oIdx) => {
+                      const letter = String.fromCharCode(65 + oIdx);
+                      const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
+                      const isSelected = isMultiSelect
+                        ? selectedLetters.includes(letter)
+                        : Number(answers[currentIndex]) === oIdx;
+                      return (
+                        <button
+                          key={oIdx}
+                          type="button"
+                          onClick={() => handleSelectOption(oIdx)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '6px 10px',
+                            borderRadius: '8px',
+                            background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                            border: `1.5px solid ${isSelected ? '#3b82f6' : 'var(--color-border)'}`,
+                            color: isSelected ? '#38bdf8' : 'var(--color-text-primary)',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            fontSize: '0.8125rem',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontWeight: 800,
+                              minWidth: '20px',
+                              height: '20px',
+                              borderRadius: '4px',
+                              background: isSelected ? '#2563eb' : 'rgba(255, 255, 255, 0.08)',
+                              color: isSelected ? '#ffffff' : 'var(--color-text-secondary)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '0.75rem',
+                            }}
+                          >
+                            {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
+                          </span>
+                          <span style={{ flex: 1 }}>
+                            <ExamMathText content={cleanOptionText(opt, oIdx)} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : currentTable ? (
+                  /* 2. If Matching Table Matrix: Show compact matching overview */
+                  <div className="sq-sidebar-table-snippet" style={{ marginTop: '8px', padding: '10px 12px', background: 'rgba(59, 130, 246, 0.08)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.25)' }}>
+                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                      📊 Matching Matrix ({currentTable.rows.length} Items):
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
+                      {Object.keys(currentTableSelections).length} of {currentTable.rows.length} matched
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleScrollToQuestionStem}
+                      style={{
+                        width: '100%',
+                        padding: '6px 10px',
+                        background: 'rgba(59, 130, 246, 0.2)',
+                        border: '1px solid #3b82f6',
+                        borderRadius: '6px',
+                        color: '#38bdf8',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      ⬇️ Match Table Below
+                    </button>
+                  </div>
+                ) : currentQuestion.question_style === 'Fill in the Blank' || hasInlineGaps(promptText) ? (
+                  /* 3. If Fill in the Blank: Show compact prompt */
+                  <div style={{ marginTop: '8px', padding: '8px 10px', background: 'rgba(255, 255, 255, 0.04)', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                    <span style={{ fontWeight: 700, color: 'var(--color-primary-500)' }}>✍️ Fill in the Blank:</span> Click "⬇️ Answer" to type directly into the gaps below.
+                  </div>
+                ) : currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0 ? (
+                  /* 4. If Structured with sub-questions: Show sub-question prompts only */
+                  <div className="sq-sidebar-subq-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Question Parts:
+                    </div>
+                    {currentQuestion.sub_questions.map((sub, sIdx) => {
+                      const subKey = `${currentIndex}_${sIdx}`;
+                      const val = answers[subKey] !== undefined ? answers[subKey] : (answers[currentIndex] as any)?.[sIdx];
+                      const isAnswered = val !== undefined && String(val).trim().length > 0;
+                      return (
+                        <div
+                          key={sIdx}
+                          style={{
+                            padding: '6px 10px',
+                            borderRadius: '8px',
+                            background: isAnswered ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.03)',
+                            border: `1px solid ${isAnswered ? 'rgba(34, 197, 94, 0.3)' : 'var(--color-border)'}`,
+                            fontSize: '0.75rem',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '6px' }}>
+                            <strong style={{ color: isAnswered ? '#22c55e' : '#38bdf8' }}>
+                              ({sub.sub_id || String.fromCharCode(97 + sIdx)})
+                            </strong>
+                            <span style={{ opacity: 0.7, fontWeight: 700 }}>
+                              [{sub.marks || 1}m] {isAnswered ? '✓' : ''}
+                            </span>
+                          </div>
+                          <div style={{ marginTop: '2px', color: 'var(--color-text-secondary)' }}>
+                            <ExamMathText content={sub.question_text || ''} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
         </aside>
       </main>
 
