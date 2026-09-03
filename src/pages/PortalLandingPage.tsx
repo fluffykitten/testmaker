@@ -8,6 +8,7 @@ import {
   type SubmissionOutboxItem,
 } from '../services/quizSubmissionService';
 import { StudentResultModal } from '../components/StudentResultModal';
+import { prefetchAccessPin } from '../components/PinGate';
 import './PortalLandingPage.css';
 
 interface PortalLandingPageProps {
@@ -145,6 +146,7 @@ export function PortalLandingPage({
   }, [isFlushingOutbox, refreshPendingOutbox]);
 
   useEffect(() => {
+    prefetchAccessPin();
     const receipts = getDeviceReceipts();
     setRecentReceipts(receipts);
     if (receipts.length > 0) {
@@ -473,6 +475,8 @@ export function PortalLandingPage({
           <div
             className="portal-card portal-card--teacher"
             onClick={onEnterTeacherSuite}
+            onMouseEnter={() => prefetchAccessPin()}
+            onFocus={() => prefetchAccessPin()}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {

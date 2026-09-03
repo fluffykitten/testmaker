@@ -4,6 +4,63 @@ import './PinGate.css';
 
 const PIN_LENGTH = 6;
 const SESSION_KEY = 'testmaker_pin_verified';
+const LOCAL_PIN_CACHE_KEY = 'testmaker_cached_access_pin';
+
+// In-memory module cache for instant validation across views
+let inMemoryPin: string | null = null;
+let fetchPinPromise: Promise<string | null> | null = null;
+
+/**
+ * Prefetches the access PIN into memory and localStorage ahead of time.
+ * Safe to call multiple times; deduplicates concurrent in-flight requests.
+ */
+export function prefetchAccessPin(): Promise<string | null> {
+  if (inMemoryPin) return Promise.resolve(inMemoryPin);
+  if (fetchPinPromise) return fetchPinPromise;
+
+  fetchPinPromise = (async () => {
+    try {
+      // 1. Check localStorage first for instant offline/cached access
+      const cached = localStorage.getItem(LOCAL_PIN_CACHE_KEY);
+      if (cached) {
+        inMemoryPin = cached;
+      }
+
+      // 2. Query Supabase with a 4-second timeout to avoid hanging on slow network/cold start
+      const timeoutPromise = new Promise<{ data: null; error: string }>((resolve) =>
+        setTimeout(() => resolve({ data: null, error: 'timeout' }), 4000)
+      );
+
+      const queryPromise = supabase
+        .from('app_config')
+        .select('value')
+        .eq('key', 'access_pin')
+        .single();
+
+      const res = (await Promise.race([queryPromise, timeoutPromise])) as {
+        data: { value: string } | null;
+        error: any;
+      };
+
+      if (!res.error && res.data?.value) {
+        inMemoryPin = res.data.value;
+        try {
+          localStorage.setItem(LOCAL_PIN_CACHE_KEY, res.data.value);
+        } catch {}
+        return res.data.value;
+      }
+
+      return inMemoryPin;
+    } catch (err) {
+      console.warn('Silent access PIN prefetch error:', err);
+      return inMemoryPin;
+    } finally {
+      fetchPinPromise = null;
+    }
+  })();
+
+  return fetchPinPromise;
+}
 
 interface PinGateProps {
   children: ReactNode;
@@ -12,8 +69,10 @@ interface PinGateProps {
 
 export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const [verified, setVerified] = useState(() => sessionStorage.getItem(SESSION_KEY) === 'true');
-  const [loading, setLoading] = useState(true);
-  const [correctPin, setCorrectPin] = useState<string | null>(null);
+  const [correctPin, setCorrectPin] = useState<string | null>(() => {
+    return inMemoryPin || localStorage.getItem(LOCAL_PIN_CACHE_KEY);
+  });
+  const [verifying, setVerifying] = useState(false);
   const [digits, setDigits] = useState<string[]>(Array(PIN_LENGTH).fill(''));
   const [error, setError] = useState('');
   const [shaking, setShaking] = useState(false);
@@ -21,47 +80,22 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const [showPin, setShowPin] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Fetch the PIN from Supabase on mount
+  // Prefetch and sync PIN in background without blocking UI
   useEffect(() => {
-    if (verified) {
-      setLoading(false);
-      return;
-    }
+    if (verified) return;
 
-    async function fetchPin() {
-      try {
-        const { data, error: fetchError } = await supabase
-          .from('app_config')
-          .select('value')
-          .eq('key', 'access_pin')
-          .single() as { data: { value: string } | null; error: any };
-
-        if (fetchError || !data) {
-          console.error('Failed to fetch access PIN:', fetchError);
-          // If we can't fetch the PIN, let the user through (fail-open)
-          setVerified(true);
-          sessionStorage.setItem(SESSION_KEY, 'true');
-        } else {
-          setCorrectPin(data.value);
-        }
-      } catch (err) {
-        console.error('PIN fetch error:', err);
-        setVerified(true);
-        sessionStorage.setItem(SESSION_KEY, 'true');
-      } finally {
-        setLoading(false);
+    prefetchAccessPin().then((pin) => {
+      if (pin) {
+        setCorrectPin(pin);
       }
-    }
+    });
 
-    fetchPin();
+    // Auto-focus first input immediately on mount
+    const timer = setTimeout(() => {
+      inputRefs.current[0]?.focus();
+    }, 50);
+    return () => clearTimeout(timer);
   }, [verified]);
-
-  // Auto-focus first input on load
-  useEffect(() => {
-    if (!verified && !loading && correctPin) {
-      setTimeout(() => inputRefs.current[0]?.focus(), 100);
-    }
-  }, [verified, loading, correctPin]);
 
   if (verified) {
     return <>{children}</>;
@@ -131,8 +165,24 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
     }
   };
 
-  const validatePin = (pin: string) => {
-    if (pin === correctPin) {
+  const validatePin = async (pin: string) => {
+    let targetPin = correctPin;
+
+    if (!targetPin) {
+      setVerifying(true);
+      targetPin = await prefetchAccessPin();
+      setVerifying(false);
+    }
+
+    // Fail-open fallback if database is completely offline/unreachable
+    if (!targetPin) {
+      setSuccess(true);
+      sessionStorage.setItem(SESSION_KEY, 'true');
+      setTimeout(() => setVerified(true), 800);
+      return;
+    }
+
+    if (pin === targetPin) {
       setSuccess(true);
       sessionStorage.setItem(SESSION_KEY, 'true');
       setTimeout(() => setVerified(true), 800);
@@ -159,12 +209,7 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   return (
     <div className={`pin-gate-overlay ${success ? 'pin-gate--success' : ''}`}>
       <div className={`pin-gate-card ${shaking ? 'pin-shake' : ''}`}>
-        {loading ? (
-          <div className="pin-loading">
-            <div className="pin-spinner" />
-            <span className="pin-loading-text">Loading…</span>
-          </div>
-        ) : success ? (
+        {success ? (
           <>
             <div className="pin-success-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
@@ -249,10 +294,10 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
             <button
               className="pin-submit-btn"
               onClick={handleSubmit}
-              disabled={!allFilled}
+              disabled={!allFilled || verifying}
               id="pin-submit-btn"
             >
-              Unlock
+              {verifying ? 'Verifying…' : 'Unlock'}
             </button>
 
             {onBackToPortal && (
