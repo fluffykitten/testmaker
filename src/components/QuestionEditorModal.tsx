@@ -789,23 +789,6 @@ export function QuestionEditorModal({
                   <label className="q-editor-label" htmlFor="q-stem-input">
                     Question Stem Text (Supports LaTeX between <code>$...$</code> and Markdown tables):
                   </label>
-                  {/* Live Preview of Math & LaTeX / Inline Gaps */}
-                  {questionText && (
-                    <div className="q-editor-preview-card">
-                      <span className="q-editor-preview-label">
-                        {questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText)
-                          ? '✍️ Interactive Inline Gap Fill Preview:'
-                          : 'Live Formatted Preview:'}
-                      </span>
-                      <div className="q-editor-preview-body">
-                        {questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText) ? (
-                          <InlineGapText content={questionText} isReadOnly={false} />
-                        ) : (
-                          <ExamMathText content={questionText} />
-                        )}
-                      </div>
-                    </div>
-                  )}
                   <textarea
                     id="q-stem-input"
                     ref={textareaRef}
@@ -818,10 +801,18 @@ export function QuestionEditorModal({
                 </div>
 
                 <div className="q-editor-split-col">
-                  <span className="q-editor-label">Live Formatted Preview:</span>
+                  <span className="q-editor-label">
+                    {questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText)
+                      ? '✍️ Interactive Gap Fill Preview:'
+                      : 'Live Formatted Preview:'}
+                  </span>
                   <div className="q-editor-preview-box">
                     {questionText.trim() ? (
-                      <ExamMathText content={questionText} />
+                      questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText) ? (
+                        <InlineGapText content={questionText} isReadOnly={false} />
+                      ) : (
+                        <ExamMathText content={questionText} />
+                      )
                     ) : (
                       <span className="q-editor-preview-placeholder">Live KaTeX math preview will render here...</span>
                     )}
