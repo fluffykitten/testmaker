@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode } from './quizCodeService';
+import { getSavedSettings } from '../lib/settings';
 
 export interface PublishedQuiz {
   id: string;                            // Unique published quiz ID
@@ -19,6 +20,8 @@ export interface PublishedQuiz {
   durationMinutes: number;
   isExamMode: boolean;                   // Enforce timer and submit gate
   securityEnabled: boolean;              // Anti-cheating fullscreen / tab lock
+  enableWatermark?: boolean;             // Dynamic per-student ghost watermark (default: false)
+  enableMultiMonitorDetection?: boolean; // Multi-monitor / extended display detection (default: false)
   requireTeacherUnlock?: boolean;        // Require invigilator PIN to unlock on tab/blur violation
   teacherPin?: string;                   // Configurable teacher/invigilator unlock PIN (e.g. "1234")
   maxViolations: number;                 // Auto-submit after N tab violations
@@ -304,6 +307,8 @@ export function createDraftFromTest(
     durationMinutes: existing?.durationMinutes || header?.durationMinutes || 45,
     isExamMode: existing?.isExamMode ?? true,
     securityEnabled: existing?.securityEnabled ?? true,
+    enableWatermark: existing?.enableWatermark ?? (getSavedSettings().defaultEnableWatermark ?? false),
+    enableMultiMonitorDetection: existing?.enableMultiMonitorDetection ?? (getSavedSettings().defaultEnableMultiMonitor ?? false),
     requireTeacherUnlock: existing?.requireTeacherUnlock ?? true,
     teacherPin: existing?.teacherPin || '1234',
     maxViolations: existing?.maxViolations || 3,

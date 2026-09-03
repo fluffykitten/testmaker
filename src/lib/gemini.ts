@@ -1609,6 +1609,7 @@ ORIGINAL QUESTION DETAILS:
 - Difficulty: ${original.difficulty}
 - Total Marks: ${original.marks}
 - Stem: ${original.question_text}
+${original.diagram_url ? `- Has Diagram/Visual Resource: Yes (${original.resource_ref ? `Referenced as ${original.resource_ref}` : 'Visual figure/diagram attached'}). The variant question retains this visual context.` : ''}
 ${original.options ? `- Original Options: ${JSON.stringify(original.options)}` : ''}
 ${original.sub_questions && original.sub_questions.length > 0 ? `- Original Sub-questions: ${JSON.stringify(original.sub_questions)}` : ''}
 ${original.mark_scheme ? `- Original Mark Scheme: ${JSON.stringify(original.mark_scheme)}` : ''}
@@ -1621,12 +1622,13 @@ REQUIREMENTS:
 1. Wrap ALL chemical formulas, scientific notation, units, and math equations in LaTeX ($...$ for inline, $$...$$ for block). Example: $CaCO_3$, $\\frac{2}{3}$, $1.5\\times 10^5\\text{ Pa}$, $dm^3$.
 2. For structured questions, generate a coherent stem and an array of sub_questions, each with sub_id, question_text, marks, and mark_scheme. "options" MUST BE null!
 3. For MCQ questions, generate 4 options A, B, C, D and leave sub_questions empty.
-4. Provide a complete, rigorous mark_scheme object containing:
+4. If the original question contains or references a diagram, figure, chart, or apparatus (e.g. "Fig. 1.1", "the diagram shows...", etc.), retain or adapt appropriate references to the diagram/figure so that the generated variant makes sense with the transferred diagram/picture.
+5. Provide a complete, rigorous mark_scheme object containing:
    - "marking_points": string array with mark allocations in square brackets (e.g. "Calculates moles of $HCl$: $0.05\\text{ mol}$ [1]")
    - "acceptable_answers": string array of allowed alternatives
    - "guidance": string array with examiner advice
    - "common_misconceptions": string array of student mistakes
-5. Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
+6. Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
 
 {
   "question_text": "The main question stem or context",
@@ -1682,24 +1684,38 @@ REQUIREMENTS:
 
   const parsed = parseRobustJson<any>(text);
 
-  // Sanitize sub-questions
+  // Sanitize sub-questions while preserving diagram and metadata from original where applicable
   let sanitizedSubs: SubQuestion[] = Array.isArray(parsed.sub_questions)
-    ? parsed.sub_questions.map((sub: any) => ({
-        sub_id: String(sub.sub_id || ''),
-        question_text: String(sub.question_text || ''),
-        marks: Number(sub.marks) || 1,
-        mark_scheme: typeof sub.mark_scheme === 'string'
-          ? sub.mark_scheme
-          : (sub.mark_scheme?.marking_points
-              ? (Array.isArray(sub.mark_scheme.marking_points) ? sub.mark_scheme.marking_points.join('; ') : String(sub.mark_scheme.marking_points))
-              : (sub.mark_scheme ? JSON.stringify(sub.mark_scheme) : '')),
-        guidance: typeof sub.guidance === 'string'
-          ? sub.guidance
-          : (Array.isArray(sub.guidance) ? sub.guidance.join('; ') : (sub.guidance ? JSON.stringify(sub.guidance) : '')),
-        common_misconceptions: Array.isArray(sub.common_misconceptions)
-          ? sub.common_misconceptions.map(String)
-          : (typeof sub.common_misconceptions === 'string' ? [sub.common_misconceptions] : []),
-      }))
+    ? parsed.sub_questions.map((sub: any, idx: number) => {
+        const origSub = original.sub_questions?.find((os) => os.sub_id === sub.sub_id) || original.sub_questions?.[idx];
+        const subDiagramUrl = sub.diagram_url || origSub?.diagram_url || null;
+        return {
+          sub_id: String(sub.sub_id || ''),
+          question_text: String(sub.question_text || ''),
+          marks: Number(sub.marks) || 1,
+          has_diagram: Boolean(subDiagramUrl || sub.has_diagram || origSub?.has_diagram),
+          diagram_url: subDiagramUrl,
+          diagram_source: sub.diagram_source || origSub?.diagram_source || null,
+          resource_ref: sub.resource_ref || origSub?.resource_ref || null,
+          page_number: sub.page_number || origSub?.page_number || null,
+          insert_page_number: sub.insert_page_number || origSub?.insert_page_number || null,
+          bounding_box: sub.bounding_box || origSub?.bounding_box || null,
+          audio_url: sub.audio_url || origSub?.audio_url || null,
+          audio_metadata: sub.audio_metadata || origSub?.audio_metadata || null,
+          options: Array.isArray(sub.options) ? sub.options : (origSub?.options || null),
+          mark_scheme: typeof sub.mark_scheme === 'string'
+            ? sub.mark_scheme
+            : (sub.mark_scheme?.marking_points
+                ? (Array.isArray(sub.mark_scheme.marking_points) ? sub.mark_scheme.marking_points.join('; ') : String(sub.mark_scheme.marking_points))
+                : (sub.mark_scheme ? JSON.stringify(sub.mark_scheme) : '')),
+          guidance: typeof sub.guidance === 'string'
+            ? sub.guidance
+            : (Array.isArray(sub.guidance) ? sub.guidance.join('; ') : (sub.guidance ? JSON.stringify(sub.guidance) : '')),
+          common_misconceptions: Array.isArray(sub.common_misconceptions)
+            ? sub.common_misconceptions.map(String)
+            : (typeof sub.common_misconceptions === 'string' ? [sub.common_misconceptions] : []),
+        };
+      })
     : [];
 
   // If structured mode was requested but LLM didn't return sub-questions, synthesize basic parts
@@ -1781,6 +1797,11 @@ REQUIREMENTS:
     options: finalOptions,
     sub_questions: finalSubs,
     mark_scheme: sanitizedMarkScheme,
-    diagram_url: null,
+    diagram_url: original.diagram_url || null,
+    diagram_source: original.diagram_source || null,
+    resource_ref: original.resource_ref || null,
+    insert_page_number: original.insert_page_number || null,
+    audio_url: original.audio_url || null,
+    audio_metadata: original.audio_metadata || null,
   };
 }

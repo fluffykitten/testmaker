@@ -338,17 +338,45 @@
 
 .variant-diagram-box {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   background: var(--color-surface);
-  padding: 10px;
+  padding: 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
 }
 
+.variant-diagram-box--transferred {
+  border-color: rgba(99, 102, 241, 0.35);
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.04), var(--color-surface));
+}
+
+.variant-diagram-badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  background: var(--color-surface-elevated);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+}
+
+.variant-diagram-badge--transferred {
+  color: var(--color-primary-600);
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
 .variant-diagram-img {
-  max-height: 200px;
+  max-height: 220px;
   max-width: 100%;
   object-fit: contain;
+  border-radius: var(--radius-sm);
 }
 
 .variant-sub-list {

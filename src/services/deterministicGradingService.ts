@@ -542,20 +542,29 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
 
   if (!options || options.length === 0) return -1;
 
-  // 1. Direct property check
-  const directProp = (question as any).correct_option;
-  if (directProp !== undefined && directProp !== null) {
-    if (typeof directProp === 'number' && directProp >= 0 && directProp < options.length) {
-      return directProp;
-    }
-    const num = Number(directProp);
-    if (!isNaN(num) && num >= 0 && num < options.length) {
-      return num;
-    }
-    const str = String(directProp).trim().toUpperCase();
-    if (str.length === 1 && str >= 'A' && str <= 'Z') {
-      const idx = str.charCodeAt(0) - 65;
-      if (idx < options.length) return idx;
+  // 1. Direct property check across all common field conventions
+  const directCandidates = [
+    (question as any).correct_option,
+    (question as any).correctOption,
+    (question as any).correct_answer,
+    (question as any).correctAnswer,
+    (question as any).answer,
+    (question as any).solution,
+  ];
+  for (const directProp of directCandidates) {
+    if (directProp !== undefined && directProp !== null) {
+      if (typeof directProp === 'number' && directProp >= 0 && directProp < options.length) {
+        return directProp;
+      }
+      const num = Number(directProp);
+      if (!isNaN(num) && num >= 0 && num < options.length) {
+        return num;
+      }
+      const str = String(directProp).trim().toUpperCase();
+      if (str.length === 1 && str >= 'A' && str <= 'Z') {
+        const idx = str.charCodeAt(0) - 65;
+        if (idx < options.length) return idx;
+      }
     }
   }
 
@@ -934,11 +943,42 @@ export function gradeDeterministicAnswer(
     // Single-Choice MCQ (only handled if an option index could be identified from mark scheme)
     const correctIdx = resolveMcqCorrectOptionIndex(question, subIndex);
     if (correctIdx >= 0) {
+      let studentOptionIdx = -1;
       const userNum = Number(rawAnswerStr);
-      const userLetter = rawAnswerStr.length === 1 ? rawAnswerStr.toUpperCase().charCodeAt(0) - 65 : -1;
-      const isCorrect = userNum === correctIdx || userLetter === correctIdx;
+
+      if (!isNaN(userNum) && Number.isInteger(userNum) && userNum >= 0 && userNum < options.length) {
+        studentOptionIdx = userNum;
+      } else {
+        // Check single letter, e.g. "C", "c", "(C)", "[C]", "C."
+        const singleMatch = rawAnswerStr.match(/^[[(]?\s*([A-Za-z])\s*[\]).:]?$/);
+        if (singleMatch) {
+          studentOptionIdx = singleMatch[1].toUpperCase().charCodeAt(0) - 65;
+        } else {
+          // Check "Option C", "Choice C", "C - text", "C: text"
+          const prefixMatch = rawAnswerStr.match(/^(?:Option|Choice)?\s*[:\-]?\s*([A-Za-z])\b/i);
+          if (prefixMatch) {
+            studentOptionIdx = prefixMatch[1].toUpperCase().charCodeAt(0) - 65;
+          } else {
+            // Check if student answer matches any option text directly
+            const cleanAns = rawAnswerStr.toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
+            for (let oIdx = 0; oIdx < options.length; oIdx++) {
+              const cleanOpt = String(options[oIdx]).toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
+              if (cleanAns && cleanOpt && (cleanAns === cleanOpt || cleanOpt.includes(cleanAns) || cleanAns.includes(cleanOpt))) {
+                studentOptionIdx = oIdx;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      const isCorrect = studentOptionIdx === correctIdx;
       const correctLetter = String.fromCharCode(65 + correctIdx);
       const correctOptionText = options[correctIdx] || `Option ${correctLetter}`;
+      const studentDisplay =
+        studentOptionIdx >= 0 && studentOptionIdx < options.length
+          ? `Option ${String.fromCharCode(65 + studentOptionIdx)}`
+          : rawAnswerStr;
 
       return {
         isHandled: true,
@@ -948,7 +988,7 @@ export function gradeDeterministicAnswer(
         matchType: 'mcq',
         feedback: isCorrect
           ? `✓ Correct choice: Option ${correctLetter}`
-          : `✗ Selected ${userNum >= 0 && userNum < options.length ? `Option ${String.fromCharCode(65 + userNum)}` : rawAnswerStr}, correct answer is Option ${correctLetter} (${correctOptionText})`,
+          : `✗ Selected ${studentDisplay}, correct answer is Option ${correctLetter} (${correctOptionText})`,
         matchedCriteria: [`Option ${correctLetter}`],
         acceptedAnswers: [`Option ${correctLetter}`, correctOptionText],
       };

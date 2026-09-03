@@ -111,14 +111,40 @@ export function exportClassQuizReportPdf(
     submissions[0]?.teacherNotes?.toLowerCase().includes('offline');
 
   // Filter by selected class if specified
-  const filteredSubmissions = selectedClass === 'all'
+  const classFiltered = selectedClass === 'all'
     ? submissions
     : submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase());
 
-  if (filteredSubmissions.length === 0) {
+  if (classFiltered.length === 0) {
     alert(`No student submissions found for class "${selectedClass}".`);
     return;
   }
+
+  // Deduplicate candidate submissions (prioritize graded/published attempts over provisional, then latest)
+  const candidateMap = new Map<string, StudentSubmission>();
+  classFiltered.forEach((sub) => {
+    const key = (sub.candidateNumber ? `${sub.studentName.toLowerCase()}_${sub.candidateNumber.toLowerCase()}` : sub.studentName.toLowerCase()) || sub.id;
+    const existing = candidateMap.get(key);
+    if (!existing) {
+      candidateMap.set(key, sub);
+    } else {
+      const isSubGraded = sub.status === 'graded' || sub.status === 'published';
+      const isExistingGraded = existing.status === 'graded' || existing.status === 'published';
+      if (isSubGraded && !isExistingGraded) {
+        candidateMap.set(key, sub);
+      } else if (!isSubGraded && isExistingGraded) {
+        // keep existing graded
+      } else {
+        const subTime = new Date(sub.updatedAt || sub.submittedAt || 0).getTime();
+        const existingTime = new Date(existing.updatedAt || existing.submittedAt || 0).getTime();
+        if (subTime >= existingTime) {
+          candidateMap.set(key, sub);
+        }
+      }
+    }
+  });
+
+  const filteredSubmissions = Array.from(candidateMap.values());
 
   const count = filteredSubmissions.length;
   const totalMarks = quiz.totalMarks || 1;

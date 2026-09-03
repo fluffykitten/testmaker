@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
@@ -10,6 +10,9 @@ import {
   getSavedSettings,
   saveSettings,
   DEFAULT_SETTINGS,
+  DEFAULT_CLASSES,
+  saveSchoolClasses,
+  loadAndSyncSchoolClasses,
 } from '../lib/settings';
 import './SettingsModal.css';
 
@@ -19,6 +22,27 @@ interface SettingsModalProps {
   onRestartTutorial?: () => void;
   onLockApp?: () => void;
 }
+
+const CLASS_PRESETS: { label: string; classes: string[] }[] = [
+  {
+    label: 'Grade 10–12 (A/B/C)',
+    classes: ['10-A', '10-B', '10-C', '11-A', '11-B', '11-C', '12-A', '12-B', '12-C'],
+  },
+  {
+    label: 'Year 7–11 (Sets 1-2)',
+    classes: [
+      'Year 7 Set 1', 'Year 7 Set 2',
+      'Year 8 Set 1', 'Year 8 Set 2',
+      'Year 9 Set 1', 'Year 9 Set 2',
+      'Year 10 Set 1', 'Year 10 Set 2',
+      'Year 11 Set 1', 'Year 11 Set 2',
+    ],
+  },
+  {
+    label: 'IB Diploma (HL/SL)',
+    classes: ['IB-1 Chemistry HL', 'IB-1 Chemistry SL', 'IB-2 Chemistry HL', 'IB-2 Chemistry SL'],
+  },
+];
 
 const ACCENT_OPTIONS: { id: AccentColor; name: string; class: string }[] = [
   { id: 'indigo', name: 'Indigo', class: 'swatch-indigo' },
@@ -43,7 +67,18 @@ export function SettingsModal({
   onLockApp,
 }: SettingsModalProps) {
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
+  const [newClassInput, setNewClassInput] = useState('');
+  const [classNotice, setClassNotice] = useState<string | null>(null);
   const backdropDismiss = useBackdropDismiss(onClose);
+
+  // Sync cloud classes on modal open
+  useEffect(() => {
+    if (isOpen) {
+      loadAndSyncSchoolClasses().then((classes) => {
+        setSettingsState((prev) => ({ ...prev, classes }));
+      });
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -53,9 +88,45 @@ export function SettingsModal({
     saveSettings(updated);
   };
 
+  const handleAddClass = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = newClassInput.trim();
+    if (!trimmed) return;
+
+    const currentClasses = settings.classes || DEFAULT_CLASSES;
+    const exists = currentClasses.some((c) => c.toLowerCase() === trimmed.toLowerCase());
+    if (exists) {
+      setClassNotice(`"${trimmed}" is already in the list.`);
+      setTimeout(() => setClassNotice(null), 3000);
+      return;
+    }
+
+    const updatedClasses = [...currentClasses, trimmed];
+    updateSetting('classes', updatedClasses);
+    saveSchoolClasses(updatedClasses);
+    setNewClassInput('');
+    setClassNotice(`✓ Added "${trimmed}"`);
+    setTimeout(() => setClassNotice(null), 2500);
+  };
+
+  const handleRemoveClass = (classToRemove: string) => {
+    const currentClasses = settings.classes || DEFAULT_CLASSES;
+    const filtered = currentClasses.filter((c) => c !== classToRemove);
+    updateSetting('classes', filtered);
+    saveSchoolClasses(filtered);
+  };
+
+  const handleApplyPreset = (presetClasses: string[]) => {
+    updateSetting('classes', presetClasses);
+    saveSchoolClasses(presetClasses);
+    setClassNotice('✓ Applied class preset');
+    setTimeout(() => setClassNotice(null), 2500);
+  };
+
   const handleReset = () => {
     setSettingsState(DEFAULT_SETTINGS);
     saveSettings(DEFAULT_SETTINGS);
+    saveSchoolClasses(DEFAULT_CLASSES);
   };
 
   return createPortal(
@@ -153,7 +224,82 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* 5. AI Extraction Preferences */}
+          {/* 5. Formal Exam Classes Configuration */}
+          <div className="settings-section">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+              <h3 className="settings-section-title">🏫 Formal Exam Classes & Cohorts</h3>
+              {classNotice && (
+                <span className="settings-class-notice animate-fade-in">
+                  {classNotice}
+                </span>
+              )}
+            </div>
+            <p style={{ margin: '0 0 4px', fontSize: '0.75rem', color: 'var(--color-text-secondary)', lineHeight: 1.4 }}>
+              Configure the classes shown in the candidate registration drop-down menu during formal exams.
+            </p>
+
+            {/* Configured Classes Tag List */}
+            <div className="settings-classes-wrap">
+              {(settings.classes || DEFAULT_CLASSES).map((cls) => (
+                <span key={cls} className="settings-class-chip">
+                  <span className="settings-class-chip-icon">🏷️</span>
+                  <span className="settings-class-chip-text">{cls}</span>
+                  <button
+                    type="button"
+                    className="settings-class-chip-remove"
+                    onClick={() => handleRemoveClass(cls)}
+                    title={`Remove class ${cls}`}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+
+            {/* Add New Class Form */}
+            <form onSubmit={handleAddClass} className="settings-add-class-form">
+              <input
+                type="text"
+                className="settings-add-class-input"
+                placeholder="Type class name (e.g. 10-D, Year 11-1, IB HL)..."
+                value={newClassInput}
+                onChange={(e) => setNewClassInput(e.target.value)}
+              />
+              <button
+                type="submit"
+                className="settings-add-class-btn"
+                disabled={!newClassInput.trim()}
+              >
+                + Add Class
+              </button>
+            </form>
+
+            {/* Presets & Bulk Actions */}
+            <div className="settings-class-presets-row">
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-tertiary)' }}>Presets:</span>
+              {CLASS_PRESETS.map((p, pIdx) => (
+                <button
+                  key={pIdx}
+                  type="button"
+                  className="settings-preset-btn"
+                  onClick={() => handleApplyPreset(p.classes)}
+                  title={`Load ${p.classes.join(', ')}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="settings-preset-btn settings-preset-btn--reset"
+                onClick={() => handleApplyPreset(DEFAULT_CLASSES)}
+                title="Reset to default Grade 10-12 classes"
+              >
+                ↺ Defaults
+              </button>
+            </div>
+          </div>
+
+          {/* 6. AI Extraction Preferences */}
           <div className="settings-section">
             <h3 className="settings-section-title">AI Extraction Defaults</h3>
             <div className="settings-action-row">
@@ -172,7 +318,43 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* 6. Tools & Management */}
+          {/* 7. Assessment & Exam Security Defaults */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Exam Security Defaults</h3>
+            <div className="settings-actions-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <span className="settings-action-name">💧 Candidate Dynamic Watermarking</span>
+                  <span className="settings-action-desc">Overlay candidate name, ID, and hash on exam runner and question diagrams to deter leaks/photos</span>
+                </div>
+                <button
+                  type="button"
+                  className={`settings-seg-btn ${settings.defaultEnableWatermark ? 'settings-seg-btn--active' : ''}`}
+                  style={{ flex: 'none', padding: '6px 16px' }}
+                  onClick={() => updateSetting('defaultEnableWatermark', !settings.defaultEnableWatermark)}
+                >
+                  {settings.defaultEnableWatermark ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <span className="settings-action-name">🖥️ Multi-Monitor Detection Shield</span>
+                  <span className="settings-action-desc">Detect secondary displays / extended screens and log proctoring violations during timed exams</span>
+                </div>
+                <button
+                  type="button"
+                  className={`settings-seg-btn ${settings.defaultEnableMultiMonitor ? 'settings-seg-btn--active' : ''}`}
+                  style={{ flex: 'none', padding: '6px 16px' }}
+                  onClick={() => updateSetting('defaultEnableMultiMonitor', !settings.defaultEnableMultiMonitor)}
+                >
+                  {settings.defaultEnableMultiMonitor ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 8. Tools & Management */}
           <div className="settings-section">
             <h3 className="settings-section-title">Tools & Reset</h3>
             <div className="settings-actions-list">

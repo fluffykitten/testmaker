@@ -24,6 +24,7 @@ import {
   exportBatchStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import type { PublishedQuiz } from '../services/quizManagerService';
+import { getSchoolClasses } from '../lib/settings';
 import './OfflineGradingModal.css';
 
 interface OfflineGradingModalProps {
@@ -648,9 +649,15 @@ export function OfflineGradingModal({
                             type="text"
                             className="og-cell-input"
                             placeholder="10-A"
+                            list="configured-classes-datalist"
                             value={row.studentClass}
                             onChange={(e) => handleGridMetadataChange(rIdx, 'studentClass', e.target.value)}
                           />
+                          <datalist id="configured-classes-datalist">
+                            {getSchoolClasses().map((c) => (
+                              <option key={c} value={c} />
+                            ))}
+                          </datalist>
                         </td>
                         <td>
                           <input

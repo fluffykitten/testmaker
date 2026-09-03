@@ -101,6 +101,7 @@ export function GameQuizRunner({
   // Test / Quiz Metadata
   const [loading, setLoading] = useState(!initialQuestions);
   const [error, setError] = useState<string | null>(null);
+  const [isQuizPaused, setIsQuizPaused] = useState<boolean>(false);
   const [title, setTitle] = useState(initialHeaderConfig?.title || 'Interactive Game');
   const [questions, setQuestions] = useState<Question[]>(initialQuestions || []);
 
@@ -211,7 +212,11 @@ export function GameQuizRunner({
         const data: StudentQuizData | null = await resolveStudentQuiz(testIdOrCode!);
         if (!data || data.questions.length === 0) {
           setError(`Quiz "${testIdOrCode}" not found.`);
+        } else if (data.isActive === false) {
+          setIsQuizPaused(true);
+          setTitle(data.title);
         } else {
+          setIsQuizPaused(false);
           setTitle(data.title);
           setQuestions(data.questions);
           if (data.pointsPerQuestion || data.questionTimerSeconds) {
@@ -589,6 +594,45 @@ export function GameQuizRunner({
       <div className="gq-root gq-centered">
         <div className="gq-loading-spinner" />
         <h2>Joining Quiz Arena...</h2>
+      </div>
+    );
+  }
+
+  if (isQuizPaused) {
+    return (
+      <div className="gq-root gq-centered animate-fade-in">
+        <div className="gq-error-card animate-scale-up">
+          <span className="gq-error-icon" style={{ fontSize: '3rem' }}>⏸️</span>
+          <h2>Game Arena Paused</h2>
+          <p style={{ maxWidth: '420px', margin: '8px auto 16px', lineHeight: 1.5 }}>
+            The host has paused access to <strong>{title || testIdOrCode}</strong>. Submissions are temporarily closed. Please wait for the teacher to activate the challenge.
+          </p>
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+            <button
+              type="button"
+              className="gq-btn-primary"
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  const refreshed = await resolveStudentQuiz(testIdOrCode!);
+                  if (refreshed && refreshed.isActive !== false) {
+                    setIsQuizPaused(false);
+                    setQuestions(refreshed.questions);
+                  }
+                } catch (err) {
+                  console.warn('Check game status error:', err);
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              ↻ Check Status
+            </button>
+            <button type="button" className="gq-btn-leave" onClick={handleLeave} style={{ padding: '10px 18px', borderRadius: '8px' }}>
+              Back to Portal
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

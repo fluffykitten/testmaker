@@ -229,13 +229,23 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
           const subResults: any[] = [];
 
+          const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
+
           // Case A: Sub-questions
           if (q.sub_questions && q.sub_questions.length > 0) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
               const subKey = `${idx}_${sqIdx}`;
-              const subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]) ?? '';
+              let subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]);
+              if (subAns === undefined || subAns === '') {
+                const prevSub = prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) || prevResult?.subQuestionResults?.[sqIdx];
+                if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
+                  subAns = prevSub.studentAnswer;
+                } else {
+                  subAns = '';
+                }
+              }
               const subMarks = sq.marks || 1;
 
               const det = gradeDeterministicAnswer(subAns, q, sqIdx);
@@ -278,9 +288,17 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           }
           // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
           else {
-            const userAns = rawAnswers[idx] ?? '';
+            let userAns = rawAnswers[idx];
+            if (userAns === undefined || userAns === '') {
+              if (prevResult?.studentAnswer !== undefined && prevResult.studentAnswer !== '') {
+                userAns = prevResult.studentAnswer;
+              } else {
+                userAns = '';
+              }
+            }
             const det = gradeDeterministicAnswer(userAns, q);
-            if (det.isHandled) {
+            const isMcq = (q.options && q.options.length > 0) || q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select';
+            if (det.isHandled || isMcq) {
               qEarned = det.earnedMarks;
               isCorrect = det.isCorrect;
               aiFeedback = det.feedback;
@@ -301,29 +319,29 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               // Throttled delay to respect Gemini rate limits
               await new Promise((r) => setTimeout(r, 1200));
             }
+
+            earnedMarks += qEarned;
+            topicBreakdown[top].earnedMarks += qEarned;
+
+            qResults.push({
+              questionId: q.id,
+              questionNumber: idx + 1,
+              questionText: q.question_text,
+              options: q.options || undefined,
+              topic: top,
+              maxMarks: qMarks,
+              earnedMarks: qEarned,
+              isCorrect,
+              studentAnswer: userAns,
+              correctAnswer: resolveQuestionModelAnswer(q),
+              misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+              aiFeedback,
+              missingPoints,
+              criteriaBreakdown,
+              gradingMethod,
+              subQuestionResults: subResults.length > 0 ? subResults : undefined,
+            });
           }
-
-          earnedMarks += qEarned;
-          topicBreakdown[top].earnedMarks += qEarned;
-
-          qResults.push({
-            questionId: q.id,
-            questionNumber: idx + 1,
-            questionText: q.question_text,
-            options: q.options || undefined,
-            topic: top,
-            maxMarks: qMarks,
-            earnedMarks: qEarned,
-            isCorrect,
-            studentAnswer: rawAnswers[idx] !== undefined ? rawAnswers[idx] : '',
-            correctAnswer: resolveQuestionModelAnswer(q),
-            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
-            aiFeedback,
-            missingPoints,
-            criteriaBreakdown,
-            gradingMethod,
-            subQuestionResults: subResults.length > 0 ? subResults : undefined,
-          });
         }
 
         Object.keys(topicBreakdown).forEach((top) => {
@@ -348,6 +366,170 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     } catch (err) {
       console.error('Batch grading error:', err);
       alert('An error occurred during batch grading. Please check your network and Gemini API key.');
+    } finally {
+      setIsBatchGrading(false);
+    }
+  };
+
+  const handleRegradeAllDeterministic = async () => {
+    if (submissions.length === 0) return;
+    const confirmed = confirm(
+      `Re-grade all ${submissions.length} submission(s) deterministically from original student raw answers?\n\nThis will re-calculate every question using the official answer key (100% exact math, zero AI variance).`
+    );
+    if (!confirmed) return;
+
+    setIsBatchGrading(true);
+    setGradingProgress({ current: 0, total: submissions.length, text: 'Fetching test questions...' });
+
+    try {
+      const questions = await fetchQuestionsByIds(quiz.questionIds || []);
+      if (!questions || questions.length === 0) {
+        alert('Could not load questions for this test.');
+        setIsBatchGrading(false);
+        return;
+      }
+
+      for (let sIdx = 0; sIdx < submissions.length; sIdx++) {
+        const sub = submissions[sIdx];
+        setGradingProgress({
+          current: sIdx + 1,
+          total: submissions.length,
+          text: `Re-grading candidate: ${sub.studentName} (${sIdx + 1} of ${submissions.length})...`,
+        });
+
+        const rawAnswers = sub.rawAnswers || {};
+        let earnedMarks = 0;
+        const qResults: QuestionSubmissionResult[] = [];
+        const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+
+        for (let idx = 0; idx < questions.length; idx++) {
+          const q = questions[idx];
+          const top = q.topic || 'General';
+          if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+          const qMarks = q.marks || 1;
+          topicBreakdown[top].totalMarks += qMarks;
+
+          let isCorrect = false;
+          let qEarned = 0;
+          let feedback: string | undefined;
+          let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+          const subResults: any[] = [];
+
+          const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
+
+          if (q.sub_questions && q.sub_questions.length > 0) {
+            let totalSubEarned = 0;
+            for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
+              const sq = q.sub_questions[sqIdx];
+              const subKey = `${idx}_${sqIdx}`;
+              let subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]);
+              if (subAns === undefined || subAns === '') {
+                const prevSub = prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) || prevResult?.subQuestionResults?.[sqIdx];
+                if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
+                  subAns = prevSub.studentAnswer;
+                } else {
+                  subAns = '';
+                }
+              }
+              const subMarks = sq.marks || 1;
+
+              const det = gradeDeterministicAnswer(subAns, q, sqIdx);
+              totalSubEarned += det.earnedMarks;
+              subResults.push({
+                subId: sq.sub_id,
+                questionText: sq.question_text,
+                studentAnswer: subAns,
+                earnedMarks: det.earnedMarks,
+                maxMarks: subMarks,
+                isCorrect: det.isCorrect,
+                feedback: det.feedback,
+              });
+            }
+            qEarned = Math.min(totalSubEarned, qMarks);
+            isCorrect = qEarned === qMarks;
+          } else {
+            let userAns = rawAnswers[idx];
+            if (userAns === undefined || userAns === '') {
+              if (prevResult?.studentAnswer !== undefined && prevResult.studentAnswer !== '') {
+                userAns = prevResult.studentAnswer;
+              } else {
+                userAns = '';
+              }
+            }
+            const det = gradeDeterministicAnswer(userAns, q);
+            qEarned = det.earnedMarks;
+            isCorrect = det.isCorrect;
+            feedback = det.feedback;
+            gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+
+            earnedMarks += qEarned;
+            topicBreakdown[top].earnedMarks += qEarned;
+
+            qResults.push({
+              questionId: q.id,
+              questionNumber: idx + 1,
+              questionText: q.question_text,
+              options: q.options || undefined,
+              topic: top,
+              maxMarks: qMarks,
+              earnedMarks: qEarned,
+              isCorrect,
+              studentAnswer: userAns,
+              correctAnswer: resolveQuestionModelAnswer(q),
+              misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+              aiFeedback: feedback,
+              gradingMethod,
+              subQuestionResults: subResults.length > 0 ? subResults : undefined,
+            });
+            continue;
+          }
+
+          earnedMarks += qEarned;
+          topicBreakdown[top].earnedMarks += qEarned;
+
+          qResults.push({
+            questionId: q.id,
+            questionNumber: idx + 1,
+            questionText: q.question_text,
+            options: q.options || undefined,
+            topic: top,
+            maxMarks: qMarks,
+            earnedMarks: qEarned,
+            isCorrect,
+            studentAnswer: rawAnswers[idx] !== undefined ? rawAnswers[idx] : '',
+            correctAnswer: resolveQuestionModelAnswer(q),
+            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+            aiFeedback: feedback,
+            gradingMethod,
+            subQuestionResults: subResults.length > 0 ? subResults : undefined,
+          });
+        }
+
+        Object.keys(topicBreakdown).forEach((top) => {
+          const item = topicBreakdown[top];
+          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+        });
+
+        const totalQuizMarks = quiz.totalMarks || sub.totalMarks;
+        const updatedSub: StudentSubmission = {
+          ...sub,
+          score: earnedMarks,
+          totalMarks: totalQuizMarks,
+          percentage: totalQuizMarks > 0 ? Math.round((earnedMarks / totalQuizMarks) * 100) : 100,
+          questionResults: qResults,
+          topicBreakdown,
+          status: 'graded',
+          updatedAt: new Date().toISOString(),
+        };
+
+        await updateSubmission(updatedSub);
+      }
+
+      await refreshSubmissions();
+      alert(`✅ Successfully re-graded all ${submissions.length} submission(s) deterministically!`);
+    } catch (err) {
+      console.error('Re-grading error:', err);
+      alert('An error occurred during re-grading.');
     } finally {
       setIsBatchGrading(false);
     }
@@ -729,6 +911,31 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {submissions.length > 0 && (
+              <button
+                type="button"
+                className="qrm-btn"
+                style={{
+                  background: 'rgba(59, 130, 246, 0.15)',
+                  color: '#60a5fa',
+                  border: '1px solid rgba(59, 130, 246, 0.35)',
+                  fontWeight: 700,
+                  fontSize: '0.8125rem',
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  cursor: isBatchGrading ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+                onClick={handleRegradeAllDeterministic}
+                disabled={isBatchGrading}
+                title="Re-calculate all submissions from original student answers using the official answer key (100% deterministic, 0% AI drift)."
+              >
+                🔄 Revert & Re-Grade (Exact MCQ)
+              </button>
+            )}
+
             {unanalyzedCount > 0 && (
               <button
                 type="button"

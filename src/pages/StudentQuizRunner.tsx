@@ -30,6 +30,18 @@ import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
 import { ExamAudioPlayer } from '../components/ExamAudioPlayer';
+import { CandidateWatermark } from '../components/CandidateWatermark';
+import { flushClipboard, detectMultiMonitor, formatSessionHash } from '../utils/examSecurityUtils';
+import {
+  joinProctorSession,
+  sendStudentHeartbeat,
+  sendStudentViolation,
+  leaveProctorSession,
+  type ProctorStudentState,
+  type ProctorCommand,
+  type StudentExamStatus,
+} from '../services/examProctorRealtimeService';
+import { getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -41,7 +53,7 @@ interface StudentQuizRunnerProps {
 }
 
 interface ViolationRecord {
-  type: 'tab_switch' | 'fullscreen_exit' | 'blocked_shortcut' | 'window_blur';
+  type: 'tab_switch' | 'fullscreen_exit' | 'blocked_shortcut' | 'window_blur' | 'multi_monitor';
   timestamp: string;
   detail: string;
 }
@@ -251,6 +263,7 @@ export function StudentQuizRunner({
   // Test Data State
   const [loading, setLoading] = useState(!initialQuestions);
   const [error, setError] = useState<string | null>(null);
+  const [isQuizPaused, setIsQuizPaused] = useState<boolean>(false);
   const [title, setTitle] = useState(initialHeaderConfig?.title || 'Interactive Examination');
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig | undefined>(initialHeaderConfig);
   const [questions, setQuestions] = useState<Question[]>(initialQuestions || []);
@@ -272,6 +285,25 @@ export function StudentQuizRunner({
   const [candidateClass, setCandidateClass] = useState<string>(() => savedExam?.candidateClass || '');
   const [candidateNumber, setCandidateNumber] = useState<string>(() => savedExam?.candidateNumber || '');
   const [startTime, setStartTime] = useState<number>(() => savedExam?.startTime || Date.now());
+
+  // Configured Classes for Dropdown (from Settings / Cloud)
+  const [configuredClasses, setConfiguredClasses] = useState<string[]>(() => {
+    return getSchoolClasses();
+  });
+  const [isCustomClass, setIsCustomClass] = useState<boolean>(() => {
+    if (!savedExam?.candidateClass) return false;
+    const initialList = getSchoolClasses();
+    return !initialList.includes(savedExam.candidateClass);
+  });
+  const [lobbyError, setLobbyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadAndSyncSchoolClasses().then((classes) => {
+      if (classes && classes.length > 0) {
+        setConfiguredClasses(classes);
+      }
+    });
+  }, []);
 
   // Exam Progress State
   const [currentIndex, setCurrentIndex] = useState<number>(() => savedExam?.currentIndex || 0);
@@ -319,6 +351,8 @@ export function StudentQuizRunner({
 
   // 🔒 Security & Anti-Cheating State
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
+  const [enableWatermark, setEnableWatermark] = useState<boolean>(() => savedExam?.enableWatermark ?? false);
+  const [enableMultiMonitorDetection, setEnableMultiMonitorDetection] = useState<boolean>(() => savedExam?.enableMultiMonitorDetection ?? false);
   const [requireTeacherUnlock, setRequireTeacherUnlock] = useState<boolean>(() => savedExam?.requireTeacherUnlock ?? true);
   const [teacherPin, setTeacherPin] = useState<string>(() => savedExam?.teacherPin || '1234');
   const [isLockedByProctor, setIsLockedByProctor] = useState<boolean>(() => savedExam?.isLockedByProctor || false);
@@ -330,7 +364,14 @@ export function StudentQuizRunner({
   const [violations, setViolations] = useState<ViolationRecord[]>(() => savedExam?.violations || []);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const [multiMonitorDetected, setMultiMonitorDetected] = useState<boolean>(false);
+  const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
+  const submitExamRef = useRef<() => void>(() => {});
+
+  const sessionHash = useMemo(() => {
+    return formatSessionHash(`${candidateName}_${candidateNumber}_${resolvedQuizCode}_${startTime}`);
+  }, [candidateName, candidateNumber, resolvedQuizCode, startTime]);
 
   // Diagram Zoom
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
@@ -401,7 +442,14 @@ export function StudentQuizRunner({
         const data = await resolveStudentQuiz(testIdOrCode!);
         if (!data || data.questions.length === 0) {
           setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
+        } else if (data.isActive === false) {
+          setIsQuizPaused(true);
+          if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
+          if (data.testId) setResolvedTestId(data.testId);
+          setTitle(data.title);
+          setHeaderConfig(data.headerConfig);
         } else {
+          setIsQuizPaused(false);
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
           setTitle(data.title);
@@ -417,6 +465,12 @@ export function StudentQuizRunner({
           }
           if (data.securityEnabled !== undefined) {
             setSecurityEnabled(data.securityEnabled);
+          }
+          if (data.enableWatermark !== undefined) {
+            setEnableWatermark(data.enableWatermark);
+          }
+          if (data.enableMultiMonitorDetection !== undefined) {
+            setEnableMultiMonitorDetection(data.enableMultiMonitorDetection);
           }
           if (data.requireTeacherUnlock !== undefined) {
             setRequireTeacherUnlock(data.requireTeacherUnlock);
@@ -444,6 +498,34 @@ export function StudentQuizRunner({
       const rec: ViolationRecord = { type, timestamp: nowIso, detail };
       setViolations((prev) => [...prev, rec]);
 
+      // Broadcast to live invigilator cockpit stream
+      if (resolvedQuizCode) {
+        sendStudentViolation(
+          resolvedQuizCode,
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: requireTeacherUnlock && isExamMode ? 'locked' : 'warning',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: timeLeft,
+            violationsCount: violations.length + 1,
+            lastViolation: detail,
+            lockReason: detail,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+          },
+          {
+            type,
+            detail,
+            severity: type === 'multi_monitor' || type === 'tab_switch' ? 'critical' : 'warning',
+          }
+        );
+      }
+
       if (requireTeacherUnlock && isExamMode) {
         setIsLockedByProctor(true);
         setLockReason(detail);
@@ -454,7 +536,25 @@ export function StudentQuizRunner({
         setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${formatProctorTimestamp(nowIso)})`);
       }
     },
-    [hasStarted, isSubmitted, isGrading, securityEnabled, requireTeacherUnlock, isExamMode]
+    [
+      hasStarted,
+      isSubmitted,
+      isGrading,
+      securityEnabled,
+      requireTeacherUnlock,
+      isExamMode,
+      resolvedQuizCode,
+      sessionHash,
+      candidateName,
+      candidateNumber,
+      candidateClass,
+      quizStats.answeredItems,
+      quizStats.totalItems,
+      currentIndex,
+      timeLeft,
+      violations.length,
+      multiMonitorDetected,
+    ]
   );
 
   const handleUnlockWithPin = (e?: React.FormEvent) => {
@@ -493,7 +593,7 @@ export function StudentQuizRunner({
     }
   };
 
-  // ─── 3. Anti-Cheating Event Listeners ──────────────────────────────────────
+  // ─── 3. Anti-Cheating & Clipboard Event Listeners ───────────────────────────
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
 
@@ -504,11 +604,15 @@ export function StudentQuizRunner({
       }
     };
 
-    // B. Window Blur (e.g. Alt+Tab or clicking outside)
+    // B. Window Blur & Focus Sanitization
     const handleWindowBlur = () => {
       if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
         logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
       }
+    };
+
+    const handleWindowFocus = () => {
+      flushClipboard();
     };
 
     // C. Fullscreen change
@@ -539,11 +643,37 @@ export function StudentQuizRunner({
       // Block Ctrl+C (Copy), Ctrl+V (Paste) in Exam Mode
       if (isExamMode && e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'v' || e.key === 'V')) {
         e.preventDefault();
+        flushClipboard();
         logViolation('blocked_shortcut', 'Copying and pasting is disabled during exam');
       }
     };
 
-    // E. Native Mobile App Minimize / Background Event
+    // E. Clipboard Event Interceptors
+    const handleCopy = (e: ClipboardEvent) => {
+      if (isExamMode) {
+        e.preventDefault();
+        flushClipboard();
+        logViolation('blocked_shortcut', 'Copying question content is disabled during exam');
+      }
+    };
+
+    const handleCut = (e: ClipboardEvent) => {
+      if (isExamMode) {
+        e.preventDefault();
+        flushClipboard();
+        logViolation('blocked_shortcut', 'Cutting text is disabled during exam');
+      }
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      if (isExamMode) {
+        e.preventDefault();
+        flushClipboard();
+        logViolation('blocked_shortcut', 'Pasting external content into exam is disabled');
+      }
+    };
+
+    // F. Native Mobile App Minimize / Background Event
     const handleMobileProctor = (e: Event) => {
       const customEvt = e as CustomEvent<{ reason?: string }>;
       if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
@@ -551,7 +681,7 @@ export function StudentQuizRunner({
       }
     };
 
-    // F. Prevent accidental unload/reload
+    // G. Prevent accidental unload/reload
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isSubmittingRef.current && !isSubmitted) {
         e.preventDefault();
@@ -561,6 +691,10 @@ export function StudentQuizRunner({
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('copy', handleCopy);
+    window.addEventListener('cut', handleCut);
+    window.addEventListener('paste', handlePaste);
     window.addEventListener('mobile-proctor-violation', handleMobileProctor);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('keydown', handleKeyDown);
@@ -569,12 +703,183 @@ export function StudentQuizRunner({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('cut', handleCut);
+      window.removeEventListener('paste', handlePaste);
       window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, logViolation]);
+
+  // ─── 3B. Multi-Monitor / Extended Display Shield ────────────────────────────
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading || !securityEnabled || !isExamMode || !enableMultiMonitorDetection) return;
+
+    let isMounted = true;
+    const checkMonitors = async () => {
+      const res = await detectMultiMonitor();
+      if (!isMounted) return;
+      if (res.isMultiMonitor) {
+        if (!multiMonitorDetected) {
+          setMultiMonitorDetected(true);
+          logViolation('multi_monitor', res.reason || 'Multiple displays / secondary monitor detected');
+        }
+      } else {
+        if (multiMonitorDetected) {
+          setMultiMonitorDetected(false);
+        }
+      }
+    };
+
+    checkMonitors();
+    const interval = setInterval(checkMonitors, 8000);
+    window.addEventListener('resize', checkMonitors);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('resize', checkMonitors);
+    };
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, enableMultiMonitorDetection, multiMonitorDetected, logViolation]);
+
+  // ─── 3C. Real-time Proctor Live Channel & Command Listener ─────────────────
+  useEffect(() => {
+    if (!hasStarted || !resolvedQuizCode) return;
+
+    const initialTelemetry: ProctorStudentState = {
+      studentId: sessionHash,
+      studentName: candidateName || 'Candidate',
+      candidateNumber: candidateNumber || '',
+      candidateClass: candidateClass || '',
+      status: isSubmitted ? 'submitted' : isLockedByProctor ? 'locked' : 'active',
+      answeredCount: quizStats.answeredItems,
+      totalQuestions: quizStats.totalItems,
+      currentIndex: currentIndex + 1,
+      timeLeftSeconds: isSubmitted ? 0 : timeLeft,
+      violationsCount: violations.length,
+      lastViolation: violations[violations.length - 1]?.detail,
+      lockReason: isLockedByProctor ? lockReason : undefined,
+      multiMonitorDetected,
+      deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+      lastHeartbeat: Date.now(),
+    };
+
+    const handleCommand = (cmd: ProctorCommand) => {
+      if (cmd.type === 'unlock') {
+        setIsLockedByProctor(false);
+        setLockReason('');
+        setLockTime('');
+        setPinInput('');
+        setPinError(null);
+        setSecurityAlert('✅ Examination remotely unlocked by invigilator. Please remain focused.');
+        setTimeout(() => setSecurityAlert(null), 5000);
+        try {
+          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          }
+        } catch {}
+      } else if (cmd.type === 'add_time') {
+        const extraSec = (cmd.minutes || 5) * 60;
+        setTimeLeft((prev) => prev + extraSec);
+        setTargetEndTime((prev) => (prev ? prev + extraSec * 1000 : Date.now() + extraSec * 1000));
+        setSecurityAlert(`⏱️ TIME EXTENSION: Invigilator granted +${cmd.minutes || 5} minutes extra time.`);
+        setTimeout(() => setSecurityAlert(null), 7000);
+      } else if (cmd.type === 'force_submit') {
+        setSecurityAlert('🛑 Examination submission requested by invigilator.');
+        // Notify proctor channel immediately of forced submission
+        const submitTelemetry: ProctorStudentState = {
+          studentId: sessionHash,
+          studentName: candidateName || 'Candidate',
+          candidateNumber: candidateNumber || '',
+          candidateClass: candidateClass || '',
+          status: 'submitted',
+          answeredCount: quizStats.answeredItems,
+          totalQuestions: quizStats.totalItems,
+          currentIndex: currentIndex + 1,
+          timeLeftSeconds: 0,
+          violationsCount: violations.length,
+          lastViolation: violations[violations.length - 1]?.detail,
+          lockReason: undefined,
+          multiMonitorDetected: false,
+          deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+          lastHeartbeat: Date.now(),
+        };
+        sendStudentHeartbeat(submitTelemetry);
+        sendStudentViolation(resolvedQuizCode, submitTelemetry, {
+          type: 'submitted',
+          detail: 'Examination submitted (forced by invigilator)',
+          severity: 'info',
+        });
+        submitExamRef.current();
+      } else if (cmd.type === 'announcement') {
+        setTeacherAnnouncement(cmd.message || null);
+      }
+    };
+
+    joinProctorSession(resolvedQuizCode, initialTelemetry, {
+      onCommandReceived: handleCommand,
+    });
+
+    return () => {
+      leaveProctorSession();
+    };
+  }, [hasStarted, resolvedQuizCode, sessionHash]);
+
+  // Periodic and reactive heartbeat
+  useEffect(() => {
+    if (!hasStarted || !resolvedQuizCode) return;
+
+    const timer = setTimeout(() => {
+      const isSubmittingOrFinished = isSubmitted || isGrading || isSubmittingRef.current;
+      const currentStatus: StudentExamStatus = isSubmittingOrFinished
+        ? 'submitted'
+        : isLockedByProctor
+        ? 'locked'
+        : document.hidden
+        ? 'warning'
+        : 'active';
+
+      sendStudentHeartbeat({
+        studentId: sessionHash,
+        studentName: candidateName || 'Candidate',
+        candidateNumber: candidateNumber || '',
+        candidateClass: candidateClass || '',
+        status: currentStatus,
+        answeredCount: quizStats.answeredItems,
+        totalQuestions: quizStats.totalItems,
+        currentIndex: currentIndex + 1,
+        timeLeftSeconds: isSubmittingOrFinished ? 0 : timeLeft,
+        violationsCount: violations.length,
+        lastViolation: violations[violations.length - 1]?.detail,
+        lockReason: isLockedByProctor ? lockReason : undefined,
+        multiMonitorDetected: isSubmittingOrFinished ? false : multiMonitorDetected,
+        deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+        lastHeartbeat: Date.now(),
+      });
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [
+    hasStarted,
+    isSubmitted,
+    isGrading,
+    resolvedQuizCode,
+    sessionHash,
+    candidateName,
+    candidateNumber,
+    candidateClass,
+    isLockedByProctor,
+    quizStats.answeredItems,
+    quizStats.totalItems,
+    currentIndex,
+    timeLeft,
+    violations.length,
+    lockReason,
+    multiMonitorDetected,
+  ]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {
@@ -586,6 +891,31 @@ export function StudentQuizRunner({
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
+
+    // Immediately notify live invigilator cockpit of submission
+    const submitTelemetry: ProctorStudentState = {
+      studentId: sessionHash,
+      studentName: candidateName || 'Candidate',
+      candidateNumber: candidateNumber || '',
+      candidateClass: candidateClass || '',
+      status: 'submitted',
+      answeredCount: quizStats.answeredItems,
+      totalQuestions: quizStats.totalItems,
+      currentIndex: currentIndex + 1,
+      timeLeftSeconds: 0,
+      violationsCount: violations.length,
+      lastViolation: violations[violations.length - 1]?.detail,
+      lockReason: undefined,
+      multiMonitorDetected: false,
+      deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+      lastHeartbeat: Date.now(),
+    };
+    sendStudentHeartbeat(submitTelemetry);
+    sendStudentViolation(resolvedQuizCode, submitTelemetry, {
+      type: 'submitted',
+      detail: `Exam submitted (${quizStats.answeredItems}/${quizStats.totalItems} answered)`,
+      severity: 'info',
+    });
 
     // ── Formal Exam Mode: Fast Deferred Submit Pipeline ──
     // Saves raw responses to Supabase immediately with zero AI rate-limit delays.
@@ -916,8 +1246,10 @@ export function StudentQuizRunner({
           strike: i + 1,
           severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
         })),
+        rawAnswers: answers,
         questionResults: qResults,
         topicBreakdown,
+        status: 'graded',
       };
 
       setCompletedSubmission(submission);
@@ -951,6 +1283,7 @@ export function StudentQuizRunner({
       setIsGrading(false);
     }
   }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, resolvedQuizCode, resolvedTestId, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey]);
+  submitExamRef.current = handleSubmitExam;
 
   const handleRetryCloudSync = useCallback(async () => {
     if (!completedSubmission || isRetryingSync) return;
@@ -994,6 +1327,8 @@ export function StudentQuizRunner({
             isSubmitted,
             timeLeft,
             securityEnabled,
+            enableWatermark,
+            enableMultiMonitorDetection,
             requireTeacherUnlock,
             teacherPin,
             isLockedByProctor,
@@ -1022,6 +1357,8 @@ export function StudentQuizRunner({
     isSubmitted,
     timeLeft,
     securityEnabled,
+    enableWatermark,
+    enableMultiMonitorDetection,
     requireTeacherUnlock,
     teacherPin,
     isLockedByProctor,
@@ -1102,6 +1439,19 @@ export function StudentQuizRunner({
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleStartExam = async () => {
+    if (!candidateName.trim()) {
+      setLobbyError('Please enter candidate full name before beginning the examination.');
+      return;
+    }
+    if (!candidateClass.trim()) {
+      setLobbyError('Please select or specify your class / section.');
+      return;
+    }
+    setLobbyError(null);
+
+    // Sanitize clipboard on exam entry
+    await flushClipboard();
+
     const now = Date.now();
     const end = now + (examDurationSec * 1000);
     setStartTime(now);
@@ -1522,6 +1872,61 @@ export function StudentQuizRunner({
     );
   }
 
+  if (isQuizPaused && !hasStarted && !isSubmitted) {
+    return (
+      <div className="student-quiz-error-screen animate-fade-in">
+        <div className="error-icon" style={{ fontSize: '3rem' }}>⏸️</div>
+        <h2>Assessment Temporarily Paused</h2>
+        <p style={{ maxWidth: '440px', margin: '8px auto 16px', lineHeight: 1.5 }}>
+          The instructor has paused access to <strong>{title || resolvedQuizCode}</strong>. Submissions are currently closed. Please wait for your invigilator or teacher to activate the exam session.
+        </p>
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="sq-btn sq-btn-primary"
+            onClick={async () => {
+              setLoading(true);
+              try {
+                const refreshed = await resolveStudentQuiz(testIdOrCode!);
+                if (refreshed && refreshed.isActive !== false) {
+                  setIsQuizPaused(false);
+                  setQuestions(refreshed.questions);
+                  if (refreshed.durationMinutes) {
+                    setTimeLeft(refreshed.durationMinutes * 60);
+                  } else if (refreshed.headerConfig?.durationMinutes) {
+                    setTimeLeft(refreshed.headerConfig.durationMinutes * 60);
+                  }
+                  if (refreshed.isExamMode !== undefined) setIsExamMode(refreshed.isExamMode);
+                  if (refreshed.securityEnabled !== undefined) setSecurityEnabled(refreshed.securityEnabled);
+                  if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
+                  if (refreshed.enableMultiMonitorDetection !== undefined) setEnableMultiMonitorDetection(refreshed.enableMultiMonitorDetection);
+                  if (refreshed.requireTeacherUnlock !== undefined) setRequireTeacherUnlock(refreshed.requireTeacherUnlock);
+                  if (refreshed.teacherPin) setTeacherPin(refreshed.teacherPin);
+                }
+              } catch (e) {
+                console.warn('Refresh status check error:', e);
+              } finally {
+                setLoading(false);
+              }
+            }}
+            style={{ minWidth: '150px' }}
+          >
+            ↻ Check Status
+          </button>
+          {onExit && (
+            <button
+              type="button"
+              className="sq-btn sq-btn-secondary"
+              onClick={onExit}
+            >
+              ← Back to Portal
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (error || (!loading && questions.length === 0)) {
     return (
       <div className="student-quiz-error-screen">
@@ -1618,16 +2023,24 @@ export function StudentQuizRunner({
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-text-primary)' }}>
-                  Class / Section / Set:
+                  Class / Section / Set: <span style={{ color: '#ef4444' }}>*</span>
                 </label>
-                <input
-                  type="text"
-                  value={candidateClass}
-                  onChange={(e) => setCandidateClass(e.target.value)}
-                  placeholder="e.g. 10-A, Year 11-1"
+                <select
+                  value={isCustomClass ? '__custom__' : (candidateClass || '')}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '__custom__') {
+                      setIsCustomClass(true);
+                      setCandidateClass('');
+                    } else {
+                      setIsCustomClass(false);
+                      setCandidateClass(val);
+                    }
+                    if (lobbyError) setLobbyError(null);
+                  }}
                   style={{
                     width: '100%',
-                    padding: '8px 12px',
+                    padding: '9px 12px',
                     borderRadius: 'var(--radius-md)',
                     border: '1.5px solid var(--color-border)',
                     background: 'var(--color-surface-sunken)',
@@ -1636,8 +2049,43 @@ export function StudentQuizRunner({
                     fontWeight: 600,
                     outline: 'none',
                     boxSizing: 'border-box',
+                    cursor: 'pointer',
                   }}
-                />
+                >
+                  <option value="" disabled>-- Select Class / Section --</option>
+                  {configuredClasses.map((cls) => (
+                    <option key={cls} value={cls}>
+                      {cls}
+                    </option>
+                  ))}
+                  <option value="__custom__">➕ Other / Custom Class...</option>
+                </select>
+
+                {isCustomClass && (
+                  <input
+                    type="text"
+                    value={candidateClass}
+                    onChange={(e) => {
+                      setCandidateClass(e.target.value);
+                      if (lobbyError) setLobbyError(null);
+                    }}
+                    placeholder="Enter custom class name (e.g. 10-D)..."
+                    autoFocus
+                    style={{
+                      width: '100%',
+                      marginTop: '6px',
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1.5px solid var(--color-primary-400)',
+                      background: 'var(--color-surface)',
+                      color: 'var(--color-text-primary)',
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                )}
               </div>
 
               <div>
@@ -1665,6 +2113,29 @@ export function StudentQuizRunner({
               </div>
             </div>
           </div>
+
+          {/* Lobby Validation Error Alert */}
+          {lobbyError && (
+            <div
+              className="animate-fade-in"
+              style={{
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#ef4444',
+                borderRadius: 'var(--radius-md)',
+                padding: '10px 14px',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                margin: '12px 0 6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span>⚠️</span>
+              <span>{lobbyError}</span>
+            </div>
+          )}
 
           {/* Mode Policy: Locked for Formal Teacher Exams vs Configurable for Practice Previews */}
           {isTeacherLocked ? (
@@ -1778,6 +2249,27 @@ export function StudentQuizRunner({
                   />
                   <span><strong>🔒 Anti-Cheating Exam Browser Mode</strong> (Fullscreen lock & tab-switch alerts)</span>
                 </label>
+
+                {securityEnabled && (
+                  <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label className="student-mode-toggle" style={{ fontSize: '0.8125rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={enableWatermark}
+                        onChange={(e) => setEnableWatermark(e.target.checked)}
+                      />
+                      <span>💧 Candidate Dynamic Watermark</span>
+                    </label>
+                    <label className="student-mode-toggle" style={{ fontSize: '0.8125rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={enableMultiMonitorDetection}
+                        onChange={(e) => setEnableMultiMonitorDetection(e.target.checked)}
+                      />
+                      <span>🖥️ Multi-Monitor Detection Shield</span>
+                    </label>
+                  </div>
+                )}
               </div>
 
               {/* Quick Switch to Quizizz Game Mode Banner */}
@@ -2592,6 +3084,18 @@ export function StudentQuizRunner({
       ref={containerRef}
       onContextMenu={(e) => securityEnabled && e.preventDefault()}
     >
+      {/* Dynamic Per-Student Candidate Watermark */}
+      {securityEnabled && enableWatermark && (
+        <CandidateWatermark
+          candidateName={candidateName}
+          candidateNumber={candidateNumber}
+          candidateClass={candidateClass}
+          quizCode={resolvedQuizCode}
+          sessionHash={sessionHash}
+          variant="page"
+        />
+      )}
+
       {/* Top Header Bar */}
       <header className="sq-runner-header">
         <div className="sq-runner-title-group">
@@ -2657,9 +3161,9 @@ export function StudentQuizRunner({
                 type="button"
                 className="sq-btn"
                 style={{
-                  background: 'rgba(139, 92, 246, 0.15)',
+                  background: 'rgba(147, 51, 234, 0.15)',
                   color: '#c084fc',
-                  border: '1px solid rgba(139, 92, 246, 0.35)',
+                  border: '1px solid rgba(147, 51, 234, 0.35)',
                   borderRadius: '8px',
                   fontSize: '0.8125rem',
                   fontWeight: 700,
@@ -2670,7 +3174,7 @@ export function StudentQuizRunner({
                   cursor: 'pointer',
                 }}
                 onClick={() => setShowCalculator(true)}
-                title="Open On-Screen Scientific Calculator"
+                title="Open Scientific Calculator"
               >
                 <span>🧮</span>
                 <span>Calculator</span>
@@ -2728,6 +3232,52 @@ export function StudentQuizRunner({
           </button>
         </div>
       </header>
+
+      {/* Live Teacher Announcement Banner */}
+      {teacherAnnouncement && (
+        <div
+          className="sq-announcement-banner animate-fade-in"
+          style={{
+            background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+            color: '#ffffff',
+            padding: '12px 20px',
+            fontWeight: 700,
+            fontSize: '0.9375rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)',
+            zIndex: 50,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '1.25rem' }}>📢</span>
+            <div>
+              <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', opacity: 0.9 }}>
+                Invigilator Announcement
+              </span>
+              <div style={{ fontSize: '0.9375rem', fontWeight: 600 }}>{teacherAnnouncement}</div>
+            </div>
+          </div>
+          <button
+            type="button"
+            style={{
+              background: 'rgba(255, 255, 255, 0.2)',
+              border: 'none',
+              color: '#ffffff',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '0.8125rem',
+              fontWeight: 700,
+            }}
+            onClick={() => setTeacherAnnouncement(null)}
+          >
+            Dismiss ✕
+          </button>
+        </div>
+      )}
 
       {/* Time Remaining Warning Banner */}
       {timeWarning && (
@@ -2815,7 +3365,14 @@ export function StudentQuizRunner({
           <div className="sq-question-card animate-scale-up" ref={questionCardRef} key={currentIndex}>
             <div className="sq-q-top-row">
                 <div className="sq-q-badge-wrap">
-                  <span className="sq-q-number-badge">Question {currentIndex + 1} of {questions.length}</span>
+                  <span className="sq-q-number-badge">
+                    Question {currentIndex + 1} of {questions.length}
+                    {currentQuestion?.question_number && String(currentQuestion.question_number).trim() !== String(currentIndex + 1) && (
+                      <span style={{ opacity: 0.75, marginLeft: '6px', fontWeight: 500 }}>
+                        (Q{currentQuestion.question_number})
+                      </span>
+                    )}
+                  </span>
                   {currentQuestion?.topic && (
                     <span className="sq-q-topic-badge">{currentQuestion.topic}</span>
                   )}
@@ -2915,7 +3472,7 @@ export function StudentQuizRunner({
 
             {/* Diagram Image if available */}
             {currentQuestion?.diagram_url && (
-              <div className="sq-q-diagram-wrap">
+              <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
                 <img
                   src={currentQuestion.diagram_url}
                   alt={`Diagram for Question ${currentIndex + 1}`}
@@ -2923,6 +3480,16 @@ export function StudentQuizRunner({
                   onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
                   title="Click to zoom diagram"
                 />
+                {securityEnabled && enableWatermark && (
+                  <CandidateWatermark
+                    candidateName={candidateName}
+                    candidateNumber={candidateNumber}
+                    candidateClass={candidateClass}
+                    quizCode={resolvedQuizCode}
+                    sessionHash={sessionHash}
+                    variant="diagram"
+                  />
+                )}
               </div>
             )}
 
@@ -3025,7 +3592,7 @@ export function StudentQuizRunner({
 
                       {/* Sub-Question Diagram (if specifically attached to this sub-part) */}
                       {sub.diagram_url && (
-                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px' }}>
+                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
                           <img
                             src={sub.diagram_url}
                             alt={`Diagram for ${sub.sub_id}`}
@@ -3034,6 +3601,16 @@ export function StudentQuizRunner({
                             onClick={() => setZoomedImage(sub.diagram_url || null)}
                             title="Click to zoom diagram"
                           />
+                          {securityEnabled && enableWatermark && (
+                            <CandidateWatermark
+                              candidateName={candidateName}
+                              candidateNumber={candidateNumber}
+                              candidateClass={candidateClass}
+                              quizCode={resolvedQuizCode}
+                              sessionHash={sessionHash}
+                              variant="diagram"
+                            />
+                          )}
                         </div>
                       )}
 
@@ -3550,9 +4127,23 @@ export function StudentQuizRunner({
       {/* Zoom Modal */}
       {zoomedImage && (
         <div className="sq-zoom-modal-backdrop" {...zoomModalDismiss}>
-          <div className="sq-zoom-modal-content" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="sq-zoom-modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{ position: 'relative', overflow: 'hidden' }}
+          >
             <img src={zoomedImage} alt="Zoomed diagram" className="sq-zoomed-img" />
-            <button className="sq-zoom-close-btn" onClick={() => setZoomedImage(null)}>✕ Close</button>
+            {securityEnabled && enableWatermark && (
+              <CandidateWatermark
+                candidateName={candidateName}
+                candidateNumber={candidateNumber}
+                candidateClass={candidateClass}
+                quizCode={resolvedQuizCode}
+                sessionHash={sessionHash}
+                variant="modal"
+              />
+            )}
+            <button className="sq-zoom-close-btn" onClick={() => setZoomedImage(null)} style={{ zIndex: 30 }}>✕ Close</button>
           </div>
         </div>
       )}

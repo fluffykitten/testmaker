@@ -68,18 +68,19 @@ export function extractStudentMcqLetter(
   if (!studentInput) return null;
   const trimmed = studentInput.trim();
 
-  // 1. Direct single letter: "A", "b", "(C)", "[d]", "D."
-  const singleMatch = trimmed.match(/^[[(]?\s*([A-Da-d])\s*[\]).:]?$/);
+  // 1. Direct single letter: "A", "b", "(C)", "[d]", "E.", "e"
+  const singleMatch = trimmed.match(/^[[(]?\s*([A-Za-z])\s*[\]).:]?$/);
   if (singleMatch) return singleMatch[1].toUpperCase();
 
-  // 2. "Option D", "Choice D", "D - Limewater", "D: Limewater"
-  const optionMatch = trimmed.match(/^(?:Option|Choice)?\s*[:\-]?\s*([A-Da-d])\b/i);
+  // 2. "Option D", "Choice D", "Option E", "D - Limewater", "E: ..."
+  const optionMatch = trimmed.match(/^(?:Option|Choice)?\s*[:\-]?\s*([A-Za-z])\b/i);
   if (optionMatch) return optionMatch[1].toUpperCase();
 
-  // 3. Numerical index (e.g. 1 -> A, 2 -> B, 3 -> C, 4 -> D)
+  // 3. Numerical index (e.g. 1 -> A, 2 -> B, 3 -> C, 4 -> D, 5 -> E)
   const num = Number(trimmed);
+  const maxOptNum = options && Array.isArray(options) && options.length > 0 ? options.length : 5;
   if (!isNaN(num) && Number.isInteger(num)) {
-    if (num >= 1 && num <= 4) {
+    if (num >= 1 && num <= maxOptNum) {
       return String.fromCharCode(64 + num);
     }
   }
@@ -90,7 +91,7 @@ export function extractStudentMcqLetter(
     for (let oIdx = 0; oIdx < options.length; oIdx++) {
       const opt = options[oIdx];
       const optStr = typeof opt === 'string' ? opt : (opt?.text || '');
-      const cleanOptText = optStr.replace(/^[[(]?([A-Da-d])[\]).:\s-]+/, '').trim().toLowerCase();
+      const cleanOptText = optStr.replace(/^[[(]?([A-Za-z])[\]).:\s-]+/, '').trim().toLowerCase();
       if (cleanOptText && (lowerInput === cleanOptText || cleanOptText.includes(lowerInput) || lowerInput.includes(cleanOptText))) {
         return String.fromCharCode(65 + oIdx);
       }
@@ -133,7 +134,7 @@ export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): stri
   if (isMcq) {
     const sIdx = sq && q.sub_questions ? q.sub_questions.indexOf(sq) : undefined;
     const correctIdx = resolveMcqCorrectOptionIndex(q, sIdx !== undefined && sIdx >= 0 ? sIdx : undefined);
-    return String.fromCharCode(65 + correctIdx);
+    return correctIdx >= 0 ? String.fromCharCode(65 + correctIdx) : 'See mark scheme';
   }
 
   if (sq && sq.mark_scheme) {
@@ -613,7 +614,7 @@ export async function gradeOfflineSubmissions(
           col.question?.options || col.subQuestion?.options
         );
         const refChoice =
-          col.referenceAnswer.toUpperCase().replace(/[^A-D]/g, '').charAt(0) ||
+          col.referenceAnswer.toUpperCase().replace(/[^A-Za-z]/g, '').charAt(0) ||
           col.referenceAnswer.toUpperCase();
 
         const isDirectAcceptable = col.acceptableAnswers.some(
@@ -690,6 +691,12 @@ export async function gradeOfflineSubmissions(
 
     const percentage = totalTestMarks > 0 ? (earnedTotal / totalTestMarks) * 100 : 0;
 
+    const rawAnswersMap: Record<string, string | number> = {};
+    columns.forEach((c, colIdx) => {
+      const val = row.answers[c.id];
+      if (val !== undefined) rawAnswersMap[colIdx] = val;
+    });
+
     submissions.push({
       id: `sub_offline_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
       quizId: '', // assigned when published
@@ -706,8 +713,10 @@ export async function gradeOfflineSubmissions(
       percentage: Math.round(percentage * 10) / 10,
       violationsCount: 0,
       proctoringLogs: [],
+      rawAnswers: rawAnswersMap,
       questionResults,
       topicBreakdown,
+      status: 'graded',
       teacherNotes: 'Offline paper exam auto-graded via Excel import',
     });
   }

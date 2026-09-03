@@ -3,7 +3,7 @@ import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
 import type { PublishedQuiz } from './quizManagerService';
-import { normalizeQuestionRecord } from './questionBankService';
+import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 
 export interface StudentQuizData {
   testId: string;
@@ -14,7 +14,10 @@ export interface StudentQuizData {
   totalMarks: number;
   durationMinutes?: number;
   isExamMode?: boolean;
+  isActive?: boolean;
   securityEnabled?: boolean;
+  enableWatermark?: boolean;
+  enableMultiMonitorDetection?: boolean;
   requireTeacherUnlock?: boolean;
   teacherPin?: string;
   maxViolations?: number;
@@ -49,12 +52,22 @@ export function generateQuizCode(test: { id: string; header_config?: ExamHeaderC
   return `${prefix}-${suffix}`;
 }
 
+// ─── Fast In-Memory Cache for Resolved Quizzes & Question Objects ───────────────
+const resolvedQuizMemoryCache = new Map<string, { data: StudentQuizData; timestamp: number }>();
+const questionObjectCache = new Map<string, Question>();
+const QUIZ_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes TTL
+
 /**
- * Resolves a quiz by Quiz Code or Test UUID from Supabase, Published Quizzes, or LocalStorage
+ * Resolves a quiz by Quiz Code or Test UUID from Supabase, Published Quizzes, or LocalStorage (cached)
  */
 export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizData | null> {
   const cleanInput = codeOrId.trim().toUpperCase();
   if (!cleanInput) return null;
+
+  const cached = resolvedQuizMemoryCache.get(cleanInput);
+  if (cached && Date.now() - cached.timestamp < QUIZ_CACHE_TTL_MS) {
+    return cached.data;
+  }
 
   // 1. Check Configured Published Quizzes in LocalStorage first
   let published: PublishedQuiz | undefined;
@@ -96,8 +109,34 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 
   if (published) {
-    const questions = await fetchQuestionsByIds(published.questionIds || []);
-    return {
+    let questions = await fetchQuestionsByIds(published.questionIds || []);
+
+    // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
+    // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
+    // Safeguard: Check that question numbers are unique sequential integers (not a multi-paper custom exam with duplicate Q1, Q2, etc.)
+    const parsedNums = questions.map((q) => parseInt(String(q.question_number), 10)).filter((n) => !isNaN(n));
+    const isSinglePaperSequential =
+      parsedNums.length === questions.length &&
+      new Set(parsedNums).size === questions.length &&
+      Math.min(...parsedNums) === 1 &&
+      Math.max(...parsedNums) === questions.length;
+
+    const isAlphabeticallyMuddled =
+      isSinglePaperSequential &&
+      questions.length >= 10 &&
+      questions.some((q, idx) => {
+        if (idx > 0) {
+          const prevNum = parseInt(String(questions[idx - 1].question_number), 10);
+          const currNum = parseInt(String(q.question_number), 10);
+          return prevNum === 1 && currNum === 10;
+        }
+        return false;
+      });
+
+    if (isAlphabeticallyMuddled) {
+      questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
+    }
+    const result: StudentQuizData = {
       testId: published.testId,
       quizCode: published.quizCode,
       title: published.title,
@@ -106,7 +145,10 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       totalMarks: published.totalMarks,
       durationMinutes: published.durationMinutes,
       isExamMode: published.isExamMode,
+      isActive: published.isActive !== undefined ? published.isActive : true,
       securityEnabled: published.securityEnabled,
+      enableWatermark: published.enableWatermark ?? false,
+      enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
       requireTeacherUnlock: published.requireTeacherUnlock,
       teacherPin: published.teacherPin,
       maxViolations: published.maxViolations,
@@ -121,6 +163,9 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       shuffleQuestions: published.shuffleQuestions,
       shuffleOptions: published.shuffleOptions,
     };
+
+    resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+    return result;
   }
 
   // 3. Check LocalStorage tests fallback
@@ -227,26 +272,32 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
 }
 
 /**
- * Fetches question rows by an array of IDs from Supabase
+ * Fetches question rows by an array of IDs from Supabase (with questionObjectCache)
  */
 export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
   if (!ids || ids.length === 0) return [];
-  try {
-    const { data, error } = await supabase
-      .from('questions')
-      .select('*')
-      .in('id', ids);
 
-    if (error || !data) {
-      console.warn('Could not fetch questions from Supabase:', error);
-      return [];
+  // 1. Check which IDs are already cached in memory
+  const missingIds = ids.filter((id) => !questionObjectCache.has(id));
+
+  if (missingIds.length > 0) {
+    try {
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .in('id', missingIds);
+
+      if (!error && data && Array.isArray(data)) {
+        (data as any[]).forEach((raw) => {
+          const norm = normalizeQuestionRecord(raw);
+          questionObjectCache.set(norm.id, norm);
+        });
+      }
+    } catch (err) {
+      console.warn('fetchQuestionsByIds error:', err);
     }
-
-    // Preserve the original order of question IDs and normalize schema attributes
-    const qMap = new Map(((data as any[]) || []).map((q) => [q.id, normalizeQuestionRecord(q)]));
-    return ids.map((id) => qMap.get(id)).filter(Boolean) as Question[];
-  } catch (err) {
-    console.error('fetchQuestionsByIds error:', err);
-    return [];
   }
+
+  // Return questions in the exact requested order
+  return ids.map((id) => questionObjectCache.get(id)).filter(Boolean) as Question[];
 }

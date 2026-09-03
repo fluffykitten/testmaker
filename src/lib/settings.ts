@@ -1,5 +1,4 @@
-// ─── Application Settings & Appearance Manager ──────────────────────────────
-// Manages themes, accent colors, font scale, and layout density with localStorage persistence.
+import { supabase } from './supabase';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type AccentColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'sky';
@@ -12,9 +11,24 @@ export interface AppSettings {
   fontSize: FontSize;
   density: Density;
   defaultAiGuidanceEnabled: boolean;
+  defaultEnableWatermark?: boolean;      // Per-candidate ghost watermark (default: disabled)
+  defaultEnableMultiMonitor?: boolean;    // Multi-monitor detection shield (default: disabled)
+  classes: string[]; // Configured list of school classes / cohorts for formal exams
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
+
+export const DEFAULT_CLASSES: string[] = [
+  '10-A',
+  '10-B',
+  '10-C',
+  '11-A',
+  '11-B',
+  '11-C',
+  '12-A',
+  '12-B',
+  '12-C',
+];
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
@@ -22,6 +36,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'normal',
   density: 'comfortable',
   defaultAiGuidanceEnabled: true,
+  defaultEnableWatermark: false,
+  defaultEnableMultiMonitor: false,
+  classes: DEFAULT_CLASSES,
 };
 
 // Accent palette color mappings for --color-primary tokens
@@ -132,4 +149,89 @@ export function saveSettings(settings: AppSettings): void {
     console.warn('Failed to save settings:', e);
   }
   applySettings(settings);
+}
+
+/**
+ * Retrieves configured school classes from settings
+ */
+export function getSchoolClasses(): string[] {
+  const settings = getSavedSettings();
+  if (Array.isArray(settings.classes) && settings.classes.length > 0) {
+    return settings.classes;
+  }
+  return DEFAULT_CLASSES;
+}
+
+/**
+ * Saves configured school classes to local settings and syncs to Supabase cloud app_config
+ */
+export function saveSchoolClasses(classes: string[]): void {
+  const cleanClasses = Array.from(
+    new Set(
+      classes
+        .map((c) => String(c || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    classes: cleanClasses.length > 0 ? cleanClasses : DEFAULT_CLASSES,
+  };
+  saveSettings(updated);
+  // Async cloud sync in background
+  syncSchoolClassesToCloud(updated.classes).catch(() => {});
+}
+
+/**
+ * Syncs school classes to Supabase app_config store
+ */
+export async function syncSchoolClassesToCloud(classes: string[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'school_classes',
+      value: JSON.stringify(classes),
+    });
+    if (error) {
+      console.warn('School classes cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for school classes:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads school classes from local storage, fetches from Supabase cloud app_config if available,
+ * and returns the authoritative class list.
+ */
+export async function loadAndSyncSchoolClasses(): Promise<string[]> {
+  const localClasses = getSchoolClasses();
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'school_classes')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const cleanCloud = parsed.map(String).filter(Boolean);
+        const current = getSavedSettings();
+        if (JSON.stringify(current.classes) !== JSON.stringify(cleanCloud)) {
+          const updated = { ...current, classes: cleanCloud };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        }
+        return cleanCloud;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch school classes from cloud, using local cache:', err);
+  }
+
+  return localClasses;
 }

@@ -205,6 +205,16 @@ export function QuestionEditorModal({
         sub_id: String(sub?.sub_id || ''),
         question_text: typeof sub?.question_text === 'string' ? sub.question_text : (sub?.question_text ? JSON.stringify(sub.question_text) : ''),
         marks: Number(sub?.marks) || 1,
+        has_diagram: Boolean(sub?.diagram_url || sub?.has_diagram),
+        diagram_url: sub?.diagram_url || null,
+        diagram_source: sub?.diagram_source || null,
+        resource_ref: sub?.resource_ref || null,
+        page_number: sub?.page_number || null,
+        insert_page_number: sub?.insert_page_number || null,
+        bounding_box: sub?.bounding_box || null,
+        audio_url: sub?.audio_url || null,
+        audio_metadata: sub?.audio_metadata || null,
+        options: Array.isArray(sub?.options) ? sub.options : null,
         mark_scheme: typeof sub?.mark_scheme === 'string'
           ? sub.mark_scheme
           : (sub?.mark_scheme?.marking_points

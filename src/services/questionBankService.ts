@@ -37,10 +37,33 @@ export interface QuestionQueryResult {
   totalPages: number;
 }
 
+// ─── High-Performance In-Memory Query & Metadata Caches ────────────────────────
+let syllabusesCache: { data: Syllabus[]; timestamp: number } | null = null;
+const topicsCache = new Map<string, { data: { topic: string; subTopics: string[] }[]; timestamp: number }>();
+const paperTypesCache = new Map<string, { data: PaperTypesSummary; timestamp: number }>();
+const questionsQueryCache = new Map<string, { data: QuestionQueryResult; timestamp: number }>();
+
+const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
+
+export function clearQuestionBankCache(): void {
+  syllabusesCache = null;
+  topicsCache.clear();
+  paperTypesCache.clear();
+  questionsQueryCache.clear();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('questions_updated', clearQuestionBankCache);
+}
+
 /**
- * Fetches all available syllabuses/subjects
+ * Fetches all available syllabuses/subjects (cached in memory)
  */
 export async function fetchSyllabuses(): Promise<Syllabus[]> {
+  if (syllabusesCache && Date.now() - syllabusesCache.timestamp < CACHE_TTL_MS) {
+    return syllabusesCache.data;
+  }
+
   const { data, error } = await supabase
     .from('syllabuses')
     .select('*')
@@ -48,10 +71,12 @@ export async function fetchSyllabuses(): Promise<Syllabus[]> {
 
   if (error) {
     console.error('Failed to fetch syllabuses:', error);
-    return [];
+    return syllabusesCache ? syllabusesCache.data : [];
   }
 
-  return data as Syllabus[];
+  const result = data as Syllabus[];
+  syllabusesCache = { data: result, timestamp: Date.now() };
+  return result;
 }
 
 /**
@@ -109,9 +134,15 @@ export function inferTopicFromContent(text?: string, subTopic?: string): string 
 }
 
 /**
- * Fetches distinct topics for a given syllabus (or all syllabuses) with intelligent inference
+ * Fetches distinct topics for a given syllabus (or all syllabuses) with intelligent inference (cached)
  */
 export async function fetchTopics(syllabusId?: string): Promise<{ topic: string; subTopics: string[] }[]> {
+  const cacheKey = syllabusId || '__all__';
+  const cached = topicsCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   let query = supabase
     .from('questions')
     .select('topic, sub_topic, question_text, syllabus_id');
@@ -132,7 +163,7 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
 
   if (error || !data) {
     console.error('Failed to fetch topics:', error);
-    return [];
+    return cached ? cached.data : [];
   }
 
   // Aggregate topics and distinct sub-topics with smart inference
@@ -155,18 +186,27 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
     }
   });
 
-  return Array.from(topicMap.entries())
+  const result = Array.from(topicMap.entries())
     .map(([topic, subTopicsSet]) => ({
       topic,
       subTopics: Array.from(subTopicsSet).sort(),
     }))
     .sort((a, b) => a.topic.localeCompare(b.topic));
+
+  topicsCache.set(cacheKey, { data: result, timestamp: Date.now() });
+  return result;
 }
 
 /**
- * Fetches distinct paper types (exam series and paper numbers) from questions in the database
+ * Fetches distinct paper types (exam series and paper numbers) from questions in the database (cached)
  */
 export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSummary> {
+  const cacheKey = syllabusId || '__all__';
+  const cached = paperTypesCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   let query = supabase
     .from('questions')
     .select('series, paper_number, syllabus_id');
@@ -189,7 +229,7 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
 
   if (error || !data) {
     console.error('Failed to fetch paper types:', error);
-    return { seriesOptions: [], paperNumberOptions: [] };
+    return cached ? cached.data : { seriesOptions: [], paperNumberOptions: [] };
   }
 
   const seriesMap = new Map<string, number>();
@@ -226,7 +266,9 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
     }))
     .sort((a, b) => a.paperNumber - b.paperNumber);
 
-  return { seriesOptions, paperNumberOptions };
+  const result = { seriesOptions, paperNumberOptions };
+  paperTypesCache.set(cacheKey, { data: result, timestamp: Date.now() });
+  return result;
 }
 
 export interface SubjectTopicSummary {
@@ -420,6 +462,12 @@ export function sortQuestionsList(
 export async function fetchQuestions(
   params: QuestionFilterParams = {}
 ): Promise<QuestionQueryResult> {
+  const cacheKey = JSON.stringify(params);
+  const cached = questionsQueryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   const {
     searchQuery,
     syllabusId,
@@ -630,12 +678,21 @@ export async function fetchQuestions(
   const to = from + pageSize;
   const pageQuestions = sortedQuestions.slice(from, to);
 
-  return {
+  const queryResult: QuestionQueryResult = {
     questions: pageQuestions,
     totalCount,
     page: safePage,
     totalPages,
   };
+
+  // Cache query result in memory (limit cache to 40 queries)
+  if (questionsQueryCache.size > 40) {
+    const oldest = questionsQueryCache.keys().next().value;
+    if (oldest) questionsQueryCache.delete(oldest);
+  }
+  questionsQueryCache.set(cacheKey, { data: queryResult, timestamp: Date.now() });
+
+  return queryResult;
 }
 
 /**
@@ -660,6 +717,7 @@ export async function fetchQuestionById(id: string): Promise<Question | null> {
  * Delete a single question by UUID
  */
 export async function deleteQuestion(id: string): Promise<boolean> {
+  clearQuestionBankCache();
   const { error } = await supabase
     .from('questions')
     .delete()
@@ -681,6 +739,7 @@ export async function deleteQuestions(ids: string[]): Promise<{ success: boolean
     return { success: true, deletedCount: 0 };
   }
 
+  clearQuestionBankCache();
   const { error } = await supabase
     .from('questions')
     .delete()
@@ -717,6 +776,7 @@ export async function updateQuestionMarkScheme(
     return false;
   }
 
+  clearQuestionBankCache();
   return true;
 }
 
@@ -920,5 +980,6 @@ export async function createQuestion(
     throw new Error(error?.message || 'Failed to create question record in database.');
   }
 
+  clearQuestionBankCache();
   return normalizeQuestionRecord(data);
 }

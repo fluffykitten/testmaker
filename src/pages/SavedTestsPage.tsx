@@ -3,12 +3,13 @@ import {
   fetchCustomTestsWithMetadata,
   fetchCustomTestWithQuestions,
   deleteCustomTest,
+  getLocalTests,
   type ExamHeaderConfig,
   type CustomTestWithDetails,
 } from '../services/testBuilderService';
 import { ExportModal } from '../components/ExportModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
-import type { Question } from '../types/database';
+import type { Question, CustomTest } from '../types/database';
 import './SavedTestsPage.css';
 
 interface SavedTestsPageProps {
@@ -24,8 +25,21 @@ export function SavedTestsPage({
   onNavigateToBank,
   onNavigateToQuizzes,
 }: SavedTestsPageProps) {
-  const [tests, setTests] = useState<CustomTestWithDetails[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [tests, setTests] = useState<CustomTestWithDetails[]>(() => {
+    try {
+      const local = getLocalTests();
+      return local.map((t: CustomTest) => ({
+        ...t,
+        topics: [],
+        subjects: t.header_config?.subject ? [t.header_config.subject] : ['General'],
+        primaryTopic: 'General',
+        primarySubject: t.header_config?.subject || 'General',
+      }));
+    } catch {
+      return [];
+    }
+  });
+  const [isLoading, setIsLoading] = useState(() => tests.length === 0);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [loadingTestId, setLoadingTestId] = useState<string | null>(null);
@@ -49,17 +63,16 @@ export function SavedTestsPage({
   } | null>(null);
 
   const loadTests = useCallback(async () => {
-    setIsLoading(true);
     setError(null);
     try {
       const data = await fetchCustomTestsWithMetadata();
       setTests(data);
     } catch (err: any) {
-      setError(err?.message || 'Failed to load saved tests');
+      if (tests.length === 0) setError(err?.message || 'Failed to load saved tests');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [tests.length]);
 
   useEffect(() => {
     loadTests();

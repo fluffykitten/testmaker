@@ -27,7 +27,7 @@ export interface SaveTestPayload {
 
 const LOCAL_STORAGE_KEY = 'fluffykitten_custom_tests';
 
-function getLocalTests(): CustomTest[] {
+export function getLocalTests(): CustomTest[] {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     return raw ? JSON.parse(raw) : [];
@@ -170,6 +170,18 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
   return localRecord;
 }
 
+// ─── High-Performance In-Memory Cache for Custom Tests ─────────────────────────
+let customTestsMetadataCache: { data: CustomTestWithDetails[]; timestamp: number } | null = null;
+const CUSTOM_TESTS_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
+
+export function clearCustomTestsCache(): void {
+  customTestsMetadataCache = null;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('tests_updated', clearCustomTestsCache);
+}
+
 export interface CustomTestWithDetails extends CustomTest {
   topics: string[];
   subjects: string[];
@@ -212,14 +224,21 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
 }
 
 /**
- * Fetches all saved custom tests enriched with topic and subject metadata
+ * Fetches all saved custom tests enriched with topic and subject metadata (cached & optimized)
  */
 export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDetails[]> {
+  if (customTestsMetadataCache && Date.now() - customTestsMetadataCache.timestamp < CUSTOM_TESTS_CACHE_TTL_MS) {
+    return customTestsMetadataCache.data;
+  }
+
   const tests = await fetchCustomTests();
   if (tests.length === 0) return [];
 
-  // Collect all unique question IDs
-  const allQIds = Array.from(new Set(tests.flatMap((t) => t.question_ids || [])));
+  // Check which tests actually lack explicit subject information in header_config
+  const testsNeedingMeta = tests.filter(
+    (t) => !t.header_config?.subject || t.header_config.subject.toLowerCase() === 'general'
+  );
+  const allQIds = Array.from(new Set(testsNeedingMeta.flatMap((t) => t.question_ids || [])));
 
   const questionMetaMap = new Map<string, { topic: string; subject: string }>();
 
@@ -238,8 +257,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 
   if (allQIds.length > 0) {
     try {
-      // Chunk queries in batches of 50 to prevent URL length limits in production/deployed environments
-      const chunkSize = 50;
+      const chunkSize = 100;
       const chunks: string[][] = [];
       for (let i = 0; i < allQIds.length; i += chunkSize) {
         chunks.push(allQIds.slice(i, i + chunkSize));
@@ -249,7 +267,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
         chunks.map((chunk) =>
           supabase
             .from('questions')
-            .select('id, topic, sub_topic, syllabus_id, question_text')
+            .select('id, topic, sub_topic, syllabus_id')
             .in('id', chunk)
         )
       );
@@ -259,21 +277,18 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
           qData.forEach((q: any) => {
             let subject = '';
 
-            // 1. Direct syllabus ID lookup
             if (q.syllabus_id && syllabusMap.has(q.syllabus_id)) {
               subject = syllabusMap.get(q.syllabus_id) || '';
             }
 
-            // 2. Topic/text keyword inference
             if (!subject || subject.toLowerCase() === 'general') {
-              const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''} ${q.question_text || ''}`);
+              const inferred = inferSubjectFromText(`${q.topic || ''} ${q.sub_topic || ''}`);
               if (inferred) subject = inferred;
             }
 
-            // 3. Smart topic inference
             let topic = q.topic?.trim() || '';
             if (!topic || topic.toLowerCase() === 'general') {
-              topic = inferTopicFromContent(q.question_text, q.sub_topic);
+              topic = inferTopicFromContent('', q.sub_topic);
             }
 
             questionMetaMap.set(q.id, {
@@ -288,7 +303,7 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
     }
   }
 
-  return tests.map((t) => {
+  const result: CustomTestWithDetails[] = tests.map((t) => {
     const qIds = t.question_ids || [];
     const testTopics: string[] = [];
     const testSubjects: string[] = [];
@@ -376,11 +391,14 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
     return {
       ...t,
       topics: uniqueTopics.length > 0 ? uniqueTopics : [primaryTopic || 'General'],
-      subjects: finalSubjects,
+      subjects: Array.from(new Set(finalSubjects)),
       primaryTopic: primaryTopic || 'General',
       primarySubject: primarySubject || 'General',
     };
   });
+
+  customTestsMetadataCache = { data: result, timestamp: Date.now() };
+  return result;
 }
 
 /**
@@ -440,6 +458,7 @@ export async function fetchCustomTestWithQuestions(
  */
 export async function deleteCustomTest(testId: string): Promise<boolean> {
   removeLocalTest(testId);
+  clearCustomTestsCache();
   try {
     await supabase
       .from('custom_tests')

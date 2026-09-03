@@ -21,6 +21,7 @@ import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/qu
 import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
+import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
@@ -38,9 +39,21 @@ export function QuizManagerPage({
   onNavigateToSaved,
   onNavigateToBank: _onNavigateToBank,
 }: QuizManagerPageProps) {
-  const [quizzes, setQuizzes] = useState<PublishedQuiz[]>([]);
+  const [quizzes, setQuizzes] = useState<PublishedQuiz[]>(() => {
+    try {
+      const pubList = getPublishedQuizzes();
+      return pubList.map((q) => {
+        if (!q.subject || q.subject.toLowerCase() === 'assessment') {
+          return { ...q, subject: 'Chemistry' };
+        }
+        return q;
+      });
+    } catch {
+      return [];
+    }
+  });
   const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => quizzes.length === 0);
   const [, setSubmissionsVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
@@ -56,6 +69,7 @@ export function QuizManagerPage({
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
+  const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
@@ -63,7 +77,7 @@ export function QuizManagerPage({
   const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
   const configModalDismiss = useBackdropDismiss(() => setIsConfigModalOpen(false));
 
-  // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
+  // ─── 1. Load Data on Mount (Cache-First + Parallelized Sync) ────────────────
   useEffect(() => {
     loadData();
 
@@ -77,7 +91,6 @@ export function QuizManagerPage({
   }, []);
 
   async function loadData() {
-    setLoading(true);
     const sanitize = (list: PublishedQuiz[]) =>
       list.map((q) => {
         if (!q.subject || q.subject.toLowerCase() === 'assessment') {
@@ -87,23 +100,35 @@ export function QuizManagerPage({
       });
 
     try {
-      // 1. Immediately show cached local quizzes (instant render, no blank flash)
+      // 1. Immediately show cached local quizzes if not already populated
       const pubList = getPublishedQuizzes();
       if (pubList.length > 0) {
         setQuizzes(sanitize(pubList));
+        setLoading(false);
       }
 
-      // 2. Fetch custom tests
-      const tests = await fetchCustomTestsWithMetadata();
-      setSavedTests(tests);
+      // 2 & 3. Parallelize fetching saved tests and syncing quizzes from Supabase cloud
+      const [testsRes, syncedRes] = await Promise.allSettled([
+        fetchCustomTestsWithMetadata(),
+        loadAndSyncPublishedQuizzes(),
+      ]);
 
-      // 3. Asynchronously load and sync quizzes from Supabase cloud
-      const synced = await loadAndSyncPublishedQuizzes();
-      setQuizzes(sanitize(synced));
+      if (testsRes.status === 'fulfilled') {
+        setSavedTests(testsRes.value);
+      }
+      if (syncedRes.status === 'fulfilled') {
+        setQuizzes(sanitize(syncedRes.value));
+      }
+      setLoading(false);
 
-      // 4. Asynchronously load and sync all student submissions from Supabase cloud
-      await loadAndSyncAllSubmissions();
-      setSubmissionsVersion((v) => v + 1);
+      // 4. Non-blocking background sync for student submissions
+      loadAndSyncAllSubmissions()
+        .then(() => {
+          setSubmissionsVersion((v) => v + 1);
+        })
+        .catch((err) => {
+          console.warn('Submissions background sync notice:', err);
+        });
     } catch (err) {
       console.error('Error loading quiz manager data:', err);
     } finally {
@@ -433,6 +458,12 @@ export function QuizManagerPage({
                   </button>
                 </span>
               )}
+              {quiz.securityEnabled && quiz.enableWatermark && (
+                <span className="qm-pill" title="Dynamic Candidate Watermarking Enabled">💧 Watermark</span>
+              )}
+              {quiz.securityEnabled && quiz.enableMultiMonitorDetection && (
+                <span className="qm-pill" title="Multi-Monitor Detection Active">🖥️ Multi-Screen Shield</span>
+              )}
               {quiz.showInstantSolutions && (
                 <span className="qm-pill">💡 Instant Solutions</span>
               )}
@@ -476,22 +507,19 @@ export function QuizManagerPage({
             <div className="qm-dual-launch-row">
               <button
                 type="button"
-                className="qm-btn qm-btn-testrun"
-                onClick={() => handleRunQuizSimulation(quiz)}
-                title="Test-run this quiz in the browser as a formal timed exam"
+                className="qm-btn qm-btn-testrun qm-btn-invigilate"
+                onClick={() => setSelectedQuizForProctor(quiz)}
+                title="Open live invigilation & proctoring cockpit to monitor candidates in real time"
               >
-                ▶️ Test-Run Interactive Exam
+                🛡️ Live Proctor ({quiz.quizCode})
               </button>
               <button
                 type="button"
                 className="qm-btn qm-btn-solo-game"
-                onClick={() => {
-                  handleQuickSetMode(quiz.id, 'game');
-                  handleStartLiveGame({ ...quiz, quizMode: 'game' });
-                }}
-                title="Launch as Quizizz Game mode instead"
+                onClick={() => handleRunQuizSimulation(quiz)}
+                title="Test-run this quiz in the browser as a formal timed exam"
               >
-                🎮 Play as Game
+                ▶️ Test Exam
               </button>
             </div>
           )}
@@ -1159,6 +1187,46 @@ export function QuizManagerPage({
                             </div>
                           )}
                         </div>
+
+                        {/* Candidate Dynamic Watermarking Toggle */}
+                        <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
+                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.enableWatermark ?? false}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  enableWatermark: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>💧 Candidate Dynamic Watermarking (Ghost Overlay)</span>
+                          </label>
+                          <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
+                            Overlays subtle translucent candidate name, ID, class, and session hash on the exam runner and diagrams to deter screen recording and camera photos.
+                          </p>
+                        </div>
+
+                        {/* Multi-Monitor Detection Shield Toggle */}
+                        <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
+                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  enableMultiMonitorDetection: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>🖥️ Multi-Monitor / Extended Display Detection</span>
+                          </label>
+                          <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
+                            Continuously checks for connected secondary monitors or split displays and logs proctoring violation alerts if detected.
+                          </p>
+                        </div>
                       </>
                     )}
                   </div>
@@ -1307,6 +1375,14 @@ export function QuizManagerPage({
             loadData();
             setSelectedQuizForResults(quiz);
           }}
+        />
+      )}
+
+      {/* Live Invigilator Proctoring Cockpit Modal */}
+      {selectedQuizForProctor && (
+        <LiveInvigilatorModal
+          quiz={selectedQuizForProctor}
+          onClose={() => setSelectedQuizForProctor(null)}
         />
       )}
     </div>

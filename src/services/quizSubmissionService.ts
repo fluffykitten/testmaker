@@ -369,6 +369,7 @@ export interface StudentSubmission {
   rawAnswers?: Record<string | number, string | number>;
   status?: SubmissionStatus;     // 'submitted' (pending) | 'grading' | 'graded' | 'published' (released)
   resultPin?: string;            // 3-digit personal PIN for secure result retrieval
+  updatedAt?: string;            // Timestamp of latest grading or teacher adjustment
 }
 
 const SUBMISSIONS_STORAGE_KEY = 'fluffykitten_quiz_submissions';
@@ -730,6 +731,7 @@ export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmissi
         teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
         teacherNotes: row.teacher_notes || '',
         resultPin: row.result_pin || '',
+        updatedAt: row.updated_at || row.submitted_at,
       }));
     }
   } catch (err) {
@@ -763,10 +765,23 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
         mergedMap.set(localS.id, localS);
         hasLocalExclusiveOrNewer = true;
       } else {
-        const localTime = new Date(localS.submittedAt || 0).getTime();
-        const cloudTime = new Date(existing.submittedAt || 0).getTime();
-        if (localTime >= cloudTime) {
+        const localTime = new Date(localS.updatedAt || localS.submittedAt || 0).getTime();
+        const cloudTime = new Date(existing.updatedAt || existing.submittedAt || 0).getTime();
+        
+        // Prioritize graded / published evaluation over provisional un-analyzed 'submitted'
+        const isCloudGraded = existing.status === 'graded' || existing.status === 'published';
+        const isLocalGraded = localS.status === 'graded' || localS.status === 'published';
+
+        if (isCloudGraded && !isLocalGraded) {
+          mergedMap.set(localS.id, existing);
+        } else if (isLocalGraded && !isCloudGraded) {
           mergedMap.set(localS.id, localS);
+          hasLocalExclusiveOrNewer = true;
+        } else if (localTime > cloudTime) {
+          mergedMap.set(localS.id, localS);
+          hasLocalExclusiveOrNewer = true;
+        } else {
+          mergedMap.set(localS.id, existing);
         }
       }
     });
@@ -844,6 +859,7 @@ export async function fetchSubmissionsFromSupabase(
         teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
         teacherNotes: row.teacher_notes || '',
         resultPin: row.result_pin || '',
+        updatedAt: row.updated_at || row.submitted_at,
       }));
 
       // Merge with local storage

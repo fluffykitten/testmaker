@@ -107,7 +107,12 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           sub_topic: generated.sub_topic || question.sub_topic,
           difficulty: generated.difficulty || question.difficulty,
           marks: generated.marks || (targetMode === 'mcq' ? 1 : question.marks),
-          diagram_url: null,
+          diagram_url: generated.diagram_url !== undefined ? generated.diagram_url : (question.diagram_url || null),
+          diagram_source: generated.diagram_source !== undefined ? generated.diagram_source : (question.diagram_source || null),
+          resource_ref: generated.resource_ref !== undefined ? generated.resource_ref : (question.resource_ref || null),
+          insert_page_number: generated.insert_page_number !== undefined ? generated.insert_page_number : (question.insert_page_number || null),
+          audio_url: generated.audio_url !== undefined ? generated.audio_url : (question.audio_url || null),
+          audio_metadata: generated.audio_metadata !== undefined ? generated.audio_metadata : (question.audio_metadata || null),
           options: targetMode === 'structured' ? null : (generated.options || null),
           sub_questions: targetMode === 'mcq' ? [] : (generated.sub_questions || []),
           mark_scheme: generated.mark_scheme || null,
@@ -344,6 +349,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
               {/* Original Diagram Preview */}
               {question.diagram_url && (
                 <div className="variant-diagram-box">
+                  <span className="variant-diagram-badge">🖼️ Original Diagram</span>
                   <img
                     src={question.diagram_url}
                     alt="Original question diagram"
@@ -364,6 +370,16 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                         </div>
                         <span className="variant-sub-marks">[{sub.marks}]</span>
                       </div>
+                      {sub.diagram_url && (
+                        <div className="variant-diagram-box" style={{ marginTop: '6px' }}>
+                          <span className="variant-diagram-badge">🖼️ Diagram for {sub.sub_id}</span>
+                          <img
+                            src={sub.diagram_url}
+                            alt={`Diagram for ${sub.sub_id}`}
+                            className="variant-diagram-img"
+                          />
+                        </div>
+                      )}
                       {sub.mark_scheme && showMarkScheme && (
                         <div className="variant-sub-ms">
                           <span className="variant-ms-tag">MS:</span>
@@ -418,6 +434,20 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                     <ExamMathText content={variant.question_text} />
                   </div>
 
+                  {/* Transferred Diagram Preview */}
+                  {variant.diagram_url && (
+                    <div className="variant-diagram-box variant-diagram-box--transferred">
+                      <span className="variant-diagram-badge variant-diagram-badge--transferred">
+                        ✨ Transferred Diagram
+                      </span>
+                      <img
+                        src={variant.diagram_url}
+                        alt="Transferred diagram for variant question"
+                        className="variant-diagram-img"
+                      />
+                    </div>
+                  )}
+
                   {/* Variant Sub-questions */}
                   {variant.sub_questions && variant.sub_questions.length > 0 && (
                     <div className="variant-sub-list">
@@ -430,6 +460,18 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                             </div>
                             <span className="variant-sub-marks">[{sub.marks}]</span>
                           </div>
+                          {sub.diagram_url && (
+                            <div className="variant-diagram-box variant-diagram-box--transferred" style={{ marginTop: '6px' }}>
+                              <span className="variant-diagram-badge variant-diagram-badge--transferred">
+                                ✨ Transferred Diagram for {sub.sub_id}
+                              </span>
+                              <img
+                                src={sub.diagram_url}
+                                alt={`Diagram for ${sub.sub_id}`}
+                                className="variant-diagram-img"
+                              />
+                            </div>
+                          )}
                           {sub.mark_scheme && showMarkScheme && (
                             <div className="variant-sub-ms">
                               <span className="variant-ms-tag">MS:</span>
