@@ -15,6 +15,8 @@ export interface RestoreInspectionResult {
   syllabusesCount: number;
   questionsCount: number;
   customTestsCount: number;
+  quizSubmissionsCount: number;
+  appConfigCount: number;
   diagramsCount: number;
 }
 
@@ -24,10 +26,13 @@ export interface RestoreOptions {
 
 export interface RestoreResult {
   success: boolean;
+  hasPartialSuccess?: boolean;
   syllabusesRestored: number;
   questionsRestored: number;
   diagramsRestored: number;
   customTestsRestored: number;
+  quizSubmissionsRestored: number;
+  appConfigRestored: number;
   errors: string[];
 }
 
@@ -59,6 +64,8 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
         syllabusesCount: 0,
         questionsCount: 0,
         customTestsCount: 0,
+        quizSubmissionsCount: 0,
+        appConfigCount: 0,
         diagramsCount: 0,
       };
     }
@@ -93,6 +100,24 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
       if (Array.isArray(tList)) customTestsCount = tList.length;
     }
 
+    // Check for quiz_submissions.json
+    const submissionsFile = zip.file('data/quiz_submissions.json');
+    let quizSubmissionsCount = manifest.stats?.quizSubmissionsCount || 0;
+    if (submissionsFile) {
+      const subText = await submissionsFile.async('string');
+      const subList = JSON.parse(subText);
+      if (Array.isArray(subList)) quizSubmissionsCount = subList.length;
+    }
+
+    // Check for app_config.json
+    const appConfigFile = zip.file('data/app_config.json');
+    let appConfigCount = manifest.stats?.appConfigCount || 0;
+    if (appConfigFile) {
+      const cfgText = await appConfigFile.async('string');
+      const cfgList = JSON.parse(cfgText);
+      if (Array.isArray(cfgList)) appConfigCount = cfgList.length;
+    }
+
     // Count diagrams in diagrams/ folder
     const diagramsFolder = zip.folder('diagrams');
     let diagramsCount = 0;
@@ -108,6 +133,8 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
       syllabusesCount,
       questionsCount,
       customTestsCount,
+      quizSubmissionsCount,
+      appConfigCount,
       diagramsCount,
     };
   } catch (err) {
@@ -117,6 +144,8 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
       syllabusesCount: 0,
       questionsCount: 0,
       customTestsCount: 0,
+      quizSubmissionsCount: 0,
+      appConfigCount: 0,
       diagramsCount: 0,
     };
   }
@@ -182,16 +211,33 @@ async function restoreDiagramsToStorage(
 }
 
 /**
- * Rewrites a question's diagram_url using the newly uploaded storage URLs.
+ * Rewrites a question's diagram_url using the newly uploaded storage URLs,
+ * checking manifest.diagramMapping first for collision-safe lookup.
  */
-function rewriteQuestionDiagramUrls(q: Question, diagramUrlMap: Map<string, string>): Question {
-  let updatedUrl = q.diagram_url;
-
-  if (q.diagram_url) {
-    const fileName = extractDiagramFileName(q.diagram_url);
-    if (diagramUrlMap.has(fileName)) {
-      updatedUrl = diagramUrlMap.get(fileName)!;
+function rewriteQuestionDiagramUrls(
+  q: Question,
+  diagramUrlMap: Map<string, string>,
+  diagramMapping?: Record<string, string>
+): Question {
+  function getNewDiagramUrl(origUrl: string): string {
+    // 1. Try manifest mapping
+    if (diagramMapping && diagramMapping[origUrl]) {
+      const mappedFileName = diagramMapping[origUrl];
+      if (diagramUrlMap.has(mappedFileName)) {
+        return diagramUrlMap.get(mappedFileName)!;
+      }
     }
+    // 2. Fallback to filename extraction
+    const fileName = extractDiagramFileName(origUrl);
+    if (diagramUrlMap.has(fileName)) {
+      return diagramUrlMap.get(fileName)!;
+    }
+    return origUrl;
+  }
+
+  let updatedUrl = q.diagram_url;
+  if (q.diagram_url) {
+    updatedUrl = getNewDiagramUrl(q.diagram_url);
   }
 
   // Also rewrite any sub-questions with diagrams
@@ -200,10 +246,7 @@ function rewriteQuestionDiagramUrls(q: Question, diagramUrlMap: Map<string, stri
   if (Array.isArray(subQuestions)) {
     updatedSubs = subQuestions.map((sub: any) => {
       if (sub?.diagram_url) {
-        const subFileName = extractDiagramFileName(sub.diagram_url);
-        if (diagramUrlMap.has(subFileName)) {
-          return { ...sub, diagram_url: diagramUrlMap.get(subFileName) };
-        }
+        return { ...sub, diagram_url: getNewDiagramUrl(sub.diagram_url) };
       }
       return sub;
     });
@@ -221,7 +264,7 @@ function rewriteQuestionDiagramUrls(q: Question, diagramUrlMap: Map<string, stri
  */
 export async function executeRestore(
   fileOrBlob: File | Blob | ArrayBuffer,
-  _options: RestoreOptions = { mode: 'merge' },
+  options: RestoreOptions = { mode: 'merge' },
   onProgress?: RestoreProgressCallback
 ): Promise<RestoreResult> {
   const errors: string[] = [];
@@ -229,6 +272,8 @@ export async function executeRestore(
   let questionsRestored = 0;
   let diagramsRestored = 0;
   let customTestsRestored = 0;
+  let quizSubmissionsRestored = 0;
+  let appConfigRestored = 0;
 
   try {
     const JSZip = (await import('jszip')).default;
@@ -242,6 +287,30 @@ export async function executeRestore(
 
     const zip = await JSZip.loadAsync(dataToLoad);
 
+    // Read manifest for collision-free diagram mapping if available
+    let diagramMapping: Record<string, string> | undefined;
+    const manifestFile = zip.file('manifest.json');
+    if (manifestFile) {
+      try {
+        const manifest = JSON.parse(await manifestFile.async('string')) as BackupManifest;
+        diagramMapping = manifest.diagramMapping;
+      } catch {
+        // Continue with standard filename extraction if manifest parse fails
+      }
+    }
+
+    // ─── Optional: If Replace mode, clear existing questions & tests ───────
+    if (options.mode === 'replace') {
+      onProgress?.('Clearing existing records for clean replace…', 15);
+      try {
+        // Delete dependent custom_tests first, then questions
+        await (supabase.from('custom_tests') as any).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        await (supabase.from('questions') as any).delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      } catch (err: any) {
+        errors.push(`Replace mode clean error: ${err?.message || 'Could not clear existing records'}`);
+      }
+    }
+
     // ─── Step 1: Re-upload storage diagrams ───────────────────────────────
     onProgress?.('Restoring exam diagrams to Supabase Storage…', 20);
     const diagramUrlMap = await restoreDiagramsToStorage(zip, (done, total) => {
@@ -252,22 +321,19 @@ export async function executeRestore(
     });
     diagramsRestored = diagramUrlMap.size;
 
-    // ─── Step 2: Restore Syllabuses ───────────────────────────────────────
+    // ─── Step 2: Restore Syllabuses (Batched) ─────────────────────────────
     onProgress?.('Restoring syllabuses…', 60);
     const syllabusesFile = zip.file('data/syllabuses.json');
     if (syllabusesFile) {
       const sList = JSON.parse(await syllabusesFile.async('string')) as Syllabus[];
       if (Array.isArray(sList) && sList.length > 0) {
-        for (const s of sList) {
-          try {
-            const { error } = await (supabase.from('syllabuses') as any).upsert(s, {
-              onConflict: 'id',
-            });
-            if (error) errors.push(`Syllabus ${s.subject_name}: ${error.message}`);
-            else syllabusesRestored++;
-          } catch (err: any) {
-            errors.push(`Syllabus ${s.subject_name}: ${err?.message}`);
-          }
+        const { error } = await (supabase.from('syllabuses') as any).upsert(sList, {
+          onConflict: 'id',
+        });
+        if (error) {
+          errors.push(`Syllabuses: ${error.message}`);
+        } else {
+          syllabusesRestored = sList.length;
         }
       }
     }
@@ -281,9 +347,7 @@ export async function executeRestore(
         const BATCH_SIZE = 100;
         for (let i = 0; i < qList.length; i += BATCH_SIZE) {
           const batch = qList.slice(i, i + BATCH_SIZE).map((q) => {
-            const withRewrittenUrls = rewriteQuestionDiagramUrls(q, diagramUrlMap);
-            // Ensure valid clean record structure
-            return withRewrittenUrls;
+            return rewriteQuestionDiagramUrls(q, diagramUrlMap, diagramMapping);
           });
 
           const { error } = await (supabase.from('questions') as any).upsert(batch, {
@@ -298,14 +362,14 @@ export async function executeRestore(
 
           onProgress?.(
             `Restoring questions (${Math.min(qList.length, i + BATCH_SIZE)}/${qList.length})…`,
-            70 + Math.round(((i + batch.length) / qList.length) * 20)
+            70 + Math.round(((i + batch.length) / qList.length) * 15)
           );
         }
       }
     }
 
     // ─── Step 4: Restore Custom Tests ─────────────────────────────────────
-    onProgress?.('Restoring custom tests…', 92);
+    onProgress?.('Restoring custom tests…', 86);
     const testsFile = zip.file('data/custom_tests.json');
     if (testsFile) {
       const tList = JSON.parse(await testsFile.async('string')) as CustomTest[];
@@ -318,30 +382,92 @@ export async function executeRestore(
       }
     }
 
-    // ─── Step 5: Notify application ───────────────────────────────────────
+    // ─── Step 5: Restore Quiz Submissions ─────────────────────────────────
+    onProgress?.('Restoring quiz submissions…', 90);
+    const submissionsFile = zip.file('data/quiz_submissions.json');
+    if (submissionsFile) {
+      try {
+        const subList = JSON.parse(await submissionsFile.async('string'));
+        if (Array.isArray(subList) && subList.length > 0) {
+          const BATCH_SIZE = 100;
+          for (let i = 0; i < subList.length; i += BATCH_SIZE) {
+            const batch = subList.slice(i, i + BATCH_SIZE);
+            const { error } = await (supabase.from('quiz_submissions') as any).upsert(batch, {
+              onConflict: 'id',
+            });
+            if (error) {
+              errors.push(`Quiz submissions batch ${i}: ${error.message}`);
+            } else {
+              quizSubmissionsRestored += batch.length;
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Quiz submissions: ${err?.message || 'Parse error'}`);
+      }
+    }
+
+    // ─── Step 6: Restore App Config (onConflict: 'key') ────────────────────
+    onProgress?.('Restoring application configurations…', 94);
+    const appConfigFile = zip.file('data/app_config.json');
+    if (appConfigFile) {
+      try {
+        const cfgList = JSON.parse(await appConfigFile.async('string'));
+        if (Array.isArray(cfgList) && cfgList.length > 0) {
+          const { error } = await (supabase.from('app_config') as any).upsert(cfgList, {
+            onConflict: 'key',
+          });
+          if (error) {
+            errors.push(`App config: ${error.message}`);
+          } else {
+            appConfigRestored = cfgList.length;
+          }
+        }
+      } catch (err: any) {
+        errors.push(`App config: ${err?.message || 'Parse error'}`);
+      }
+    }
+
+    // ─── Step 7: Notify application ───────────────────────────────────────
     onProgress?.('Finalizing restore…', 98);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('questions_updated'));
+      window.dispatchEvent(new Event('tests_updated'));
     }
 
-    onProgress?.('Restore completed successfully!', 100);
+    onProgress?.(errors.length === 0 ? 'Restore completed successfully!' : 'Restore completed with notes.', 100);
+
+    const success = errors.length === 0;
+    const hasPartialSuccess =
+      errors.length > 0 &&
+      (questionsRestored > 0 ||
+        syllabusesRestored > 0 ||
+        customTestsRestored > 0 ||
+        quizSubmissionsRestored > 0 ||
+        appConfigRestored > 0);
 
     return {
-      success: errors.length === 0 || questionsRestored > 0,
+      success,
+      hasPartialSuccess,
       syllabusesRestored,
       questionsRestored,
       diagramsRestored,
       customTestsRestored,
+      quizSubmissionsRestored,
+      appConfigRestored,
       errors,
     };
   } catch (err: any) {
     errors.push(err?.message || 'Restore process encountered an unexpected failure.');
     return {
       success: false,
+      hasPartialSuccess: false,
       syllabusesRestored,
       questionsRestored,
       diagramsRestored,
       customTestsRestored,
+      quizSubmissionsRestored,
+      appConfigRestored,
       errors,
     };
   }

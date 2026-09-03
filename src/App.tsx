@@ -12,6 +12,7 @@ import { supabase } from './lib/supabase';
 import type { Question } from './types/database';
 import type { ExamHeaderConfig } from './services/testBuilderService';
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
+import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
@@ -98,9 +99,10 @@ function App() {
   // Mobile lifecycle & hardware back-button integration
   useMobileLifecycle();
 
-  // Initialize and apply user appearance preferences
+  // Initialize and apply user appearance preferences & background backup scheduler
   useEffect(() => {
     applySettings(getSavedSettings());
+    initAutoBackupPeriodicScheduler();
   }, []);
 
   // Sync selected questions to sessionStorage

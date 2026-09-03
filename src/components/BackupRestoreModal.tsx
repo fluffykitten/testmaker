@@ -14,7 +14,8 @@ import {
   type RestoreResult,
 } from '../services/restoreService';
 import {
-  requestGoogleDriveToken,
+  requestGoogleDriveTokenDetails,
+  GoogleDriveAuthExpiredError,
   listGoogleDriveBackups,
   uploadBackupToGoogleDrive,
   downloadBackupFromGoogleDrive,
@@ -90,6 +91,16 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       setGdriveToken(getSessionDriveToken());
     }
   }, [isOpen]);
+
+  // Listen for background session expiration
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setGdriveToken(null);
+      setDriveActionNotice('Google Drive authorization expired. Please reconnect.');
+    };
+    window.addEventListener('testmaker_gdrive_auth_expired', handleAuthExpired);
+    return () => window.removeEventListener('testmaker_gdrive_auth_expired', handleAuthExpired);
+  }, []);
 
   // Load Google Drive files if token is active
   useEffect(() => {
@@ -173,10 +184,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
     } catch (err: any) {
       setRestoreResult({
         success: false,
+        hasPartialSuccess: false,
         syllabusesRestored: 0,
         questionsRestored: 0,
         diagramsRestored: 0,
         customTestsRestored: 0,
+        quizSubmissionsRestored: 0,
+        appConfigRestored: 0,
         errors: [err?.message || 'Failed to restore archive.'],
       });
     } finally {
@@ -201,10 +215,10 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
 
     try {
       setIsLoadingDrive(true);
-      const token = await requestGoogleDriveToken(gdriveClientId.trim());
-      setGdriveToken(token);
-      setSessionDriveToken(token);
-      await refreshDriveFiles(token);
+      const details = await requestGoogleDriveTokenDetails(gdriveClientId.trim());
+      setGdriveToken(details.accessToken);
+      setSessionDriveToken(details.accessToken, details.expiresIn);
+      await refreshDriveFiles(details.accessToken);
       setDriveActionNotice('Connected to Google Drive!');
       setTimeout(() => setDriveActionNotice(null), 3000);
     } catch (err: any) {
@@ -220,7 +234,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       const files = await listGoogleDriveBackups(token);
       setDriveFiles(files);
     } catch (err: any) {
-      console.warn('Failed to list drive files:', err);
+      if (err instanceof GoogleDriveAuthExpiredError) {
+        setGdriveToken(null);
+        setSessionDriveToken(null);
+        setDriveActionNotice('Google Drive session expired. Please reconnect.');
+      } else {
+        console.warn('Failed to list drive files:', err);
+      }
     } finally {
       setIsLoadingDrive(false);
     }
@@ -239,7 +259,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       setDriveActionNotice(`Successfully uploaded ${archive.fileName} to Google Drive!`);
       setTimeout(() => setDriveActionNotice(null), 4000);
     } catch (err: any) {
-      setDriveActionNotice(`Upload to Drive failed: ${err?.message || 'Unknown'}`);
+      if (err instanceof GoogleDriveAuthExpiredError) {
+        setGdriveToken(null);
+        setSessionDriveToken(null);
+        setDriveActionNotice('Google Drive session expired. Please reconnect.');
+      } else {
+        setDriveActionNotice(`Upload to Drive failed: ${err?.message || 'Unknown'}`);
+      }
     } finally {
       setIsUploadingToDrive(false);
     }
@@ -248,13 +274,27 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
   const handleRestoreFromDrive = async (file: GoogleDriveBackupItem) => {
     if (!gdriveToken) return;
 
+    // Switch to restore tab and display progress immediately (Issue #6 & #10)
+    setActiveTab('restore');
+    setIsRestoring(true);
+    setRestoreProgress({ status: `Downloading ${file.name} from Google Drive…`, pct: 30 });
+    setRestoreResult(null);
+
     try {
-      setDriveActionNotice(`Downloading ${file.name} from Google Drive…`);
       const blob = await downloadBackupFromGoogleDrive(gdriveToken, file.id);
-      setActiveTab('restore');
+      setRestoreProgress({ status: 'Inspecting backup archive…', pct: 75 });
       await processSelectedRestoreFile(blob);
     } catch (err: any) {
-      setDriveActionNotice(`Failed to fetch from Drive: ${err?.message}`);
+      if (err instanceof GoogleDriveAuthExpiredError) {
+        setGdriveToken(null);
+        setSessionDriveToken(null);
+        setDriveActionNotice('Google Drive session expired. Please reconnect.');
+      } else {
+        setDriveActionNotice(`Failed to fetch from Drive: ${err?.message}`);
+      }
+      setRestoreProgress({ status: '', pct: 0 });
+    } finally {
+      setIsRestoring(false);
     }
   };
 
@@ -266,7 +306,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       await deleteGoogleDriveBackup(gdriveToken, file.id);
       await refreshDriveFiles(gdriveToken);
     } catch (err: any) {
-      setDriveActionNotice(`Failed to delete: ${err?.message}`);
+      if (err instanceof GoogleDriveAuthExpiredError) {
+        setGdriveToken(null);
+        setSessionDriveToken(null);
+        setDriveActionNotice('Google Drive session expired. Please reconnect.');
+      } else {
+        setDriveActionNotice(`Failed to delete: ${err?.message}`);
+      }
     }
   };
 
@@ -330,6 +376,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
             <span>☁️</span> Google Drive Sync
           </button>
         </div>
+
+        {/* Global Action / Notice Banner (Visible across all tabs) */}
+        {driveActionNotice && (
+          <div className="backup-success-alert animate-fade-in" style={{ margin: '12px 20px 0' }}>
+            {driveActionNotice}
+          </div>
+        )}
 
         {/* ─── Modal Body ─────────────────────────────────────────────── */}
         <div className="backup-body">
@@ -460,17 +513,44 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                           <span className="backup-stat-val">{inspection.syllabusesCount}</span>
                           <span className="backup-stat-lbl">Syllabuses</span>
                         </div>
+                        <div className="backup-stat-card">
+                          <span className="backup-stat-val">{inspection.customTestsCount}</span>
+                          <span className="backup-stat-lbl">Custom Tests</span>
+                        </div>
+                        <div className="backup-stat-card">
+                          <span className="backup-stat-val">{inspection.quizSubmissionsCount}</span>
+                          <span className="backup-stat-lbl">Submissions</span>
+                        </div>
+                        <div className="backup-stat-card">
+                          <span className="backup-stat-val">{inspection.appConfigCount}</span>
+                          <span className="backup-stat-lbl">App Settings</span>
+                        </div>
                       </div>
 
-                      <div className="restore-mode-toggle">
-                        <label className="restore-mode-label">
+                      <div className="restore-mode-toggle" style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '12px 0' }}>
+                        <label className="restore-mode-label" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
                           <input
                             type="radio"
                             name="restoreMode"
                             checked={restoreMode === 'merge'}
                             onChange={() => setRestoreMode('merge')}
                           />
-                          <span><strong>Merge & Update</strong> (Recommended - preserves existing questions)</span>
+                          <span><strong>Merge & Update</strong> (Recommended — updates matching IDs and preserves existing questions)</span>
+                        </label>
+                        <label className="restore-mode-label" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <input
+                            type="radio"
+                            name="restoreMode"
+                            checked={restoreMode === 'replace'}
+                            onChange={() => {
+                              if (confirm('Clean Replace mode will wipe existing questions and tests before importing from this archive. Are you sure?')) {
+                                setRestoreMode('replace');
+                              }
+                            }}
+                          />
+                          <span style={{ color: restoreMode === 'replace' ? '#f43f5e' : 'inherit' }}>
+                            <strong>Clean Replace</strong> (Wipes existing questions and tests before importing)
+                          </span>
                         </label>
                       </div>
 
@@ -511,18 +591,65 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
               {restoreResult && (
                 <div
                   className={`animate-fade-in ${
-                    restoreResult.success ? 'backup-success-alert' : 'backup-success-alert'
+                    restoreResult.success
+                      ? 'backup-success-alert'
+                      : restoreResult.hasPartialSuccess
+                      ? 'backup-success-alert'
+                      : 'backup-success-alert'
                   }`}
                   style={{
-                    background: restoreResult.success ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
-                    borderColor: restoreResult.success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)',
-                    color: restoreResult.success ? '#10b981' : '#f43f5e',
+                    background: restoreResult.success
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : restoreResult.hasPartialSuccess
+                      ? 'rgba(245, 158, 11, 0.12)'
+                      : 'rgba(244, 63, 94, 0.12)',
+                    borderColor: restoreResult.success
+                      ? 'rgba(16, 185, 129, 0.3)'
+                      : restoreResult.hasPartialSuccess
+                      ? 'rgba(245, 158, 11, 0.3)'
+                      : 'rgba(244, 63, 94, 0.3)',
+                    color: restoreResult.success
+                      ? '#10b981'
+                      : restoreResult.hasPartialSuccess
+                      ? '#f59e0b'
+                      : '#f43f5e',
                   }}
                 >
-                  <strong>{restoreResult.success ? '🎉 Restore Successful!' : '⚠️ Restore Finished with Notes:'}</strong>
+                  <strong>
+                    {restoreResult.success
+                      ? '🎉 Restore Successful!'
+                      : restoreResult.hasPartialSuccess
+                      ? '⚠️ Restore Partially Completed with Notes:'
+                      : '❌ Restore Failed:'}
+                  </strong>
                   <div style={{ marginTop: 4 }}>
-                    Restored {restoreResult.questionsRestored} questions, {restoreResult.diagramsRestored} storage diagrams, and {restoreResult.syllabusesRestored} syllabuses.
+                    Restored {restoreResult.questionsRestored} questions, {restoreResult.diagramsRestored} storage diagrams, {restoreResult.syllabusesRestored} syllabuses, {restoreResult.customTestsRestored} custom tests, {restoreResult.quizSubmissionsRestored} submissions, and {restoreResult.appConfigRestored} app settings.
                   </div>
+
+                  {/* Render error list if any error occurred */}
+                  {restoreResult.errors && restoreResult.errors.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(244, 63, 94, 0.2)' }}>
+                      <strong style={{ fontSize: '0.75rem', display: 'block', marginBottom: 4 }}>
+                        Error Details ({restoreResult.errors.length}):
+                      </strong>
+                      <div
+                        style={{
+                          maxHeight: '120px',
+                          overflowY: 'auto',
+                          fontSize: '0.6875rem',
+                          background: 'rgba(0,0,0,0.05)',
+                          padding: '6px 8px',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {restoreResult.errors.map((err, i) => (
+                          <div key={i} style={{ marginBottom: 2, fontFamily: 'monospace' }}>
+                            • {err}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -738,12 +865,6 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                     </div>
                   )}
                 </>
-              )}
-
-              {driveActionNotice && (
-                <div className="backup-success-alert animate-fade-in" style={{ marginTop: 12 }}>
-                  {driveActionNotice}
-                </div>
               )}
             </div>
           )}

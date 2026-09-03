@@ -23,6 +23,13 @@ declare global {
   }
 }
 
+export class GoogleDriveAuthExpiredError extends Error {
+  constructor(message = 'Google Drive authorization expired. Please sign in again.') {
+    super(message);
+    this.name = 'GoogleDriveAuthExpiredError';
+  }
+}
+
 export interface GoogleDriveBackupItem {
   id: string;
   name: string;
@@ -31,12 +38,19 @@ export interface GoogleDriveBackupItem {
   formattedSize: string;
 }
 
+export interface GoogleDriveTokenResult {
+  accessToken: string;
+  expiresIn: number; // in seconds
+  expiresAt: number; // timestamp in ms
+}
+
 const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const BACKUP_FOLDER_NAME = 'TestMaker Backups';
 
 /**
- * Dynamically loads the Google Identity Services client script if not already present.
+ * Dynamically loads the Google Identity Services client script if not already present,
+ * with polling fallback to eliminate script-listener race conditions.
  */
 export function loadGsiScript(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -45,8 +59,19 @@ export function loadGsiScript(): Promise<void> {
 
     const existing = document.querySelector(`script[src="${GIS_SCRIPT_URL}"]`);
     if (existing) {
+      if (window.google?.accounts?.oauth2) return resolve();
+
       existing.addEventListener('load', () => resolve());
       existing.addEventListener('error', (e) => reject(e));
+
+      // Guard against race if load event already fired before attaching listener
+      const pollTimer = setInterval(() => {
+        if (window.google?.accounts?.oauth2) {
+          clearInterval(pollTimer);
+          resolve();
+        }
+      }, 50);
+      setTimeout(() => clearInterval(pollTimer), 3000);
       return;
     }
 
@@ -61,9 +86,15 @@ export function loadGsiScript(): Promise<void> {
 }
 
 /**
- * Requests a Google Drive OAuth access token using Google Identity Services popup.
+ * Requests a Google Drive OAuth access token using Google Identity Services popup,
+ * capturing token lifetime.
  */
 export async function requestGoogleDriveToken(clientId: string): Promise<string> {
+  const result = await requestGoogleDriveTokenDetails(clientId);
+  return result.accessToken;
+}
+
+export async function requestGoogleDriveTokenDetails(clientId: string): Promise<GoogleDriveTokenResult> {
   await loadGsiScript();
 
   if (!window.google?.accounts?.oauth2) {
@@ -75,14 +106,20 @@ export async function requestGoogleDriveToken(clientId: string): Promise<string>
       const tokenClient = window.google!.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: DRIVE_FILE_SCOPE,
-        callback: (resp) => {
+        callback: (resp: any) => {
           if (resp.access_token) {
-            resolve(resp.access_token);
+            const expiresIn = resp.expires_in ? Number(resp.expires_in) : 3600;
+            const expiresAt = Date.now() + expiresIn * 1000;
+            resolve({
+              accessToken: resp.access_token,
+              expiresIn,
+              expiresAt,
+            });
           } else {
             reject(new Error(resp.error?.message || 'Google Drive authentication was cancelled.'));
           }
         },
-        error_callback: (err) => {
+        error_callback: (err: any) => {
           reject(new Error(err?.message || 'Google authentication error.'));
         },
       });
@@ -104,6 +141,10 @@ export async function findOrCreateBackupFolder(accessToken: string): Promise<str
   const searchRes = await fetch(searchUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+
+  if (searchRes.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
 
   if (!searchRes.ok) {
     const errText = await searchRes.text();
@@ -127,6 +168,10 @@ export async function findOrCreateBackupFolder(accessToken: string): Promise<str
       mimeType: 'application/vnd.google-apps.folder',
     }),
   });
+
+  if (createRes.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
 
   if (!createRes.ok) {
     const errText = await createRes.text();
@@ -156,6 +201,10 @@ export async function listGoogleDriveBackups(accessToken: string): Promise<Googl
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+
+  if (res.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
 
   if (!res.ok) {
     throw new Error(`Failed to list Google Drive backups (${res.status})`);
@@ -213,6 +262,10 @@ export async function uploadBackupToGoogleDrive(
     body: multipartBody,
   });
 
+  if (res.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
+
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Google Drive upload failed (${res.status}): ${errText}`);
@@ -234,6 +287,10 @@ export async function downloadBackupFromGoogleDrive(
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
+  if (res.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
+
   if (!res.ok) {
     throw new Error(`Failed to download backup from Google Drive (${res.status})`);
   }
@@ -254,6 +311,10 @@ export async function deleteGoogleDriveBackup(
     method: 'DELETE',
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+
+  if (res.status === 401) {
+    throw new GoogleDriveAuthExpiredError();
+  }
 
   if (!res.ok && res.status !== 404) {
     throw new Error(`Failed to delete backup from Google Drive (${res.status})`);

@@ -5,17 +5,49 @@
 
 import { getSavedSettings, saveSettings } from '../lib/settings';
 import { createFullBackupArchive } from './backupService';
-import { uploadBackupToGoogleDrive } from './googleDriveService';
+import { uploadBackupToGoogleDrive, GoogleDriveAuthExpiredError } from './googleDriveService';
 
 let activeDriveToken: string | null = null;
+let activeDriveTokenExpiresAt: number = 0;
 let isAutoBackingUp = false;
+let periodicSchedulerTimer: any = null;
 
-export function setSessionDriveToken(token: string | null) {
+export function setSessionDriveToken(token: string | null, expiresInSec = 3600) {
   activeDriveToken = token;
+  activeDriveTokenExpiresAt = token ? Date.now() + expiresInSec * 1000 : 0;
 }
 
 export function getSessionDriveToken(): string | null {
+  if (!activeDriveToken) return null;
+  // If expired, clear and return null
+  if (activeDriveTokenExpiresAt > 0 && Date.now() >= activeDriveTokenExpiresAt) {
+    activeDriveToken = null;
+    activeDriveTokenExpiresAt = 0;
+    return null;
+  }
   return activeDriveToken;
+}
+
+export function isSessionDriveTokenValid(): boolean {
+  return !!getSessionDriveToken();
+}
+
+/**
+ * Initializes the periodic background scheduler for daily/weekly automated backups.
+ * Runs an initial check shortly after startup and periodically checks every 15 minutes.
+ */
+export function initAutoBackupPeriodicScheduler() {
+  if (periodicSchedulerTimer || typeof window === 'undefined') return;
+
+  // Run initial check 15 seconds after app startup
+  setTimeout(() => {
+    triggerAutoBackupIfEligible('interval').catch(() => {});
+  }, 15000);
+
+  // Periodic interval check every 15 minutes
+  periodicSchedulerTimer = setInterval(() => {
+    triggerAutoBackupIfEligible('interval').catch(() => {});
+  }, 15 * 60 * 1000);
 }
 
 /**
@@ -23,8 +55,9 @@ export function getSessionDriveToken(): string | null {
  */
 export async function triggerAutoBackupIfEligible(trigger: 'paper_upload' | 'interval'): Promise<boolean> {
   const settings = getSavedSettings();
+  const token = getSessionDriveToken();
 
-  if (!settings.autoBackupEnabled || !activeDriveToken) {
+  if (!settings.autoBackupEnabled || !token) {
     return false;
   }
 
@@ -60,7 +93,7 @@ export async function triggerAutoBackupIfEligible(trigger: 'paper_upload' | 'int
     console.log('[AutoBackup] Initiating automated cloud backup to Google Drive…');
 
     const archive = await createFullBackupArchive();
-    const result = await uploadBackupToGoogleDrive(activeDriveToken, archive.blob, archive.fileName);
+    const result = await uploadBackupToGoogleDrive(token, archive.blob, archive.fileName);
 
     const updatedSettings = {
       ...settings,
@@ -83,8 +116,16 @@ export async function triggerAutoBackupIfEligible(trigger: 'paper_upload' | 'int
 
     console.log('[AutoBackup] Automated cloud backup completed successfully:', archive.fileName);
     return true;
-  } catch (err) {
-    console.warn('[AutoBackup] Automated cloud backup encountered an error:', err);
+  } catch (err: any) {
+    if (err instanceof GoogleDriveAuthExpiredError) {
+      console.warn('[AutoBackup] Google Drive authorization expired. Clearing session token.');
+      setSessionDriveToken(null);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('testmaker_gdrive_auth_expired'));
+      }
+    } else {
+      console.warn('[AutoBackup] Automated cloud backup encountered an error:', err);
+    }
     return false;
   } finally {
     isAutoBackingUp = false;

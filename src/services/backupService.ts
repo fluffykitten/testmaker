@@ -17,11 +17,13 @@ export interface BackupManifest {
   timestamp: number;
   createdAt: string;
   supabaseProjectRef?: string;
+  diagramMapping?: Record<string, string>; // Maps original image URL -> zip archive filename
   stats: {
     syllabusesCount: number;
     questionsCount: number;
     customTestsCount: number;
     quizSubmissionsCount: number;
+    appConfigCount?: number;
     diagramsCount: number;
   };
 }
@@ -175,7 +177,32 @@ export async function createFullBackupArchive(
   // ─── Step 3: Fetch & Pack Storage Diagram Blobs ─────────────────────────
   const diagramUrls = Array.from(collectDiagramUrls(questions));
   const diagramsFolder = zip.folder('diagrams')!;
+  const diagramMapping: Record<string, string> = {};
+  const usedFileNames = new Set<string>();
   let diagramsPacked = 0;
+
+  function getUniqueArchiveFileName(url: string): string {
+    const raw = extractDiagramFileName(url);
+    if (!usedFileNames.has(raw)) {
+      usedFileNames.add(raw);
+      return raw;
+    }
+    const lastDot = raw.lastIndexOf('.');
+    const base = lastDot > 0 ? raw.slice(0, lastDot) : raw;
+    const ext = lastDot > 0 ? raw.slice(lastDot) : '';
+    let counter = 2;
+    while (usedFileNames.has(`${base}_${counter}${ext}`)) {
+      counter++;
+    }
+    const unique = `${base}_${counter}${ext}`;
+    usedFileNames.add(unique);
+    return unique;
+  }
+
+  // Pre-assign collision-free filenames for all unique diagram URLs
+  for (const url of diagramUrls) {
+    diagramMapping[url] = getUniqueArchiveFileName(url);
+  }
 
   if (diagramUrls.length > 0) {
     onProgress?.(`Backing up ${diagramUrls.length} exam diagrams from storage…`, 40);
@@ -187,7 +214,7 @@ export async function createFullBackupArchive(
       await Promise.all(
         batch.map(async (url) => {
           try {
-            const fileName = extractDiagramFileName(url);
+            const fileName = diagramMapping[url];
             const res = await fetch(url);
             if (res.ok) {
               const arrayBuffer = await res.arrayBuffer();
@@ -215,11 +242,13 @@ export async function createFullBackupArchive(
     generator: 'TestMaker Cloud Backup Engine',
     timestamp: now.getTime(),
     createdAt: now.toISOString(),
+    diagramMapping,
     stats: {
       syllabusesCount: syllabuses.length,
       questionsCount: questions.length,
       customTestsCount: customTests.length,
       quizSubmissionsCount: quizSubmissions.length,
+      appConfigCount: appConfig.length,
       diagramsCount: diagramsPacked,
     },
   };
