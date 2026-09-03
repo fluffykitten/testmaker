@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { PdfUpload } from '../components/PdfUpload';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { ExtractionReview } from '../components/ExtractionReview';
@@ -11,13 +11,30 @@ import {
   revokeLocalDiagramUrls,
   type DiagramCropItem,
 } from '../lib/diagramCropper';
+import {
+  saveUploadDraft,
+  loadUploadDraft,
+  hasUploadDraft,
+  deleteUploadDraft,
+} from '../lib/uploadDraftStorage';
 import type { SubjectDomain } from '../lib/gemini';
 import type { ExtractionResult } from '../types/database';
 import './UploadPage.css';
 
+function formatRelativeTime(timestamp: number): string {
+  const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} minute${diffMin > 1 ? 's' : ''} ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+}
+
 /**
  * Phase 2 Upload Page — orchestrates the full extraction flow:
- * 1. PDF upload drop zone
+ * 1. PDF upload drop zone & Auto-Save Draft Recovery
  * 2. Pipeline progress indicator
  * 3. Extraction review with save/discard (zero cloud storage uploads)
  * 4. Success confirmation
@@ -39,6 +56,15 @@ export function UploadPage() {
   const [uploadedQpFile, setUploadedQpFile] = useState<File | null>(null);
   const [uploadedInsertFile, setUploadedInsertFile] = useState<File | null>(null);
 
+  // Draft recovery state
+  const [draftInfo, setDraftInfo] = useState<{
+    exists: boolean;
+    fileName?: string;
+    timestamp?: number;
+    questionCount?: number;
+  } | null>(null);
+  const [isRestoringDraft, setIsRestoringDraft] = useState(false);
+
   const selectedFilesRef = useRef<{
     qpFile: File | null;
     msFile: File | null;
@@ -50,6 +76,53 @@ export function UploadPage() {
   });
 
   const isProcessing = ['uploading', 'extracting', 'cropping-diagrams'].includes(pipelineState.stage);
+
+  // Check for an existing uncommitted draft on mount
+  useEffect(() => {
+    hasUploadDraft().then((info) => {
+      if (info.exists) {
+        setDraftInfo(info);
+      }
+    });
+  }, []);
+
+  // ─── Handle Resume & Discard Draft ───────────────────────────────────────
+
+  const handleResumeDraft = async () => {
+    setIsRestoringDraft(true);
+    try {
+      const draft = await loadUploadDraft();
+      if (draft) {
+        setExtractionResult(draft.result);
+        setDiagramData(draft.diagramData);
+        setPreviewUrls(draft.previewUrls);
+        setUploadedQpFile(draft.qpFile);
+        setUploadedInsertFile(draft.insertFile);
+        selectedFilesRef.current = {
+          qpFile: draft.qpFile,
+          msFile: null,
+          insertFile: draft.insertFile,
+        };
+        setPipelineState({
+          stage: 'reviewing',
+          message: `Restored draft from ${draft.fileName} (${draft.result.questions.length} questions).`,
+          progress: 90,
+          result: draft.result,
+          error: null,
+        });
+        setDraftInfo(null);
+      }
+    } catch (err) {
+      console.warn('Failed to restore draft:', err);
+    } finally {
+      setIsRestoringDraft(false);
+    }
+  };
+
+  const handleDiscardDraft = async () => {
+    await deleteUploadDraft();
+    setDraftInfo(null);
+  };
 
   // ─── Handle PDF Selection & Extraction ───────────────────────────────────
 
@@ -77,6 +150,9 @@ export function UploadPage() {
         setExtractionResult(result);
         setDiagramData(data);
         setPreviewUrls(urls);
+
+        // Auto-save draft to IndexedDB to protect teacher against accidental refresh
+        await saveUploadDraft(qpFile.name, result, data, qpFile, insertFile);
       } catch {
         // Error state is already set by the pipeline
       }
@@ -108,6 +184,9 @@ export function UploadPage() {
       );
       setSavedCount(count);
       window.dispatchEvent(new Event('questions_updated'));
+      // Once successfully saved, purge the draft
+      await deleteUploadDraft();
+      setDraftInfo(null);
       setPipelineState({
         stage: 'complete',
         message: `Successfully saved ${count} questions!`,
@@ -133,6 +212,8 @@ export function UploadPage() {
   const handleCancel = useCallback(() => {
     // Revoke any created browser memory Object URLs
     revokeLocalDiagramUrls(diagramData);
+    deleteUploadDraft();
+    setDraftInfo(null);
 
     setPipelineState({
       stage: 'idle',
@@ -165,9 +246,45 @@ export function UploadPage() {
           </p>
         </div>
 
-        {/* Stage: Idle — Show Upload Zone */}
+        {/* Stage: Idle — Show Upload Zone & Draft Recovery Banner */}
         {pipelineState.stage === 'idle' && (
           <div className="upload-page-center">
+            {/* Unsaved Draft Recovery Banner */}
+            {draftInfo?.exists && (
+              <div className="upload-draft-banner animate-fade-in">
+                <div className="upload-draft-icon">💾</div>
+                <div className="upload-draft-content">
+                  <div className="upload-draft-header">
+                    <strong>Unsaved Extraction Draft Found</strong>
+                    <span className="upload-draft-badge">Auto-Saved</span>
+                  </div>
+                  <p className="upload-draft-text">
+                    You have an uncommitted extraction from <strong>{draftInfo.fileName}</strong>{' '}
+                    ({draftInfo.questionCount} questions, saved {formatRelativeTime(draftInfo.timestamp || Date.now())}).
+                  </p>
+                </div>
+                <div className="upload-draft-actions">
+                  <button
+                    type="button"
+                    className="upload-draft-btn upload-draft-btn--resume"
+                    onClick={handleResumeDraft}
+                    disabled={isRestoringDraft}
+                    id="resume-draft-btn"
+                  >
+                    {isRestoringDraft ? 'Restoring…' : '⚡ Resume Review'}
+                  </button>
+                  <button
+                    type="button"
+                    className="upload-draft-btn upload-draft-btn--discard"
+                    onClick={handleDiscardDraft}
+                    id="discard-draft-btn"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+
             <PdfUpload
               onFilesSelected={handleFilesSelected}
               isProcessing={isProcessing}
@@ -207,6 +324,15 @@ export function UploadPage() {
               setDiagramData((prev) => {
                 const next = new Map(prev);
                 next.set(qNum, item);
+                if (extractionResult) {
+                  saveUploadDraft(
+                    uploadedQpFile?.name || 'Exam Paper',
+                    extractionResult,
+                    next,
+                    uploadedQpFile,
+                    uploadedInsertFile
+                  );
+                }
                 return next;
               });
               setPreviewUrls((prev) => {
