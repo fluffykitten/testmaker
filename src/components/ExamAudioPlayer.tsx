@@ -58,6 +58,7 @@ export function ExamAudioPlayer({
   // Play limit configuration (maxPlaysAllowed overrides metadata.play_limit if defined)
   const configuredLimit = maxPlaysAllowed !== undefined ? maxPlaysAllowed : (metadata?.play_limit ?? null);
   const [playedCount, setPlayedCount] = useState(initialPlayedCount);
+  const hasConsumedPlayForCurrentRun = useRef(false);
 
   const isLimitReached = configuredLimit !== null && configuredLimit > 0 && playedCount >= configuredLimit;
   const remainingPlays = configuredLimit !== null && configuredLimit > 0 ? Math.max(0, configuredLimit - playedCount) : null;
@@ -129,7 +130,8 @@ export function ExamAudioPlayer({
 
   // When playback starts from beginning, count as a play
   const handlePlayStarted = () => {
-    if (currentTime < 1 && playedCount === 0) {
+    if (currentTime < 1 && !hasConsumedPlayForCurrentRun.current) {
+      hasConsumedPlayForCurrentRun.current = true;
       const nextCount = playedCount + 1;
       setPlayedCount(nextCount);
       const nextRemaining = configuredLimit !== null ? Math.max(0, configuredLimit - nextCount) : null;
@@ -163,6 +165,7 @@ export function ExamAudioPlayer({
   const handleEnded = () => {
     setIsPlaying(false);
     setCurrentTime(0);
+    hasConsumedPlayForCurrentRun.current = false;
     onTimeUpdate?.(0);
     if (isTts) stopTtsSpeech();
   };
@@ -178,6 +181,7 @@ export function ExamAudioPlayer({
     if (prevAudioUrlRef.current !== audioUrl) {
       prevAudioUrlRef.current = audioUrl;
       setIsPlaying(false);
+      hasConsumedPlayForCurrentRun.current = false;
       const initTime = initialCurrentTime || 0;
       setCurrentTime(initTime);
       setDuration(metadata?.duration || 0);
@@ -201,6 +205,9 @@ export function ExamAudioPlayer({
     if (shouldDisableSeeking) return;
     const time = Number(e.target.value);
     setCurrentTime(time);
+    if (time === 0) {
+      hasConsumedPlayForCurrentRun.current = false;
+    }
     if (audioRef.current) {
       audioRef.current.currentTime = time;
     }

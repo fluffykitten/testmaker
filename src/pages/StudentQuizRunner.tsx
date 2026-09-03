@@ -354,7 +354,7 @@ export function StudentQuizRunner({
   const [enableWatermark, setEnableWatermark] = useState<boolean>(() => savedExam?.enableWatermark ?? false);
   const [enableMultiMonitorDetection, setEnableMultiMonitorDetection] = useState<boolean>(() => savedExam?.enableMultiMonitorDetection ?? false);
   const [requireTeacherUnlock, setRequireTeacherUnlock] = useState<boolean>(() => savedExam?.requireTeacherUnlock ?? true);
-  const [teacherPin, setTeacherPin] = useState<string>(() => savedExam?.teacherPin || '1234');
+  const [teacherPin, setTeacherPin] = useState<string>(() => initialHeaderConfig?.teacherPin || '1234');
   const [isLockedByProctor, setIsLockedByProctor] = useState<boolean>(() => savedExam?.isLockedByProctor || false);
   const [lockReason, setLockReason] = useState<string>(() => savedExam?.lockReason || '');
   const [lockTime, setLockTime] = useState<string>(() => savedExam?.lockTime || '');
@@ -368,6 +368,38 @@ export function StudentQuizRunner({
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => {});
+
+  // Fullscreen tracking & enforcement for formal exam mode
+  const [isFullscreenActive, setIsFullscreenActive] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      return !!document.fullscreenElement;
+    }
+    return true;
+  });
+
+  const handleResumeFullscreen = useCallback(async () => {
+    try {
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      }
+      setIsFullscreenActive(true);
+    } catch (err) {
+      console.warn('Fullscreen resume notice:', err);
+    }
+  }, []);
+
+  // Timer warning latches to prevent missed alerts during background tab throttling
+  const hasShown5MinWarningRef = useRef<boolean>(false);
+  const hasShown1MinWarningRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    const handleFsStateSync = () => {
+      setIsFullscreenActive(!!document.fullscreenElement);
+    };
+    handleFsStateSync();
+    document.addEventListener('fullscreenchange', handleFsStateSync);
+    return () => document.removeEventListener('fullscreenchange', handleFsStateSync);
+  }, []);
 
   const sessionHash = useMemo(() => {
     return formatSessionHash(`${candidateName}_${candidateNumber}_${resolvedQuizCode}_${startTime}`);
@@ -618,6 +650,7 @@ export function StudentQuizRunner({
     // C. Fullscreen change
     const handleFullscreenChange = () => {
       const isFull = !!document.fullscreenElement;
+      setIsFullscreenActive(isFull);
       if (!isFull && hasStarted && !isSubmitted && !isGrading && !isSubmittingRef.current) {
         logViolation('fullscreen_exit', 'Exited fullscreen secure exam view');
       }
@@ -1330,7 +1363,6 @@ export function StudentQuizRunner({
             enableWatermark,
             enableMultiMonitorDetection,
             requireTeacherUnlock,
-            teacherPin,
             isLockedByProctor,
             lockReason,
             lockTime,
@@ -1360,7 +1392,6 @@ export function StudentQuizRunner({
     enableWatermark,
     enableMultiMonitorDetection,
     requireTeacherUnlock,
-    teacherPin,
     isLockedByProctor,
     lockReason,
     lockTime,
@@ -1378,12 +1409,17 @@ export function StudentQuizRunner({
 
       if (remainingSec <= 0) {
         handleSubmitExam();
-      } else if (remainingSec === 300) {
-        setTimeWarning('⚠️ 5 Minutes Remaining! Please review and finalize your answers.');
-        setTimeout(() => setTimeWarning(null), 6000);
-      } else if (remainingSec === 60) {
-        setTimeWarning('🚨 1 Minute Remaining! Examination will auto-submit when the countdown reaches zero.');
-        setTimeout(() => setTimeWarning(null), 6000);
+      } else {
+        // Resilient latches ensure warnings fire even if browser throttles setInterval across 300s / 60s
+        if (remainingSec <= 300 && remainingSec > 60 && examDurationSec > 330 && !hasShown5MinWarningRef.current) {
+          hasShown5MinWarningRef.current = true;
+          setTimeWarning('⚠️ 5 Minutes Remaining! Please review and finalize your answers.');
+          setTimeout(() => setTimeWarning(null), 6000);
+        } else if (remainingSec <= 60 && remainingSec > 0 && !hasShown1MinWarningRef.current) {
+          hasShown1MinWarningRef.current = true;
+          setTimeWarning('🚨 1 Minute Remaining! Examination will auto-submit when the countdown reaches zero.');
+          setTimeout(() => setTimeWarning(null), 6000);
+        }
       }
     };
 
@@ -4257,6 +4293,60 @@ export function StudentQuizRunner({
                 </div>
               )}
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 🛡️ Secure Fullscreen Recovery Overlay (When browser drops fullscreen on reload or Esc) */}
+      {!isLockedByProctor && hasStarted && !isSubmitted && !isGrading && isExamMode && securityEnabled && !isFullscreenActive && (
+        <div className="sq-lockdown-overlay animate-fade-in" style={{ backdropFilter: 'blur(12px)', zIndex: 9999 }}>
+          <div className="sq-lockdown-card animate-scale-up" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px', textAlign: 'center' }}>
+            <div className="sq-lockdown-icon-wrap" style={{ background: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)' }}>
+              <span className="sq-lockdown-icon">🛡️</span>
+            </div>
+
+            <h2 className="sq-lockdown-title" style={{ color: 'var(--color-primary-400, #38bdf8)' }}>FULLSCREEN MODE REQUIRED</h2>
+            <p className="sq-lockdown-subtitle">
+              To preserve examination integrity and comply with assessment policy, this formal exam must be completed in dedicated fullscreen view.
+            </p>
+
+            <div className="sq-lockdown-details-box" style={{ textAlign: 'left', margin: '16px 0' }}>
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Assessment:</span>
+                <span className="sq-ld-val">{title}</span>
+              </div>
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Candidate:</span>
+                <span className="sq-ld-val">{candidateName || 'Registered Candidate'}</span>
+              </div>
+              <div className="sq-lockdown-row">
+                <span className="sq-ld-lbl">Remaining Time:</span>
+                <span className="sq-ld-val" style={{ fontFamily: 'monospace', fontWeight: 800 }}>
+                  ⏱️ {formatTimer(timeLeft)}
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleResumeFullscreen}
+              className="sq-btn sq-btn--primary"
+              style={{
+                width: '100%',
+                padding: '14px 20px',
+                fontSize: '1rem',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                borderRadius: 'var(--radius-md)',
+                boxShadow: '0 4px 14px rgba(59, 130, 246, 0.35)',
+              }}
+            >
+              <span>🖥️</span>
+              <span>Return to Fullscreen Exam</span>
+            </button>
           </div>
         </div>
       )}

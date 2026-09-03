@@ -16,6 +16,7 @@ export interface ExamHeaderConfig {
   examDate?: string;
   additionalMaterials?: string;
   layoutTemplate?: 'cambridge' | 'standard';
+  teacherPin?: string;
 }
 
 export interface SaveTestPayload {
