@@ -238,7 +238,11 @@ CRITICAL FORMATTING RULES:
  * Enforces cross-referencing of Insert / Resource Booklets, mapping "Fig. 1.1 in the Insert", "Photograph A", "Table 2.1",
  * and generating a structured insert_resources catalog.
  */
-export function getHumanitiesExtractionPrompt(hasInsert: boolean = true, includeGuidance: boolean = true): string {
+export function getHumanitiesExtractionPrompt(
+  hasInsert: boolean = true,
+  includeGuidance: boolean = true,
+  extractResourceCatalog: boolean = true
+): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -255,6 +259,36 @@ export function getHumanitiesExtractionPrompt(hasInsert: boolean = true, include
     ? `,
           "guidance": "Examiner tip: 1 mark for identification from Fig. 1.1, 1 mark for explanation",
           "common_misconceptions": ["Candidates frequently quote data without units"]`
+    : '';
+
+  const insertCatalogPrompt = (hasInsert && extractResourceCatalog)
+    ? `
+6. ROOT "insert_resources" CATALOG:
+   - Extract an array listing all unique resource items in the Insert Booklet:
+   "insert_resources": [
+     {
+       "id": "Fig. 1.1",
+       "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
+       "page_number": 2,
+       "target_questions": ["1(a)"]
+     },
+     {
+       "id": "Fig. 2.1",
+       "title": "A map showing information about settlements in Extremadura, Spain",
+       "page_number": 3,
+       "target_questions": ["2(a)"]
+     },
+     {
+       "id": "Figs. 2.2, 2.3 and 2.4",
+       "title": "Photographs showing settlements with different functions",
+       "page_number": 4,
+       "target_questions": ["2(b)"]
+     }
+   ]`
+    : (hasInsert && !extractResourceCatalog)
+    ? `
+6. ROOT "insert_resources" CATALOG:
+   - To conserve token usage on this chunk, do NOT output an "insert_resources" catalog array. Only output "paper_metadata" and "questions".`
     : '';
 
   const insertSchemaRule = hasInsert
@@ -284,28 +318,7 @@ DIAGRAMS, MAPS & INSERT PLACEMENT RULES (CRITICAL — READ CAREFULLY):
 5. EXTENDED CASE STUDY QUESTIONS (e.g. Part (c)):
    - Transcribe full prompts (e.g. "(c) For a named country you have studied, describe a policy used to influence its population growth rate.") as sub_id "(c)".
 
-6. ROOT "insert_resources" CATALOG:
-   - Extract an array listing all unique resource items in the Insert Booklet:
-   "insert_resources": [
-     {
-       "id": "Fig. 1.1",
-       "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
-       "page_number": 2,
-       "target_questions": ["1(a)"]
-     },
-     {
-       "id": "Fig. 2.1",
-       "title": "A map showing information about settlements in Extremadura, Spain",
-       "page_number": 3,
-       "target_questions": ["2(a)"]
-     },
-     {
-       "id": "Figs. 2.2, 2.3 and 2.4",
-       "title": "Photographs showing settlements with different functions",
-       "page_number": 4,
-       "target_questions": ["2(b)"]
-     }
-   ]`
+${insertCatalogPrompt}`
     : `
 FIGURES & MAPS IN QUESTION PAPER:
 If figures, diagrams, maps, climate graphs, or sketches are embedded in the Question Paper:
@@ -342,7 +355,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
     "paper_number": 11,
     "has_insert_booklet": ${hasInsert ? 'true' : 'false'}
   },
-  ${hasInsert ? `"insert_resources": [
+  ${(hasInsert && extractResourceCatalog) ? `"insert_resources": [
     {
       "id": "Fig. 1.1",
       "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
@@ -776,13 +789,14 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
 export function getExtractionPrompt(
   includeGuidance: boolean = true,
   domain: SubjectDomain = 'stem',
-  hasInsert: boolean = false
+  hasInsert: boolean = false,
+  extractResourceCatalog: boolean = true
 ): string {
   if (domain === 'languages') {
     return getLanguageExtractionPrompt(includeGuidance);
   }
   if (domain === 'humanities') {
-    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance);
+    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance, extractResourceCatalog);
   }
   return getStemExtractionPrompt(includeGuidance);
 }
@@ -1300,6 +1314,7 @@ export interface ExtractionOptions {
   domain?: SubjectDomain;
   hasInsertBooklet?: boolean;
   apiKey?: string;
+  extractResourceCatalog?: boolean;
 }
 
 /**
@@ -1324,7 +1339,12 @@ export async function extractQuestionsFromPdf(
 
   const domain = options.domain || 'stem';
   const hasInsert = Boolean(insertBase64 || options.hasInsertBooklet);
-  const promptText = getExtractionPrompt(options.includeGuidance !== false, domain, hasInsert);
+  const promptText = getExtractionPrompt(
+    options.includeGuidance !== false,
+    domain,
+    hasInsert,
+    options.extractResourceCatalog !== false
+  );
 
   onProgress?.('Discovering available Gemini models…');
 

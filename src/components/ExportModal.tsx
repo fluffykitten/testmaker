@@ -416,6 +416,15 @@ export function ExportModal({
                   >
                     Spacious (3/mark)
                   </button>
+                  <button
+                    type="button"
+                    className={`export-pill-btn ${layoutOptions.linesPerMark === 4 ? 'export-pill-btn--active' : ''}`}
+                    onClick={() =>
+                      setLayoutOptions((prev) => ({ ...prev, linesPerMark: 4 }))
+                    }
+                  >
+                    Generous (4/mark)
+                  </button>
                 </div>
               </div>
             )}

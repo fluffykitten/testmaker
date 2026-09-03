@@ -675,7 +675,7 @@ export async function cropDiagramsLocally(
         const sourceLabel = isFromInsert ? 'Insert Booklet' : 'Question Paper';
 
         const targetPage = isFromInsert
-          ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : (q.page_number || 1))
+          ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1)
           : (q.page_number && q.page_number > 0 ? q.page_number : 1);
 
         const safePageNumber = Math.max(1, Math.min(targetDoc.numPages, targetPage));
@@ -752,23 +752,48 @@ export async function cropDiagramsLocally(
 
       for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
         const sub = q.sub_questions[sIdx];
+        const subKey = `${q.question_number}_sub_${sIdx}`;
+
+        // 1. Check if sub-question references the exact same resource_ref as parent question
+        const parentCrop = results.get(q.question_number);
+        const sharesParentResource = Boolean(
+          parentCrop &&
+          q.resource_ref &&
+          sub.resource_ref &&
+          q.resource_ref.trim().toLowerCase() === sub.resource_ref.trim().toLowerCase()
+        );
+
+        if (sharesParentResource && parentCrop) {
+          results.set(subKey, parentCrop);
+          sub.diagram_url = parentCrop.localUrl;
+          continue;
+        }
+
+        const hasValidBox = sub.bounding_box && Array.isArray(sub.bounding_box) && sub.bounding_box.length >= 4;
         const hasSubDiagram = Boolean(
           sub.has_diagram ||
-          (sub.bounding_box && Array.isArray(sub.bounding_box) && sub.bounding_box.length >= 4) ||
+          hasValidBox ||
           (sub.diagram_source !== null && sub.diagram_source !== undefined)
         );
 
         if (!hasSubDiagram) continue;
 
+        // If no explicit bounding box and sub is not flagged has_diagram, avoid blind full-page crop
+        if (!hasValidBox && !sub.has_diagram) continue;
+
         try {
-          const isFromInsert = sub.diagram_source === 'insert' && insertDoc !== null;
+          const isFromInsert = (sub.diagram_source === 'insert' || (!sub.diagram_source && q.diagram_source === 'insert')) && insertDoc !== null;
           const targetDoc = isFromInsert ? insertDoc! : qpDoc;
           const pageCache = isFromInsert ? insertPageCache : qpPageCache;
           const sourceLabel = isFromInsert ? 'Insert Booklet' : 'Question Paper';
 
           const targetPage = isFromInsert
-            ? (sub.insert_page_number && sub.insert_page_number > 0 ? sub.insert_page_number : 1)
-            : (sub.page_number && sub.page_number > 0 ? sub.page_number : (q.page_number || 1));
+            ? (sub.insert_page_number && sub.insert_page_number > 0
+                ? sub.insert_page_number
+                : (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1))
+            : (sub.page_number && sub.page_number > 0
+                ? sub.page_number
+                : (q.page_number && q.page_number > 0 ? q.page_number : 1));
 
           const safePageNumber = Math.max(1, Math.min(targetDoc.numPages, targetPage));
 
@@ -791,7 +816,6 @@ export async function cropDiagramsLocally(
             pageNumber: safePageNumber,
           };
 
-          const subKey = `${q.question_number}_sub_${sIdx}`;
           results.set(subKey, subCropItem);
           sub.diagram_url = localUrl;
         } catch (subCropErr) {

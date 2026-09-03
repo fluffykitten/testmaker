@@ -86,7 +86,7 @@ export async function saveExtractedQuestions(
   _insertFile?: File | null,
   onProgress?: (status: string) => void
 ): Promise<number> {
-  const { paper_metadata, questions } = result;
+  const { paper_metadata, questions, insert_resources } = result;
 
   // 1. Upload cropped diagram blobs to Supabase Storage (WebP compressed)
   let permanentDiagramUrls = new Map<string, string>();
@@ -112,36 +112,44 @@ export async function saveExtractedQuestions(
   // 4. Insert questions with permanent Supabase public URLs
   onProgress?.(`Inserting ${questions.length} questions into database…`);
 
-  const records = questions.map((q: ExtractedQuestion) => ({
-    syllabus_id: syllabusId,
-    year: q.year || paper_metadata.year,
-    series: q.series || paper_metadata.series,
-    paper_number: q.paper_number || paper_metadata.paper_number,
-    question_number: q.question_number,
-    parent_question_id: q.parent_question_id || null,
-    question_text: q.question_text,
-    question_style: q.question_style,
-    topic: q.topic,
-    sub_topic: q.sub_topic || null,
-    difficulty: q.estimated_difficulty,
-    marks: q.total_marks,
-    diagram_url: permanentDiagramUrls.get(q.question_number) || null,
-    diagram_source: q.diagram_source || null,
-    resource_ref: q.resource_ref || null,
-    insert_page_number: q.insert_page_number || null,
-    options: q.options || null,
-    sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
-      ...sub,
-      diagram_source: sub.diagram_source || null,
-      resource_ref: sub.resource_ref || null,
-      insert_page_number: sub.insert_page_number || null,
-      diagram_url:
-        permanentDiagramUrls.get(`${q.question_number}_sub_${sIdx}`) ||
-        sub.diagram_url ||
-        null,
-    })),
-    mark_scheme: q.mark_scheme || null,
-  }));
+  const records = questions.map((q: ExtractedQuestion) => {
+    // Preserve full insert_resources catalog inside question mark_scheme JSONB metadata
+    const ms = typeof q.mark_scheme === 'object' && q.mark_scheme !== null ? { ...q.mark_scheme } : { raw: q.mark_scheme };
+    if (insert_resources && insert_resources.length > 0) {
+      (ms as any)._insert_resources = insert_resources;
+    }
+
+    return {
+      syllabus_id: syllabusId,
+      year: q.year || paper_metadata.year,
+      series: q.series || paper_metadata.series,
+      paper_number: q.paper_number || paper_metadata.paper_number,
+      question_number: q.question_number,
+      parent_question_id: q.parent_question_id || null,
+      question_text: q.question_text,
+      question_style: q.question_style,
+      topic: q.topic,
+      sub_topic: q.sub_topic || null,
+      difficulty: q.estimated_difficulty,
+      marks: q.total_marks,
+      diagram_url: permanentDiagramUrls.get(q.question_number) || null,
+      diagram_source: q.diagram_source || null,
+      resource_ref: q.resource_ref || null,
+      insert_page_number: q.insert_page_number || null,
+      options: q.options || null,
+      sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
+        ...sub,
+        diagram_source: sub.diagram_source || null,
+        resource_ref: sub.resource_ref || null,
+        insert_page_number: sub.insert_page_number || null,
+        diagram_url:
+          permanentDiagramUrls.get(`${q.question_number}_sub_${sIdx}`) ||
+          sub.diagram_url ||
+          null,
+      })),
+      mark_scheme: ms,
+    };
+  });
 
   let { data, error } = await supabase
     .from('questions')
@@ -187,6 +195,25 @@ export async function saveExtractedQuestions(
 
   // 5. Clean up temporary local Object URLs
   revokeLocalDiagramUrls(diagramData);
+
+  // 6. Attempt to persist insert_resources to dedicated table if available
+  if (insert_resources && insert_resources.length > 0) {
+    try {
+      await supabase.from('insert_resources').insert(
+        insert_resources.map((res) => ({
+          syllabus_id: syllabusId,
+          resource_id: res.id,
+          title: res.title,
+          page_number: res.page_number,
+          target_questions: res.target_questions || [],
+          diagram_url: res.diagram_url || null,
+          text_content: res.text_content || null,
+        })) as any
+      );
+    } catch {
+      // Safely ignored if insert_resources table does not exist in DB; catalog is already saved in questions JSONB
+    }
+  }
 
   const insertedCount = data?.length ?? 0;
   onProgress?.(`Successfully saved ${insertedCount} questions.`);
@@ -375,6 +402,7 @@ export async function runExtractionPipeline(
               domain: options.domain || 'stem',
               hasInsertBooklet: Boolean(insertFile),
               apiKey: assignedKey,
+              extractResourceCatalog: idx === 0,
             }
           );
         })

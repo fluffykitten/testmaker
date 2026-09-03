@@ -9,6 +9,12 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 
 export type StudentExamStatus = 'active' | 'warning' | 'locked' | 'submitted' | 'offline';
 
+export interface ProctorViolationSummary {
+  timestamp: string;
+  detail: string;
+  type?: string;
+}
+
 export interface ProctorStudentState {
   studentId: string;           // Unique session hash or candidate identifier
   studentName: string;
@@ -25,6 +31,7 @@ export interface ProctorStudentState {
   multiMonitorDetected: boolean;
   deviceOS?: string;
   lastHeartbeat: number;       // Unix timestamp (ms)
+  recentViolations?: ProctorViolationSummary[];
 }
 
 export type ProctorCommandType = 'unlock' | 'add_time' | 'force_submit' | 'announcement';

@@ -29,3 +29,6 @@ scratch/
 
 # Local Netlify folder
 .netlify
+
+# Local test & backup data
+backup/

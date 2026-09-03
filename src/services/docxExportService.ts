@@ -1051,7 +1051,7 @@ export async function exportStudentPaperDocx(
                 indent: { left: 800 },
                 tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX, leader: leaderStyle }],
                 children: [new TextRun({ text: '\t', size: 24, font: fontName })],
-                spacing: { before: 160, after: 160, line: 360 },
+                spacing: { before: 200, after: 200, line: 420 },
               })
             );
           }
@@ -1066,7 +1066,7 @@ export async function exportStudentPaperDocx(
             indent: { left: 450 },
             tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX, leader: leaderStyle }],
             children: [new TextRun({ text: '\t', size: 24, font: fontName })],
-            spacing: { before: 160, after: 160, line: 360 },
+            spacing: { before: 200, after: 200, line: 420 },
           })
         );
       }
@@ -1433,7 +1433,7 @@ export async function exportAnswerBookletDocx(
               indent: { left: 400 },
               tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX, leader: leaderStyle }],
               children: [new TextRun('\t')],
-              spacing: { before: 80, after: 80 },
+              spacing: { before: 200, after: 200, line: 420 },
             })
           );
         }
@@ -1445,7 +1445,7 @@ export async function exportAnswerBookletDocx(
           new Paragraph({
             tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX, leader: leaderStyle }],
             children: [new TextRun('\t')],
-            spacing: { before: 80, after: 80 },
+            spacing: { before: 200, after: 200, line: 420 },
           })
         );
       }

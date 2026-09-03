@@ -549,6 +549,11 @@ export function StudentQuizRunner({
             lockReason: detail,
             multiMonitorDetected,
             lastHeartbeat: Date.now(),
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
           },
           {
             type,
@@ -798,6 +803,11 @@ export function StudentQuizRunner({
       multiMonitorDetected,
       deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
       lastHeartbeat: Date.now(),
+      recentViolations: violations.map((v) => ({
+        timestamp: v.timestamp,
+        detail: v.detail,
+        type: v.type,
+      })),
     };
 
     const handleCommand = (cmd: ProctorCommand) => {
@@ -839,6 +849,11 @@ export function StudentQuizRunner({
           multiMonitorDetected: false,
           deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
           lastHeartbeat: Date.now(),
+          recentViolations: violations.map((v) => ({
+            timestamp: v.timestamp,
+            detail: v.detail,
+            type: v.type,
+          })),
         };
         sendStudentHeartbeat(submitTelemetry);
         sendStudentViolation(resolvedQuizCode, submitTelemetry, {
@@ -891,6 +906,11 @@ export function StudentQuizRunner({
         multiMonitorDetected: isSubmittingOrFinished ? false : multiMonitorDetected,
         deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
         lastHeartbeat: Date.now(),
+        recentViolations: violations.map((v) => ({
+          timestamp: v.timestamp,
+          detail: v.detail,
+          type: v.type,
+        })),
       });
     }, 400);
 
@@ -1016,6 +1036,11 @@ export function StudentQuizRunner({
               isCorrect = det.isCorrect;
               aiFeedback = det.feedback;
               gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+            } else {
+              qEarned = 0;
+              isCorrect = false;
+              aiFeedback = 'Awaiting examiner AI evaluation';
+              gradingMethod = 'deterministic';
             }
           }
 
@@ -4209,6 +4234,13 @@ export function StudentQuizRunner({
         isOpen={showResourceBooklet}
         onClose={() => setShowResourceBooklet(false)}
         questions={questions}
+        resources={(() => {
+          for (const q of questions) {
+            const list = (q.mark_scheme as any)?._insert_resources;
+            if (Array.isArray(list) && list.length > 0) return list;
+          }
+          return undefined;
+        })()}
         activeResourceRef={currentQuestion?.resource_ref}
         subject={headerConfig?.subject || 'Geography'}
         title={`${title} — Resource Booklet`}

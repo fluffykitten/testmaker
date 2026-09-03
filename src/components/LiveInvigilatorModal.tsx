@@ -109,6 +109,36 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
           [student.studentId]: student,
         };
       });
+
+      // Backfill / reconstruct missing activity logs from recentViolations telemetry
+      if (student.recentViolations && student.recentViolations.length > 0) {
+        setLogEvents((prev) => {
+          const existingKeys = new Set(prev.map((e) => `${e.studentName}_${e.timestamp}_${e.detail}`));
+          const recovered: ProctorLogEvent[] = [];
+
+          student.recentViolations!.forEach((v, idx) => {
+            const key = `${student.studentName}_${v.timestamp}_${v.detail}`;
+            if (!existingKeys.has(key)) {
+              existingKeys.add(key);
+              recovered.push({
+                id: `recov_${student.studentId}_${idx}_${v.timestamp || Date.now()}`,
+                timestamp: v.timestamp || new Date().toISOString(),
+                studentName: student.studentName,
+                candidateNumber: student.candidateNumber,
+                type: (v.type as any) || 'blur',
+                detail: v.detail,
+                severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+              });
+            }
+          });
+
+          if (recovered.length === 0) return prev;
+          const merged = [...recovered, ...prev].sort(
+            (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+          return merged.slice(0, 200);
+        });
+      }
     };
 
     const handleLogEvent = (event: ProctorLogEvent) => {
@@ -724,6 +754,20 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
                           <span className="lip-telemetry-label">Violations:</span>
                           <span
                             className={`lip-telemetry-val ${s.violationsCount > 0 ? 'lip-telemetry-val--violation' : ''}`}
+                            title={
+                              s.recentViolations && s.recentViolations.length > 0
+                                ? s.recentViolations
+                                    .map(
+                                      (v, i) =>
+                                        `${i + 1}. [${new Date(v.timestamp).toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                          second: '2-digit',
+                                        })}] ${v.detail}`
+                                    )
+                                    .join('\n')
+                                : s.lastViolation || undefined
+                            }
                           >
                             {s.violationsCount} strikes
                           </span>

@@ -469,10 +469,10 @@ export function openStudentPaperPrintWindow(
       white-space: nowrap;
     }
     .ans-lines {
-      margin: 12px 0 12px 26px;
+      margin: 14px 0 16px 26px;
       display: flex;
       flex-direction: column;
-      gap: 26px;
+      gap: 34px;
     }
     .ans-line {
       border-bottom: ${answerLineBorder};
@@ -595,9 +595,9 @@ export function openStudentPaperPrintWindow(
             content += `
               <div class="sub-block">
                 <div class="sub-row">
-                  <span class="sub-id">${sub.sub_id}</span>
-                  <span class="sub-text">${convertMarkdownTablesToHtml(sub.question_text)}</span>
-                  <span class="marks">[${sub.marks}]</span>
+                  <div class="sub-id">${sub.sub_id}</div>
+                  <div class="sub-text">${convertMarkdownTablesToHtml(sub.question_text)}</div>
+                  <div class="marks">[${sub.marks}]</div>
                 </div>
             `;
 
@@ -614,7 +614,7 @@ export function openStudentPaperPrintWindow(
             }
 
             if (includeAnswerLines && !isSeparate) {
-              const lineCount = Math.min(6, Math.max(2, (sub.marks || 1) * linesPerMark));
+              const lineCount = Math.max(2, (sub.marks || 1) * linesPerMark);
               content += `<div class="ans-lines">`;
               for (let li = 0; li < lineCount; li++) {
                 content += `<div class="ans-line"></div>`;
@@ -625,7 +625,7 @@ export function openStudentPaperPrintWindow(
             content += `</div>`;
           });
         } else if (includeAnswerLines && !isSeparate && (!q.options || q.options.length === 0)) {
-          const lineCount = Math.min(6, Math.max(2, (q.marks || 1) * linesPerMark));
+          const lineCount = Math.max(2, (q.marks || 1) * linesPerMark);
           content += `<div class="ans-lines">`;
           for (let li = 0; li < lineCount; li++) {
             content += `<div class="ans-line"></div>`;
@@ -1007,7 +1007,7 @@ export function openAnswerBookletPrintWindow(
     .q-booklet-item { margin-bottom: 24px; page-break-inside: avoid; }
     .q-booklet-title { font-weight: bold; font-size: 16px; color: #1e40af; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 10px; }
     .sub-booklet-id { font-weight: bold; font-size: 14px; margin-bottom: 6px; }
-    .ans-lines { display: flex; flex-direction: column; gap: 26px; margin-bottom: 16px; }
+    .ans-lines { display: flex; flex-direction: column; gap: 34px; margin-bottom: 18px; }
     .ans-line { border-bottom: ${answerLineBorder}; height: 1px; width: 100%; }
     .turn-over { text-align: right; font-style: italic; font-size: 12px; color: #64748b; margin-top: 16px; }
   </style>
