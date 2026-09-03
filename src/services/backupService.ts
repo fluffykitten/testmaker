@@ -82,14 +82,17 @@ async function fetchAllTableRows<T = any>(
 }
 
 /**
- * Collects all unique diagram URLs referenced in questions and sub-questions.
+ * Collects all unique diagram and audio URLs referenced in questions and sub-questions.
  */
-function collectDiagramUrls(questions: Question[]): Set<string> {
+function collectMediaUrls(questions: Question[]): Set<string> {
   const urls = new Set<string>();
 
   for (const q of questions) {
     if (q.diagram_url && typeof q.diagram_url === 'string' && q.diagram_url.startsWith('http')) {
       urls.add(q.diagram_url);
+    }
+    if (q.audio_url && typeof q.audio_url === 'string' && q.audio_url.startsWith('http')) {
+      urls.add(q.audio_url);
     }
     // Check sub_questions if present
     const subQuestions = (q as any).sub_questions;
@@ -97,6 +100,9 @@ function collectDiagramUrls(questions: Question[]): Set<string> {
       for (const sub of subQuestions) {
         if (sub?.diagram_url && typeof sub.diagram_url === 'string' && sub.diagram_url.startsWith('http')) {
           urls.add(sub.diagram_url);
+        }
+        if (sub?.audio_url && typeof sub.audio_url === 'string' && sub.audio_url.startsWith('http')) {
+          urls.add(sub.audio_url);
         }
       }
     }
@@ -139,7 +145,7 @@ export async function getBackupEstimate(): Promise<{
  * - data/custom_tests.json
  * - data/app_config.json
  * - data/quiz_submissions.json
- * - diagrams/* (all binary diagram image files)
+ * - diagrams/* (all binary diagram image & audio files)
  */
 export async function createFullBackupArchive(
   onProgress?: BackupProgressCallback
@@ -174,8 +180,8 @@ export async function createFullBackupArchive(
   dataFolder.file('app_config.json', JSON.stringify(appConfig, null, 2));
   dataFolder.file('quiz_submissions.json', JSON.stringify(quizSubmissions, null, 2));
 
-  // ─── Step 3: Fetch & Pack Storage Diagram Blobs ─────────────────────────
-  const diagramUrls = Array.from(collectDiagramUrls(questions));
+  // ─── Step 3: Fetch & Pack Storage Diagram & Audio Blobs ─────────────────
+  const mediaUrls = Array.from(collectMediaUrls(questions));
   const diagramsFolder = zip.folder('diagrams')!;
   const diagramMapping: Record<string, string> = {};
   const usedFileNames = new Set<string>();
@@ -199,18 +205,18 @@ export async function createFullBackupArchive(
     return unique;
   }
 
-  // Pre-assign collision-free filenames for all unique diagram URLs
-  for (const url of diagramUrls) {
+  // Pre-assign collision-free filenames for all unique media URLs
+  for (const url of mediaUrls) {
     diagramMapping[url] = getUniqueArchiveFileName(url);
   }
 
-  if (diagramUrls.length > 0) {
-    onProgress?.(`Backing up ${diagramUrls.length} exam diagrams from storage…`, 40);
+  if (mediaUrls.length > 0) {
+    onProgress?.(`Backing up ${mediaUrls.length} exam diagrams and audio assets from storage…`, 40);
 
-    // Fetch images in concurrent batches of 8 to balance speed and network stability
+    // Fetch images/audio in concurrent batches of 8 to balance speed and network stability
     const BATCH_SIZE = 8;
-    for (let i = 0; i < diagramUrls.length; i += BATCH_SIZE) {
-      const batch = diagramUrls.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < mediaUrls.length; i += BATCH_SIZE) {
+      const batch = mediaUrls.slice(i, i + BATCH_SIZE);
       await Promise.all(
         batch.map(async (url) => {
           try {
@@ -222,14 +228,14 @@ export async function createFullBackupArchive(
               diagramsPacked++;
             }
           } catch (err) {
-            console.warn(`[BackupService] Failed to download diagram ${url}:`, err);
+            console.warn(`[BackupService] Failed to download media asset ${url}:`, err);
           }
         })
       );
 
-      const pct = 40 + Math.round(((i + batch.length) / diagramUrls.length) * 45);
+      const pct = 40 + Math.round(((i + batch.length) / mediaUrls.length) * 45);
       onProgress?.(
-        `Archiving diagrams (${diagramsPacked}/${diagramUrls.length})…`,
+        `Archiving diagrams & audio (${diagramsPacked}/${mediaUrls.length})…`,
         Math.min(85, pct)
       );
     }

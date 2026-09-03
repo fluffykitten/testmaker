@@ -6,6 +6,7 @@
 
 import { supabase } from '../lib/supabase';
 import { extractDiagramFileName, type BackupManifest } from './backupService';
+import { getSavedSettings, saveSettings } from '../lib/settings';
 import type { Question, Syllabus, CustomTest } from '../types/database';
 
 export interface RestoreInspectionResult {
@@ -38,6 +39,21 @@ export interface RestoreResult {
 
 export interface RestoreProgressCallback {
   (status: string, percentage: number): void;
+}
+
+function getStorageMimeType(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webm')) return 'audio/webm';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  return 'application/octet-stream';
 }
 
 /**
@@ -152,22 +168,24 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
 }
 
 /**
- * Re-uploads diagram files from archive into Supabase Storage and maps old URLs to new URLs.
+ * Re-uploads diagram and audio files from archive into Supabase Storage and maps old URLs to new URLs.
+ * Returns both the urlMap and any captured storage errors for maximum diagnostic visibility.
  */
 async function restoreDiagramsToStorage(
   zip: any,
   onProgress?: (count: number, total: number) => void
-): Promise<Map<string, string>> {
+): Promise<{ urlMap: Map<string, string>; storageErrors: string[] }> {
   const urlMap = new Map<string, string>();
+  const storageErrors: string[] = [];
   const diagramsFolder = zip.folder('diagrams');
-  if (!diagramsFolder) return urlMap;
+  if (!diagramsFolder) return { urlMap, storageErrors };
 
   const entries: { path: string; file: any }[] = [];
   diagramsFolder.forEach((relativePath: string, file: any) => {
     if (!file.dir) entries.push({ path: relativePath, file });
   });
 
-  if (entries.length === 0) return urlMap;
+  if (entries.length === 0) return { urlMap, storageErrors };
 
   // Upload in batches of 6
   const BATCH_SIZE = 6;
@@ -180,7 +198,7 @@ async function restoreDiagramsToStorage(
           const blob = await file.async('blob');
           const fileName = path.split('/').pop() || path;
           const storagePath = `diagrams/${fileName}`;
-          const contentType = fileName.endsWith('.webp') ? 'image/webp' : 'image/png';
+          const contentType = getStorageMimeType(fileName);
 
           const { error } = await supabase.storage
             .from('exam-diagrams')
@@ -197,9 +215,15 @@ async function restoreDiagramsToStorage(
             if (data?.publicUrl) {
               urlMap.set(fileName, data.publicUrl);
             }
+          } else {
+            const hint =
+              error.message.includes('not found') || error.message.includes('Bucket')
+                ? " (Please ensure the 'exam-diagrams' public bucket exists in Supabase Storage)"
+                : '';
+            storageErrors.push(`Storage upload failed for ${fileName}: ${error.message}${hint}`);
           }
-        } catch (err) {
-          console.warn(`[RestoreService] Failed to upload diagram ${path}:`, err);
+        } catch (err: any) {
+          storageErrors.push(`Failed to upload media ${path}: ${err?.message || 'Storage error'}`);
         }
       })
     );
@@ -207,54 +231,61 @@ async function restoreDiagramsToStorage(
     onProgress?.(Math.min(entries.length, i + batch.length), entries.length);
   }
 
-  return urlMap;
+  return { urlMap, storageErrors };
 }
 
 /**
- * Rewrites a question's diagram_url using the newly uploaded storage URLs,
+ * Rewrites a question's diagram_url and audio_url using newly uploaded storage URLs,
  * checking manifest.diagramMapping first for collision-safe lookup.
  */
-function rewriteQuestionDiagramUrls(
+function rewriteQuestionMediaUrls(
   q: Question,
-  diagramUrlMap: Map<string, string>,
+  mediaUrlMap: Map<string, string>,
   diagramMapping?: Record<string, string>
 ): Question {
-  function getNewDiagramUrl(origUrl: string): string {
+  function getNewMediaUrl(origUrl: string | null | undefined): string | null {
+    if (!origUrl || typeof origUrl !== 'string' || !origUrl.startsWith('http')) {
+      return origUrl || null;
+    }
     // 1. Try manifest mapping
     if (diagramMapping && diagramMapping[origUrl]) {
       const mappedFileName = diagramMapping[origUrl];
-      if (diagramUrlMap.has(mappedFileName)) {
-        return diagramUrlMap.get(mappedFileName)!;
+      if (mediaUrlMap.has(mappedFileName)) {
+        return mediaUrlMap.get(mappedFileName)!;
       }
     }
     // 2. Fallback to filename extraction
     const fileName = extractDiagramFileName(origUrl);
-    if (diagramUrlMap.has(fileName)) {
-      return diagramUrlMap.get(fileName)!;
+    if (mediaUrlMap.has(fileName)) {
+      return mediaUrlMap.get(fileName)!;
     }
     return origUrl;
   }
 
-  let updatedUrl = q.diagram_url;
-  if (q.diagram_url) {
-    updatedUrl = getNewDiagramUrl(q.diagram_url);
-  }
+  const updatedDiagramUrl = getNewMediaUrl(q.diagram_url);
+  const updatedAudioUrl = getNewMediaUrl(q.audio_url);
 
-  // Also rewrite any sub-questions with diagrams
+  // Also rewrite any sub-questions with diagrams or audio
   const subQuestions = (q as any).sub_questions;
   let updatedSubs = subQuestions;
   if (Array.isArray(subQuestions)) {
     updatedSubs = subQuestions.map((sub: any) => {
-      if (sub?.diagram_url) {
-        return { ...sub, diagram_url: getNewDiagramUrl(sub.diagram_url) };
-      }
-      return sub;
+      let subDiagram = sub?.diagram_url;
+      let subAudio = sub?.audio_url;
+      if (subDiagram) subDiagram = getNewMediaUrl(subDiagram);
+      if (subAudio) subAudio = getNewMediaUrl(subAudio);
+      return {
+        ...sub,
+        diagram_url: subDiagram,
+        audio_url: subAudio,
+      };
     });
   }
 
   return {
     ...q,
-    diagram_url: updatedUrl,
+    diagram_url: updatedDiagramUrl,
+    audio_url: updatedAudioUrl,
     sub_questions: updatedSubs,
   } as Question;
 }
@@ -302,24 +333,29 @@ export async function executeRestore(
     // ─── Optional: If Replace mode, clear existing questions & tests ───────
     if (options.mode === 'replace') {
       onProgress?.('Clearing existing records for clean replace…', 15);
-      try {
-        // Delete dependent custom_tests first, then questions
-        await (supabase.from('custom_tests') as any).delete().neq('id', '00000000-0000-0000-0000-000000000000');
-        await (supabase.from('questions') as any).delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      } catch (err: any) {
-        errors.push(`Replace mode clean error: ${err?.message || 'Could not clear existing records'}`);
-      }
+      const { error: testDelErr } = await (supabase.from('custom_tests') as any)
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (testDelErr) errors.push(`Replace mode error (custom_tests): ${testDelErr.message}`);
+
+      const { error: qDelErr } = await (supabase.from('questions') as any)
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (qDelErr) errors.push(`Replace mode error (questions): ${qDelErr.message}`);
     }
 
-    // ─── Step 1: Re-upload storage diagrams ───────────────────────────────
-    onProgress?.('Restoring exam diagrams to Supabase Storage…', 20);
-    const diagramUrlMap = await restoreDiagramsToStorage(zip, (done, total) => {
+    // ─── Step 1: Re-upload storage diagrams & audio ───────────────────────
+    onProgress?.('Restoring exam diagrams and audio to Supabase Storage…', 20);
+    const { urlMap: mediaUrlMap, storageErrors } = await restoreDiagramsToStorage(zip, (done, total) => {
       onProgress?.(
-        `Uploading diagrams (${done}/${total})…`,
+        `Uploading media (${done}/${total})…`,
         20 + Math.round((done / total) * 35)
       );
     });
-    diagramsRestored = diagramUrlMap.size;
+    diagramsRestored = mediaUrlMap.size;
+    if (storageErrors.length > 0) {
+      errors.push(...storageErrors);
+    }
 
     // ─── Step 2: Restore Syllabuses (Batched) ─────────────────────────────
     onProgress?.('Restoring syllabuses…', 60);
@@ -338,7 +374,7 @@ export async function executeRestore(
       }
     }
 
-    // ─── Step 3: Restore Questions ────────────────────────────────────────
+    // ─── Step 3: Restore Questions with Schema Drift Fallback ──────────────
     onProgress?.('Restoring question bank records…', 70);
     const questionsFile = zip.file('data/questions.json');
     if (questionsFile) {
@@ -347,12 +383,56 @@ export async function executeRestore(
         const BATCH_SIZE = 100;
         for (let i = 0; i < qList.length; i += BATCH_SIZE) {
           const batch = qList.slice(i, i + BATCH_SIZE).map((q) => {
-            return rewriteQuestionDiagramUrls(q, diagramUrlMap, diagramMapping);
+            return rewriteQuestionMediaUrls(q, mediaUrlMap, diagramMapping);
           });
 
-          const { error } = await (supabase.from('questions') as any).upsert(batch, {
+          let { error } = await (supabase.from('questions') as any).upsert(batch, {
             onConflict: 'id',
           });
+
+          // Schema drift fallback: if target Supabase table doesn't have newer columns yet
+          if (
+            error &&
+            error.message &&
+            (error.message.includes('diagram_source') ||
+              error.message.includes('resource_ref') ||
+              error.message.includes('insert_page_number') ||
+              error.message.includes('audio_url') ||
+              error.message.includes('audio_metadata'))
+          ) {
+            console.warn(
+              '[RestoreService] Extended columns missing in target database; falling back to core schema:',
+              error.message
+            );
+            const fallbackBatch = batch.map(
+              ({
+                diagram_source,
+                resource_ref,
+                insert_page_number,
+                audio_url,
+                audio_metadata,
+                mark_scheme,
+                ...rest
+              }: any) => {
+                const ms =
+                  typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
+                if (audio_url) (ms as any)._audio_url = audio_url;
+                if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
+                if (diagram_source) (ms as any)._diagram_source = diagram_source;
+                if (resource_ref) (ms as any)._resource_ref = resource_ref;
+                if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
+                return {
+                  ...rest,
+                  mark_scheme: ms,
+                };
+              }
+            );
+
+            const retry = await (supabase.from('questions') as any).upsert(fallbackBatch, {
+              onConflict: 'id',
+            });
+            error = retry.error;
+          }
 
           if (error) {
             errors.push(`Questions batch ${i}-${i + batch.length}: ${error.message}`);
@@ -368,15 +448,33 @@ export async function executeRestore(
       }
     }
 
-    // ─── Step 4: Restore Custom Tests ─────────────────────────────────────
+    // ─── Step 4: Restore Custom Tests with Foreign Key Fallback ───────────
     onProgress?.('Restoring custom tests…', 86);
     const testsFile = zip.file('data/custom_tests.json');
     if (testsFile) {
       const tList = JSON.parse(await testsFile.async('string')) as CustomTest[];
       if (Array.isArray(tList) && tList.length > 0) {
-        const { error } = await (supabase.from('custom_tests') as any).upsert(tList, {
+        let { error } = await (supabase.from('custom_tests') as any).upsert(tList, {
           onConflict: 'id',
         });
+
+        // Foreign key fallback: if user_id does not exist in target project's auth.users
+        if (
+          error &&
+          (error.message.includes('user_id') ||
+            error.message.includes('foreign key') ||
+            error.message.includes('fkey') ||
+            error.message.includes('auth.users') ||
+            error.message.includes('users'))
+        ) {
+          console.warn('[RestoreService] Foreign key constraint on user_id failed, retrying with user_id: null fallback');
+          const sanitized = tList.map(({ user_id, ...rest }) => ({ ...rest, user_id: null }));
+          const retry = await (supabase.from('custom_tests') as any).upsert(sanitized, {
+            onConflict: 'id',
+          });
+          error = retry.error;
+        }
+
         if (error) errors.push(`Custom tests: ${error.message}`);
         else customTestsRestored = tList.length;
       }
@@ -428,11 +526,37 @@ export async function executeRestore(
       }
     }
 
-    // ─── Step 7: Notify application ───────────────────────────────────────
-    onProgress?.('Finalizing restore…', 98);
+    // ─── Step 7: Sync Client LocalStorage & Notify Application ────────────
+    onProgress?.('Synchronizing local caches & finalizing restore…', 98);
     if (typeof window !== 'undefined') {
+      // Sync published quizzes and school classes to localStorage
+      if (appConfigFile) {
+        try {
+          const cfgList = JSON.parse(await appConfigFile.async('string'));
+          if (Array.isArray(cfgList)) {
+            const pubQuizzes = cfgList.find((c: any) => c.key === 'published_quizzes');
+            if (pubQuizzes?.value) {
+              localStorage.setItem('fluffykitten_published_quizzes', pubQuizzes.value);
+              window.dispatchEvent(new Event('published_quizzes_updated'));
+            }
+            const schoolClasses = cfgList.find((c: any) => c.key === 'school_classes');
+            if (schoolClasses?.value) {
+              const parsed = JSON.parse(schoolClasses.value);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                const cur = getSavedSettings();
+                saveSettings({ ...cur, classes: parsed });
+                window.dispatchEvent(new Event('settings_updated'));
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[RestoreService] Cache sync note:', e);
+        }
+      }
+
       window.dispatchEvent(new Event('questions_updated'));
       window.dispatchEvent(new Event('tests_updated'));
+      window.dispatchEvent(new Event('quiz_submissions_updated'));
     }
 
     onProgress?.(errors.length === 0 ? 'Restore completed successfully!' : 'Restore completed with notes.', 100);
