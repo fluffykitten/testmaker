@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, memo } from 'react';
 import type { Question } from '../types/database';
 import { isQuestionBookmarked, toggleBookmarkQuestion } from '../services/questionBookmarkService';
 import { getQuestionTags, addQuestionTag, removeQuestionTag } from '../services/questionTagService';
@@ -17,7 +17,7 @@ interface QuestionCardProps {
   showMarkSchemeDefault?: boolean;
 }
 
-export function QuestionCard({
+function QuestionCardComponent({
   question,
   isSelected = false,
   onToggleSelect,
@@ -218,6 +218,8 @@ export function QuestionCard({
               src={question.diagram_url}
               alt={`Diagram for Question ${question.question_number}`}
               className="q-diagram-img"
+              loading="lazy"
+              decoding="async"
               onClick={() => onViewDetails?.(question)}
               title="Click to view high resolution diagram"
             />
@@ -303,6 +305,8 @@ export function QuestionCard({
                       src={sub.diagram_url}
                       alt={`Diagram for ${sub.sub_id}`}
                       className="q-sub-diagram-img"
+                      loading="lazy"
+                      decoding="async"
                       onClick={() => onViewDetails?.(question)}
                       title={`Click to view diagram for ${sub.sub_id}`}
                     />
@@ -494,3 +498,5 @@ export function QuestionCard({
     </div>
   );
 }
+
+export const QuestionCard = memo(QuestionCardComponent);

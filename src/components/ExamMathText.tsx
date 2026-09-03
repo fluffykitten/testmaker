@@ -20,6 +20,32 @@ const KATEX_OPTIONS = {
   },
 };
 
+// High-performance bounded in-memory cache for rendered KaTeX HTML strings
+const KATEX_CACHE = new Map<string, string>();
+const MAX_KATEX_CACHE_SIZE = 1500;
+
+function renderCachedKaTeX(math: string, displayMode: boolean): string {
+  const cacheKey = `${displayMode ? 'D' : 'I'}:${math}`;
+  const cached = KATEX_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  const html = katex.renderToString(math, {
+    ...KATEX_OPTIONS,
+    displayMode,
+  });
+
+  if (KATEX_CACHE.size >= MAX_KATEX_CACHE_SIZE) {
+    const it = KATEX_CACHE.keys();
+    for (let i = 0; i < 300; i++) {
+      const k = it.next().value;
+      if (k) KATEX_CACHE.delete(k);
+    }
+  }
+
+  KATEX_CACHE.set(cacheKey, html);
+  return html;
+}
+
 const SUB_MAP: Record<string, string> = {
   '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
   '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
@@ -318,10 +344,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
       const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
-        const html = katex.renderToString(math, {
-          ...KATEX_OPTIONS,
-          displayMode: true,
-        });
+        const html = renderCachedKaTeX(math, true);
         return (
           <span
             key={idx}
@@ -351,10 +374,7 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       // In LaTeX/KaTeX math mode, % is a comment character unless escaped as \%
       const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
-        const html = katex.renderToString(math, {
-          ...KATEX_OPTIONS,
-          displayMode: false,
-        });
+        const html = renderCachedKaTeX(math, false);
         return (
           <span
             key={idx}
@@ -436,7 +456,7 @@ function parseTickBoxLine(line: string): { text: string; checked: boolean; posit
 /**
  * Parses markdown table blocks and mixed text/KaTeX
  */
-export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className = '' }) => {
+export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, className = '' }) => {
   if (content === null || content === undefined) return null;
 
   let strContent = '';
@@ -630,4 +650,6 @@ export const ExamMathText: React.FC<ExamMathTextProps> = ({ content, className =
       })}
     </div>
   );
-};
+});
+
+ExamMathText.displayName = 'ExamMathText';

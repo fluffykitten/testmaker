@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { parseMcqOption } from '../utils/mcqUtils';
@@ -15,7 +15,7 @@ interface TestQuestionItemProps {
   onGenerateVariant?: (question: Question) => void;
 }
 
-export function TestQuestionItem({
+function TestQuestionItemComponent({
   question,
   index,
   totalQuestions,
@@ -143,6 +143,8 @@ export function TestQuestionItem({
               src={question.diagram_url}
               alt={`Diagram for Question ${index + 1}`}
               className="test-q-diagram-img"
+              loading="lazy"
+              decoding="async"
             />
           </div>
         )}
@@ -227,3 +229,5 @@ export function TestQuestionItem({
     </div>
   );
 }
+
+export const TestQuestionItem = memo(TestQuestionItemComponent);

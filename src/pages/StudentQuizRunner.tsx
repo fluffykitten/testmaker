@@ -2791,6 +2791,8 @@ export function StudentQuizRunner({
                         <img
                           src={q.diagram_url}
                           alt={`Diagram for Question ${idx + 1}`}
+                          loading="lazy"
+                          decoding="async"
                           style={{
                             maxWidth: '100%',
                             maxHeight: '340px',
@@ -2840,6 +2842,8 @@ export function StudentQuizRunner({
                                   <img
                                     src={subQ.diagram_url}
                                     alt={`Diagram for Part (${sub.subId})`}
+                                    loading="lazy"
+                                    decoding="async"
                                     style={{
                                       maxWidth: '100%',
                                       maxHeight: '260px',
@@ -3477,6 +3481,8 @@ export function StudentQuizRunner({
                   src={currentQuestion.diagram_url}
                   alt={`Diagram for Question ${currentIndex + 1}`}
                   className="sq-q-diagram-img"
+                  loading="lazy"
+                  decoding="async"
                   onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
                   title="Click to zoom diagram"
                 />
@@ -3597,6 +3603,8 @@ export function StudentQuizRunner({
                             src={sub.diagram_url}
                             alt={`Diagram for ${sub.sub_id}`}
                             className="sq-q-diagram-img"
+                            loading="lazy"
+                            decoding="async"
                             style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
                             onClick={() => setZoomedImage(sub.diagram_url || null)}
                             title="Click to zoom diagram"

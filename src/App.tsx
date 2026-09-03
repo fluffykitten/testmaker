@@ -1,19 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { PinGate } from './components/PinGate';
 import { OnboardingTutorial } from './components/OnboardingTutorial';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { SettingsModal } from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { getSavedSettings, applySettings } from './lib/settings';
-import { UploadPage } from './pages/UploadPage';
-import { QuestionBankPage } from './pages/QuestionBankPage';
-import { TestBuilderPage } from './pages/TestBuilderPage';
-import { SavedTestsPage } from './pages/SavedTestsPage';
-import { QuizManagerPage } from './pages/QuizManagerPage';
 import { PortalLandingPage } from './pages/PortalLandingPage';
-import { StudentQuizRunner } from './pages/StudentQuizRunner';
-import { GameQuizRunner } from './pages/GameQuizRunner';
-import { GameHostController } from './pages/GameHostController';
 import { resolveStudentQuiz } from './services/quizCodeService';
 import type { PublishedQuiz } from './services/quizManagerService';
 import { supabase } from './lib/supabase';
@@ -21,6 +13,46 @@ import type { Question } from './types/database';
 import type { ExamHeaderConfig } from './services/testBuilderService';
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import './App.css';
+
+// Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
+const UploadPage = lazy(() => import('./pages/UploadPage').then((m) => ({ default: m.UploadPage })));
+const QuestionBankPage = lazy(() => import('./pages/QuestionBankPage').then((m) => ({ default: m.QuestionBankPage })));
+const TestBuilderPage = lazy(() => import('./pages/TestBuilderPage').then((m) => ({ default: m.TestBuilderPage })));
+const SavedTestsPage = lazy(() => import('./pages/SavedTestsPage').then((m) => ({ default: m.SavedTestsPage })));
+const QuizManagerPage = lazy(() => import('./pages/QuizManagerPage').then((m) => ({ default: m.QuizManagerPage })));
+const StudentQuizRunner = lazy(() => import('./pages/StudentQuizRunner').then((m) => ({ default: m.StudentQuizRunner })));
+const GameQuizRunner = lazy(() => import('./pages/GameQuizRunner').then((m) => ({ default: m.GameQuizRunner })));
+const GameHostController = lazy(() => import('./pages/GameHostController').then((m) => ({ default: m.GameHostController })));
+
+function PageLoadingFallback() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '50vh',
+        gap: '1rem',
+        color: 'var(--color-text-secondary, #94a3b8)',
+      }}
+    >
+      <div
+        style={{
+          width: '36px',
+          height: '36px',
+          border: '3px solid rgba(99, 102, 241, 0.15)',
+          borderTopColor: 'var(--color-primary-500, #6366f1)',
+          borderRadius: '50%',
+          animation: 'spin 0.8s linear infinite',
+        }}
+      />
+      <span style={{ fontSize: '0.875rem', fontWeight: 500, letterSpacing: '0.025em' }}>
+        Loading module…
+      </span>
+    </div>
+  );
+}
 
 export type Page = 'home' | 'bank' | 'builder' | 'saved' | 'quizzes' | 'upload';
 export type AppMode = 'portal' | 'teacher' | 'student_quiz' | 'game_host';
@@ -194,15 +226,17 @@ function App() {
   // ─── Route 3: Teacher Game Host Session (Multiplayer Dashboard) ─────────────
   if (appMode === 'game_host' && activeGameHostQuiz) {
     return (
-      <GameHostController
-        quiz={activeGameHostQuiz}
-        questions={activeGameHostQuestions}
-        onExit={() => {
-          setAppMode('teacher');
-          setActiveGameHostQuiz(null);
-          setActiveGameHostQuestions([]);
-        }}
-      />
+      <Suspense fallback={<PageLoadingFallback />}>
+        <GameHostController
+          quiz={activeGameHostQuiz}
+          questions={activeGameHostQuestions}
+          onExit={() => {
+            setAppMode('teacher');
+            setActiveGameHostQuiz(null);
+            setActiveGameHostQuestions([]);
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -321,69 +355,71 @@ function App() {
 
         {/* ─── Page Content ───────────────────────────────────────────────────── */}
         <ErrorBoundary>
-          {currentPage === 'home' && (
-            <HomePage
-              onNavigate={setCurrentPage}
-              selectedCount={selectedCount}
-              onRestartTutorial={() => setTutorialRestartSignal((s) => s + 1)}
-            />
-          )}
-          {currentPage === 'bank' && (
-            <QuestionBankPage
-              selectedQuestionIds={selectedIds}
-              onToggleSelectQuestion={handleToggleSelectQuestion}
-              onAddQuestionsToTest={handleAddMultipleQuestionsToTest}
-              onClearSelection={handleClearSelection}
-              onRemoveQuestionsFromTest={handleRemoveQuestionsFromTest}
-              onNavigateToUpload={() => setCurrentPage('upload')}
-              onNavigateToBuilder={() => setCurrentPage('builder')}
-            />
-          )}
-          {currentPage === 'builder' && (
-            <TestBuilderPage
-              initialQuestions={questionsList}
-              onRemoveQuestion={handleRemoveQuestionFromTest}
-              onUpdateQuestions={handleUpdateTestQuestions}
-              onNavigateToBank={() => setCurrentPage('bank')}
-              onLaunchTestRun={(questions, headerConfig) => {
-                setTestRunQuestions(questions);
-                setTestRunHeaderConfig(headerConfig);
-                setTestRunInitialMode('exam');
-                setAppMode('student_quiz');
-              }}
-              onLaunchGameRun={(questions, headerConfig) => {
-                setTestRunQuestions(questions);
-                setTestRunHeaderConfig(headerConfig);
-                setTestRunInitialMode('game');
-                setAppMode('student_quiz');
-              }}
-            />
-          )}
-          {currentPage === 'saved' && (
-            <SavedTestsPage
-              onLoadTestIntoBuilder={handleLoadTestIntoBuilder}
-              onNavigateToBuilder={() => setCurrentPage('builder')}
-              onNavigateToBank={() => setCurrentPage('bank')}
-              onNavigateToQuizzes={() => setCurrentPage('quizzes')}
-            />
-          )}
-          {currentPage === 'quizzes' && (
-            <QuizManagerPage
-              onLaunchTestRun={(questions, headerConfig) => {
-                setTestRunQuestions(questions);
-                setTestRunHeaderConfig(headerConfig);
-                setAppMode('student_quiz');
-              }}
-              onLaunchGameHost={(quiz, questions) => {
-                setActiveGameHostQuiz(quiz);
-                setActiveGameHostQuestions(questions);
-                setAppMode('game_host');
-              }}
-              onNavigateToBuilder={() => setCurrentPage('builder')}
-              onNavigateToSaved={() => setCurrentPage('saved')}
-            />
-          )}
-          {currentPage === 'upload' && <UploadPage />}
+          <Suspense fallback={<PageLoadingFallback />}>
+            {currentPage === 'home' && (
+              <HomePage
+                onNavigate={setCurrentPage}
+                selectedCount={selectedCount}
+                onRestartTutorial={() => setTutorialRestartSignal((s) => s + 1)}
+              />
+            )}
+            {currentPage === 'bank' && (
+              <QuestionBankPage
+                selectedQuestionIds={selectedIds}
+                onToggleSelectQuestion={handleToggleSelectQuestion}
+                onAddQuestionsToTest={handleAddMultipleQuestionsToTest}
+                onClearSelection={handleClearSelection}
+                onRemoveQuestionsFromTest={handleRemoveQuestionsFromTest}
+                onNavigateToUpload={() => setCurrentPage('upload')}
+                onNavigateToBuilder={() => setCurrentPage('builder')}
+              />
+            )}
+            {currentPage === 'builder' && (
+              <TestBuilderPage
+                initialQuestions={questionsList}
+                onRemoveQuestion={handleRemoveQuestionFromTest}
+                onUpdateQuestions={handleUpdateTestQuestions}
+                onNavigateToBank={() => setCurrentPage('bank')}
+                onLaunchTestRun={(questions, headerConfig) => {
+                  setTestRunQuestions(questions);
+                  setTestRunHeaderConfig(headerConfig);
+                  setTestRunInitialMode('exam');
+                  setAppMode('student_quiz');
+                }}
+                onLaunchGameRun={(questions, headerConfig) => {
+                  setTestRunQuestions(questions);
+                  setTestRunHeaderConfig(headerConfig);
+                  setTestRunInitialMode('game');
+                  setAppMode('student_quiz');
+                }}
+              />
+            )}
+            {currentPage === 'saved' && (
+              <SavedTestsPage
+                onLoadTestIntoBuilder={handleLoadTestIntoBuilder}
+                onNavigateToBuilder={() => setCurrentPage('builder')}
+                onNavigateToBank={() => setCurrentPage('bank')}
+                onNavigateToQuizzes={() => setCurrentPage('quizzes')}
+              />
+            )}
+            {currentPage === 'quizzes' && (
+              <QuizManagerPage
+                onLaunchTestRun={(questions, headerConfig) => {
+                  setTestRunQuestions(questions);
+                  setTestRunHeaderConfig(headerConfig);
+                  setAppMode('student_quiz');
+                }}
+                onLaunchGameHost={(quiz, questions) => {
+                  setActiveGameHostQuiz(quiz);
+                  setActiveGameHostQuestions(questions);
+                  setAppMode('game_host');
+                }}
+                onNavigateToBuilder={() => setCurrentPage('builder')}
+                onNavigateToSaved={() => setCurrentPage('saved')}
+              />
+            )}
+            {currentPage === 'upload' && <UploadPage />}
+          </Suspense>
         </ErrorBoundary>
 
         {/* ─── Footer ─────────────────────────────────────────────────────────── */}
@@ -821,24 +857,28 @@ function StudentQuizDispatcher({
 
   if (resolvedMode === 'game') {
     return (
-      <GameQuizRunner
-        testIdOrCode={codeOrId}
-        initialQuestions={initialQuestions}
-        initialHeaderConfig={initialHeaderConfig}
-        initialGameConfig={gameConfig}
-        onExit={onExit}
-      />
+      <Suspense fallback={<PageLoadingFallback />}>
+        <GameQuizRunner
+          testIdOrCode={codeOrId}
+          initialQuestions={initialQuestions}
+          initialHeaderConfig={initialHeaderConfig}
+          initialGameConfig={gameConfig}
+          onExit={onExit}
+        />
+      </Suspense>
     );
   }
 
   return (
-    <StudentQuizRunner
-      testIdOrCode={codeOrId}
-      initialQuestions={initialQuestions}
-      initialHeaderConfig={initialHeaderConfig}
-      onExit={onExit}
-      onSwitchToGameMode={!codeOrId ? () => setResolvedMode('game') : undefined}
-    />
+    <Suspense fallback={<PageLoadingFallback />}>
+      <StudentQuizRunner
+        testIdOrCode={codeOrId}
+        initialQuestions={initialQuestions}
+        initialHeaderConfig={initialHeaderConfig}
+        onExit={onExit}
+        onSwitchToGameMode={!codeOrId ? () => setResolvedMode('game') : undefined}
+      />
+    </Suspense>
   );
 }
 
