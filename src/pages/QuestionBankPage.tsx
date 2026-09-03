@@ -5,8 +5,10 @@ import {
   fetchTopics,
   deleteQuestion,
   deleteQuestions,
+  prefetchNextQuestionsPage,
   type QuestionFilterParams,
 } from '../services/questionBankService';
+import { fetchQuestionsByIds } from '../services/quizCodeService';
 import type { Question, Syllabus } from '../types/database';
 import { QuestionFilters } from '../components/QuestionFilters';
 import { QuestionCard } from '../components/QuestionCard';
@@ -15,7 +17,22 @@ import { QuestionEditorModal } from '../components/QuestionEditorModal';
 import { QuestionVariantModal } from '../components/QuestionVariantModal';
 import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+import { ExportModal } from '../components/ExportModal';
 import './QuestionBankPage.css';
+
+const PAGE_SIZE_STORAGE_KEY = 'testmaker_bank_page_size';
+const DEFAULT_PAGE_SIZE = 12;
+
+function getSavedPageSize(): number {
+  try {
+    const saved = localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if ([12, 24, 48].includes(parsed)) return parsed;
+    }
+  } catch {}
+  return DEFAULT_PAGE_SIZE;
+}
 
 interface QuestionBankPageProps {
   selectedQuestionIds: Set<string>;
@@ -40,11 +57,11 @@ export function QuestionBankPage({
   const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
   const [topics, setTopics] = useState<{ topic: string; subTopics: string[] }[]>([]);
 
-  const [filters, setFilters] = useState<QuestionFilterParams>({
+  const [filters, setFilters] = useState<QuestionFilterParams>(() => ({
     sortBy: 'year_desc',
     page: 1,
-    pageSize: 12,
-  });
+    pageSize: getSavedPageSize(),
+  }));
 
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
@@ -90,6 +107,11 @@ export function QuestionBankPage({
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionToast, setActionToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
+  // Quick Export state
+  const [isQuickExportOpen, setIsQuickExportOpen] = useState(false);
+  const [exportQuestions, setExportQuestions] = useState<Question[]>([]);
+  const [isExportLoading, setIsExportLoading] = useState(false);
+
   // Load syllabuses on mount
   useEffect(() => {
     async function loadSyllabuses() {
@@ -126,6 +148,11 @@ export function QuestionBankPage({
       setQuestions(result.questions);
       setTotalCount(result.totalCount);
       setTotalPages(result.totalPages);
+
+      // Predictive prefetch: if there is a next page, prefetch it into memory in the background
+      if (result.page < result.totalPages) {
+        prefetchNextQuestionsPage(filters);
+      }
     } catch (err: any) {
       setError(err?.message || 'Failed to load questions from database');
     } finally {
@@ -155,6 +182,38 @@ export function QuestionBankPage({
     if (newPage >= 1 && newPage <= totalPages) {
       setFilters((prev) => ({ ...prev, page: newPage }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    try {
+      localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(newSize));
+    } catch {}
+    setFilters((prev) => ({ ...prev, pageSize: newSize, page: 1 }));
+  };
+
+  const handleOpenQuickExport = async () => {
+    const ids = Array.from(selectedQuestionIds);
+    if (ids.length === 0) return;
+
+    // Check if all selected questions are already present in memory
+    const currentMap = new Map(questions.map((q) => [q.id, q]));
+    const allFound = ids.every((id) => currentMap.has(id));
+
+    if (allFound) {
+      setExportQuestions(ids.map((id) => currentMap.get(id)!));
+      setIsQuickExportOpen(true);
+    } else {
+      setIsExportLoading(true);
+      try {
+        const fullQuestions = await fetchQuestionsByIds(ids);
+        setExportQuestions(fullQuestions);
+        setIsQuickExportOpen(true);
+      } catch (err) {
+        console.error('Error fetching questions for quick export:', err);
+      } finally {
+        setIsExportLoading(false);
+      }
     }
   };
 
@@ -336,6 +395,22 @@ export function QuestionBankPage({
                   Showing {questions.length} of <strong>{totalCount}</strong> question{totalCount !== 1 ? 's' : ''}
                 </span>
 
+                {/* Page Size Selector */}
+                <div className="bank-page-size-selector">
+                  <span className="bank-page-size-label">Per page:</span>
+                  {[12, 24, 48].map((size) => (
+                    <button
+                      key={size}
+                      type="button"
+                      className={`bank-page-size-btn ${(filters.pageSize || 12) === size ? 'bank-page-size-btn--active' : ''}`}
+                      onClick={() => handlePageSizeChange(size)}
+                      title={`Show ${size} questions per page`}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+
                 {questions.length > 0 && questions.length <= 50 && (
                   <button
                     type="button"
@@ -484,6 +559,16 @@ export function QuestionBankPage({
             <div className="bank-basket-actions">
               <button
                 type="button"
+                className="bank-basket-btn bank-basket-btn--export"
+                onClick={handleOpenQuickExport}
+                disabled={isExportLoading}
+                title="Directly export or print selected questions to PDF, Word, or HTML without leaving Question Bank"
+              >
+                {isExportLoading ? 'Loading…' : `⚡ Quick Export (${selectedCount})`}
+              </button>
+
+              <button
+                type="button"
                 className="bank-basket-btn bank-basket-btn--danger"
                 onClick={handleRequestDeleteBulk}
                 title="Delete selected questions"
@@ -499,13 +584,15 @@ export function QuestionBankPage({
                 Clear
               </button>
 
-              <button
-                type="button"
-                className="bank-basket-btn bank-basket-btn--primary"
-                onClick={onNavigateToBuilder}
-              >
-                Build Custom Test →
-              </button>
+              {onNavigateToBuilder && (
+                <button
+                  type="button"
+                  className="bank-basket-btn bank-basket-btn--primary"
+                  onClick={onNavigateToBuilder}
+                >
+                  Build Custom Test →
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -637,6 +724,28 @@ export function QuestionBankPage({
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteModalState({ isOpen: false, title: '', message: '', ids: [] })}
       />
+
+      {/* ─── Quick Export Modal ────────────────────────────────────────────── */}
+      {isQuickExportOpen && (
+        <ExportModal
+          isOpen={isQuickExportOpen}
+          onClose={() => setIsQuickExportOpen(false)}
+          questions={exportQuestions}
+          headerConfig={{
+            title: 'Selected Questions Export',
+            schoolName: 'Cambridge Assessment',
+            subject: filters.syllabusId
+              ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_name || 'General Examination'
+              : 'General Examination',
+            subjectCode: filters.syllabusId
+              ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_code || ''
+              : '',
+            durationMinutes: Math.max(15, exportQuestions.reduce((acc: number, q: Question) => acc + (q.marks || 1), 0)),
+            instructions: 'Answer all questions in the spaces provided.',
+            layoutTemplate: 'cambridge',
+          }}
+        />
+      )}
     </div>
   );
 }

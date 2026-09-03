@@ -456,13 +456,39 @@ export function sortQuestionsList(
   return sorted;
 }
 
+function getNormalizedCacheKey(params: QuestionFilterParams): string {
+  const normalized: Record<string, any> = {};
+  const keys = Object.keys(params).sort() as (keyof QuestionFilterParams)[];
+  for (const k of keys) {
+    const val = params[k];
+    if (val !== undefined && val !== null && val !== '') {
+      normalized[k] = val;
+    }
+  }
+  return JSON.stringify(normalized);
+}
+
+/**
+ * Silently prefetches and caches the next page of questions in the background
+ */
+export function prefetchNextQuestionsPage(currentParams: QuestionFilterParams): void {
+  const currentPage = currentParams.page || 1;
+  const nextParams = { ...currentParams, page: currentPage + 1 };
+  const nextKey = getNormalizedCacheKey(nextParams);
+  if (!questionsQueryCache.has(nextKey)) {
+    fetchQuestions(nextParams).catch(() => {
+      // Silent catch for background prefetch
+    });
+  }
+}
+
 /**
  * Dynamic multi-filter question query with full dataset natural sorting and pagination
  */
 export async function fetchQuestions(
   params: QuestionFilterParams = {}
 ): Promise<QuestionQueryResult> {
-  const cacheKey = JSON.stringify(params);
+  const cacheKey = getNormalizedCacheKey(params);
   const cached = questionsQueryCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.data;
@@ -685,8 +711,8 @@ export async function fetchQuestions(
     totalPages,
   };
 
-  // Cache query result in memory (limit cache to 40 queries)
-  if (questionsQueryCache.size > 40) {
+  // Cache query result in memory (limit cache to 100 queries)
+  if (questionsQueryCache.size >= 100) {
     const oldest = questionsQueryCache.keys().next().value;
     if (oldest) questionsQueryCache.delete(oldest);
   }
