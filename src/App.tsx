@@ -184,6 +184,53 @@ function App() {
     setAppMode('portal');
   };
 
+  // ─── Security Feature 3: Inactivity Auto-Lock & Panic Lock for Teacher Suite ───
+  useEffect(() => {
+    if (appMode !== 'teacher') return;
+
+    const settings = getSavedSettings();
+    const lockMinutes = settings.autoLockMinutes ?? 15;
+    const timeoutMs = lockMinutes * 60 * 1000;
+    let lastActivityTime = Date.now();
+
+    const recordActivity = () => {
+      lastActivityTime = Date.now();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      recordActivity();
+      // Panic lock shortcut: Ctrl+Shift+L
+      if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+        e.preventDefault();
+        handleLockApp();
+      }
+    };
+
+    const events: (keyof WindowEventMap)[] = ['mousemove', 'mousedown', 'touchstart', 'scroll'];
+    events.forEach((evt) => {
+      window.addEventListener(evt, recordActivity, { passive: true });
+    });
+    window.addEventListener('keydown', handleKeyDown);
+
+    // If autoLockMinutes > 0, check periodically for idle timeout
+    let checkInterval: ReturnType<typeof setInterval> | null = null;
+    if (lockMinutes > 0) {
+      checkInterval = setInterval(() => {
+        if (Date.now() - lastActivityTime >= timeoutMs) {
+          handleLockApp();
+        }
+      }, 15000);
+    }
+
+    return () => {
+      events.forEach((evt) => {
+        window.removeEventListener(evt, recordActivity);
+      });
+      window.removeEventListener('keydown', handleKeyDown);
+      if (checkInterval) clearInterval(checkInterval);
+    };
+  }, [appMode]);
+
   const selectedIds = new Set(selectedQuestions.keys());
   const selectedCount = selectedQuestions.size;
   const questionsList = Array.from(selectedQuestions.values());

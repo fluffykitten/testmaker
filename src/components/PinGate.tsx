@@ -1,10 +1,66 @@
 import { useState, useRef, useEffect, type ReactNode, type KeyboardEvent, type ClipboardEvent } from 'react';
 import { supabase } from '../lib/supabase';
+import { verifyPinAgainstHashOrPlain } from '../utils/cryptoUtils';
 import './PinGate.css';
 
 const PIN_LENGTH = 6;
 const SESSION_KEY = 'testmaker_pin_verified';
 const LOCAL_PIN_CACHE_KEY = 'testmaker_cached_access_pin';
+const ATTEMPTS_KEY = 'testmaker_pin_failed_attempts';
+const LOCKOUT_KEY = 'testmaker_pin_lockout_until';
+
+function getLockoutRemainingSeconds(): number {
+  try {
+    const until = parseInt(localStorage.getItem(LOCKOUT_KEY) || '0', 10);
+    const now = Date.now();
+    return until > now ? Math.ceil((until - now) / 1000) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getFailedAttempts(): number {
+  try {
+    return parseInt(localStorage.getItem(ATTEMPTS_KEY) || '0', 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function recordFailedAttempt(): { attempts: number; lockoutSeconds: number } {
+  const attempts = getFailedAttempts() + 1;
+  let lockoutSeconds = 0;
+
+  if (attempts >= 10) {
+    lockoutSeconds = 30 * 60; // 30 minutes
+  } else if (attempts >= 5) {
+    lockoutSeconds = 5 * 60; // 5 minutes
+  } else if (attempts >= 3) {
+    lockoutSeconds = 30; // 30 seconds
+  }
+
+  try {
+    localStorage.setItem(ATTEMPTS_KEY, String(attempts));
+    if (lockoutSeconds > 0) {
+      localStorage.setItem(LOCKOUT_KEY, String(Date.now() + lockoutSeconds * 1000));
+    }
+  } catch {}
+
+  return { attempts, lockoutSeconds };
+}
+
+function resetFailedAttempts() {
+  try {
+    localStorage.removeItem(ATTEMPTS_KEY);
+    localStorage.removeItem(LOCKOUT_KEY);
+  } catch {}
+}
+
+function formatDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+}
 
 // In-memory module cache for instant validation across views
 let inMemoryPin: string | null = null;
@@ -73,12 +129,30 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
     return inMemoryPin || localStorage.getItem(LOCAL_PIN_CACHE_KEY);
   });
   const [verifying, setVerifying] = useState(false);
+  const [lockoutRemaining, setLockoutRemaining] = useState<number>(() => getLockoutRemainingSeconds());
   const [digits, setDigits] = useState<string[]>(Array(PIN_LENGTH).fill(''));
   const [error, setError] = useState('');
   const [shaking, setShaking] = useState(false);
   const [success, setSuccess] = useState(false);
   const [showPin, setShowPin] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Lockout countdown timer
+  useEffect(() => {
+    if (lockoutRemaining <= 0) return;
+
+    const interval = setInterval(() => {
+      const remaining = getLockoutRemainingSeconds();
+      setLockoutRemaining(remaining);
+      if (remaining <= 0) {
+        clearInterval(interval);
+        setError('');
+        setTimeout(() => inputRefs.current[0]?.focus(), 100);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [lockoutRemaining]);
 
   // Prefetch and sync PIN in background without blocking UI
   useEffect(() => {
@@ -90,18 +164,22 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
       }
     });
 
-    // Auto-focus first input immediately on mount
-    const timer = setTimeout(() => {
-      inputRefs.current[0]?.focus();
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [verified]);
+    // Auto-focus first input immediately on mount if not locked out
+    if (lockoutRemaining <= 0) {
+      const timer = setTimeout(() => {
+        inputRefs.current[0]?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [verified, lockoutRemaining]);
 
   if (verified) {
     return <>{children}</>;
   }
 
   const handleDigitChange = (index: number, value: string) => {
+    if (lockoutRemaining > 0) return;
+
     // Only allow numeric input
     const digit = value.replace(/\D/g, '').slice(-1);
     const newDigits = [...digits];
@@ -124,6 +202,8 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   };
 
   const handleKeyDown = (index: number, e: KeyboardEvent<HTMLInputElement>) => {
+    if (lockoutRemaining > 0) return;
+
     if (e.key === 'Backspace') {
       if (!digits[index] && index > 0) {
         // Move back and clear previous
@@ -146,6 +226,7 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   };
 
   const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    if (lockoutRemaining > 0) return;
     e.preventDefault();
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, PIN_LENGTH);
     if (pasted.length > 0) {
@@ -166,6 +247,8 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   };
 
   const validatePin = async (pin: string) => {
+    if (lockoutRemaining > 0) return;
+
     let targetPin = correctPin;
 
     if (!targetPin) {
@@ -176,28 +259,48 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
 
     // Fail-open fallback if database is completely offline/unreachable
     if (!targetPin) {
+      resetFailedAttempts();
       setSuccess(true);
       sessionStorage.setItem(SESSION_KEY, 'true');
       setTimeout(() => setVerified(true), 800);
       return;
     }
 
-    if (pin === targetPin) {
+    const isMatch = await verifyPinAgainstHashOrPlain(pin, targetPin);
+
+    if (isMatch) {
+      resetFailedAttempts();
       setSuccess(true);
       sessionStorage.setItem(SESSION_KEY, 'true');
       setTimeout(() => setVerified(true), 800);
     } else {
-      setError('Incorrect PIN. Please try again.');
+      const { attempts, lockoutSeconds } = recordFailedAttempt();
+
+      if (lockoutSeconds > 0) {
+        setLockoutRemaining(lockoutSeconds);
+        setError(`Too many failed attempts. Device locked for ${formatDuration(lockoutSeconds)}.`);
+      } else {
+        const remainingBeforeLockout = 3 - attempts;
+        setError(
+          remainingBeforeLockout > 0
+            ? `Incorrect PIN. ${remainingBeforeLockout} attempt${remainingBeforeLockout === 1 ? '' : 's'} remaining before cooldown.`
+            : 'Incorrect PIN. Please try again.'
+        );
+      }
+
       setShaking(true);
       setTimeout(() => {
         setShaking(false);
         setDigits(Array(PIN_LENGTH).fill(''));
-        inputRefs.current[0]?.focus();
+        if (lockoutSeconds <= 0) {
+          inputRefs.current[0]?.focus();
+        }
       }, 600);
     }
   };
 
   const handleSubmit = () => {
+    if (lockoutRemaining > 0) return;
     const fullPin = digits.join('');
     if (fullPin.length === PIN_LENGTH) {
       validatePin(fullPin);
@@ -230,6 +333,17 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
               Please enter your 6-digit PIN to continue
             </p>
 
+            {/* Lockout Banner */}
+            {lockoutRemaining > 0 && (
+              <div className="pin-lockout-banner animate-fade-in">
+                <span className="pin-lockout-icon">⏳</span>
+                <div className="pin-lockout-text">
+                  <strong>Cooldown Active</strong>
+                  <span>Please wait <span className="pin-lockout-timer">{formatDuration(lockoutRemaining)}</span> before trying again.</span>
+                </div>
+              </div>
+            )}
+
             {/* Digit inputs */}
             <div className="pin-digits-row">
               {digits.map((digit, i) => (
@@ -240,6 +354,7 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
                   inputMode="numeric"
                   maxLength={1}
                   value={digit}
+                  disabled={lockoutRemaining > 0}
                   onChange={(e) => handleDigitChange(i, e.target.value)}
                   onKeyDown={(e) => handleKeyDown(i, e)}
                   onPaste={i === 0 ? handlePaste : undefined}
@@ -294,10 +409,14 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
             <button
               className="pin-submit-btn"
               onClick={handleSubmit}
-              disabled={!allFilled || verifying}
+              disabled={!allFilled || verifying || lockoutRemaining > 0}
               id="pin-submit-btn"
             >
-              {verifying ? 'Verifying…' : 'Unlock'}
+              {lockoutRemaining > 0
+                ? `Cooldown (${formatDuration(lockoutRemaining)})`
+                : verifying
+                  ? 'Verifying…'
+                  : 'Unlock'}
             </button>
 
             {onBackToPortal && (

@@ -351,6 +351,32 @@ export function SettingsModal({
                   {settings.defaultEnableMultiMonitor ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
+
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <span className="settings-action-name">⏱️ Inactivity Auto-Lock</span>
+                  <span className="settings-action-desc">Automatically lock the Teacher Suite when left idle on desk or classroom projector</span>
+                </div>
+                <select
+                  value={settings.autoLockMinutes ?? 15}
+                  onChange={(e) => updateSetting('autoLockMinutes', parseInt(e.target.value, 10))}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    borderRadius: '8px',
+                    color: 'inherit',
+                    padding: '6px 12px',
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value={5} style={{ background: '#1e293b' }}>5 Minutes</option>
+                  <option value={15} style={{ background: '#1e293b' }}>15 Minutes (Default)</option>
+                  <option value={30} style={{ background: '#1e293b' }}>30 Minutes</option>
+                  <option value={0} style={{ background: '#1e293b' }}>Never (Disabled)</option>
+                </select>
+              </div>
             </div>
           </div>
 

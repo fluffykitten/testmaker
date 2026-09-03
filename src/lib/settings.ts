@@ -13,6 +13,7 @@ export interface AppSettings {
   defaultAiGuidanceEnabled: boolean;
   defaultEnableWatermark?: boolean;      // Per-candidate ghost watermark (default: disabled)
   defaultEnableMultiMonitor?: boolean;    // Multi-monitor detection shield (default: disabled)
+  autoLockMinutes?: number;              // Inactivity auto-lock in minutes (default: 15, 0 = disabled)
   classes: string[]; // Configured list of school classes / cohorts for formal exams
 }
 
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultAiGuidanceEnabled: true,
   defaultEnableWatermark: false,
   defaultEnableMultiMonitor: false,
+  autoLockMinutes: 15,
   classes: DEFAULT_CLASSES,
 };
 
