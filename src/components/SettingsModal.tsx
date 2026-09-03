@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
+import { BackupRestoreModal } from './BackupRestoreModal';
 import {
   type AppSettings,
   type ThemeMode,
@@ -69,6 +70,7 @@ export function SettingsModal({
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
   const [newClassInput, setNewClassInput] = useState('');
   const [classNotice, setClassNotice] = useState<string | null>(null);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const backdropDismiss = useBackdropDismiss(onClose);
 
   // Sync cloud classes on modal open
@@ -380,7 +382,36 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* 8. Tools & Management */}
+          {/* 8. Cloud Backup & Storage Safety */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Cloud Backup & Storage Safety</h3>
+            <div className="settings-actions-list">
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <span className="settings-action-name">💾 Supabase & Google Drive Backup</span>
+                  <span className="settings-action-desc">
+                    Download full offline ZIP snapshots or sync database records & storage diagrams to Google Drive
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="settings-action-trigger"
+                  style={{
+                    background: 'linear-gradient(135deg, var(--color-primary-600), var(--color-primary-700))',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: 600,
+                  }}
+                  onClick={() => setIsBackupModalOpen(true)}
+                  id="open-backup-modal-btn"
+                >
+                  Manage Backups
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 9. Tools & Management */}
           <div className="settings-section">
             <h3 className="settings-section-title">Tools & Reset</h3>
             <div className="settings-actions-list">
@@ -446,6 +477,11 @@ export function SettingsModal({
           </button>
         </div>
       </div>
+
+      <BackupRestoreModal
+        isOpen={isBackupModalOpen}
+        onClose={() => setIsBackupModalOpen(false)}
+      />
     </div>,
     document.body
   );

@@ -12,6 +12,7 @@ export default defineConfig({
           if (id.includes('node_modules')) {
             if (id.includes('docx')) return 'vendor-docx';
             if (id.includes('xlsx')) return 'vendor-xlsx';
+            if (id.includes('jszip')) return 'vendor-jszip';
             if (id.includes('pdfjs-dist') || id.includes('pdf-lib')) return 'vendor-pdf';
             if (id.includes('katex')) return 'vendor-katex';
             if (id.includes('@supabase')) return 'vendor-supabase';

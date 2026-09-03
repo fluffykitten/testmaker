@@ -15,6 +15,11 @@ export interface AppSettings {
   defaultEnableMultiMonitor?: boolean;    // Multi-monitor detection shield (default: disabled)
   autoLockMinutes?: number;              // Inactivity auto-lock in minutes (default: 15, 0 = disabled)
   classes: string[]; // Configured list of school classes / cohorts for formal exams
+  googleDriveClientId?: string;
+  autoBackupEnabled?: boolean;
+  autoBackupFrequency?: 'on_paper_upload' | 'daily' | 'weekly';
+  lastBackupTimestamp?: number;
+  lastBackupFileName?: string;
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -41,6 +46,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultEnableMultiMonitor: false,
   autoLockMinutes: 15,
   classes: DEFAULT_CLASSES,
+  autoBackupEnabled: false,
+  autoBackupFrequency: 'on_paper_upload',
 };
 
 // Accent palette color mappings for --color-primary tokens

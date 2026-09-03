@@ -17,6 +17,7 @@ import {
   hasUploadDraft,
   deleteUploadDraft,
 } from '../lib/uploadDraftStorage';
+import { triggerAutoBackupIfEligible } from '../services/autoBackupService';
 import type { SubjectDomain } from '../lib/gemini';
 import type { ExtractionResult } from '../types/database';
 import './UploadPage.css';
@@ -187,6 +188,8 @@ export function UploadPage() {
       // Once successfully saved, purge the draft
       await deleteUploadDraft();
       setDraftInfo(null);
+      // Trigger background auto-backup if enabled
+      triggerAutoBackupIfEligible('paper_upload').catch(() => {});
       setPipelineState({
         stage: 'complete',
         message: `Successfully saved ${count} questions!`,
