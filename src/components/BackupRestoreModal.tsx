@@ -592,6 +592,52 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       {isLoadingDrive ? 'Connecting…' : '🔑 Sign in with Google Drive'}
                     </button>
                   </div>
+
+                  {/* Authorized Origin Setup Box */}
+                  <div style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    background: 'rgba(99, 102, 241, 0.08)',
+                    border: '1px solid rgba(99, 102, 241, 0.25)',
+                    fontSize: '0.75rem',
+                    lineHeight: '1.45',
+                    color: 'var(--color-text-secondary)',
+                    marginTop: '14px',
+                  }}>
+                    <strong style={{ color: 'var(--color-text-primary)', display: 'block', marginBottom: '4px' }}>
+                      ⚙️ Required Google Cloud Origin Setup:
+                    </strong>
+                    To prevent <em>"Error 401: invalid_client / no registered origin"</em>, add your current URL under <strong>Authorized JavaScript origins</strong> in Google Cloud Console:
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: 'var(--color-surface)',
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--color-border)',
+                      marginTop: '6px',
+                      fontFamily: 'monospace',
+                      fontWeight: 600,
+                      color: 'var(--color-primary-600)',
+                    }}>
+                      <span>{typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173'}</span>
+                      <button
+                        type="button"
+                        className="gdrive-action-btn"
+                        style={{ padding: '2px 8px', fontSize: '0.6875rem' }}
+                        onClick={() => {
+                          if (typeof window !== 'undefined') {
+                            navigator.clipboard.writeText(window.location.origin);
+                            setDriveActionNotice('Copied origin to clipboard!');
+                            setTimeout(() => setDriveActionNotice(null), 3000);
+                          }
+                        }}
+                      >
+                        Copy Origin
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <>
