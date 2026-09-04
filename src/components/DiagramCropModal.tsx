@@ -441,14 +441,25 @@ export function DiagramCropModal({
             </div>
           </div>
 
-          <button
-            type="button"
-            className="crop-modal-close-btn"
-            onClick={onClose}
-            aria-label="Close modal"
-          >
-            ✕
-          </button>
+          <div className="crop-modal-header-actions">
+            <button
+              type="button"
+              className="crop-btn-primary crop-btn-header-save"
+              onClick={handleSave}
+              disabled={isLoadingContent || !previewBlob}
+              title="Apply & Save Cropped Diagram"
+            >
+              ✓ Save Crop
+            </button>
+            <button
+              type="button"
+              className="crop-modal-close-btn"
+              onClick={onClose}
+              aria-label="Close modal"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* ─── Controls Toolbar ───────────────────────────────────────────── */}

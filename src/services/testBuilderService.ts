@@ -27,11 +27,56 @@ export interface SaveTestPayload {
 }
 
 const LOCAL_STORAGE_KEY = 'fluffykitten_custom_tests';
+const DELETED_TESTS_KEY = 'fluffykitten_deleted_test_ids';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Returns the set of all test IDs that have been explicitly deleted.
+ */
+export function getDeletedTestIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_TESTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Permanently records a deleted test ID in the tombstone registry.
+ */
+export function recordDeletedTestId(id: string): void {
+  if (!id || typeof id !== 'string') return;
+  const cleanId = id.trim();
+  if (!cleanId) return;
+  try {
+    const current = getDeletedTestIds();
+    current.add(cleanId);
+    // Keep most recent 500 deleted IDs to prevent unbounded storage growth
+    const arr = Array.from(current);
+    const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+    localStorage.setItem(DELETED_TESTS_KEY, JSON.stringify(trimmed));
+  } catch (err) {
+    console.warn('Failed to record deleted test ID to tombstone registry:', err);
+  }
+}
+
+/**
+ * Checks whether a given test ID was marked as deleted.
+ */
+export function isTestDeleted(id: string): boolean {
+  if (!id) return false;
+  return getDeletedTestIds().has(id.trim());
+}
 
 export function getLocalTests(): CustomTest[] {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const list: CustomTest[] = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(list)) return [];
+    const deletedIds = getDeletedTestIds();
+    return list.filter((t) => t && t.id && !deletedIds.has(t.id));
   } catch {
     return [];
   }
@@ -49,8 +94,11 @@ function saveLocalTest(test: CustomTest) {
 
 function removeLocalTest(id: string) {
   try {
-    const existing = getLocalTests();
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(existing.filter((t) => t.id !== id)));
+    const cleanId = id.trim();
+    recordDeletedTestId(cleanId);
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const existing: CustomTest[] = raw ? JSON.parse(raw) : [];
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(existing.filter((t) => t.id !== cleanId)));
   } catch (err) {
     console.warn('Failed to remove from localStorage:', err);
   }
@@ -191,10 +239,23 @@ export interface CustomTestWithDetails extends CustomTest {
 }
 
 /**
- * Fetches all saved custom tests from Supabase and local storage
+ * Fetches all saved custom tests from Supabase and local storage,
+ * strictly filtering out any tombstoned/deleted test IDs.
  */
 export async function fetchCustomTests(): Promise<CustomTest[]> {
-  const localTests = getLocalTests();
+  const deletedIds = getDeletedTestIds();
+  const rawLocal = getLocalTests();
+  const localTests = rawLocal.filter((t) => !deletedIds.has(t.id));
+
+  // Auto-prune tombstoned records from localStorage if any slipped in
+  if (rawLocal.length !== localTests.length) {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(localTests));
+    } catch {
+      // ignore
+    }
+  }
+
   try {
     const { data, error } = await supabase
       .from('custom_tests')
@@ -203,8 +264,38 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
 
     if (!error && Array.isArray(data)) {
       const mergedMap = new Map<string, CustomTest>();
-      (data as CustomTest[]).forEach((t) => mergedMap.set(t.id, t));
+      const orphanedCloudDeletes: string[] = [];
+
+      (data as CustomTest[]).forEach((t) => {
+        if (!t || !t.id) return;
+        if (deletedIds.has(t.id)) {
+          // Lingering in cloud despite local deletion — queue background cleanup
+          orphanedCloudDeletes.push(t.id);
+          return;
+        }
+        mergedMap.set(t.id, t);
+      });
+
+      // Background self-healing: purge orphaned rows from Supabase
+      if (orphanedCloudDeletes.length > 0) {
+        const validUuids = orphanedCloudDeletes.filter((id) => UUID_REGEX.test(id));
+        if (validUuids.length > 0) {
+          (async () => {
+            try {
+              const { error: delErr } = await supabase
+                .from('custom_tests')
+                .delete()
+                .in('id', validUuids);
+              if (delErr) console.warn('Orphaned cloud test cleanup notice:', delErr.message);
+            } catch (delEx) {
+              console.warn('Orphaned cloud test cleanup exception:', delEx);
+            }
+          })();
+        }
+      }
+
       localTests.forEach((t) => {
+        if (deletedIds.has(t.id)) return;
         if (!mergedMap.has(t.id)) {
           mergedMap.set(t.id, t);
         } else {
@@ -215,6 +306,7 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
           }
         }
       });
+
       return Array.from(mergedMap.values());
     }
   } catch (err) {
@@ -455,26 +547,47 @@ export async function fetchCustomTestWithQuestions(
 }
 
 /**
- * Deletes a custom test from Supabase and local storage
+ * Deletes a custom test from Supabase and local storage,
+ * and adds it to the persistent tombstone registry to prevent resurrection.
  */
 export async function deleteCustomTest(testId: string): Promise<boolean> {
-  removeLocalTest(testId);
+  const cleanId = (testId || '').trim();
+  if (!cleanId) return false;
+
+  // 1. Record into tombstone registry immediately
+  recordDeletedTestId(cleanId);
+
+  // 2. Remove from local storage & memory cache
+  removeLocalTest(cleanId);
   clearCustomTestsCache();
-  try {
-    await supabase
-      .from('custom_tests')
-      .delete()
-      .eq('id', testId);
-  } catch {
-    // ignore
+
+  // 3. Delete from Supabase if valid UUID
+  if (UUID_REGEX.test(cleanId)) {
+    try {
+      const { error } = await supabase
+        .from('custom_tests')
+        .delete()
+        .eq('id', cleanId);
+
+      if (error) {
+        console.warn('Supabase delete custom_tests notice:', error.message);
+      }
+    } catch (err) {
+      console.warn('Supabase delete custom_tests exception:', err);
+    }
   }
 
-  // Also clean up any associated published interactive quiz (both local & cloud)
+  // 4. Also clean up any associated published interactive quiz (both local & cloud)
   try {
     const { deletePublishedQuiz } = await import('./quizManagerService');
-    await deletePublishedQuiz(testId);
-  } catch {
-    // ignore
+    await deletePublishedQuiz(cleanId);
+  } catch (err) {
+    console.warn('Cleanup published quiz notice:', err);
+  }
+
+  // 5. Broadcast deletion to all open tabs/views
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('tests_updated', { detail: { deletedId: cleanId } }));
   }
 
   return true;

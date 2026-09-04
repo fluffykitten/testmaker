@@ -22,6 +22,7 @@ import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
+import { getSavedSettings } from '../lib/settings';
 import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
@@ -68,6 +69,7 @@ export function QuizManagerPage({
   // Modal states
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
+  const [securityDefaults, setSecurityDefaults] = useState(() => getSavedSettings());
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
   const [offlineGradingData, setOfflineGradingData] = useState<{
@@ -84,9 +86,26 @@ export function QuizManagerPage({
     const handleSubmissionsUpdated = () => {
       setSubmissionsVersion((v) => v + 1);
     };
+    const handleSettingsUpdated = () => {
+      setSecurityDefaults(getSavedSettings());
+    };
+    const handleTestsUpdated = () => {
+      loadData();
+    };
+    const handleQuizzesUpdated = () => {
+      loadData();
+    };
+
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
+    window.addEventListener('storage', handleSettingsUpdated);
+    window.addEventListener('tests_updated', handleTestsUpdated);
+    window.addEventListener('quizzes_updated', handleQuizzesUpdated);
+
     return () => {
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
+      window.removeEventListener('storage', handleSettingsUpdated);
+      window.removeEventListener('tests_updated', handleTestsUpdated);
+      window.removeEventListener('quizzes_updated', handleQuizzesUpdated);
     };
   }, []);
 
@@ -100,6 +119,7 @@ export function QuizManagerPage({
       });
 
     try {
+      setSecurityDefaults(getSavedSettings());
       // 1. Immediately show cached local quizzes if not already populated
       const pubList = getPublishedQuizzes();
       if (pubList.length > 0) {
@@ -181,11 +201,20 @@ export function QuizManagerPage({
       return;
     }
 
+    const currentSettings = getSavedSettings();
+    setSecurityDefaults(currentSettings);
+
     const firstTest = savedTests[0];
     setSelectedTestId(firstTest.id);
     const existing = quizzes.find((q) => q.testId === firstTest.id);
     const draft = createDraftFromTest(firstTest, undefined, undefined, existing);
     draft.quizMode = initialMode;
+    if (!currentSettings.defaultEnableWatermark) {
+      draft.enableWatermark = false;
+    }
+    if (!currentSettings.defaultEnableMultiMonitor) {
+      draft.enableMultiMonitorDetection = false;
+    }
     setActiveQuizDraft(draft);
     setIsConfigModalOpen(true);
   };
@@ -233,17 +262,32 @@ export function QuizManagerPage({
     setSelectedTestId(testId);
     const selected = savedTests.find((t) => t.id === testId);
     if (selected) {
+      const currentSettings = getSavedSettings();
+      setSecurityDefaults(currentSettings);
       const existing = quizzes.find((q) => q.testId === testId);
       const draft = createDraftFromTest(selected, undefined, undefined, existing);
       if (activeQuizDraft?.quizMode) {
         draft.quizMode = activeQuizDraft.quizMode;
+      }
+      if (!currentSettings.defaultEnableWatermark) {
+        draft.enableWatermark = false;
+      }
+      if (!currentSettings.defaultEnableMultiMonitor) {
+        draft.enableMultiMonitorDetection = false;
       }
       setActiveQuizDraft(draft);
     }
   };
 
   const handleOpenEditModal = (quiz: PublishedQuiz) => {
-    setActiveQuizDraft({ ...quiz, quizMode: quiz.quizMode || 'exam' });
+    const currentSettings = getSavedSettings();
+    setSecurityDefaults(currentSettings);
+    setActiveQuizDraft({
+      ...quiz,
+      quizMode: quiz.quizMode || 'exam',
+      enableWatermark: currentSettings.defaultEnableWatermark ? (quiz.enableWatermark ?? false) : false,
+      enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (quiz.enableMultiMonitorDetection ?? false) : false,
+    });
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
   };
@@ -267,6 +311,7 @@ export function QuizManagerPage({
     }
 
     const cleanSubject = activeQuizDraft.subject?.trim() || 'Chemistry';
+    const currentSettings = getSavedSettings();
 
     const isExam = activeQuizDraft.isExamMode ?? true;
     const updated: PublishedQuiz = {
@@ -274,6 +319,8 @@ export function QuizManagerPage({
       quizCode: cleanCode,
       subject: cleanSubject,
       quizMode: activeQuizDraft.quizMode || 'exam',
+      enableWatermark: currentSettings.defaultEnableWatermark ? (activeQuizDraft.enableWatermark ?? false) : false,
+      enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (activeQuizDraft.enableMultiMonitorDetection ?? false) : false,
       showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
       updatedAt: new Date().toISOString(),
     };
@@ -286,9 +333,10 @@ export function QuizManagerPage({
     setTimeout(() => setSaveSuccessMsg(null), 4000);
   };
 
-  // ─── 5. Action Handlers ─────────────────────────────────────────────────────
   const handleDeleteQuiz = async (id: string) => {
     if (confirm('Are you sure you want to unpublish and delete this interactive quiz?')) {
+      // Optimistically remove from state immediately
+      setQuizzes((prev) => prev.filter((q) => q.id !== id && q.testId !== id));
       const remaining = await deletePublishedQuiz(id);
       setQuizzes(remaining);
     }
@@ -458,11 +506,16 @@ export function QuizManagerPage({
                   </button>
                 </span>
               )}
-              {quiz.securityEnabled && quiz.enableWatermark && (
+              {quiz.securityEnabled && quiz.enableWatermark && securityDefaults.defaultEnableWatermark && (
                 <span className="qm-pill" title="Dynamic Candidate Watermarking Enabled">💧 Watermark</span>
               )}
-              {quiz.securityEnabled && quiz.enableMultiMonitorDetection && (
+              {quiz.securityEnabled && quiz.enableMultiMonitorDetection && securityDefaults.defaultEnableMultiMonitor && (
                 <span className="qm-pill" title="Multi-Monitor Detection Active">🖥️ Multi-Screen Shield</span>
+              )}
+              {quiz.requireStudentPin && (
+                <span className="qm-pill qm-pill--pin" title="Student 4-Digit PIN Verification Enforced">
+                  🛡️ Student PIN Enforced
+                </span>
               )}
               {quiz.showInstantSolutions && (
                 <span className="qm-pill">💡 Instant Solutions</span>
@@ -1188,44 +1241,86 @@ export function QuizManagerPage({
                           )}
                         </div>
 
-                        {/* Candidate Dynamic Watermarking Toggle */}
-                        <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
-                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
-                            <input
-                              type="checkbox"
-                              checked={activeQuizDraft.enableWatermark ?? false}
-                              onChange={(e) =>
-                                setActiveQuizDraft({
-                                  ...activeQuizDraft,
-                                  enableWatermark: e.target.checked,
-                                })
-                              }
-                            />
-                            <span>💧 Candidate Dynamic Watermarking (Ghost Overlay)</span>
-                          </label>
-                          <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
-                            Overlays subtle translucent candidate name, ID, class, and session hash on the exam runner and diagrams to deter screen recording and camera photos.
-                          </p>
-                        </div>
+                        {/* Candidate Dynamic Watermarking Toggle (Visible only if enabled in Exam Security Defaults) */}
+                        {securityDefaults.defaultEnableWatermark && (
+                          <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
+                            <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                              <input
+                                type="checkbox"
+                                checked={activeQuizDraft.enableWatermark ?? false}
+                                onChange={(e) =>
+                                  setActiveQuizDraft({
+                                    ...activeQuizDraft,
+                                    enableWatermark: e.target.checked,
+                                  })
+                                }
+                              />
+                              <span>💧 Candidate Dynamic Watermarking (Ghost Overlay)</span>
+                            </label>
+                            <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
+                              Overlays subtle translucent candidate name, ID, class, and session hash on the exam runner and diagrams to deter screen recording and camera photos.
+                            </p>
+                          </div>
+                        )}
 
-                        {/* Multi-Monitor Detection Shield Toggle */}
+                        {/* Multi-Monitor Detection Shield Toggle (Visible only if enabled in Exam Security Defaults) */}
+                        {securityDefaults.defaultEnableMultiMonitor && (
+                          <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
+                            <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                              <input
+                                type="checkbox"
+                                checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
+                                onChange={(e) =>
+                                  setActiveQuizDraft({
+                                    ...activeQuizDraft,
+                                    enableMultiMonitorDetection: e.target.checked,
+                                  })
+                                }
+                              />
+                              <span>🖥️ Multi-Monitor / Extended Display Detection</span>
+                            </label>
+                            <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
+                              Continuously checks for connected secondary monitors or split displays and logs proctoring violation alerts if detected.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Student 4-Digit PIN Verification Shield Toggle (OFF by default) */}
                         <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
                           <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
                             <input
                               type="checkbox"
-                              checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
+                              checked={activeQuizDraft.requireStudentPin ?? false}
                               onChange={(e) =>
                                 setActiveQuizDraft({
                                   ...activeQuizDraft,
-                                  enableMultiMonitorDetection: e.target.checked,
+                                  requireStudentPin: e.target.checked,
+                                  limitOneAttempt: e.target.checked ? (activeQuizDraft.limitOneAttempt ?? true) : activeQuizDraft.limitOneAttempt,
                                 })
                               }
                             />
-                            <span>🖥️ Multi-Monitor / Extended Display Detection</span>
+                            <span>🛡️ Require 4-Digit Student PIN (School Roster)</span>
                           </label>
                           <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
-                            Continuously checks for connected secondary monitors or split displays and logs proctoring violation alerts if detected.
+                            Candidates must select their name and enter their unique 4-digit PIN from the School Student Roster to start. Prevents impersonation and limits each candidate to 1 attempt. (Default: Off)
                           </p>
+                          {activeQuizDraft.requireStudentPin && (
+                            <div style={{ marginTop: '8px', marginLeft: '24px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <label className="qm-checkbox-label" style={{ fontWeight: 600, fontSize: '0.85rem' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={activeQuizDraft.limitOneAttempt ?? true}
+                                  onChange={(e) =>
+                                    setActiveQuizDraft({
+                                      ...activeQuizDraft,
+                                      limitOneAttempt: e.target.checked,
+                                    })
+                                  }
+                                />
+                                <span>Limit each candidate to exactly 1 attempt</span>
+                              </label>
+                            </div>
+                          )}
                         </div>
                       </>
                     )}

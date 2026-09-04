@@ -8,7 +8,7 @@ interface PdfUploadProps {
     questionPaper: File,
     markScheme: File | null,
     insertFile: File | null,
-    options: { includeGuidance: boolean; domain: SubjectDomain }
+    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean }
   ) => void;
   isProcessing: boolean;
 }
@@ -21,6 +21,7 @@ interface PdfUploadProps {
  */
 export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [domain, setDomain] = useState<SubjectDomain>('stem');
+  const [isIgcse, setIsIgcse] = useState<boolean>(true);
 
   const [qpDragOver, setQpDragOver] = useState(false);
   const [msDragOver, setMsDragOver] = useState(false);
@@ -104,6 +105,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       onFilesSelected(qpFile, msFile, domain === 'humanities' ? insertFile : null, {
         includeGuidance,
         domain,
+        isIgcse,
       });
     }
   };
@@ -369,6 +371,46 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* ─── Exam Board & Structure Format Toggle ────────────────────────── */}
+      <div className="upload-ai-options-card" style={{ marginBottom: '12px' }}>
+        <label className="upload-toggle-label" htmlFor="exam-format-toggle">
+          <div className="upload-toggle-info">
+            <div className="upload-toggle-heading">
+              <span className="upload-toggle-icon">📋</span>
+              <span className="upload-toggle-title">Exam Board & Structure Format</span>
+              <span
+                className="upload-badge"
+                style={{
+                  background: isIgcse
+                    ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(59, 130, 246, 0.15))'
+                    : 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(20, 184, 166, 0.15))',
+                  color: isIgcse ? 'var(--color-primary-600, #4f46e5)' : '#059669',
+                  border: `1px solid ${isIgcse ? 'rgba(99, 102, 241, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`,
+                }}
+              >
+                {isIgcse ? 'Cambridge / IGCSE (Hierarchical)' : 'General / Non-IGCSE (Flexible)'}
+              </span>
+            </div>
+            <p className="upload-toggle-desc">
+              {isIgcse
+                ? 'Cambridge / IGCSE Mode: Optimized for Paper 1/2/4/6 layouts with strictly grouped sub-questions (a), (b)(i), (c), syllabus codes, and insert references.'
+                : 'General / Non-IGCSE Mode: Flexible extraction for AP, IB, SAT, national, or school exams. Avoids assuming Cambridge sub-part hierarchies or series codes.'}
+            </p>
+          </div>
+
+          <div className="upload-switch-wrapper">
+            <input
+              type="checkbox"
+              id="exam-format-toggle"
+              checked={isIgcse}
+              onChange={(e) => setIsIgcse(e.target.checked)}
+              className="upload-switch-input"
+            />
+            <span className="upload-switch-slider" />
+          </div>
+        </label>
       </div>
 
       {/* ─── AI Teacher Guidance Toggle ──────────────────────────────────── */}

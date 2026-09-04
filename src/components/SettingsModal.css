@@ -22,7 +22,7 @@
 .settings-modal {
   position: relative;
   width: 100%;
-  max-width: 520px;
+  max-width: 660px;
   max-height: 90vh;
   background: var(--color-surface);
   border-radius: var(--radius-2xl);
@@ -521,6 +521,83 @@
   border-color: var(--color-danger-300);
   background: rgba(244, 63, 94, 0.05);
 }
+
+/* ─── Advanced Administration Gate Card ──────────────────────────────────────── */
+
+.settings-advanced-gate-card {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1.5px solid var(--color-primary-400, #818cf8);
+  border-radius: var(--radius-xl, 14px);
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.1);
+}
+
+.settings-advanced-gate-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex: 1 1 300px;
+}
+
+.settings-advanced-gate-icon {
+  font-size: 2rem;
+  line-height: 1;
+  padding-top: 2px;
+}
+
+.settings-advanced-gate-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  margin-bottom: 4px;
+}
+
+.settings-advanced-gate-title {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--color-text-primary, #f8fafc);
+  margin-bottom: 4px;
+}
+
+.settings-advanced-gate-desc {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary, #94a3b8);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.settings-advanced-gate-btn {
+  background: linear-gradient(135deg, var(--color-primary-600, #4f46e5), var(--color-primary-500, #6366f1));
+  color: #ffffff;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 9px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.settings-advanced-gate-btn:hover {
+  opacity: 0.94;
+  transform: translateY(-1px);
+}
+
 
 /* ─── Footer ────────────────────────────────────────────────────────────────── */
 

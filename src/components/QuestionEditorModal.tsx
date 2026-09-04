@@ -719,7 +719,7 @@ export function QuestionEditorModal({
             className={`q-editor-tab-btn ${activeTab === 'stem' ? 'q-editor-tab-btn--active' : ''}`}
             onClick={() => setActiveTab('stem')}
           >
-            📝 Question Stem & Math
+            📝 Main Question Stem & Math
           </button>
           <button
             type="button"
@@ -971,13 +971,23 @@ export function QuestionEditorModal({
               {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && (
                 <div className="q-editor-subs-section">
                   <div className="q-editor-subhead-row">
-                    <div>
-                      <h4 className="q-editor-subhead">Sub-Questions / Multi-Part Breakdown ({subQuestions.length})</h4>
-                      {subQuestions.length > 0 && (
-                        <span className="q-subs-mark-total">
-                          Sub-questions mark sum: <strong>{subQuestionsTotalMarks} marks</strong>
-                        </span>
-                      )}
+                    <div className="q-editor-subhead-left">
+                      <button
+                        type="button"
+                        className="q-editor-btn-back-to-main"
+                        onClick={() => setActiveTab('stem')}
+                        title="Return to editing the main question stem & context"
+                      >
+                        ← Back to Main Question
+                      </button>
+                      <div>
+                        <h4 className="q-editor-subhead">Sub-Questions / Multi-Part Breakdown ({subQuestions.length})</h4>
+                        {subQuestions.length > 0 && (
+                          <span className="q-subs-mark-total">
+                            Sub-questions mark sum: <strong>{subQuestionsTotalMarks} marks</strong>
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button type="button" className="q-editor-btn-add" onClick={handleAddSubQuestion}>
                       + Add Sub-Question Part
@@ -1026,34 +1036,76 @@ export function QuestionEditorModal({
                           </div>
 
                           <div className="q-editor-sub-body">
-                            <label className="q-editor-sub-label">Sub-part Question Text (LaTeX supported):</label>
-                            <textarea
-                              className="q-editor-textarea q-editor-textarea--sm"
-                              value={sub.question_text}
-                              onChange={(e) => handleUpdateSubQuestion(si, { question_text: e.target.value })}
-                              placeholder="e.g. State the formula of hydrochloric acid..."
-                              rows={2}
-                            />
+                            <div className="q-editor-sub-split">
+                              {/* Left Edit Column */}
+                              <div className="q-editor-sub-input-col">
+                                <label className="q-editor-sub-label">Sub-part Question Text (LaTeX supported):</label>
+                                <textarea
+                                  className="q-editor-textarea q-editor-textarea--sm"
+                                  value={sub.question_text}
+                                  onChange={(e) => handleUpdateSubQuestion(si, { question_text: e.target.value })}
+                                  placeholder="e.g. State the formula of hydrochloric acid..."
+                                  rows={3}
+                                />
 
-                            <label className="q-editor-sub-label">Official Answer / Sub-Mark Scheme:</label>
-                            <input
-                              type="text"
-                              className="q-editor-input"
-                              value={sub.mark_scheme || ''}
-                              onChange={(e) => handleUpdateSubQuestion(si, { mark_scheme: e.target.value })}
-                              placeholder="e.g. $HCl$ [1]"
-                            />
-
-                            <div className="q-editor-sub-insights-row">
-                              <div className="q-editor-sub-insight-field">
-                                <label className="q-editor-sub-label">💡 Examiner Tip (Optional):</label>
+                                <label className="q-editor-sub-label">Official Answer / Sub-Mark Scheme:</label>
                                 <input
                                   type="text"
-                                  className="q-editor-input q-editor-input--sm"
-                                  value={sub.guidance || ''}
-                                  onChange={(e) => handleUpdateSubQuestion(si, { guidance: e.target.value })}
-                                  placeholder="e.g. Allow error carried forward (ecf) from part (a)"
+                                  className="q-editor-input"
+                                  value={sub.mark_scheme || ''}
+                                  onChange={(e) => handleUpdateSubQuestion(si, { mark_scheme: e.target.value })}
+                                  placeholder="e.g. $HCl$ [1]"
                                 />
+
+                                <div className="q-editor-sub-insights-row">
+                                  <div className="q-editor-sub-insight-field">
+                                    <label className="q-editor-sub-label">💡 Examiner Tip (Optional):</label>
+                                    <input
+                                      type="text"
+                                      className="q-editor-input q-editor-input--sm"
+                                      value={sub.guidance || ''}
+                                      onChange={(e) => handleUpdateSubQuestion(si, { guidance: e.target.value })}
+                                      placeholder="e.g. Allow error carried forward (ecf) from part (a)"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Right Live KaTeX Preview Column */}
+                              <div className="q-editor-sub-preview-col">
+                                <div className="q-editor-sub-preview-box">
+                                  <div className="q-editor-sub-preview-top">
+                                    <span className="q-editor-sub-preview-badge">
+                                      {sub.sub_id ? sub.sub_id : `Part ${si + 1}`}
+                                    </span>
+                                    <span className="q-editor-sub-preview-marks">
+                                      [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
+                                    </span>
+                                  </div>
+
+                                  <div className="q-editor-sub-preview-text">
+                                    {hasInlineGaps(sub.question_text) ? (
+                                      <InlineGapText content={sub.question_text} isReadOnly={false} />
+                                    ) : sub.question_text?.trim() ? (
+                                      <ExamMathText content={sub.question_text} />
+                                    ) : (
+                                      <span className="q-editor-preview-placeholder">Live sub-part KaTeX preview will render here...</span>
+                                    )}
+                                  </div>
+
+                                  {sub.mark_scheme && sub.mark_scheme.trim() && (
+                                    <div className="q-editor-sub-preview-ans">
+                                      <span className="q-editor-sub-preview-ans-label">Answer:</span>
+                                      <ExamMathText content={sub.mark_scheme} />
+                                    </div>
+                                  )}
+
+                                  {sub.guidance && sub.guidance.trim() && (
+                                    <div className="q-editor-sub-preview-tip">
+                                      <span>💡 {sub.guidance}</span>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -1804,6 +1856,16 @@ export function QuestionEditorModal({
           </div>
 
           <div className="q-editor-footer-right">
+            {activeTab === 'subquestions' && (
+              <button
+                type="button"
+                className="q-editor-btn-secondary"
+                onClick={() => setActiveTab('stem')}
+                title="Return to editing the main question stem"
+              >
+                ← Main Question
+              </button>
+            )}
             <button
               type="button"
               className="q-editor-btn-secondary"

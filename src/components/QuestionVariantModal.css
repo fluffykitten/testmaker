@@ -156,9 +156,16 @@
   align-items: center;
 }
 
-.variant-instruction-input {
+.variant-instruction-input-wrap {
+  position: relative;
   flex: 1;
-  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+}
+
+.variant-instruction-input {
+  width: 100%;
+  padding: 8px 34px 8px 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -172,6 +179,30 @@
 .variant-instruction-input:focus {
   border-color: var(--color-primary-500);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.variant-instruction-clear-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  line-height: 1;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.variant-instruction-clear-btn:hover {
+  color: var(--color-danger-500);
+  background: rgba(244, 63, 94, 0.1);
 }
 
 .variant-generate-btn {
@@ -239,6 +270,65 @@
   color: var(--color-primary-600);
   border-color: var(--color-primary-400);
   background: rgba(99, 102, 241, 0.05);
+}
+
+.variant-suggestion-chip--active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: var(--color-primary-500);
+  color: var(--color-primary-600);
+  font-weight: 600;
+  border-style: solid;
+}
+
+.variant-loading-instruction {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-primary-400);
+  font-style: italic;
+  font-size: 0.8125rem;
+  word-break: break-word;
+}
+
+/* ─── Applied Instruction Banner ────────────────────────────────────────── */
+
+.variant-applied-badge {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.08));
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius-md);
+  animation: fadeIn 0.3s ease;
+}
+
+.variant-applied-icon {
+  font-size: 1.125rem;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.variant-applied-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.variant-applied-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-primary-600);
+}
+
+.variant-applied-val {
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .variant-error-alert {

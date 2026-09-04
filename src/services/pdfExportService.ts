@@ -2,6 +2,7 @@
 // Opens high-resolution, print-optimized document windows for saving as PDF
 // with support for authentic Cambridge, Modern Worksheet, Answer Booklet, and Mark Scheme layouts.
 
+import katex from 'katex';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import type { ExportLayoutOptions } from '../types/exportTemplates';
@@ -12,16 +13,61 @@ import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConst
 import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 
+const KATEX_OPTIONS = {
+  throwOnError: false,
+  trust: true,
+  strict: false,
+  macros: {
+    '\\degree': '^\\circ',
+    '\\degreeC': '^\\circ\\text{C}',
+    '\\celsius': '^\\circ\\text{C}',
+    '\\ce': '#1',
+  },
+};
+
+function normalizeLatexForPrint(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .replace(/\\,/g, ' ')
+    .replace(/\\:/g, ' ')
+    .replace(/\\;/g, ' ')
+    .replace(/\\!/g, '')
+    .replace(/\\ /g, ' ')
+    .replace(/~/g, ' ')
+    .replace(/\\(degreeC|celsius)\b/g, '°C')
+    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
+    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
+    .replace(/\\degree\s*C\b/gi, '°C')
+    .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
+    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
+    .replace(/\^\{\\circ\s*C\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '°C')
+    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*F\s*\}/gi, '°F')
+    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
+    .replace(/\^\{\\circ\}/g, '°')
+    .replace(/\^\\circ/g, '°')
+    .replace(/\\degree\b/g, '°')
+    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
+    .replace(/\bext\{([^{}]+)\}/g, '$1')
+    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
+    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
+    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '{}^{$1}_{$2}')
+    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '{}^{$2}_{$1}')
+    .replace(/_\^\{([^{}]+)\}/g, '{}^{$1}')
+    .replace(/_\^([0-9a-zA-Z]+)/g, '{}^{$1}')
+    .replace(/\\quad/g, ' \\quad ')
+    .replace(/\\qquad/g, ' \\qquad ');
+}
+
 /**
- * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean HTML
+ * Formats non-LaTeX text, plain chemistry equations, and general sub/superscripts to clean HTML
  */
-export function formatLatexForHtml(text: string): string {
-  if (!text) return '';
-  // 1. Unescape literal '\n' sequences from database/JSON strings
-  const unescaped = text.replace(/\\n/g, '\n');
-  const protectedText = protectCurrencySymbols(unescaped);
-  const chemFormatted = autoFormatChemistryAndMath(protectedText);
-  const formatted = chemFormatted
+function formatPlainTextForPrint(raw: string): string {
+  if (!raw) return '';
+  const chemFormatted = autoFormatChemistryAndMath(raw);
+  return chemFormatted
     // Markdown bold: **text** or __text__ -> <strong>text</strong>
     .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+?)__/g, '<strong>$1</strong>')
@@ -56,7 +102,7 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
     .replace(/\\degree\s*C\b/gi, '°C')
     .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
-    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}\}/gi, '°C')
+    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
     .replace(/\^\{\\circ\s*C\}/gi, '°C')
     .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
     .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
@@ -82,20 +128,15 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\\lambda/g, 'λ')
     .replace(/\\phi/g, 'ϕ')
     // Fractions: \frac{a}{b} -> (a / b)
-    .replace(/\\frac\{(.*?)\}\{(.*?)\}/g, '($1 / $2)')
+    .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1 / $2)')
     // Font wrappers inside LaTeX
-    .replace(/\\text\{(.*?)\}/g, '$1')
-    .replace(/\\mathrm\{(.*?)\}/g, '$1')
-    .replace(/\\mathbf\{(.*?)\}/g, '$1')
-    .replace(/\\mathit\{(.*?)\}/g, '$1')
+    .replace(/\\text\{([^{}]+)\}/g, '$1')
+    .replace(/\\mathrm\{([^{}]+)\}/g, '$1')
+    .replace(/\\mathbf\{([^{}]+)\}/g, '$1')
+    .replace(/\\mathit\{([^{}]+)\}/g, '$1')
     .replace(/\\ce\{([^{}]+)\}/g, '$1')
     .replace(/\\quad/g, '   ')
     .replace(/\\qquad/g, '      ')
-    // Remove outer LaTeX math delimiters while keeping content
-    .replace(/\$\$(.*?)\$\$/g, '$1')
-    .replace(/\$(.*?)\$/g, '$1')
-    .replace(/\\\[(.*?)\\\]/g, '$1')
-    .replace(/\\\((.*?)\\\)/g, '$1')
     // 1. Nuclide / Isotope notation: {}^{40}_{20}W or _{20}^{40}W or \prescript{40}{20}W -> vertically stacked
     .replace(/(?:\{\}\s*)?(?:_\^|\^)\{([^{}]+)\}\s*_\{([^{}]+)\}/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$1</span><span>$2</span></span>')
     .replace(/(?:\{\}\s*)?_\{([^{}]+)\}\s*\^\{([^{}]+)\}/g, '<span class="nuclide-stack" style="display:inline-flex; flex-direction:column; vertical-align:middle; line-height:0.92; font-size:0.72em; text-align:right; margin-right:1.5px; font-family:inherit;"><span>$2</span><span>$1</span></span>')
@@ -106,11 +147,80 @@ export function formatLatexForHtml(text: string): string {
     .replace(/\{\}/g, '')
     // Clean percentage escaping
     .replace(/\\%/g, '%')
-    // Subscripts & Superscripts to HTML tags
+    // Subscripts:
+    // 1. Braced subscripts: _{...}
     .replace(/_{([^{}]*)}/g, '<sub>$1</sub>')
+    // 2. Unbraced digit subscripts: H_2, SO_4, x_1, v_10 (matches digits ONLY so it never swallows following letters!)
+    .replace(/([a-zA-Z0-9)\]])_(\d+)/g, '$1<sub>$2</sub>')
+    // 3. Unbraced single-letter or sign subscripts: v_x, a_n, e_-
+    .replace(/([a-zA-Z0-9)\]])_([a-zA-Z+-])(?![a-zA-Z0-9])/g, '$1<sub>$2</sub>')
+    // Superscripts:
+    // 1. Braced superscripts: ^{...}
     .replace(/\^{([^{}]*)}/g, '<sup>$1</sup>')
-    .replace(/([a-zA-Z0-9)\]])_([0-9a-zA-Z+\-*]+)/g, '$1<sub>$2</sub>')
-    .replace(/\^([0-9a-zA-Z+\-*]+)/g, '<sup>$1</sup>')
+    // 2. Unbraced charge superscripts: Fe^2+, SO_4^2-, Ba^2+, Cl^-, Na^+
+    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]-]|$)/g, '$1<sup>$2</sup>')
+    // 3. Unbraced digit superscripts: x^2, 10^5
+    .replace(/([a-zA-Z0-9)\]])\^(\d+)/g, '$1<sup>$2</sup>')
+    // 4. Unbraced single-letter superscripts: x^n, e^x
+    .replace(/([a-zA-Z0-9)\]])\^([a-zA-Z])(?![a-zA-Z0-9])/g, '$1<sup>$2</sup>');
+}
+
+/**
+ * Formats LaTeX math formulas, Greek symbols, and sub/superscripts to clean, high-resolution HTML with KaTeX
+ */
+export function formatLatexForHtml(text: string): string {
+  if (!text) return '';
+  // 1. Unescape literal '\n' sequences from database/JSON strings
+  const unescaped = text.replace(/\\n/g, '\n');
+  const protectedText = protectCurrencySymbols(unescaped);
+
+  // 2. Standardize LaTeX delimiters: \[...\] -> $$...$$, \(...\) -> $...$
+  const normalized = protectedText
+    .replace(/\\\[([\s\S]*?)\\\]/g, '$$$$1$$')
+    .replace(/\\\(([\s\S]*?)\\\)/g, '$$$1$$');
+
+  // 3. Split by block math ($$...$$) and inline math ($...$)
+  const tokens = normalized.split(/(\$\$[\s\S]*?\$\$|\$(?!\$)[^$\n]+?\$)/g);
+
+  const formattedTokens = tokens.map((token) => {
+    if (!token) return '';
+
+    // Block math: $$ ... $$
+    if (token.startsWith('$$') && token.endsWith('$$') && token.length >= 4) {
+      const rawMath = restoreCurrencySymbols(token.slice(2, -2).trim());
+      const math = normalizeLatexForPrint(rawMath).replace(/(?<!\\)%/g, '\\%');
+      try {
+        const rendered = katex.renderToString(math, { ...KATEX_OPTIONS, displayMode: true });
+        return `<div class="katex-display-wrap" style="text-align: center; margin: 8px 0; break-inside: avoid; page-break-inside: avoid;">${rendered}</div>`;
+      } catch {
+        return `<div class="katex-display-wrap" style="text-align: center; margin: 8px 0; break-inside: avoid; page-break-inside: avoid;">${formatPlainTextForPrint(rawMath)}</div>`;
+      }
+    }
+
+    // Inline math: $ ... $
+    if (token.startsWith('$') && token.endsWith('$') && token.length >= 2) {
+      const rawMath = restoreCurrencySymbols(token.slice(1, -1).trim());
+
+      // Safeguard: Plain English sentence words mistakenly enclosed in dollar signs
+      const hasEnglishSentenceWords = /\b(and|the|is|was|were|are|to|for|from|with|in|of|or|each|per|costs?|prices?)\b/i.test(rawMath);
+      if (hasEnglishSentenceWords && !/\\(frac|text|mathrm|mathbf|times|sqrt|cdot|rightarrow|delta|Delta|circ|degree)\b/i.test(rawMath)) {
+        return formatPlainTextForPrint(rawMath);
+      }
+
+      const math = normalizeLatexForPrint(rawMath).replace(/(?<!\\)%/g, '\\%');
+      try {
+        return katex.renderToString(math, { ...KATEX_OPTIONS, displayMode: false });
+      } catch {
+        return formatPlainTextForPrint(rawMath);
+      }
+    }
+
+    // Standard non-delimited text
+    return formatPlainTextForPrint(token);
+  });
+
+  const formatted = formattedTokens
+    .join('')
     // Convert newlines to HTML line breaks so multi-line text and numbered statements render cleanly
     .replace(/\r\n/g, '\n')
     .replace(/\n\s*\n/g, '<br /><br />')
@@ -278,6 +388,7 @@ export function openStudentPaperPrintWindow(
 <head>
   <meta charset="utf-8" />
   <title>${headerConfig.title || 'Exam Paper'} — Student Assessment</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page {
       size: A4;
@@ -492,6 +603,36 @@ export function openStudentPaperPrintWindow(
       color: #64748b;
       margin-top: 16px;
     }
+
+    /* KaTeX and Mathematical Typography for Print */
+    .katex-mathml { display: none !important; }
+    .katex {
+      font-size: 1.05em;
+      line-height: 1.2;
+      text-rendering: auto;
+    }
+    .katex-display {
+      margin: 0.6em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .katex-display > .katex {
+      display: inline-block;
+      text-align: initial;
+    }
+    .katex-html {
+      white-space: normal;
+    }
+    sub, sup {
+      font-size: 75%;
+      line-height: 0;
+      position: relative;
+      vertical-align: baseline;
+    }
+    sub { bottom: -0.25em; }
+    sup { top: -0.45em; }
   </style>
 </head>
 <body>
@@ -543,8 +684,8 @@ export function openStudentPaperPrintWindow(
       headerConfig.instructions
         ? `<div class="inst-box">
             <div style="font-weight: bold; margin-bottom: 4px;">INSTRUCTIONS TO CANDIDATES:</div>
-            <div>• ${headerConfig.instructions}</div>
-            ${headerConfig.additionalMaterials ? `<div>• Additional Materials: ${headerConfig.additionalMaterials}</div>` : ''}
+            <div>• ${formatLatexForHtml(headerConfig.instructions)}</div>
+            ${headerConfig.additionalMaterials ? `<div>• Additional Materials: ${formatLatexForHtml(headerConfig.additionalMaterials)}</div>` : ''}
             <div>• The number of marks is given in brackets [ ] at the end of each question or part question.</div>
           </div>`
         : ''
@@ -879,11 +1020,20 @@ export function openInsertBookletPrintWindow(
 <head>
   <meta charset="utf-8" />
   <title>${headerConfig.title || 'Exam'} — Insert / Resource Booklet</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
     body { font-family: "Times New Roman", Times, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
     .no-print { text-align: center; padding: 10px; background: #e0e7ff; color: #3730a3; font-size: 13px; margin-bottom: 16px; border-radius: 6px; font-family: Arial, sans-serif; }
     @media print { .no-print { display: none; } }
+
+    /* KaTeX Mathematical Typography for Insert Booklet */
+    .katex-mathml { display: none !important; }
+    .katex { font-size: 1.05em; line-height: 1.2; text-rendering: auto; }
+    .katex-display { margin: 0.5em 0; overflow-x: auto; overflow-y: hidden; break-inside: avoid; page-break-inside: avoid; }
+    sub, sup { font-size: 75%; line-height: 0; position: relative; vertical-align: baseline; }
+    sub { bottom: -0.25em; }
+    sup { top: -0.45em; }
   </style>
 </head>
 <body>
@@ -994,6 +1144,7 @@ export function openAnswerBookletPrintWindow(
 <head>
   <meta charset="utf-8" />
   <title>${headerConfig.title || 'Exam'} — Candidate Answer Booklet</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
     body { font-family: "Times New Roman", Times, serif; color: #111; line-height: 1.5; margin: 0; padding: 10px; }
@@ -1010,6 +1161,36 @@ export function openAnswerBookletPrintWindow(
     .ans-lines { display: flex; flex-direction: column; gap: 34px; margin-bottom: 18px; }
     .ans-line { border-bottom: ${answerLineBorder}; height: 1px; width: 100%; }
     .turn-over { text-align: right; font-style: italic; font-size: 12px; color: #64748b; margin-top: 16px; }
+
+    /* KaTeX Mathematical Typography for Answer Booklet Print */
+    .katex-mathml { display: none !important; }
+    .katex {
+      font-size: 1.05em;
+      line-height: 1.2;
+      text-rendering: auto;
+    }
+    .katex-display {
+      margin: 0.5em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .katex-display > .katex {
+      display: inline-block;
+      text-align: initial;
+    }
+    .katex-html {
+      white-space: normal;
+    }
+    sub, sup {
+      font-size: 75%;
+      line-height: 0;
+      position: relative;
+      vertical-align: baseline;
+    }
+    sub { bottom: -0.25em; }
+    sup { top: -0.45em; }
   </style>
 </head>
 <body>
@@ -1114,6 +1295,7 @@ export function openTeacherMarkSchemePrintWindow(
 <head>
   <meta charset="utf-8" />
   <title>${headerConfig.title || 'Assessment'} — Comprehensive Teacher Solutions</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
     body { font-family: Arial, sans-serif; color: #111827; line-height: 1.4; margin: 0; padding: 10px; }
@@ -1133,6 +1315,36 @@ export function openTeacherMarkSchemePrintWindow(
     tr:nth-child(even) { background: #fafafa; }
     .guidance-box { margin-top: 4px; font-size: 11px; color: #2563eb; font-style: italic; background: #eff6ff; padding: 4px 6px; border-radius: 4px; }
     .trap-box { margin-top: 4px; font-size: 11px; color: #d97706; font-style: italic; background: #fffbeb; padding: 4px 6px; border-radius: 4px; }
+
+    /* KaTeX Mathematical Typography for Mark Scheme Print */
+    .katex-mathml { display: none !important; }
+    .katex {
+      font-size: 1.05em;
+      line-height: 1.2;
+      text-rendering: auto;
+    }
+    .katex-display {
+      margin: 0.5em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .katex-display > .katex {
+      display: inline-block;
+      text-align: initial;
+    }
+    .katex-html {
+      white-space: normal;
+    }
+    sub, sup {
+      font-size: 75%;
+      line-height: 0;
+      position: relative;
+      vertical-align: baseline;
+    }
+    sub { bottom: -0.25em; }
+    sup { top: -0.45em; }
   </style>
 </head>
 <body>

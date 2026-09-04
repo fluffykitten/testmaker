@@ -42,6 +42,18 @@ import {
   type StudentExamStatus,
 } from '../services/examProctorRealtimeService';
 import { getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
+import {
+  saveExamDraft,
+  fetchExamDraft,
+  clearExamDraft,
+  checkStudentAttemptSubmitted,
+  type ExamDraftPayload,
+} from '../services/examDraftService';
+import {
+  fetchPublicRosterDirectory,
+  verifyStudentPin,
+  type PublicRosterStudent,
+} from '../services/studentRosterService';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -268,11 +280,11 @@ export function StudentQuizRunner({
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig | undefined>(initialHeaderConfig);
   const [questions, setQuestions] = useState<Question[]>(initialQuestions || []);
 
-  // Session Persistence Key (per exam code)
+  // Session Persistence Key (per exam code) - Migrated to localStorage to survive tab & browser crashes
   const sessionKey = `exam_sess_${testIdOrCode || 'testrun'}`;
   const getSavedExamState = () => {
     try {
-      const raw = sessionStorage.getItem(sessionKey);
+      const raw = localStorage.getItem(sessionKey) || sessionStorage.getItem(sessionKey);
       return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
@@ -280,16 +292,22 @@ export function StudentQuizRunner({
   };
   const savedExam = useRef(getSavedExamState()).current;
 
-  // Candidate Info
+  // Candidate Info & Verification State
   const [candidateName, setCandidateName] = useState<string>(() => savedExam?.candidateName || '');
   const [candidateClass, setCandidateClass] = useState<string>(() => savedExam?.candidateClass || '');
   const [candidateNumber, setCandidateNumber] = useState<string>(() => savedExam?.candidateNumber || '');
   const [startTime, setStartTime] = useState<number>(() => savedExam?.startTime || Date.now());
+  const [studentPinInput, setStudentPinInput] = useState<string>(() => savedExam?.studentPin || '');
+  const [studentPinError, setStudentPinError] = useState<string | null>(null);
+  const [attemptBlockedMessage, setAttemptBlockedMessage] = useState<string | null>(null);
+  const [requireStudentPin, setRequireStudentPin] = useState<boolean>(() => savedExam?.requireStudentPin ?? false);
+  const [limitOneAttempt, setLimitOneAttempt] = useState<boolean>(() => savedExam?.limitOneAttempt ?? true);
+  const [detectedDraft, setDetectedDraft] = useState<ExamDraftPayload | null>(null);
+  const [isCheckingAttempt, setIsCheckingAttempt] = useState<boolean>(false);
 
-  // Configured Classes for Dropdown (from Settings / Cloud)
-  const [configuredClasses, setConfiguredClasses] = useState<string[]>(() => {
-    return getSchoolClasses();
-  });
+  // Configured Classes and Student Roster
+  const [configuredClasses, setConfiguredClasses] = useState<string[]>(() => getSchoolClasses());
+  const [schoolRoster, setSchoolRoster] = useState<PublicRosterStudent[]>([]);
   const [isCustomClass, setIsCustomClass] = useState<boolean>(() => {
     if (!savedExam?.candidateClass) return false;
     const initialList = getSchoolClasses();
@@ -301,6 +319,11 @@ export function StudentQuizRunner({
     loadAndSyncSchoolClasses().then((classes) => {
       if (classes && classes.length > 0) {
         setConfiguredClasses(classes);
+      }
+    });
+    fetchPublicRosterDirectory().then((roster) => {
+      if (roster && roster.length > 0) {
+        setSchoolRoster(roster);
       }
     });
   }, []);
@@ -509,6 +532,12 @@ export function StudentQuizRunner({
           }
           if (data.teacherPin) {
             setTeacherPin(data.teacherPin);
+          }
+          if (data.requireStudentPin !== undefined) {
+            setRequireStudentPin(data.requireStudentPin);
+          }
+          if (data.limitOneAttempt !== undefined) {
+            setLimitOneAttempt(data.limitOneAttempt);
           }
           setIsTeacherLocked(true);
         }
@@ -966,7 +995,9 @@ export function StudentQuizRunner({
     sendStudentHeartbeat(submitTelemetry);
     sendStudentViolation(resolvedQuizCode, submitTelemetry, {
       type: 'submitted',
-      detail: `Exam submitted (${quizStats.answeredItems}/${quizStats.totalItems} answered)`,
+      detail: (isExamMode && timeLeft <= 0)
+        ? `⏱️ Time Expired. Exam auto-submitted (${quizStats.answeredItems}/${quizStats.totalItems} answered)`
+        : `Exam submitted (${quizStats.answeredItems}/${quizStats.totalItems} answered)`,
       severity: 'info',
     });
 
@@ -1122,7 +1153,9 @@ export function StudentQuizRunner({
           setSyncStatus('synced');
           setSyncErrorMessage(null);
           try {
+            localStorage.removeItem(sessionKey);
             sessionStorage.removeItem(sessionKey);
+            clearExamDraft(finalQuizCode, studentPinInput || candidateName).catch(() => {});
           } catch {}
         } else {
           setSyncStatus('offline_failed');
@@ -1322,7 +1355,9 @@ export function StudentQuizRunner({
         setSyncStatus('synced');
         setSyncErrorMessage(null);
         try {
+          localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
+          clearExamDraft(finalQuizCode, studentPinInput || candidateName).catch(() => {});
         } catch {}
       } else {
         setSyncStatus('offline_failed');
@@ -1340,7 +1375,7 @@ export function StudentQuizRunner({
     } finally {
       setIsGrading(false);
     }
-  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, resolvedQuizCode, resolvedTestId, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey]);
+  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, resolvedQuizCode, resolvedTestId, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey, studentPinInput]);
   submitExamRef.current = handleSubmitExam;
 
   const handleRetryCloudSync = useCallback(async () => {
@@ -1352,7 +1387,9 @@ export function StudentQuizRunner({
         setSyncStatus('synced');
         setSyncErrorMessage(null);
         try {
+          localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
+          clearExamDraft(resolvedQuizCode, studentPinInput || candidateName).catch(() => {});
         } catch {}
       } else {
         setSyncErrorMessage(syncResult.error || 'Retry attempt failed. Please check internet connection.');
@@ -1362,47 +1399,54 @@ export function StudentQuizRunner({
     } finally {
       setIsRetryingSync(false);
     }
-  }, [completedSubmission, isRetryingSync, sessionKey]);
+  }, [completedSubmission, isRetryingSync, sessionKey, resolvedQuizCode, studentPinInput, candidateName]);
 
-  // Auto-persist exam state to sessionStorage across page refreshes
+  // Auto-persist exam state to localStorage (and sessionStorage fallback) across tab & browser reloads
   useEffect(() => {
     if (hasStarted && !isSubmitted) {
+      const payload = JSON.stringify({
+        candidateName,
+        candidateClass,
+        candidateNumber,
+        studentPin: studentPinInput,
+        startTime,
+        targetEndTime,
+        currentIndex,
+        answers,
+        flaggedIndices: Array.from(flaggedIndices),
+        audioProgress,
+        isExamMode,
+        hasStarted,
+        isSubmitted,
+        timeLeft,
+        securityEnabled,
+        enableWatermark,
+        enableMultiMonitorDetection,
+        requireTeacherUnlock,
+        requireStudentPin,
+        limitOneAttempt,
+        isLockedByProctor,
+        lockReason,
+        lockTime,
+        violations,
+      });
+
       try {
-        sessionStorage.setItem(
-          sessionKey,
-          JSON.stringify({
-            candidateName,
-            candidateClass,
-            candidateNumber,
-            startTime,
-            targetEndTime,
-            currentIndex,
-            answers,
-            flaggedIndices: Array.from(flaggedIndices),
-            audioProgress,
-            isExamMode,
-            hasStarted,
-            isSubmitted,
-            timeLeft,
-            securityEnabled,
-            enableWatermark,
-            enableMultiMonitorDetection,
-            requireTeacherUnlock,
-            isLockedByProctor,
-            lockReason,
-            lockTime,
-            violations,
-          })
-        );
+        localStorage.setItem(sessionKey, payload);
       } catch (e) {
-        console.warn('Exam state save error:', e);
+        console.warn('LocalStorage save error:', e);
       }
+
+      try {
+        sessionStorage.setItem(sessionKey, payload);
+      } catch {}
     }
   }, [
     sessionKey,
     candidateName,
     candidateClass,
     candidateNumber,
+    studentPinInput,
     startTime,
     targetEndTime,
     currentIndex,
@@ -1417,10 +1461,67 @@ export function StudentQuizRunner({
     enableWatermark,
     enableMultiMonitorDetection,
     requireTeacherUnlock,
+    requireStudentPin,
+    limitOneAttempt,
     isLockedByProctor,
     lockReason,
     lockTime,
     violations,
+  ]);
+
+  // Periodic Cloud Auto-Save (Every 50 seconds in background via UPSERT to app_config)
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading) return;
+    const identifier = studentPinInput || candidateName;
+    if (!identifier || !resolvedQuizCode) return;
+
+    const performSync = () => {
+      saveExamDraft({
+        quizCode: resolvedQuizCode,
+        quizId: resolvedTestId,
+        studentName: candidateName,
+        candidateNumber,
+        candidateClass,
+        studentPin: studentPinInput || undefined,
+        answers,
+        currentIndex,
+        timeLeftSeconds: timeLeft,
+        startTime,
+        targetEndTime,
+        flaggedIndices: Array.from(flaggedIndices),
+        audioProgress,
+        violations,
+        isLockedByProctor,
+        lockReason,
+        lockTime,
+        lastSavedAt: new Date().toISOString(),
+        status: 'in_progress',
+      }).catch(() => {});
+    };
+
+    const interval = setInterval(performSync, 50000);
+    return () => clearInterval(interval);
+  }, [
+    hasStarted,
+    isSubmitted,
+    isGrading,
+    resolvedQuizCode,
+    resolvedTestId,
+    candidateName,
+    candidateNumber,
+    candidateClass,
+    studentPinInput,
+    answers,
+    currentIndex,
+    timeLeft,
+    startTime,
+    targetEndTime,
+    flaggedIndices,
+    audioProgress,
+    violations,
+    isLockedByProctor,
+    lockReason,
+    lockTime,
   ]);
 
   // ─── 5. Absolute Epoch Countdown Timer & Device Sleep / Tab Sync ─────────
@@ -1433,7 +1534,11 @@ export function StudentQuizRunner({
       setTimeLeft(remainingSec);
 
       if (remainingSec <= 0) {
-        handleSubmitExam();
+        if (submitExamRef.current) {
+          submitExamRef.current();
+        } else {
+          handleSubmitExam();
+        }
       } else {
         // Resilient latches ensure warnings fire even if browser throttles setInterval across 300s / 60s
         if (remainingSec <= 300 && remainingSec > 60 && examDurationSec > 330 && !hasShown5MinWarningRef.current) {
@@ -1465,7 +1570,7 @@ export function StudentQuizRunner({
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
     };
-  }, [hasStarted, isSubmitted, isExamMode, targetEndTime, handleSubmitExam]);
+  }, [hasStarted, isSubmitted, isExamMode, targetEndTime]);
 
   // ─── 5b. Prevent Accidental Tab Closure & Back Navigation ───────────────
   useEffect(() => {
@@ -1498,7 +1603,91 @@ export function StudentQuizRunner({
     }
   }, [hasStarted, isSubmitted]);
 
+  // Detect existing in-progress draft when candidate enters their info
+  useEffect(() => {
+    if (hasStarted || isSubmitted || !candidateName.trim() || !resolvedQuizCode) return;
+
+    // If student PIN is enforced, require the 4-digit PIN before detecting and revealing candidate drafts
+    if (requireStudentPin && (!studentPinInput.trim() || studentPinInput.trim().length !== 4)) {
+      setDetectedDraft(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const draft = await fetchExamDraft(resolvedQuizCode, studentPinInput || candidateName);
+      if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
+        setDetectedDraft(draft);
+      } else {
+        setDetectedDraft(null);
+      }
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [candidateName, studentPinInput, resolvedQuizCode, hasStarted, isSubmitted, requireStudentPin]);
+
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
+  const handleResumeDraft = async () => {
+    if (!detectedDraft) return;
+
+    // Verify PIN before allowing candidate to resume a draft
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
+      if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
+        setStudentPinError('Please enter your valid 4-digit numeric PIN to resume your session.');
+        return;
+      }
+
+      setIsCheckingAttempt(true);
+      try {
+        const result = await verifyStudentPin(candidateName, candidateClass, pin);
+        if (!result.valid) {
+          setIsCheckingAttempt(false);
+          setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
+          return;
+        }
+      } catch (err: any) {
+        setIsCheckingAttempt(false);
+        setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
+        return;
+      }
+      setIsCheckingAttempt(false);
+    }
+
+    setAnswers(detectedDraft.answers || {});
+    setCurrentIndex(detectedDraft.currentIndex || 0);
+    if (detectedDraft.candidateClass) setCandidateClass(detectedDraft.candidateClass);
+    if (detectedDraft.candidateNumber) setCandidateNumber(detectedDraft.candidateNumber);
+    if (detectedDraft.flaggedIndices) setFlaggedIndices(new Set(detectedDraft.flaggedIndices));
+    if (detectedDraft.audioProgress) setAudioProgress(detectedDraft.audioProgress);
+    if (detectedDraft.violations) setViolations(detectedDraft.violations);
+    if (detectedDraft.isLockedByProctor) {
+      setIsLockedByProctor(detectedDraft.isLockedByProctor);
+      setLockReason(detectedDraft.lockReason || '');
+      setLockTime(detectedDraft.lockTime || '');
+    }
+
+    const remaining = Math.max(10, detectedDraft.timeLeftSeconds || examDurationSec);
+    const now = Date.now();
+    setStartTime(detectedDraft.startTime || now);
+    setTargetEndTime(now + remaining * 1000);
+    setTimeLeft(remaining);
+
+    await flushClipboard();
+
+    if (securityEnabled && containerRef.current) {
+      try {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (err) {
+        console.warn('Fullscreen request blocked:', err);
+      }
+    }
+
+    setHasStarted(true);
+    setDetectedDraft(null);
+  };
+
   const handleStartExam = async () => {
     if (!candidateName.trim()) {
       setLobbyError('Please enter candidate full name before beginning the examination.');
@@ -1509,12 +1698,69 @@ export function StudentQuizRunner({
       return;
     }
     setLobbyError(null);
+    setStudentPinError(null);
+    setAttemptBlockedMessage(null);
+
+    // 1. If student PIN verification is enabled, validate securely against server
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
+      if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
+        setStudentPinError('Please enter a valid 4-digit numeric PIN.');
+        return;
+      }
+
+      setIsCheckingAttempt(true);
+      try {
+        const result = await verifyStudentPin(candidateName, candidateClass, pin);
+        if (!result.valid) {
+          setIsCheckingAttempt(false);
+          setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
+          return;
+        }
+        // Auto-fill candidate number if returned from server
+        if (result.student?.candidateNumber && !candidateNumber) {
+          setCandidateNumber(result.student.candidateNumber);
+        }
+      } catch (err: any) {
+        setIsCheckingAttempt(false);
+        setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
+        return;
+      }
+      setIsCheckingAttempt(false);
+    }
+
+    // 2. If single-attempt enforcement is active in formal exam mode
+    if (limitOneAttempt && isExamMode) {
+      setIsCheckingAttempt(true);
+      try {
+        const attempt = await checkStudentAttemptSubmitted(
+          resolvedQuizCode,
+          candidateName,
+          candidateClass,
+          studentPinInput
+        );
+        if (attempt.submitted) {
+          setIsCheckingAttempt(false);
+          const timeStr = attempt.submittedAt
+            ? new Date(attempt.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'earlier';
+          setAttemptBlockedMessage(
+            `⛔ Access Denied: You have already completed and submitted this examination (${timeStr}). Multiple attempts are not permitted.`
+          );
+          return;
+        }
+      } catch (err) {
+        console.warn('Attempt check notice:', err);
+      } finally {
+        setIsCheckingAttempt(false);
+      }
+    }
 
     // Sanitize clipboard on exam entry
     await flushClipboard();
 
     const now = Date.now();
-    const end = now + (examDurationSec * 1000);
+    const end = now + examDurationSec * 1000;
     setStartTime(now);
     setTargetEndTime(end);
     setTimeLeft(examDurationSec);
@@ -1528,6 +1774,26 @@ export function StudentQuizRunner({
       }
     }
     setHasStarted(true);
+
+    // Initial draft sync
+    saveExamDraft({
+      quizCode: resolvedQuizCode,
+      quizId: resolvedTestId,
+      studentName: candidateName,
+      candidateNumber,
+      candidateClass,
+      studentPin: studentPinInput || undefined,
+      answers,
+      currentIndex,
+      timeLeftSeconds: examDurationSec,
+      startTime: now,
+      targetEndTime: end,
+      flaggedIndices: Array.from(flaggedIndices),
+      audioProgress,
+      violations,
+      lastSavedAt: new Date().toISOString(),
+      status: 'in_progress',
+    }).catch(() => {});
   };
 
   // ─── 7. Question Navigation & Answers ──────────────────────────────────────
@@ -1820,12 +2086,12 @@ export function StudentQuizRunner({
   };
 
   const handleClearTable = () => {
-    if (isSubmitted) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => ({ ...prev, [currentIndex]: '' }));
   };
 
   const handleSelectOption = (optionIndex: number) => {
-    if (isSubmitted) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     if (isMultiSelect) {
       const letter = String.fromCharCode(65 + optionIndex);
       const currentVal = String(answers[currentIndex] || '');
@@ -1844,17 +2110,17 @@ export function StudentQuizRunner({
   };
 
   const handleTextAnswerChange = (val: string) => {
-    if (isSubmitted) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => ({ ...prev, [currentIndex]: val }));
   };
 
   const handleSubAnswerChange = (subKey: string, val: string) => {
-    if (isSubmitted) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => ({ ...prev, [subKey]: val }));
   };
 
   const handleInsertSymbol = (targetKey: string | number, symbol: string) => {
-    if (isSubmitted) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => {
       const currentVal = String(prev[targetKey] || '');
       return { ...prev, [targetKey]: currentVal + symbol };
@@ -2054,6 +2320,31 @@ export function StudentQuizRunner({
             </div>
           )}
 
+          {/* Empty Roster Warning */}
+          {requireStudentPin && schoolRoster.length === 0 && (
+            <div
+              style={{
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1.5px solid #ef4444',
+                borderRadius: 'var(--radius-lg)',
+                padding: '12px 16px',
+                color: '#dc2626',
+                margin: '16px 0 0 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+              }}
+            >
+              <span style={{ fontSize: '1.25rem' }}>⚠️</span>
+              <div>
+                <strong style={{ fontSize: '0.875rem' }}>Notice: School Student Roster is Empty</strong>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginTop: '2px' }}>
+                  This examination requires a student PIN, but no roster entries were found in the database. Please notify your invigilator or teacher.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Candidate Information Form */}
           <div className="student-candidate-name-box" style={{ margin: '16px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div>
@@ -2062,10 +2353,26 @@ export function StudentQuizRunner({
               </label>
               <input
                 type="text"
+                list="roster-candidate-suggestions"
                 className="student-name-input"
                 value={candidateName}
-                onChange={(e) => setCandidateName(e.target.value)}
-                placeholder="e.g. Alex Johnson"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCandidateName(val);
+                  if (lobbyError) setLobbyError(null);
+                  // Auto-fill class and candidate number if matching roster student selected
+                  const matched = schoolRoster.find(
+                    (s) => s.name.trim().toLowerCase() === val.trim().toLowerCase()
+                  );
+                  if (matched) {
+                    if (matched.class) {
+                      setCandidateClass(matched.class);
+                      setIsCustomClass(false);
+                    }
+                    if (matched.candidateNumber) setCandidateNumber(matched.candidateNumber);
+                  }
+                }}
+                placeholder={requireStudentPin ? "Select or type your name..." : "e.g. Alex Johnson"}
                 style={{
                   width: '100%',
                   padding: '10px 14px',
@@ -2079,6 +2386,15 @@ export function StudentQuizRunner({
                   boxSizing: 'border-box',
                 }}
               />
+              <datalist id="roster-candidate-suggestions">
+                {schoolRoster
+                  .filter((s) => !candidateClass || s.class === candidateClass)
+                  .map((s) => (
+                    <option key={s.id} value={s.name}>
+                      {s.name} ({s.class}{s.candidateNumber ? ` • #${s.candidateNumber}` : ''})
+                    </option>
+                  ))}
+              </datalist>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
@@ -2173,7 +2489,121 @@ export function StudentQuizRunner({
                 />
               </div>
             </div>
+
+            {/* Optional 4-Digit Student PIN Verification Input (Enforced only when requireStudentPin is true) */}
+            {requireStudentPin && (
+              <div
+                style={{
+                  background: 'rgba(99, 102, 241, 0.08)',
+                  border: studentPinError ? '1.5px solid #ef4444' : '1.5px solid rgba(99, 102, 241, 0.3)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: '12px 14px',
+                }}
+              >
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 800, marginBottom: 6, color: 'var(--color-text-primary)' }}>
+                  🛡️ 4-Digit Candidate Exam PIN: <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <input
+                  type="password"
+                  maxLength={4}
+                  value={studentPinInput}
+                  onChange={(e) => {
+                    setStudentPinInput(e.target.value.replace(/\D/g, '').slice(0, 4));
+                    if (studentPinError) setStudentPinError(null);
+                  }}
+                  placeholder="• • • •"
+                  style={{
+                    width: '100%',
+                    maxWidth: '180px',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1.5px solid var(--color-border)',
+                    background: 'var(--color-surface)',
+                    color: 'var(--color-text-primary)',
+                    fontSize: '1.25rem',
+                    fontWeight: 800,
+                    letterSpacing: '0.35em',
+                    textAlign: 'center',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <p style={{ margin: '6px 0 0', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                  Enter your unique 4-digit PIN issued by your teacher.
+                </p>
+                {studentPinError && (
+                  <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '0.8125rem', marginTop: '6px' }}>
+                    {studentPinError}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
+          {/* Active Cloud Exam Draft Resume Prompt */}
+          {detectedDraft && (
+            <div
+              className="animate-fade-in"
+              style={{
+                background: 'rgba(59, 130, 246, 0.1)',
+                border: '1.5px solid #3b82f6',
+                borderRadius: 'var(--radius-lg)',
+                padding: '14px 18px',
+                margin: '14px 0',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '1.75rem' }}>🔄</span>
+                <div>
+                  <strong style={{ fontSize: '0.9rem', color: '#60a5fa', display: 'block' }}>
+                    Active In-Progress Session Detected
+                  </strong>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
+                    Saved session found for <strong>{detectedDraft.studentName}</strong> ({Object.keys(detectedDraft.answers || {}).length} questions answered).
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="sq-btn sq-btn-secondary"
+                  style={{ fontSize: '0.8125rem', padding: '6px 12px' }}
+                  onClick={() => setDetectedDraft(null)}
+                >
+                  Start Fresh Session
+                </button>
+                <button
+                  type="button"
+                  className="sq-btn sq-btn-primary"
+                  style={{ fontSize: '0.8125rem', padding: '6px 14px', fontWeight: 800 }}
+                  onClick={handleResumeDraft}
+                >
+                  ⏩ Resume Exam (Q#{detectedDraft.currentIndex + 1})
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Attempt Blocked Message */}
+          {attemptBlockedMessage && (
+            <div
+              className="animate-fade-in"
+              style={{
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '2px solid #ef4444',
+                color: '#ef4444',
+                borderRadius: 'var(--radius-md)',
+                padding: '12px 16px',
+                fontSize: '0.875rem',
+                fontWeight: 800,
+                margin: '12px 0',
+                textAlign: 'left',
+              }}
+            >
+              {attemptBlockedMessage}
+            </div>
+          )}
 
           {/* Lobby Validation Error Alert */}
           {lobbyError && (
@@ -2381,12 +2811,17 @@ export function StudentQuizRunner({
 
           <div className="student-lobby-actions">
             {onExit && (
-              <button type="button" className="sq-btn sq-btn-secondary" onClick={onExit}>
+              <button type="button" className="sq-btn sq-btn-secondary" onClick={onExit} disabled={isCheckingAttempt}>
                 Exit
               </button>
             )}
-            <button type="button" className="sq-btn sq-btn-primary sq-btn-large" onClick={handleStartExam}>
-              🚀 Begin Assessment Now
+            <button 
+              type="button" 
+              className="sq-btn sq-btn-primary sq-btn-large" 
+              onClick={handleStartExam}
+              disabled={isCheckingAttempt}
+            >
+              {isCheckingAttempt ? '⏳ Verifying Credentials...' : '🚀 Begin Assessment Now'}
             </button>
           </div>
         </div>

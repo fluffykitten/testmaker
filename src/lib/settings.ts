@@ -99,15 +99,28 @@ const FONT_SIZE_PX: Record<FontSize, string> = {
  * Loads user settings from localStorage or returns defaults
  */
 export function getSavedSettings(): AppSettings {
+  const envGoogleClientId =
+    (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) ||
+    (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) ||
+    undefined;
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw);
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        googleDriveClientId: parsed.googleDriveClientId || envGoogleClientId,
+      };
     }
   } catch (e) {
     console.warn('Failed to read settings:', e);
   }
-  return DEFAULT_SETTINGS;
+  return {
+    ...DEFAULT_SETTINGS,
+    googleDriveClientId: envGoogleClientId,
+  };
 }
 
 /**
@@ -243,4 +256,58 @@ export async function loadAndSyncSchoolClasses(): Promise<string[]> {
   }
 
   return localClasses;
+}
+
+/**
+ * Syncs Google Drive Client ID to Supabase app_config store
+ */
+export async function syncGoogleDriveClientIdToCloud(clientId: string): Promise<boolean> {
+  const trimmed = clientId ? clientId.trim() : '';
+  if (!trimmed) return false;
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'google_drive_client_id',
+      value: JSON.stringify(trimmed),
+    });
+    if (error) {
+      console.warn('Google Drive Client ID cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for Google Drive Client ID:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads Google Drive Client ID from local storage or cloud app_config if available
+ */
+export async function loadAndSyncGoogleDriveClientId(): Promise<string> {
+  const current = getSavedSettings();
+  if (current.googleDriveClientId && current.googleDriveClientId.trim()) {
+    // Keep cloud in sync
+    syncGoogleDriveClientIdToCloud(current.googleDriveClientId).catch(() => {});
+    return current.googleDriveClientId;
+  }
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'google_drive_client_id')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (typeof parsed === 'string' && parsed.trim()) {
+        const updated = { ...current, googleDriveClientId: parsed.trim() };
+        saveSettings(updated);
+        return parsed.trim();
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch Google Drive Client ID from cloud:', err);
+  }
+
+  return current.googleDriveClientId || '';
 }

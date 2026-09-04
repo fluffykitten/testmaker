@@ -68,14 +68,23 @@ export function SavedTestsPage({
       const data = await fetchCustomTestsWithMetadata();
       setTests(data);
     } catch (err: any) {
-      if (tests.length === 0) setError(err?.message || 'Failed to load saved tests');
+      setError(err?.message || 'Failed to load saved tests');
     } finally {
       setIsLoading(false);
     }
-  }, [tests.length]);
+  }, []);
 
   useEffect(() => {
     loadTests();
+
+    const handleTestsUpdated = () => {
+      loadTests();
+    };
+
+    window.addEventListener('tests_updated', handleTestsUpdated);
+    return () => {
+      window.removeEventListener('tests_updated', handleTestsUpdated);
+    };
   }, [loadTests]);
 
   const handleOpenTest = async (test: CustomTestWithDetails) => {
@@ -153,13 +162,18 @@ export function SavedTestsPage({
     if (!confirm('Are you sure you want to delete this custom exam?')) return;
 
     setDeletingId(testId);
+    // Optimistically remove from state immediately for zero-lag UI
+    setTests((prev) => prev.filter((t) => t.id !== testId));
+
     try {
       const ok = await deleteCustomTest(testId);
-      if (ok) {
-        setTests((prev) => prev.filter((t) => t.id !== testId));
-      } else {
+      if (!ok) {
         alert('Failed to delete custom test from database.');
+        loadTests();
       }
+    } catch (err: any) {
+      alert(`Failed to delete custom test: ${err?.message || 'Unknown error'}`);
+      loadTests();
     } finally {
       setDeletingId(null);
     }

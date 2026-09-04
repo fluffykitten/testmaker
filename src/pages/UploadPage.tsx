@@ -132,7 +132,11 @@ export function UploadPage() {
       qpFile: File,
       msFile: File | null,
       insertFile: File | null,
-      options: { includeGuidance: boolean; domain: SubjectDomain } = { includeGuidance: true, domain: 'stem' }
+      options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean } = {
+        includeGuidance: true,
+        domain: 'stem',
+        isIgcse: true,
+      }
     ) => {
       setSavedCount(null);
       setExtractionResult(null);

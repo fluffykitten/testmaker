@@ -298,12 +298,12 @@ function renderTextWithSubSuper(text: string): React.ReactNode {
   if (!text) return null;
   const clean = restoreCurrencySymbols(text).replace(/\\%/g, '%');
 
-  // Check for subscript/superscript patterns like Fe_3O_4 or H_2SO_4 or 10^5
-  if (!/([a-zA-Z0-9)\]])(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d+|\^[a-zA-Z+-])/.test(clean)) {
+  // Check for subscript/superscript patterns like Fe_3O_4, H_2SO_4, Fe^2+, or 10^5
+  if (!/([a-zA-Z0-9)\]])(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d*[+-]|\^[+-]\d*|\^\d+|\^[a-zA-Z])/.test(clean)) {
     return clean;
   }
 
-  const parts = clean.split(/(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d+|\^[a-zA-Z+-])/g);
+  const parts = clean.split(/(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d*[+-]|\^[+-]\d*|\^\d+|\^[a-zA-Z])/g);
   return parts.map((part, pIdx) => {
     if (part.startsWith('_')) {
       const val = part.startsWith('_{') && part.endsWith('}') ? part.slice(2, -1) : part.slice(1);

@@ -22,6 +22,9 @@ export interface StudentQuizData {
   teacherPin?: string;
   maxViolations?: number;
   showInstantSolutions?: boolean;
+  requireStudentPin?: boolean;
+  limitOneAttempt?: boolean;
+  targetClass?: string;
   // Game mode fields
   quizMode?: 'exam' | 'game';
   enablePowerUps?: boolean;
@@ -153,6 +156,9 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       teacherPin: published.teacherPin,
       maxViolations: published.maxViolations,
       showInstantSolutions: published.showInstantSolutions,
+      requireStudentPin: published.requireStudentPin ?? false,
+      limitOneAttempt: published.limitOneAttempt ?? true,
+      targetClass: published.targetClass,
       quizMode: published.quizMode,
       enablePowerUps: published.enablePowerUps,
       enableStreaks: published.enableStreaks,

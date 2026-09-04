@@ -2,7 +2,7 @@
 // Sends PDF pages to Google's multimodal AI for structured question extraction.
 // Features dynamic model discovery, auto-fallback, and retry.
 
-import type { ExtractionResult, Question, SubQuestion, QuestionStyle } from '../types/database';
+import type { ExtractionResult, ExtractedQuestion, Question, SubQuestion, QuestionStyle } from '../types/database';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 
 /**
@@ -68,7 +68,7 @@ export type SubjectDomain = 'stem' | 'humanities' | 'languages';
  * Builds the specialized STEM (Sciences, Math, Technology) extraction prompt.
  * Focuses on LaTeX math, chemical formulas ($CaCO_3$, equations), nuclide notation, titration tables, and circuit schematics.
  */
-export function getStemExtractionPrompt(includeGuidance: boolean = true): string {
+export function getStemExtractionPrompt(includeGuidance: boolean = true, isIgcse: boolean = true): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -87,59 +87,76 @@ export function getStemExtractionPrompt(includeGuidance: boolean = true): string
           "common_misconceptions": ["Students often forget to square the denominator"]`
     : '';
 
-  return `You are an expert educational assessment parser specializing in STEM (Chemistry, Physics, Biology, Mathematics, and Computer Science).
-Analyze the attached exam past paper PDF page(s) and any mark scheme content.
+  const introText = isIgcse
+    ? `You are an expert educational assessment parser specializing in STEM (Chemistry, Physics, Biology, Mathematics, and Computer Science).
+Analyze the attached exam past paper PDF page(s) and any mark scheme content.`
+    : `You are an expert educational assessment parser specializing in STEM (Chemistry, Physics, Biology, Mathematics, and Computer Science) across diverse curricula (e.g., AP, IB, national standards, and general assessments).
+Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.`;
 
-Extract every numbered question (e.g., Question 1, Question 2, Question 3) as a structured JSON object. 
+  const structureRule = isIgcse
+    ? `CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS (e.g. Paper 4, Theory, Extended papers):
+Do NOT split sub-parts into separate top-level questions! Group all parts belonging to Question 1 under a SINGLE Question 1 container object.
 
-CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS (e.g. Paper 4, Theory, Extended papers):
-Do NOT split sub-parts (a), (b)(i), (b)(ii), (c) into separate top-level questions! 
-Group all sub-parts belonging to Question 1 under a SINGLE Question 1 container object, with:
-- "question_number": "1"
-- "question_text": The main stem / introductory context describing the question or setup
-- "has_diagram": true if there is a shared diagram/table/apparatus for this question
-- "total_marks": Sum of all sub-question marks
-- "sub_questions": An array containing all sub-parts [(a), (b)(i), (b)(ii), (c)...] with their respective text, marks, and mark scheme!
+CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
+1. INTRODUCTORY SCENARIO STEMS VS SUB-QUESTIONS:
+   - In Cambridge structured papers, section (a) often begins with an introductory experimental setup, apparatus description, reaction equation, or diagram, followed by sub-parts (i), (ii).
+   - NEVER drop or skip the introductory setup text of (a)! 
+     * Place the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true).
+     * In the first sub-question "(a)(i)", ALSO preserve the section context (e.g. "(a) A student investigates the reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.") so that sub-question (a)(i) is completely self-contained!
+   - When section (b) or section (c) introduces a new scenario, reaction, or graph followed by (i), (ii):
+     * Prepend the section introductory text to the first sub-part "(b)(i)" (e.g. "(b) The student repeats the experiment using powdered marble chips.\\\\n\\\\n(i) Explain why the rate of reaction increases.").
+     * If section (b) has its own graph or apparatus diagram, set "has_diagram": true, diagram_source="qp", and bounding_box directly on sub-question "(b)(i)"!
+   - When a part has direct marks without roman numerals (e.g. "(a) State the formula of hydrochloric acid. [1]" or "(c) Describe one effect... [2]"):
+     * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" or "(c)" and its marks. NEVER swallow it into parent question_text where it loses its marks and student answer box!
 
-Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
+2. "total_marks": Sum of all sub-question marks.
+3. "sub_questions": Array containing all sub-parts with their respective text, marks, and mark schemes.`
+    : `QUESTION STRUCTURE RULES (GENERAL / NON-IGCSE):
+- If a question has sub-parts (e.g. (a), (b), (i), (ii), or 1.1, 1.2), group them under the parent question container object in 'sub_questions'.
+- If questions are standalone numbered questions (e.g. 1, 2, 3, 4, 5...) without sub-parts, extract each as its own top-level question object with an empty 'sub_questions: []' array.
+- Do NOT force Cambridge/IGCSE sub-part labelling or assume Paper 1/2/4/6 conventions.
+- In 'paper_metadata', extract whatever subject, year, or title is actually present on the paper. Do NOT hallucinate Cambridge series like 'May/June' or 'Oct/Nov' or 'paper_number' if not stated on the exam paper.`;
 
-{
-  "paper_metadata": {
+  const metadataSnippet = isIgcse
+    ? `"paper_metadata": {
     "subject": "Chemistry",
     "subject_code": "0620",
     "year": 2023,
     "series": "May/June",
     "paper_number": 41,
     "has_insert_booklet": false
-  },
-  "questions": [
-    {
-      "question_number": "1",
-      "parent_question_id": "Q1",
-      "page_number": 1,
-      "year": 2023,
-      "series": "May/June",
-      "paper_number": 41,
-      "question_text": "A student investigates the rate of reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).",
-      "question_style": "Structured",
-      "total_marks": 7,
-      "estimated_difficulty": "Medium",
-      "topic": "States of Matter",
-      "sub_topic": "Rates of Reaction",
-      "has_diagram": true,
-      "diagram_source": "qp",
-      "bounding_box": [150, 45, 420, 550],
-      "options": null,
-      "sub_questions": [
+  }`
+    : `"paper_metadata": {
+    "subject": "Chemistry",
+    "subject_code": "CHEM",
+    "year": 2024,
+    "series": "Annual / Term",
+    "paper_number": 1,
+    "has_insert_booklet": false
+  }`;
+
+  const exampleYear = isIgcse ? 2023 : 2024;
+  const exampleSeries = isIgcse ? 'May/June' : 'Annual / Term';
+  const examplePaper1 = isIgcse ? 41 : 1;
+  const examplePaper2 = isIgcse ? 11 : 1;
+
+  const subQuestionsSnippet = isIgcse
+    ? `[
         {
-          "sub_id": "(a)",
-          "question_text": "State the formula of hydrochloric acid.",
+          "sub_id": "(a)(i)",
+          "question_text": "(a) A student investigates the rate of reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.",
           "marks": 1,
-          "mark_scheme": "$HCl$ [1]"${subGuidanceSnippet}
+          "mark_scheme": "carbon dioxide / $CO_2$ [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(a)(ii)",
+          "question_text": "Describe a test for this gas.\\\\ntest: ...\\\\nresult: ...",
+          "marks": 2,
+          "mark_scheme": "limewater [1]; turns milky / cloudy [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(b)(i)",
-          "question_text": "Explain why the rate of reaction decreases as the reaction proceeds.",
+          "question_text": "(b) The student measures the volume of gas produced over time.\\\\n\\\\n(i) Explain why the rate of reaction decreases as the reaction proceeds.",
           "marks": 2,
           "mark_scheme": "Concentration of reactants decreases [1]; fewer successful collisions per unit time [1]"${subGuidanceSnippet}
         },
@@ -147,11 +164,31 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
           "sub_id": "(b)(ii)",
           "question_text": "Calculate the volume of $CO_2$ gas produced at standard temperature and pressure from 0.05 mol of $CaCO_3$.",
           "marks": 2,
-          "mark_scheme": "$0.05 \\times 24 = 1.2 \\text{ dm}^3$ [2]"${subGuidanceSnippet}
+          "mark_scheme": "$0.05 \\\\times 24 = 1.2 \\\\text{ dm}^3$ [2]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(c)",
-          "question_text": "Complete the table to show the formula and physical state of each compound at r.t.p.\\n\\n| Compound Name | Formula | State at r.t.p. |\\n|---|---|---|\\n| Methane | $CH_4$ | gas |\\n| Calcium carbonate | $CaCO_3$ | solid |\\n| Sodium chloride | [       ] | [       ] |",
+          "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
+          "marks": 2,
+          "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\\\ge E_a$ [1]"${subGuidanceSnippet}
+        }
+      ]`
+    : `[
+        {
+          "sub_id": "(a)",
+          "question_text": "State the formula of hydrochloric acid.",
+          "marks": 1,
+          "mark_scheme": "$HCl$ [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)",
+          "question_text": "Explain why the rate of reaction decreases as the reaction proceeds.",
+          "marks": 2,
+          "mark_scheme": "Concentration of reactants decreases [1]; fewer successful collisions per unit time [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(c)",
+          "question_text": "Complete the table to show the formula and physical state of each compound at r.t.p.\\\\n\\\\n| Compound Name | Formula | State at r.t.p. |\\\\n|---|---|---|\\\\n| Methane | $CH_4$ | gas |\\\\n| Calcium carbonate | $CaCO_3$ | solid |\\\\n| Sodium chloride | [       ] | [       ] |",
           "marks": 2,
           "mark_scheme": "$NaCl$ [1]; solid [1]"${subGuidanceSnippet}
         },
@@ -159,11 +196,41 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
           "sub_id": "(d)",
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
-          "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\ge E_a$ [1]"${subGuidanceSnippet}
+          "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\\\ge E_a$ [1]"${subGuidanceSnippet}
         }
-      ],
+      ]`;
+
+  return `${introText}
+
+Extract every numbered question (e.g., Question 1, Question 2, Question 3) as a structured JSON object. 
+
+${structureRule}
+
+Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
+
+{
+  ${metadataSnippet},
+  "questions": [
+    {
+      "question_number": "1",
+      "parent_question_id": "Q1",
+      "page_number": 1,
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
+      "paper_number": ${examplePaper1},
+      "question_text": "A student investigates the rate of reaction between dilute hydrochloric acid and marble chips ($CaCO_3$). The apparatus used is shown in the diagram.",
+      "question_style": "Structured",
+      "total_marks": ${isIgcse ? 9 : 7},
+      "estimated_difficulty": "Medium",
+      "topic": "States of Matter",
+      "sub_topic": "Rates of Reaction",
+      "has_diagram": true,
+      "diagram_source": "qp",
+      "bounding_box": [150, 45, 420, 550],
+      "options": null,
+      "sub_questions": ${subQuestionsSnippet},
       "mark_scheme": {
-        "marking_points": ["See sub-question breakdown [7]"],
+        "marking_points": ["See sub-question breakdown [${isIgcse ? 9 : 7}]"],
         "acceptable_answers": []${guidanceSchemaSnippet}
       }
     },
@@ -171,9 +238,9 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "question_number": "2",
       "parent_question_id": "Q2",
       "page_number": 1,
-      "year": 2023,
-      "series": "May/June",
-      "paper_number": 11,
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
+      "paper_number": ${examplePaper2},
       "question_text": "Which particle has the same electronic structure as an argon atom?",
       "question_style": "Multiple Choice",
       "total_marks": 1,
@@ -215,12 +282,12 @@ CRITICAL FORMATTING RULES:
      * Keep statements 1, 2, 3, 4 in "question_text" before the options ["A 1 and 3", "B 1 and 4", ...].
    - FILL-IN-THE-BLANK SENTENCES:
      * Transcribe completion statements with clear blank lines (e.g. 'Organisms are classified into groups by the .......................................... that they share.') and mark brackets [ ].
-3. Group all sub-questions inside their parent question's sub_questions array. Do not fragment them into separate top-level questions.
+3. Group all sub-questions inside their parent question's sub_questions array if the question has sub-parts. For standalone questions, keep sub_questions empty.
 4. CHEMICAL FORMULAS, WORD EQUATIONS & MATH:
    - Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
    - For Biology word equations and reaction paths, use arrows: '$glucose \\rightarrow alcohol + carbon dioxide$' or '$carbon dioxide + water \\rightarrow glucose + oxygen$'.
    - For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}'.
-5. Identify paper provenance: series, year, paper_number.
+5. Identify paper provenance: series (or exam session/period), year, paper_number (or paper title if applicable).
 6. DIAGRAMS, GRAPHS & SCHEMATICS:
    - Set has_diagram=true for drawings, apparatus setups, circuit schematics, cell illustrations, graphs, and reaction flowcharts.
    - Set diagram_source="qp".
@@ -230,6 +297,17 @@ CRITICAL FORMATTING RULES:
 8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
 9. ANSWER KEYS & SOLUTIONS: If the PDF contains an answer key or solutions grid at the end (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
 10. CURRENCY & PRICES: When transcribing prices or costs (e.g. $25, $1.50), write them as normal text without LaTeX delimiters to prevent math rendering conflicts.
+11. CAMBRIDGE PAPER 4 / THEORY SUB-QUESTION CONTEXT PRESERVATION (CRITICAL):
+   - In structured exams (Paper 4 / Theory), questions often feature introductory scenario/apparatus setups for sections (a), (b), (c) followed by sub-parts (i), (ii).
+   - ABSOLUTELY NEVER drop or omit the introductory text or diagram of (a) or (b)!
+   - When (a) has setup text before (i), (ii):
+     * Put the overall setup text and apparatus diagram in the parent Question container ("question_text" and "has_diagram": true).
+     * ALSO preserve the (a) context on the first sub-question "(a)(i)" so the sub-question is completely self-contained.
+   - When (b) or (c) introduces a new scenario or graph followed by (i), (ii):
+     * Prepend the section introductory text to the first sub-part "(b)(i)".
+     * Set "has_diagram": true and diagram bounding_box directly on "(b)(i)" if that section introduces a graph or figure!
+   - When (a) is a standalone question with marks (e.g. "(a) State the formula... [1]"):
+     * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" and marks! NEVER put it in parent question_text.
 `;
 }
 
@@ -241,7 +319,8 @@ CRITICAL FORMATTING RULES:
 export function getHumanitiesExtractionPrompt(
   hasInsert: boolean = true,
   includeGuidance: boolean = true,
-  extractResourceCatalog: boolean = true
+  extractResourceCatalog: boolean = true,
+  isIgcse: boolean = true
 ): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
@@ -326,12 +405,14 @@ If figures, diagrams, maps, climate graphs, or sketches are embedded in the Ques
 - For Part (b) figures: set "has_diagram": true, "diagram_source": "qp", "page_number": <page in QP>, "bounding_box": [ymin, xmin, ymax, xmax] on sub-question (b)(i).
 - Do NOT duplicate the diagram onto every sub-question; place it before the sub-questions or on the specific part stem.`;
 
-  return `You are an expert educational assessment parser specializing in Cambridge IGCSE, GCSE, and International A-Level Geography (0460, 0976, 2217), History (0470, 0977), Economics (0455), Environmental Management (0680), Sociology, and English.
-Analyze the attached exam Question Paper PDF${hasInsert ? ', Insert / Resource Booklet PDF,' : ''} and any mark scheme content.
+  const introText = isIgcse
+    ? `You are an expert educational assessment parser specializing in Cambridge IGCSE, GCSE, and International A-Level Geography (0460, 0976, 2217), History (0470, 0977), Economics (0455), Environmental Management (0680), Sociology, and English.
+Analyze the attached exam Question Paper PDF${hasInsert ? ', Insert / Resource Booklet PDF,' : ''} and any mark scheme content.`
+    : `You are an expert educational assessment parser specializing in Geography, History, Economics, Social Sciences, Civics, Environmental Studies, and English / Humanities across international and regional exam curricula (such as AP, IB, national high school boards, and general assessments).
+Analyze the attached exam Question Paper PDF${hasInsert ? ', Resource / Stimulus Booklet PDF,' : ''} and any mark scheme / answer key content.`;
 
-Extract every numbered question (e.g., Question 1, Question 2, Question 3...) as a structured JSON object.
-
-CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS:
+  const structureRule = isIgcse
+    ? `CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS:
 Do NOT split sub-parts (a)(i), (a)(ii), (b)(i), (b)(ii), (c) into separate top-level questions! 
 Group all sub-parts belonging to Question 1 under a SINGLE Question 1 container object with:
 - "question_number": "1"
@@ -340,42 +421,56 @@ Group all sub-parts belonging to Question 1 under a SINGLE Question 1 container 
 - "diagram_source": "insert" (if figure is in the Insert Booklet) OR "qp" (if figure is in the Question Paper)
 - "resource_ref": Figure/Photo reference (e.g. "Fig. 1.1", "Photograph A", "Fig. 2.1")
 - "total_marks": Sum of all sub-question marks (e.g. 25 marks)
-- "sub_questions": An array containing all sub-parts [(a)(i), (a)(ii), (a)(iii), (a)(iv), (b)(i), (b)(ii), (c)] with their respective text, marks, and mark schemes!
+- "sub_questions": An array containing all sub-parts [(a)(i), (a)(ii), (a)(iii), (a)(iv), (b)(i), (b)(ii), (c)] with their respective text, marks, and mark schemes!`
+    : `QUESTION STRUCTURE RULES (GENERAL / NON-IGCSE):
+- For multi-part questions (e.g. Question 1 with parts (a), (b), (c) or 1.1, 1.2), keep them grouped under the parent Question container in 'sub_questions'.
+- For standalone questions (e.g. Question 1, Question 2 without sub-parts), output each question as its own top-level question with 'sub_questions': [].
+- If a question references a reading passage, excerpt, map, or chart, capture that context in the question text or link it to sub-questions.
+- In 'paper_metadata', extract the real subject, year, and paper title. Do not hallucinate Cambridge syllabus codes (like 0460) or series (like 'Oct/Nov') if not present.`;
 
-${insertSchemaRule}
-
-Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
-
-{
-  "paper_metadata": {
+  const metadataSnippet = isIgcse
+    ? `"paper_metadata": {
     "subject": "Geography",
     "subject_code": "0460",
     "year": 2025,
     "series": "Oct/Nov",
     "paper_number": 11,
     "has_insert_booklet": ${hasInsert ? 'true' : 'false'}
-  },
-  ${(hasInsert && extractResourceCatalog) ? `"insert_resources": [
+  }`
+    : `"paper_metadata": {
+    "subject": "Geography",
+    "subject_code": "GEO",
+    "year": 2025,
+    "series": "General / Semester",
+    "paper_number": 1,
+    "has_insert_booklet": ${hasInsert ? 'true' : 'false'}
+  }`;
+
+  const insertResourcesSnippet = (hasInsert && extractResourceCatalog)
+    ? `"insert_resources": [
     {
-      "id": "Fig. 1.1",
-      "title": "Average annual population growth rates between 1950 and 2100 (estimated)",
+      "id": "${isIgcse ? 'Fig. 1.1' : 'Figure 1'}",
+      "title": "${isIgcse ? 'Average annual population growth rates between 1950 and 2100 (estimated)' : 'Projected global population trends by continent'}",
       "page_number": 2,
       "target_questions": ["1(a)"]
     },
     {
-      "id": "Fig. 2.1",
-      "title": "A map showing information about settlements in Extremadura, Spain",
+      "id": "${isIgcse ? 'Fig. 2.1' : 'Resource 2'}",
+      "title": "${isIgcse ? 'A map showing information about settlements in Extremadura, Spain' : 'Infographic illustrating urban microclimates and land use'}",
       "page_number": 3,
       "target_questions": ["2(a)"]
-    },
+    }${isIgcse ? `,
     {
       "id": "Figs. 2.2, 2.3 and 2.4",
       "title": "Photographs showing settlements with different functions",
       "page_number": 4,
       "target_questions": ["2(b)"]
-    }
-  ],` : ''}
-  "questions": [
+    }` : ''}
+  ],`
+    : '';
+
+  const questionsSnippet = isIgcse
+    ? `[
     {
       "question_number": "1",
       "parent_question_id": "Q1",
@@ -408,7 +503,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         },
         {
           "sub_id": "(a)(ii)",
-          "question_text": "Put the following four countries in rank order according to their average annual population growth rates:\\nAngola, Australia, China, Peru\\n\\nhighest: ...\\n...\\n...\\nlowest: ...",
+          "question_text": "Put the following four countries in rank order according to their average annual population growth rates:\\\\nAngola, Australia, China, Peru\\\\n\\\\nhighest: ...\\\\n...\\\\n...\\\\nlowest: ...",
           "marks": 2,
           "has_diagram": false,
           "diagram_url": null,
@@ -438,7 +533,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         },
         {
           "sub_id": "(b)(i)",
-          "question_text": "(b) Study Fig. 1.2, a graph showing information about the population of MEDCs and LEDCs between 2015 and 2040 (estimated).\\n\\n(i) Compare the expected changes in the total population of MEDCs and LEDCs between 2015 and 2040. You should refer to years and use statistics in your answer.",
+          "question_text": "(b) Study Fig. 1.2, a graph showing information about the population of MEDCs and LEDCs between 2015 and 2040 (estimated).\\\\n\\\\n(i) Compare the expected changes in the total population of MEDCs and LEDCs between 2015 and 2040. You should refer to years and use statistics in your answer.",
           "marks": 3,
           "has_diagram": true,
           "diagram_url": null,
@@ -467,7 +562,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
           "diagram_url": null,
           "diagram_source": null,
           "resource_ref": null,
-          "mark_scheme": "Level 1 (1-3 marks): Limited detail describing population policy.\\nLevel 2 (4-6 marks): Developed statements explaining how policy influences growth rate.\\nLevel 3 (7 marks): Named example with place-specific details and developed points."${subGuidanceSnippet}
+          "mark_scheme": "Level 1 (1-3 marks): Limited detail describing population policy.\\\\nLevel 2 (4-6 marks): Developed statements explaining how policy influences growth rate.\\\\nLevel 3 (7 marks): Named example with place-specific details and developed points."${subGuidanceSnippet}
         }
       ],
       "mark_scheme": {
@@ -517,7 +612,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         },
         {
           "sub_id": "(a)(iii)",
-          "question_text": "Use the following words to fill in the table to show likely differences in service provision in the settlements labelled X and Y in Fig. 2.1:\\n*convenience, few, high, low, many, specialist*\\n\\n| | settlement X | settlement Y |\\n| :--- | :--- | :--- |\\n| **amount of services** | | |\\n| **order of services** | | |\\n| **type of services** | | |",
+          "question_text": "Use the following words to fill in the table to show likely differences in service provision in the settlements labelled X and Y in Fig. 2.1:\\\\n*convenience, few, high, low, many, specialist*\\\\n\\\\n| | settlement X | settlement Y |\\\\n| :--- | :--- | :--- |\\\\n| **amount of services** | | |\\\\n| **order of services** | | |\\\\n| **type of services** | | |",
           "marks": 3,
           "has_diagram": false,
           "diagram_url": null,
@@ -537,7 +632,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         },
         {
           "sub_id": "(b)(i)",
-          "question_text": "(b) Study Figs. 2.2, 2.3 and 2.4 (Insert), photographs showing settlements with different functions.\\n\\n(i) Using evidence from Figs. 2.2, 2.3 and 2.4 only, identify the functions of each settlement.\\n\\nChoose your answers from the following list:\\n*commercial, cultural, industrial, mining, port, tourism*\\n\\n- Fig. 2.2: ...\\n- Fig. 2.3: ...\\n- Fig. 2.4: ...",
+          "question_text": "(b) Study Figs. 2.2, 2.3 and 2.4 (Insert), photographs showing settlements with different functions.\\\\n\\\\n(i) Using evidence from Figs. 2.2, 2.3 and 2.4 only, identify the functions of each settlement.\\\\n\\\\nChoose your answers from the following list:\\\\n*commercial, cultural, industrial, mining, port, tourism*\\\\n\\\\n- Fig. 2.2: ...\\\\n- Fig. 2.3: ...\\\\n- Fig. 2.4: ...",
           "marks": 3,
           "has_diagram": true,
           "diagram_url": null,
@@ -566,7 +661,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
           "diagram_url": null,
           "diagram_source": null,
           "resource_ref": null,
-          "mark_scheme": "Level 1 (1-3 marks): Simple statements explaining settlement function.\\nLevel 2 (4-6 marks): Developed statements explaining reasons for function.\\nLevel 3 (7 marks): Named example with place-specific detail."${subGuidanceSnippet}
+          "mark_scheme": "Level 1 (1-3 marks): Simple statements explaining settlement function.\\\\nLevel 2 (4-6 marks): Developed statements explaining reasons for function.\\\\nLevel 3 (7 marks): Named example with place-specific detail."${subGuidanceSnippet}
         }
       ],
       "mark_scheme": {
@@ -574,7 +669,108 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         "acceptable_answers": []${guidanceSchemaSnippet}
       }
     }
-  ]
+  ]`
+    : `[
+    {
+      "question_number": "1",
+      "parent_question_id": "Q1",
+      "page_number": 2,
+      "year": 2025,
+      "series": "General / Semester",
+      "paper_number": 1,
+      "question_text": "Study Figure 1${hasInsert ? ' (Resource Booklet)' : ''}, showing projected global population trends by continent.",
+      "question_style": "Structured",
+      "total_marks": 6,
+      "estimated_difficulty": "Medium",
+      "topic": "Human Geography",
+      "sub_topic": "Demographic Patterns",
+      "has_diagram": true,
+      "diagram_source": ${hasInsert ? '"insert"' : '"qp"'},
+      "resource_ref": "Figure 1",
+      "insert_page_number": ${hasInsert ? '2' : 'null'},
+      "bounding_box": [115, 60, 580, 930],
+      "options": null,
+      "sub_questions": [
+        {
+          "sub_id": "(a)",
+          "question_text": "Identify the continent projected to experience the highest population growth rate.",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Africa [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)",
+          "question_text": "Describe two socio-economic factors contributing to declining birth rates in developed nations.",
+          "marks": 2,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Increased access to higher education/careers for women [1]; higher cost of living and childrearing [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(c)",
+          "question_text": "Explain one policy government leaders can implement to address challenges associated with an aging population.",
+          "marks": 3,
+          "has_diagram": false,
+          "diagram_url": null,
+          "diagram_source": null,
+          "resource_ref": null,
+          "mark_scheme": "Raising the retirement age or pension reform [1]; encouraging skilled immigration [1]; investing in healthcare infrastructure [1]"${subGuidanceSnippet}
+        }
+      ],
+      "mark_scheme": {
+        "marking_points": ["See sub-question breakdown [6]"],
+        "acceptable_answers": []${guidanceSchemaSnippet}
+      }
+    },
+    {
+      "question_number": "2",
+      "parent_question_id": "Q2",
+      "page_number": 3,
+      "year": 2025,
+      "series": "General / Semester",
+      "paper_number": 1,
+      "question_text": "Which factor is primarily responsible for the urban heat island effect?",
+      "question_style": "Multiple Choice",
+      "total_marks": 1,
+      "estimated_difficulty": "Easy",
+      "topic": "Urban Geography",
+      "sub_topic": "Urban Environments",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. High concentration of dark, impermeable surfaces like asphalt and concrete",
+        "B. Abundance of expansive urban parks and wetlands",
+        "C. Low levels of vehicular and industrial emissions",
+        "D. Widespread use of reflective roofing materials"
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["A [1]"],
+        "acceptable_answers": ["A"]${guidanceSchemaSnippet}
+      }
+    }
+  ]`;
+
+  return `${introText}
+
+Extract every numbered question (e.g., Question 1, Question 2, Question 3...) as a structured JSON object.
+
+${structureRule}
+
+${insertSchemaRule}
+
+Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
+
+{
+  ${metadataSnippet},
+  ${insertResourcesSnippet}
+  "questions": ${questionsSnippet}
 }
 
 CRITICAL FORMATTING RULES:
@@ -603,7 +799,7 @@ CRITICAL FORMATTING RULES:
  * Focuses on reading passage preservation, 5-option MCQs (A-E/a-e), complex multiple select (Pilihan Ganda Kompleks),
  * matching/category tables (Menjodohkan), and in-PDF answer key/pembahasan parsing with 100% verbatim accuracy.
  */
-export function getLanguageExtractionPrompt(includeGuidance: boolean = true): string {
+export function getLanguageExtractionPrompt(includeGuidance: boolean = true, isIgcse: boolean = true): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -616,8 +812,54 @@ export function getLanguageExtractionPrompt(includeGuidance: boolean = true): st
       ]`
     : '';
 
-  return `You are an expert assessment parser specializing in English Language & Literature, Reading Comprehension, TKA / AKM / National Exams (e.g. SMA/MA Kelas 12 Bahasa Inggris), SAT, ACT, and Language Proficiency Assessments.
-Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.
+  const introText = isIgcse
+    ? `You are an expert assessment parser specializing in Cambridge IGCSE, GCSE, English Language & Literature, Reading Comprehension, TKA / AKM / National Exams (e.g. SMA/MA Kelas 12 Bahasa Inggris), SAT, ACT, and Language Proficiency Assessments.
+Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.`
+    : `You are an expert assessment parser specializing in English Language & Literature, Reading Comprehension, SAT, ACT, AP English, IELTS, TOEFL, national exams, and general language assessments.
+Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.`;
+
+  const fillInRule = isIgcse
+    ? `8. IELTS & CAMBRIDGE FILL-IN-THE-BLANK, FORM COMPLETION & NOTES COMPLETION (CRITICAL):
+   - When a question requires filling in missing words/numbers in sentences, notes, forms, summaries, or tables:
+     a) Set "question_style": "Fill in the Blank".
+     b) Replace blank lines or dots with numbered bracket gaps "[1]", "[2]", "[3]" directly inside the sentence or form layout:
+        e.g. "Customer Name: [1]\\nAddress: 42 [2] Avenue\\nDate of departure: [3]\\nType of ticket: [4]"
+     c) Set "total_marks" to the number of gaps (e.g. 4 marks for 4 gaps).
+     d) In "mark_scheme":
+        - "marking_points": ["[1] John Smith [1]", "[2] Springfield [1]", "[3] 15 October / 15th October [1]", "[4] economy / return [1]"]
+        - "acceptable_answers": ["[1] John Smith / J. Smith", "[2] Springfield / Springfield Ave", "[3] 15 October / October 15 / 15th Oct", "[4] economy / return ticket"]`
+    : `8. FILL-IN-THE-BLANK, SENTENCE COMPLETION & CLOZE TESTS:
+   - When a question requires filling in missing words/numbers in sentences, notes, forms, summaries, or tables:
+     a) Set "question_style": "Fill in the Blank".
+     b) Replace blank lines or dots with numbered bracket gaps "[1]", "[2]", "[3]" directly inside the sentence or form layout:
+        e.g. "Customer Name: [1]\\nAddress: 42 [2] Avenue\\nDate of departure: [3]\\nType of ticket: [4]"
+     c) Set "total_marks" to the number of gaps (e.g. 4 marks for 4 gaps).
+     d) In "mark_scheme":
+        - "marking_points": ["[1] John Smith [1]", "[2] Springfield [1]", "[3] 15 October / 15th October [1]", "[4] economy / return [1]"]
+        - "acceptable_answers": ["[1] John Smith / J. Smith", "[2] Springfield / Springfield Ave", "[3] 15 October / October 15 / 15th Oct", "[4] economy / return ticket"]`;
+
+  const metadataSnippet = isIgcse
+    ? `"paper_metadata": {
+    "subject": "English",
+    "subject_code": "ENG",
+    "year": 2026,
+    "series": "Tray Out TKA",
+    "paper_number": 1,
+    "has_insert_booklet": false
+  }`
+    : `"paper_metadata": {
+    "subject": "English",
+    "subject_code": "ENG",
+    "year": 2025,
+    "series": "General / Semester",
+    "paper_number": 1,
+    "has_insert_booklet": false
+  }`;
+
+  const exampleYear = isIgcse ? 2026 : 2025;
+  const exampleSeries = isIgcse ? 'TKA' : 'General / Semester';
+
+  return `${introText}
 
 Extract every numbered question (e.g. Question 1, 2, 3... 30) as a structured JSON object.
 
@@ -627,10 +869,10 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - You MUST extract and transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom.
    - When a reading passage / stimulus text applies to a group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
      * On the FIRST question of that passage group (e.g. Question 1): provide the complete reading text heading and ALL body paragraphs verbatim in "question_text", followed by the Question 1 prompt.
-     * On subsequent questions in that group (e.g. Questions 2, 3, 4): include the passage header reference (e.g. "### Text 1: Exploring Komodo National Park\n\n**Question 2:** The text primarily discusses...") and the specific question stem/options. Our system automatically propagates the complete body paragraphs to all linked questions in the group!
+     * On subsequent questions in that group (e.g. Questions 2, 3, 4): include the passage header reference (e.g. "### Text 1: Exploring Komodo National Park\\n\\n**Question 2:** The text primarily discusses...") and the specific question stem/options. Our system automatically propagates the complete body paragraphs to all linked questions in the group!
      * NEVER omit, shorten, or summarize any paragraph from the reading passage.
    - Format "question_text" cleanly with Markdown:
-     "### Text 1: Exploring Komodo National Park (KNP)\n(Descriptive/Expository Text, 4 Questions)\n\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\n\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\n\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\n\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!"
+     "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!"
 
 2. EXTRACT 100% OF ALL QUESTIONS WITHOUT SKIPPING ANY:
    - You MUST extract every numbered question (e.g. Question 1 to Question 30+) present across all pages.
@@ -670,34 +912,19 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - ABSOLUTELY NEVER translate Indonesian instructions, headers, or "Pembahasan" into English.
    - Preserve the exact verbatim text and original language of all passages, questions, options, table rows, and explanations.
 
-8. IELTS & CAMBRIDGE FILL-IN-THE-BLANK, FORM COMPLETION & NOTES COMPLETION (CRITICAL):
-   - When a question requires filling in missing words/numbers in sentences, notes, forms, summaries, or tables:
-     a) Set "question_style": "Fill in the Blank".
-     b) Replace blank lines or dots with numbered bracket gaps "[1]", "[2]", "[3]" directly inside the sentence or form layout:
-        e.g. "Customer Name: [1]\\nAddress: 42 [2] Avenue\\nDate of departure: [3]\\nType of ticket: [4]"
-     c) Set "total_marks" to the number of gaps (e.g. 4 marks for 4 gaps).
-     d) In "mark_scheme":
-        - "marking_points": ["[1] John Smith [1]", "[2] Springfield [1]", "[3] 15 October / 15th October [1]", "[4] economy / return [1]"]
-        - "acceptable_answers": ["[1] John Smith / J. Smith", "[2] Springfield / Springfield Ave", "[3] 15 October / October 15 / 15th Oct", "[4] economy / return ticket"]
+${fillInRule}
 
 Output strictly valid JSON matching this exact schema — no markdown fences, no commentary:
 
 {
-  "paper_metadata": {
-    "subject": "English",
-    "subject_code": "ENG",
-    "year": 2026,
-    "series": "Tray Out TKA",
-    "paper_number": 1,
-    "has_insert_booklet": false
-  },
+  ${metadataSnippet},
   "questions": [
     {
       "question_number": "1",
       "parent_question_id": "Q1",
       "page_number": 3,
-      "year": 2026,
-      "series": "TKA",
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
       "paper_number": 1,
       "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!\\n\\n| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | | |\\n| Padar Island | | |\\n| Pink Beach | | |",
       "question_style": "Structured",
@@ -725,8 +952,8 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "question_number": "2",
       "parent_question_id": "Q2",
       "page_number": 4,
-      "year": 2026,
-      "series": "TKA",
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
       "paper_number": 1,
       "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n2. [Multiple Choice]\\nThe text primarily discusses...",
       "question_style": "Multiple Choice",
@@ -754,8 +981,8 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "question_number": "3",
       "parent_question_id": "Q3",
       "page_number": 4,
-      "year": 2026,
-      "series": "TKA",
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
       "paper_number": 1,
       "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n3. [Multiple Select]\\nWhich parts of the text best support the description of Komodo National Park as an \\"ecological paradise\\"? (There is more than one correct answer. Click on every correct answer!)",
       "question_style": "Multiple Select",
@@ -790,15 +1017,16 @@ export function getExtractionPrompt(
   includeGuidance: boolean = true,
   domain: SubjectDomain = 'stem',
   hasInsert: boolean = false,
-  extractResourceCatalog: boolean = true
+  extractResourceCatalog: boolean = true,
+  isIgcse: boolean = true
 ): string {
   if (domain === 'languages') {
-    return getLanguageExtractionPrompt(includeGuidance);
+    return getLanguageExtractionPrompt(includeGuidance, isIgcse);
   }
   if (domain === 'humanities') {
-    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance, extractResourceCatalog);
+    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance, extractResourceCatalog, isIgcse);
   }
-  return getStemExtractionPrompt(includeGuidance);
+  return getStemExtractionPrompt(includeGuidance, isIgcse);
 }
 
 /**
@@ -1309,12 +1537,111 @@ async function callGeminiModel(
   throw new Error(`All candidate API keys failed for model ${modelName}.`);
 }
 
+/**
+ * Post-processes structured questions to ensure section context (e.g. Part (a), Part (b) setups)
+ * is never lost or orphaned when sub-questions are partitioned into (i), (ii).
+ */
+export function normalizePaper4SubQuestions(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  return questions.map((q) => {
+    if (!q.sub_questions || q.sub_questions.length === 0) return q;
+
+    let subs = [...q.sub_questions];
+    const qText = q.question_text || '';
+
+    // Step 1: Normalize bare roman numerals / numbers (e.g. "(i)", "(ii)") to include the section letter
+    // If the paper starts with (i), (ii) and later has (b), (i) should be (a)(i)
+    const hasAnySectionLetter = subs.some((s) => /^\(?[a-zA-Z]\)?/i.test(s.sub_id.trim()));
+    if (hasAnySectionLetter) {
+      let currentSection = 'a';
+      subs = subs.map((s) => {
+        const subIdTrim = s.sub_id.trim();
+        const sectionMatch = subIdTrim.match(/^\(?([a-zA-Z])\)?/);
+        if (sectionMatch && !/^[ivxIVX]+$/i.test(sectionMatch[1])) {
+          currentSection = sectionMatch[1].toLowerCase();
+          return s;
+        }
+        // If it's a bare roman numeral like "(i)", "(ii)", "i.", "(1)"
+        const bareNumeralMatch = subIdTrim.match(/^\(?([ivxIVX]+|\d+)\)?\.?$/);
+        if (bareNumeralMatch) {
+          const numeral = bareNumeralMatch[1].toLowerCase();
+          return {
+            ...s,
+            sub_id: `(${currentSection})(${numeral})`,
+          };
+        }
+        return s;
+      });
+    }
+
+    // Step 2: (a) was accidentally swallowed into question_text as a standalone question with marks
+    // e.g. question_text: "(a) State the formula of hydrochloric acid. [1]" and subs start at "(b)" or "(b)(i)"
+    const hasAnyPartA = subs.some((s) => /^\(?a\)?/i.test(s.sub_id.trim()));
+    if (!hasAnyPartA) {
+      const matchSwallowedA = qText.match(
+        /^\s*(?:(?:question|q)?\s*\d+[\s.:-]*)?(?:\([aA]\)|a\.)\s*([\s\S]+?)(?:\s*\[(\d+)\])?\s*$/i
+      );
+      if (matchSwallowedA) {
+        const extractedText = matchSwallowedA[1].trim();
+        const extractedMarks = matchSwallowedA[2] ? parseInt(matchSwallowedA[2], 10) : 1;
+        subs.unshift({
+          sub_id: '(a)',
+          question_text: extractedText,
+          marks: extractedMarks,
+          has_diagram: q.has_diagram || false,
+          diagram_source: q.diagram_source || null,
+          bounding_box: q.bounding_box || null,
+          mark_scheme: '',
+        });
+        return {
+          ...q,
+          question_text: '',
+          sub_questions: subs,
+        };
+      }
+    }
+
+    // Step 3: (a)(i) is present, but parent question_text starts with a specific Part (a) setup
+    // e.g. question_text: "(a) A student investigates the reaction between dilute hydrochloric acid and marble chips."
+    // and sub_question (a)(i) says: "Name the gas produced."
+    // If (a)(i) does not mention that setup, prepend it so that (a)(i) is fully self-contained!
+    const firstSub = subs[0];
+    if (firstSub && /^\(?a\)?(?:\(i\)|i)/i.test(firstSub.sub_id.trim())) {
+      const partAMatch = qText.match(
+        /^\s*(?:(?:question|q)?\s*\d+[\s.:-]*)?(?:\([aA]\)|a\.)\s*([\s\S]+?)$/i
+      );
+      if (partAMatch && partAMatch[1]) {
+        const partASetup = partAMatch[1].trim();
+        // If the first sub-question does not already contain this setup
+        if (
+          partASetup.length > 20 &&
+          !firstSub.question_text.includes(partASetup.slice(0, 30))
+        ) {
+          subs[0] = {
+            ...firstSub,
+            question_text: `(a) ${partASetup}\n\n${firstSub.question_text}`,
+          };
+          return {
+            ...q,
+            sub_questions: subs,
+          };
+        }
+      }
+    }
+
+    return {
+      ...q,
+      sub_questions: subs,
+    };
+  });
+}
+
 export interface ExtractionOptions {
   includeGuidance?: boolean;
   domain?: SubjectDomain;
   hasInsertBooklet?: boolean;
   apiKey?: string;
   extractResourceCatalog?: boolean;
+  isIgcse?: boolean;
 }
 
 /**
@@ -1339,11 +1666,13 @@ export async function extractQuestionsFromPdf(
 
   const domain = options.domain || 'stem';
   const hasInsert = Boolean(insertBase64 || options.hasInsertBooklet);
+  const isIgcse = options.isIgcse !== false;
   const promptText = getExtractionPrompt(
     options.includeGuidance !== false,
     domain,
     hasInsert,
-    options.extractResourceCatalog !== false
+    options.extractResourceCatalog !== false,
+    isIgcse
   );
 
   onProgress?.('Discovering available Gemini models…');
@@ -1430,6 +1759,9 @@ export async function extractQuestionsFromPdf(
         }))
       : q.sub_questions,
   }));
+
+  // Ensure Cambridge Paper 4 section setups and standalone sub-parts are properly preserved
+  parsed.questions = normalizePaper4SubQuestions(parsed.questions);
 
   onProgress?.(`Extracted ${parsed.questions.length} questions successfully using ${usedModel}.`);
   return parsed;
@@ -1615,8 +1947,21 @@ Transform this into an open-ended, multi-part Structured Theory Question with 2 
       break;
   }
 
-  const customPromptSnippet = options.customInstruction
-    ? `\nTEACHER CUSTOM INSTRUCTION: "${options.customInstruction}"\n`
+  const trimmedCustomInstruction = options.customInstruction?.trim();
+
+  const customInstructionDirective = trimmedCustomInstruction
+    ? `
+══════════════════════════════════════════════════════════════════════
+CRITICAL MANDATORY DIRECTIVE — TEACHER CUSTOM INSTRUCTION (TOP PRIORITY):
+The teacher has specified the following requirement for this question variant:
+"${trimmedCustomInstruction}"
+
+YOU MUST STRICTLY ADHERE TO THIS INSTRUCTION:
+- If the teacher specifies values, concentrations, units, elements, apparatus, or physical contexts, YOU MUST USE THEM.
+- If the teacher requests problem inversion, scaffolding, or specific calculations, YOU MUST FOCUS THE VARIANT ON THIS REQUEST.
+- This teacher custom instruction OVERRIDES any default parallel-twin behavior that would otherwise preserve the original scenario unchanged.
+══════════════════════════════════════════════════════════════════════
+`
     : '';
 
   const prompt = `You are an expert exam author for Cambridge IGCSE, GCSE, and A-Level assessments.
@@ -1636,19 +1981,19 @@ ${original.mark_scheme ? `- Original Mark Scheme: ${JSON.stringify(original.mark
 
 GENERATION GOAL:
 ${modeInstruction}
-${customPromptSnippet}
+${customInstructionDirective}
 
 REQUIREMENTS:
-1. Wrap ALL chemical formulas, scientific notation, units, and math equations in LaTeX ($...$ for inline, $$...$$ for block). Example: $CaCO_3$, $\\frac{2}{3}$, $1.5\\times 10^5\\text{ Pa}$, $dm^3$.
-2. For structured questions, generate a coherent stem and an array of sub_questions, each with sub_id, question_text, marks, and mark_scheme. "options" MUST BE null!
-3. For MCQ questions, generate 4 options A, B, C, D and leave sub_questions empty.
-4. If the original question contains or references a diagram, figure, chart, or apparatus (e.g. "Fig. 1.1", "the diagram shows...", etc.), retain or adapt appropriate references to the diagram/figure so that the generated variant makes sense with the transferred diagram/picture.
-5. Provide a complete, rigorous mark_scheme object containing:
+${trimmedCustomInstruction ? `1. MANDATORY TEACHER INSTRUCTION: The generated variant MUST explicitly satisfy and incorporate the teacher's custom instruction: "${trimmedCustomInstruction}". Do NOT ignore or skip this instruction.\n2.` : '1.'} Wrap ALL chemical formulas, scientific notation, units, and math equations in LaTeX ($...$ for inline, $$...$$ for block). Example: $CaCO_3$, $\\frac{2}{3}$, $1.5\\times 10^5\\text{ Pa}$, $dm^3$.
+${trimmedCustomInstruction ? '3.' : '2.'} For structured questions, generate a coherent stem and an array of sub_questions, each with sub_id, question_text, marks, and mark_scheme. "options" MUST BE null!
+${trimmedCustomInstruction ? '4.' : '3.'} For MCQ questions, generate 4 options A, B, C, D and leave sub_questions empty.
+${trimmedCustomInstruction ? '5.' : '4.'} If the original question contains or references a diagram, figure, chart, or apparatus (e.g. "Fig. 1.1", "the diagram shows...", etc.), retain or adapt appropriate references to the diagram/figure so that the generated variant makes sense with the transferred diagram/picture.
+${trimmedCustomInstruction ? '6.' : '5.'} Provide a complete, rigorous mark_scheme object containing:
    - "marking_points": string array with mark allocations in square brackets (e.g. "Calculates moles of $HCl$: $0.05\\text{ mol}$ [1]")
    - "acceptable_answers": string array of allowed alternatives
    - "guidance": string array with examiner advice
    - "common_misconceptions": string array of student mistakes
-6. Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
+${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
 
 {
   "question_text": "The main question stem or context",
@@ -1667,6 +2012,8 @@ REQUIREMENTS:
   }
 } `;
 
+  console.log(`[generateQuestionVariant] Generating (${options.mode}) with customInstruction:`, trimmedCustomInstruction || '(none)');
+
   const availableModels = await discoverAvailableModels(activeKey);
   let response: Response | null = null;
   let lastError = '';
@@ -1681,7 +2028,7 @@ REQUIREMENTS:
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: 'application/json',
-            temperature: 0.3,
+            temperature: 0.4,
             maxOutputTokens: 8192,
           },
         }),

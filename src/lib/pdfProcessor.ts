@@ -9,6 +9,7 @@ import {
   fileToBase64,
   getGeminiApiKeys,
   getApiKeyForChunk,
+  normalizePaper4SubQuestions,
   type SubjectDomain,
 } from './gemini';
 import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
@@ -44,6 +45,7 @@ export interface PipelineState {
 export interface ExtractionPipelineOptions {
   includeGuidance?: boolean;
   domain?: SubjectDomain;
+  isIgcse?: boolean;
 }
 
 // ─── Step 2: Resolve or create syllabus ────────────────────────────────────────
@@ -403,6 +405,7 @@ export async function runExtractionPipeline(
               hasInsertBooklet: Boolean(insertFile),
               apiKey: assignedKey,
               extractResourceCatalog: idx === 0,
+              isIgcse: options.isIgcse !== false,
             }
           );
         })
@@ -485,7 +488,7 @@ export async function runExtractionPipeline(
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(allQuestions);
-      const finalizedQuestions = normalizeQuestionStyles(propagated);
+      const finalizedQuestions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
 
       // Merge insert_resources across chunks
       const mergedInsertResources = chunkResults.flatMap((cr) => cr.insert_resources || []);
@@ -508,10 +511,10 @@ export async function runExtractionPipeline(
             options.domain === 'languages'
               ? 'ENG'
               : options.domain === 'humanities'
-              ? '0460'
-              : '0620',
+              ? (options.isIgcse !== false ? '0460' : 'GEO')
+              : (options.isIgcse !== false ? '0620' : 'CHEM'),
           year: new Date().getFullYear(),
-          series: 'Exam',
+          series: options.isIgcse !== false ? 'Exam' : 'General',
           paper_number: 1,
           has_insert_booklet: Boolean(insertFile),
         },
@@ -537,9 +540,10 @@ export async function runExtractionPipeline(
           includeGuidance: options.includeGuidance !== false,
           domain: options.domain || 'stem',
           hasInsertBooklet: Boolean(insertFile),
+          isIgcse: options.isIgcse !== false,
         }
       );
-      result.questions = normalizeQuestionStyles(propagateReadingPassages(result.questions));
+      result.questions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagateReadingPassages(result.questions)));
     }
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)

@@ -4,7 +4,12 @@ import { OnboardingTutorial } from './components/OnboardingTutorial';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { SettingsModal } from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { getSavedSettings, applySettings } from './lib/settings';
+import {
+  getSavedSettings,
+  applySettings,
+  loadAndSyncSchoolClasses,
+  loadAndSyncGoogleDriveClientId,
+} from './lib/settings';
 import { PortalLandingPage } from './pages/PortalLandingPage';
 import { resolveStudentQuiz } from './services/quizCodeService';
 import type { PublishedQuiz } from './services/quizManagerService';
@@ -24,6 +29,7 @@ const QuizManagerPage = lazy(() => import('./pages/QuizManagerPage').then((m) =>
 const StudentQuizRunner = lazy(() => import('./pages/StudentQuizRunner').then((m) => ({ default: m.StudentQuizRunner })));
 const GameQuizRunner = lazy(() => import('./pages/GameQuizRunner').then((m) => ({ default: m.GameQuizRunner })));
 const GameHostController = lazy(() => import('./pages/GameHostController').then((m) => ({ default: m.GameHostController })));
+const AdvancedSettingsPage = lazy(() => import('./pages/AdvancedSettingsPage').then((m) => ({ default: m.AdvancedSettingsPage })));
 
 function PageLoadingFallback() {
   return (
@@ -55,7 +61,7 @@ function PageLoadingFallback() {
   );
 }
 
-export type Page = 'home' | 'bank' | 'builder' | 'saved' | 'quizzes' | 'upload';
+export type Page = 'home' | 'bank' | 'builder' | 'saved' | 'quizzes' | 'upload' | 'advanced_settings';
 export type AppMode = 'portal' | 'teacher' | 'student_quiz' | 'game_host';
 
 function App() {
@@ -78,7 +84,17 @@ function App() {
   const [activeGameHostQuiz, setActiveGameHostQuiz] = useState<PublishedQuiz | null>(null);
   const [activeGameHostQuestions, setActiveGameHostQuestions] = useState<Question[]>([]);
 
-  const [currentPage, setCurrentPage] = useState<Page>('home');
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (
+      params.get('page') === 'advanced-settings' ||
+      params.get('page') === 'advanced' ||
+      window.location.hash === '#advanced-settings'
+    ) {
+      return 'advanced_settings';
+    }
+    return 'home';
+  });
   const [selectedQuestions, setSelectedQuestions] = useState<Map<string, Question>>(() => {
     try {
       const saved = sessionStorage.getItem('testmaker_selected_questions');
@@ -103,6 +119,8 @@ function App() {
   useEffect(() => {
     applySettings(getSavedSettings());
     initAutoBackupPeriodicScheduler();
+    loadAndSyncSchoolClasses().catch(() => {});
+    loadAndSyncGoogleDriveClientId().catch(() => {});
   }, []);
 
   // Sync selected questions to sessionStorage
@@ -305,6 +323,10 @@ function App() {
             setIsSettingsOpen(false);
           }}
           onLockApp={handleLockApp}
+          onOpenAdvancedSettings={() => {
+            setIsSettingsOpen(false);
+            setCurrentPage('advanced_settings');
+          }}
         />
 
         {/* ─── Navigation ─────────────────────────────────────────────────────── */}
@@ -468,6 +490,11 @@ function App() {
               />
             )}
             {currentPage === 'upload' && <UploadPage />}
+            {currentPage === 'advanced_settings' && (
+              <AdvancedSettingsPage
+                onBack={() => setCurrentPage('home')}
+              />
+            )}
           </Suspense>
         </ErrorBoundary>
 

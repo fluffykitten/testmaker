@@ -67,6 +67,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
 }) => {
   const [selectedMode, setSelectedMode] = useState<VariantMode | null>(null);
   const [customInstruction, setCustomInstruction] = useState('');
+  const [appliedInstruction, setAppliedInstruction] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -85,11 +86,12 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
       setErrorMessage(null);
 
       const instruction = overrideInstruction !== undefined ? overrideInstruction : customInstruction;
+      const trimmedInstruction = instruction.trim();
 
       try {
         const generated = await generateQuestionVariant(question, {
           mode: targetMode,
-          customInstruction: instruction.trim() || undefined,
+          customInstruction: trimmedInstruction || undefined,
         });
 
         const fullVariant: Question = {
@@ -119,6 +121,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
         };
 
         setVariant(fullVariant);
+        setAppliedInstruction(trimmedInstruction || null);
         setIsSavedToBank(false);
         setIsAddedToTest(false);
         setActionSuccessMsg(null);
@@ -137,6 +140,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     setVariant(null);
     setSelectedMode(null);
     setCustomInstruction('');
+    setAppliedInstruction(null);
     setErrorMessage(null);
     setIsGenerating(false);
     setIsSavedToBank(false);
@@ -274,17 +278,30 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
 
           {/* Teacher custom prompt input */}
           <div className="variant-instruction-row">
-            <input
-              type="text"
-              className="variant-instruction-input"
-              placeholder="Optional custom instruction (e.g. 'Use 0.25 mol/dm³ HCl', 'Context: car braking on wet road')"
-              value={customInstruction}
-              onChange={(e) => setCustomInstruction(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleGenerate();
-              }}
-              disabled={isGenerating}
-            />
+            <div className="variant-instruction-input-wrap">
+              <input
+                type="text"
+                className="variant-instruction-input"
+                placeholder="Optional custom instruction (e.g. 'Use 0.25 mol/dm³ HCl', 'Context: car braking on wet road')"
+                value={customInstruction}
+                onChange={(e) => setCustomInstruction(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleGenerate();
+                }}
+                disabled={isGenerating}
+              />
+              {customInstruction && !isGenerating && (
+                <button
+                  type="button"
+                  className="variant-instruction-clear-btn"
+                  onClick={() => setCustomInstruction('')}
+                  title="Clear custom instruction"
+                  aria-label="Clear custom instruction"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
             <button
               type="button"
               className="variant-generate-btn"
@@ -305,19 +322,28 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           {/* Quick Prompt Suggestions */}
           <div className="variant-suggestions-row">
             <span className="variant-sublabel">Ideas:</span>
-            {PROMPT_SUGGESTIONS.map((text, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className="variant-suggestion-chip"
-                onClick={() => {
-                  setCustomInstruction(text);
-                }}
-                disabled={isGenerating}
-              >
-                + {text}
-              </button>
-            ))}
+            {PROMPT_SUGGESTIONS.map((text, idx) => {
+              const isIncluded = customInstruction.toLowerCase().includes(text.toLowerCase());
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  className={`variant-suggestion-chip ${isIncluded ? 'variant-suggestion-chip--active' : ''}`}
+                  onClick={() => {
+                    setCustomInstruction((prev) => {
+                      const trimmed = prev.trim();
+                      if (!trimmed) return text;
+                      if (trimmed.toLowerCase().includes(text.toLowerCase())) return trimmed;
+                      return `${trimmed}; ${text}`;
+                    });
+                  }}
+                  disabled={isGenerating}
+                  title={`Add "${text}" to custom instruction`}
+                >
+                  {isIncluded ? '✓ ' : '+ '} {text}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -425,11 +451,28 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                   <div className="variant-shimmer-line" style={{ width: '80%' }} />
                   <div className="variant-shimmer-line" style={{ width: '60%' }} />
                   <p className="variant-loading-text">
-                    Authoring Cambridge-standard variant with formulas & rubrics…
+                    {customInstruction.trim() ? (
+                      <>
+                        Authoring variant with custom instruction:
+                        <span className="variant-loading-instruction">"{customInstruction.trim()}"</span>
+                      </>
+                    ) : (
+                      'Authoring Cambridge-standard variant with formulas & rubrics…'
+                    )}
                   </p>
                 </div>
               ) : variant ? (
                 <>
+                  {appliedInstruction && (
+                    <div className="variant-applied-badge animate-fade-in">
+                      <span className="variant-applied-icon">🎯</span>
+                      <div className="variant-applied-content">
+                        <span className="variant-applied-label">Custom Instruction Applied</span>
+                        <span className="variant-applied-val">"{appliedInstruction}"</span>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="variant-stem-box variant-stem-box--highlight">
                     <ExamMathText content={variant.question_text} />
                   </div>

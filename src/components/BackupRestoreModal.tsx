@@ -26,7 +26,12 @@ import {
   setSessionDriveToken,
   getSessionDriveToken,
 } from '../services/autoBackupService';
-import { getSavedSettings, saveSettings } from '../lib/settings';
+import {
+  getSavedSettings,
+  saveSettings,
+  syncGoogleDriveClientIdToCloud,
+  loadAndSyncGoogleDriveClientId,
+} from '../lib/settings';
 import './BackupRestoreModal.css';
 
 interface BackupRestoreModalProps {
@@ -69,7 +74,12 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
   // ─── Google Drive State ──────────────────────────────────────────────────
   const [gdriveToken, setGdriveToken] = useState<string | null>(() => getSessionDriveToken());
   const [gdriveClientId, setGdriveClientId] = useState<string>(() => {
-    return getSavedSettings().googleDriveClientId || '';
+    return (
+      getSavedSettings().googleDriveClientId ||
+      (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) ||
+      (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) ||
+      ''
+    );
   });
   const [driveFiles, setDriveFiles] = useState<GoogleDriveBackupItem[]>([]);
   const [isLoadingDrive, setIsLoadingDrive] = useState(false);
@@ -84,11 +94,16 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
     return getSavedSettings().autoBackupFrequency || 'on_paper_upload';
   });
 
-  // Load estimate stats when opening
+  // Load estimate stats & sync client ID when opening
   useEffect(() => {
     if (isOpen) {
       getBackupEstimate().then((est) => setStats(est));
       setGdriveToken(getSessionDriveToken());
+      loadAndSyncGoogleDriveClientId().then((id) => {
+        if (id) {
+          setGdriveClientId((prev) => prev || id);
+        }
+      });
     }
   }, [isOpen]);
 
@@ -200,22 +215,42 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
 
   // ─── Handle Google Drive ─────────────────────────────────────────────────
 
+  const handleClientIdChange = (val: string) => {
+    setGdriveClientId(val);
+    const trimmed = val.trim();
+    if (trimmed) {
+      const s = getSavedSettings();
+      saveSettings({ ...s, googleDriveClientId: trimmed });
+      syncGoogleDriveClientIdToCloud(trimmed).catch(() => {});
+    }
+  };
+
   const handleSaveClientId = () => {
+    const trimmed = gdriveClientId.trim();
     const s = getSavedSettings();
-    saveSettings({ ...s, googleDriveClientId: gdriveClientId.trim() });
-    setDriveActionNotice('Client ID saved successfully.');
+    saveSettings({ ...s, googleDriveClientId: trimmed });
+    if (trimmed) {
+      syncGoogleDriveClientIdToCloud(trimmed).catch(() => {});
+    }
+    setDriveActionNotice('Client ID saved & synced successfully.');
     setTimeout(() => setDriveActionNotice(null), 3000);
   };
 
   const handleConnectGoogleDrive = async () => {
-    if (!gdriveClientId.trim()) {
+    const trimmedId = gdriveClientId.trim();
+    if (!trimmedId) {
       setDriveActionNotice('Please enter your Google OAuth Client ID first.');
       return;
     }
 
+    // Always auto-save client ID to local storage & cloud so it never disappears!
+    const s = getSavedSettings();
+    saveSettings({ ...s, googleDriveClientId: trimmedId });
+    syncGoogleDriveClientIdToCloud(trimmedId).catch(() => {});
+
     try {
       setIsLoadingDrive(true);
-      const details = await requestGoogleDriveTokenDetails(gdriveClientId.trim());
+      const details = await requestGoogleDriveTokenDetails(trimmedId);
       setGdriveToken(details.accessToken);
       setSessionDriveToken(details.accessToken, details.expiresIn);
       await refreshDriveFiles(details.accessToken);
@@ -695,7 +730,15 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       className="gdrive-input"
                       placeholder="e.g. 123456789-abcdef.apps.googleusercontent.com"
                       value={gdriveClientId}
-                      onChange={(e) => setGdriveClientId(e.target.value)}
+                      onChange={(e) => handleClientIdChange(e.target.value)}
+                      onBlur={() => {
+                        const trimmed = gdriveClientId.trim();
+                        if (trimmed) {
+                          const s = getSavedSettings();
+                          saveSettings({ ...s, googleDriveClientId: trimmed });
+                          syncGoogleDriveClientIdToCloud(trimmed).catch(() => {});
+                        }
+                      }}
                     />
                     <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-tertiary)', marginTop: 4, display: 'block' }}>
                       From your Google Cloud Console (APIs & Services → Credentials → OAuth Client ID).

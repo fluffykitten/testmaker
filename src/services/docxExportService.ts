@@ -168,9 +168,13 @@ export function parseFormattedTextToDocxRuns(
   // Restore protected currency
   processed = restoreCurrencySymbols(processed);
 
-  // Step 2: Convert single-character sub/super syntax (e.g. Fe_3O_4 -> Fe_{3}O_{4}, H_2O -> H_{2}O, 10^3 -> 10^{3})
-  processed = processed.replace(/([a-zA-Z0-9)\]])_([0-9a-zA-Z+\-*]+)/g, '$1_{$2}');
-  processed = processed.replace(/\^([0-9a-zA-Z+\-*]+)/g, '^{$1}');
+  // Step 2: Convert digit and single-character sub/super syntax (e.g. H_2SO_4 -> H_{2}SO_{4}, Fe^2+ -> Fe^{2+})
+  processed = processed
+    .replace(/([a-zA-Z0-9)\]])_(\d+)/g, '$1_{$2}')
+    .replace(/([a-zA-Z0-9)\]])_([a-zA-Z+-])(?![a-zA-Z0-9])/g, '$1_{$2}')
+    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]-]|$)/g, '$1^{$2}')
+    .replace(/([a-zA-Z0-9)\]])\^(\d+)/g, '$1^{$2}')
+    .replace(/([a-zA-Z0-9)\]])\^([a-zA-Z])(?![a-zA-Z0-9])/g, '$1^{$2}');
 
   // Convert unicode sub/superscripts to standard markers
   const unicodeSubMap: Record<string, string> = {

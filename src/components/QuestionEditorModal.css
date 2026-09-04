@@ -11,19 +11,24 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .q-editor-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-2xl);
-  max-width: 980px;
+  max-width: 1040px;
   width: 100%;
-  max-height: 94vh;
+  max-height: calc(100vh - 24px);
+  height: min(92vh, 900px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
   overflow: hidden;
+  margin: auto;
+  position: relative;
 }
 
 /* ─── Header ────────────────────────────────────────────────────────────────── */
@@ -32,9 +37,11 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 18px 24px;
+  padding: 16px 24px;
   background: var(--color-surface-elevated);
   border-bottom: 1px solid var(--color-surface-sunken);
+  flex-shrink: 0;
+  z-index: 10;
 }
 
 .q-editor-header-left {
@@ -90,6 +97,10 @@
   background: var(--color-surface-elevated);
   border-bottom: 1px solid var(--color-border);
   overflow-x: auto;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .q-editor-tab-btn {
@@ -388,8 +399,40 @@
 .q-editor-subhead-row {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.q-editor-subhead-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.q-editor-btn-back-to-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-primary-300);
+  border-radius: var(--radius-md);
+  color: var(--color-primary-600);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.q-editor-btn-back-to-main:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-500);
+  transform: translateX(-2px);
 }
 
 .q-editor-subhead {
@@ -480,7 +523,102 @@
 .q-editor-sub-body {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.q-editor-sub-split {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 860px) {
+  .q-editor-sub-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.q-editor-sub-input-col {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+}
+
+.q-editor-sub-preview-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.q-editor-sub-preview-box {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 140px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.q-editor-sub-preview-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--color-surface-sunken);
+  padding-bottom: 6px;
+}
+
+.q-editor-sub-preview-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--color-primary-700);
+  background: var(--color-primary-50);
+  border: 1px solid var(--color-primary-200);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+.q-editor-sub-preview-marks {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.q-editor-sub-preview-text {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  word-break: break-word;
+  flex: 1;
+}
+
+.q-editor-sub-preview-ans {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--color-border);
+  font-size: 0.8125rem;
+  color: #10b981;
+}
+
+.q-editor-sub-preview-ans-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  letter-spacing: 0.03em;
+}
+
+.q-editor-sub-preview-tip {
+  font-size: 0.75rem;
+  color: var(--color-primary-600);
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
 }
 
 .q-editor-sub-label {
@@ -581,10 +719,12 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 14px 24px;
   background: var(--color-surface-elevated);
   border-top: 1px solid var(--color-surface-sunken);
   gap: 12px;
+  flex-shrink: 0;
+  z-index: 10;
 }
 
 .q-editor-summary-pill {

@@ -11,6 +11,8 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .crop-modal-card {
@@ -19,11 +21,14 @@
   border-radius: var(--radius-2xl);
   max-width: 1100px;
   width: 100%;
-  max-height: 94vh;
+  max-height: calc(100vh - 24px);
+  height: min(92vh, 880px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
   overflow: hidden;
+  margin: auto;
+  position: relative;
 }
 
 /* Header */
@@ -31,9 +36,24 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 14px 24px;
   background: var(--color-surface-elevated);
   border-bottom: 1px solid var(--color-surface-sunken);
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.crop-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.crop-btn-header-save {
+  padding: 7px 14px !important;
+  font-size: 0.8125rem !important;
+  border-radius: var(--radius-md) !important;
 }
 
 .crop-modal-header-left {
@@ -84,11 +104,12 @@
 .crop-modal-toolbar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 24px;
+  gap: 12px;
+  padding: 8px 24px;
   background: var(--color-surface-sunken);
   border-bottom: 1px solid var(--color-border);
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .crop-toolbar-group {
@@ -166,19 +187,10 @@
   display: grid;
   grid-template-columns: 1fr 340px;
   gap: 16px;
-  padding: 16px 24px;
+  padding: 14px 24px;
   overflow: hidden;
-  flex: 1;
-  min-height: 480px;
-  max-height: 68vh;
-}
-
-@media (max-width: 860px) {
-  .crop-modal-body {
-    grid-template-columns: 1fr;
-    max-height: none;
-    overflow-y: auto;
-  }
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 /* Interactive Workspace Area */
@@ -190,7 +202,9 @@
   position: relative;
   display: flex;
   justify-content: center;
-  padding: 20px;
+  padding: 16px;
+  height: 100%;
+  min-height: 0;
 }
 
 .crop-loading-overlay {
@@ -407,12 +421,17 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .crop-preview-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .crop-preview-title {
@@ -431,8 +450,8 @@
 }
 
 .crop-preview-card {
-  flex: 1;
-  min-height: 200px;
+  flex: 1 1 0;
+  min-height: 140px;
   max-height: 280px;
   background: var(--color-surface-sunken);
   border: 1px solid var(--color-border);
@@ -480,10 +499,12 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 12px 24px;
   background: var(--color-surface-elevated);
   border-top: 1px solid var(--color-surface-sunken);
   gap: 12px;
+  flex-shrink: 0;
+  z-index: 10;
 }
 
 .crop-box-coords {
@@ -539,4 +560,81 @@
 .crop-btn-primary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ─── Responsive Adjustments ─────────────────────────────────────────────────── */
+
+@media (max-width: 860px) {
+  .crop-modal-card {
+    height: auto;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+
+  .crop-modal-body {
+    grid-template-columns: 1fr;
+    overflow-y: visible;
+    flex: none;
+    padding: 12px 16px;
+  }
+
+  .crop-workspace-area {
+    min-height: 320px;
+    max-height: 52vh;
+  }
+
+  .crop-preview-sidebar {
+    height: auto;
+    overflow-y: visible;
+  }
+
+  .crop-modal-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.25);
+    padding: 12px 16px;
+  }
+}
+
+@media (max-height: 720px) {
+  .crop-modal-card {
+    height: calc(100vh - 16px);
+    max-height: calc(100vh - 16px);
+  }
+
+  .crop-modal-header {
+    padding: 8px 16px;
+  }
+
+  .crop-modal-subtitle {
+    display: none;
+  }
+
+  .crop-modal-toolbar {
+    padding: 6px 16px;
+    gap: 8px;
+  }
+
+  .crop-btn-tool {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+  }
+
+  .crop-modal-body {
+    padding: 8px 16px;
+    gap: 10px;
+  }
+
+  .crop-preview-tips {
+    display: none;
+  }
+
+  .crop-preview-card {
+    min-height: 110px;
+  }
+
+  .crop-modal-footer {
+    padding: 8px 16px;
+  }
 }

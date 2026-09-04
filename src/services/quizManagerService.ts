@@ -26,6 +26,9 @@ export interface PublishedQuiz {
   teacherPin?: string;                   // Configurable teacher/invigilator unlock PIN (e.g. "1234")
   maxViolations: number;                 // Auto-submit after N tab violations
   showInstantSolutions: boolean;         // Show step-by-step breakdown on submit
+  requireStudentPin?: boolean;           // Require 4-digit student PIN from school roster (default: false)
+  limitOneAttempt?: boolean;             // Limit candidate to 1 attempt (default: true for exams)
+  targetClass?: string;                  // Optional target class cohort filter (e.g. "10-A")
   isActive: boolean;                     // Open for student submissions
   createdAt: string;
   updatedAt: string;
@@ -96,11 +99,51 @@ export function deduplicateQuizzes(quizzes: PublishedQuiz[]): PublishedQuiz[] {
   return cleanList;
 }
 
+const DELETED_QUIZZES_KEY = 'fluffykitten_deleted_quiz_ids';
+
+/**
+ * Returns all deleted quiz identifiers (IDs, testIds, quiz codes).
+ */
+export function getDeletedQuizIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_QUIZZES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Records a deleted quiz in the persistent tombstone registry.
+ */
+export function recordDeletedQuiz(id?: string, testId?: string, quizCode?: string): void {
+  try {
+    const current = getDeletedQuizIds();
+    if (id) current.add(id.trim());
+    if (testId) current.add(testId.trim());
+    if (quizCode) current.add(quizCode.trim().toUpperCase());
+    const arr = Array.from(current);
+    const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+    localStorage.setItem(DELETED_QUIZZES_KEY, JSON.stringify(trimmed));
+  } catch (err) {
+    console.warn('Failed to record deleted quiz tombstone:', err);
+  }
+}
+
 export function getPublishedQuizzes(): PublishedQuiz[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const list: PublishedQuiz[] = raw ? JSON.parse(raw) : [];
-    return deduplicateQuizzes(list);
+    const deletedIds = getDeletedQuizIds();
+    const activeOnly = list.filter((q) => {
+      if (!q) return false;
+      const qId = String(q.id || '').trim();
+      const qTestId = String(q.testId || '').trim();
+      const qCode = String(q.quizCode || '').trim().toUpperCase();
+      return !deletedIds.has(qId) && !deletedIds.has(qTestId) && !deletedIds.has(qCode);
+    });
+    return deduplicateQuizzes(activeOnly);
   } catch (err) {
     console.error('Failed to load published quizzes from localStorage:', err);
     return [];
@@ -149,9 +192,18 @@ export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Pro
  */
 export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
   const localList = getPublishedQuizzes();
+  const deletedIds = getDeletedQuizIds();
 
   try {
-    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    const rawCloudList = await fetchPublishedQuizzesFromSupabase();
+    // Filter cloud list through tombstones to prevent resurrection of deleted quizzes
+    const cloudList = rawCloudList.filter((q) => {
+      if (!q) return false;
+      const qId = String(q.id || '').trim();
+      const qTestId = String(q.testId || '').trim();
+      const qCode = String(q.quizCode || '').trim().toUpperCase();
+      return !deletedIds.has(qId) && !deletedIds.has(qTestId) && !deletedIds.has(qCode);
+    });
 
     // Authoritatively merge and deduplicate both cloud and local lists
     const combined = [...localList, ...cloudList];
@@ -160,8 +212,8 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
     // Update localStorage with authoritative merged list
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
 
-    // If local and cloud had differences or duplicates, sync clean list back to Supabase
-    if (cloudList.length !== merged.length || localList.length !== merged.length) {
+    // If local and cloud had differences or duplicates (including deleted items pruned from cloud), sync back
+    if (rawCloudList.length !== merged.length || localList.length !== merged.length) {
       await syncPublishedQuizzesToCloud(merged);
     }
 
@@ -213,6 +265,12 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     const targetCode = (target?.quizCode || cleanId).toUpperCase();
     const targetTestId = target?.testId || cleanId;
 
+    // Record in tombstone registry so this quiz cannot resurrect
+    recordDeletedQuiz(cleanId, targetTestId, targetCode);
+    if (targetId && targetId !== cleanId) {
+      recordDeletedQuiz(targetId);
+    }
+
     const matchesTarget = (q: PublishedQuiz) => {
       const qId = q.id;
       const qCode = q.quizCode.toUpperCase();
@@ -233,6 +291,11 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     const cloudList = await fetchPublishedQuizzesFromSupabase();
     const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
     await syncPublishedQuizzesToCloud(updatedCloud);
+
+    // Broadcast quiz deletion event to UI
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
+    }
 
     return updated;
   } catch (err) {
