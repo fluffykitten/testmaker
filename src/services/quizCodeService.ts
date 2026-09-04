@@ -55,10 +55,21 @@ export function generateQuizCode(test: { id: string; header_config?: ExamHeaderC
   return `${prefix}-${suffix}`;
 }
 
-// ─── Fast In-Memory Cache for Resolved Quizzes & Question Objects ───────────────
 const resolvedQuizMemoryCache = new Map<string, { data: StudentQuizData; timestamp: number }>();
 const questionObjectCache = new Map<string, Question>();
 const QUIZ_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes TTL
+
+/**
+ * Clears the in-memory cache for resolved quizzes
+ */
+export function clearQuizMemoryCache(codeOrId?: string): void {
+  if (codeOrId) {
+    const clean = codeOrId.trim().toUpperCase();
+    resolvedQuizMemoryCache.delete(clean);
+  } else {
+    resolvedQuizMemoryCache.clear();
+  }
+}
 
 /**
  * Resolves a quiz by Quiz Code or Test UUID from Supabase, Published Quizzes, or LocalStorage (cached)
@@ -139,14 +150,26 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     if (isAlphabeticallyMuddled) {
       questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
     }
+    const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
+    const syncedHeader = published.headerConfig
+      ? { ...published.headerConfig, durationMinutes: effectiveDuration }
+      : {
+          title: published.title || 'Examination Assessment',
+          schoolName: '',
+          subject: published.subject || 'Assessment',
+          subjectCode: '',
+          durationMinutes: effectiveDuration,
+          instructions: '',
+        };
+
     const result: StudentQuizData = {
       testId: published.testId,
       quizCode: published.quizCode,
       title: published.title,
-      headerConfig: published.headerConfig,
+      headerConfig: syncedHeader,
       questions,
       totalMarks: published.totalMarks,
-      durationMinutes: published.durationMinutes,
+      durationMinutes: effectiveDuration,
       isExamMode: published.isExamMode,
       isActive: published.isActive !== undefined ? published.isActive : true,
       securityEnabled: published.securityEnabled,
@@ -188,13 +211,15 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       ) {
         // Fetch question objects
         const questions = await fetchQuestionsByIds(test.question_ids || []);
+        const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
         return {
           testId: test.id,
           quizCode: generated,
           title: test.title || test.header_config?.title || 'Examination Assessment',
-          headerConfig: test.header_config,
+          headerConfig: test.header_config ? { ...test.header_config, durationMinutes: effectiveDuration } : undefined,
           questions,
           totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
+          durationMinutes: effectiveDuration,
         };
       }
     }
@@ -214,13 +239,15 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
 
       if (!error && test) {
         const questions = await fetchQuestionsByIds(test.question_ids || []);
+        const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
         return {
           testId: test.id,
           quizCode: generateQuizCode(test),
           title: test.title || test.header_config?.title || 'Examination Assessment',
-          headerConfig: test.header_config,
+          headerConfig: test.header_config ? { ...test.header_config, durationMinutes: effectiveDuration } : undefined,
           questions,
           totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
+          durationMinutes: effectiveDuration,
         };
       }
     }
@@ -241,13 +268,15 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
           test.id.replace(/-/g, '').toUpperCase().startsWith(cleanInput.replace(/-/g, ''))
         ) {
           const questions = await fetchQuestionsByIds(test.question_ids || []);
+          const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
           return {
             testId: test.id,
             quizCode: code,
             title: test.title || test.header_config?.title || 'Examination Assessment',
-            headerConfig: test.header_config,
+            headerConfig: test.header_config ? { ...test.header_config, durationMinutes: effectiveDuration } : undefined,
             questions,
             totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
+            durationMinutes: effectiveDuration,
           };
         }
       }

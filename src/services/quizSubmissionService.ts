@@ -643,7 +643,6 @@ export async function deleteSubmission(id: string): Promise<void> {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.id !== id);
     localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
-    window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to delete submission from localStorage:', err);
   }
@@ -662,6 +661,8 @@ export async function deleteSubmission(id: string): Promise<void> {
     const updatedAppConfig = appConfigSubs.filter((s) => s.id !== id);
     await syncSubmissionsToAppConfig(updatedAppConfig);
   } catch {}
+
+  window.dispatchEvent(new Event('submissions_updated'));
 }
 
 export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string): Promise<void> {
@@ -670,7 +671,6 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode));
     localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
-    window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to clear submissions from localStorage:', err);
   }
@@ -695,6 +695,8 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
     );
     await syncSubmissionsToAppConfig(updatedAppConfig);
   } catch {}
+
+  window.dispatchEvent(new Event('submissions_updated'));
 }
 
 /**

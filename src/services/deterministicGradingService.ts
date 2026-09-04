@@ -898,8 +898,6 @@ export function gradeDeterministicAnswer(
     if (multiTargetLetters.length >= 2) {
       const studentLetters = Array.from(new Set(rawAnswerStr.toUpperCase().match(/[A-Z]/g) || [])).sort();
       const isExactMatch = studentLetters.join('') === multiTargetLetters.join('');
-      const correctOverlap = studentLetters.filter((l) => multiTargetLetters.includes(l)).length;
-      const incorrectCount = studentLetters.filter((l) => !multiTargetLetters.includes(l)).length;
 
       const correctSelected = studentLetters.filter((l) => multiTargetLetters.includes(l));
       const incorrectSelected = studentLetters.filter((l) => !multiTargetLetters.includes(l));
@@ -908,13 +906,8 @@ export function gradeDeterministicAnswer(
       let earnedMarks = 0;
       if (isExactMatch) {
         earnedMarks = maxMarks;
-      } else if (incorrectCount === 0 && correctOverlap > 0 && maxMarks > 1) {
-        // Partial credit when all selected options are correct but some targets were missed
-        earnedMarks = Math.min(maxMarks - 1, Math.floor((correctOverlap / multiTargetLetters.length) * maxMarks));
-      } else if (incorrectCount > 0 && correctOverlap > incorrectCount && maxMarks > 1) {
-        // Net partial credit: correct selections minus wrong selections
-        const netCorrect = correctOverlap - incorrectCount;
-        earnedMarks = Math.min(maxMarks - 1, Math.floor((netCorrect / multiTargetLetters.length) * maxMarks));
+      } else {
+        earnedMarks = 0;
       }
 
       let feedback = '';
@@ -925,7 +918,7 @@ export function gradeDeterministicAnswer(
         if (correctSelected.length > 0) breakdownParts.push(`✓ Correct: ${correctSelected.join(', ')}`);
         if (incorrectSelected.length > 0) breakdownParts.push(`✗ Incorrect: ${incorrectSelected.join(', ')}`);
         if (missedTargets.length > 0) breakdownParts.push(`Missed: ${missedTargets.join(', ')}`);
-        feedback = `${earnedMarks > 0 ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): ` : '✗ '}Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')})`;
+        feedback = `✗ Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}). All selections must be correct to earn marks (0/${maxMarks}).`;
       }
 
       return {
@@ -935,7 +928,7 @@ export function gradeDeterministicAnswer(
         isCorrect: isExactMatch,
         matchType: 'mcq',
         feedback,
-        matchedCriteria: [multiTargetLetters.join(', ')],
+        matchedCriteria: isExactMatch ? [multiTargetLetters.join(', ')] : [],
         acceptedAnswers: [multiTargetLetters.join(', ')],
       };
     }
@@ -1109,17 +1102,25 @@ export function gradeDeterministicAnswer(
     const targetPoints = parseMarkSchemeTargetPoints(targetStr);
     if (targetPoints.length >= 2) {
       const multiRes = evaluateMultiPointAnswer(rawAnswerStr, targetPoints);
-      if (multiRes.matchedCount > 0) {
-        const earned = Math.round((multiRes.matchedCount / multiRes.totalPoints) * maxMarks);
+      if (multiRes.isAllMatched) {
         return {
           isHandled: true,
-          earnedMarks: earned,
+          earnedMarks: maxMarks,
           maxMarks,
-          isCorrect: multiRes.isAllMatched,
+          isCorrect: true,
           matchType: 'keyword',
-          feedback: multiRes.isAllMatched
-            ? `✓ All ${multiRes.totalPoints} criteria met: ${multiRes.feedbackSummary}`
-            : `Partial match (${multiRes.matchedCount}/${multiRes.totalPoints}): Expected: ${multiRes.feedbackSummary}`,
+          feedback: `✓ All ${multiRes.totalPoints} criteria correctly matched: ${multiRes.feedbackSummary}`,
+          matchedCriteria: multiRes.matchedPoints,
+          acceptedAnswers: [multiRes.feedbackSummary],
+        };
+      } else if (multiRes.matchedCount > 0 || targetPoints.some((p) => p.label)) {
+        return {
+          isHandled: true,
+          earnedMarks: 0,
+          maxMarks,
+          isCorrect: false,
+          matchType: 'keyword',
+          feedback: `✗ Incomplete match (${multiRes.matchedCount}/${multiRes.totalPoints} correct). All selections must be correct to earn marks (0/${maxMarks}). Expected: ${multiRes.feedbackSummary}`,
           matchedCriteria: multiRes.matchedPoints,
           acceptedAnswers: [multiRes.feedbackSummary],
         };

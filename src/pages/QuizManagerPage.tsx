@@ -314,10 +314,24 @@ export function QuizManagerPage({
     const currentSettings = getSavedSettings();
 
     const isExam = activeQuizDraft.isExamMode ?? true;
+    const resolvedDuration = activeQuizDraft.durationMinutes || 45;
+    const updatedHeader = activeQuizDraft.headerConfig
+      ? { ...activeQuizDraft.headerConfig, durationMinutes: resolvedDuration }
+      : {
+          title: activeQuizDraft.title || 'Examination',
+          schoolName: '',
+          subject: cleanSubject,
+          subjectCode: '',
+          durationMinutes: resolvedDuration,
+          instructions: '',
+        };
+
     const updated: PublishedQuiz = {
       ...activeQuizDraft,
       quizCode: cleanCode,
       subject: cleanSubject,
+      durationMinutes: resolvedDuration,
+      headerConfig: updatedHeader,
       quizMode: activeQuizDraft.quizMode || 'exam',
       enableWatermark: currentSettings.defaultEnableWatermark ? (activeQuizDraft.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (activeQuizDraft.enableMultiMonitorDetection ?? false) : false,
@@ -372,7 +386,18 @@ export function QuizManagerPage({
     if (questions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
       questions = await fetchQuestionsByIds(quiz.questionIds);
     }
-    onLaunchTestRun(questions, quiz.headerConfig);
+    const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
+    const mergedHeader = quiz.headerConfig
+      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration }
+      : {
+          title: quiz.title || 'Examination',
+          schoolName: '',
+          subject: quiz.subject || 'Assessment',
+          subjectCode: '',
+          durationMinutes: resolvedDuration,
+          instructions: '',
+        };
+    onLaunchTestRun(questions, mergedHeader);
   };
 
   const handleStartLiveGame = async (quiz: PublishedQuiz) => {

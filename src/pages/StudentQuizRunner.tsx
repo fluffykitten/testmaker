@@ -353,6 +353,7 @@ export function StudentQuizRunner({
     }
     return savedExam?.timeLeft ?? examDurationSec;
   });
+  const effectiveDurationMinutes = headerConfig?.durationMinutes || (timeLeft ? Math.round(timeLeft / 60) : 45);
 
   // Reference & Tool Drawers
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
@@ -478,8 +479,9 @@ export function StudentQuizRunner({
   useEffect(() => {
     if (initialQuestions && initialQuestions.length > 0) {
       setQuestions(initialQuestions);
-      if (initialHeaderConfig?.durationMinutes) {
-        setTimeLeft(initialHeaderConfig.durationMinutes * 60);
+      const eff = initialHeaderConfig?.durationMinutes || 45;
+      if (!savedExam?.hasStarted) {
+        setTimeLeft(eff * 60);
       }
       setLoading(false);
       return;
@@ -502,18 +504,40 @@ export function StudentQuizRunner({
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
           setTitle(data.title);
-          setHeaderConfig(data.headerConfig);
+          const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
+          setHeaderConfig(
+            data.headerConfig
+              ? { ...data.headerConfig, durationMinutes: resolvedDuration }
+              : {
+                  title: data.title || 'Examination',
+                  schoolName: '',
+                  subject: 'Assessment',
+                  subjectCode: '',
+                  durationMinutes: resolvedDuration,
+                  instructions: '',
+                }
+          );
         } else {
           setIsQuizPaused(false);
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
           setTitle(data.title);
-          setHeaderConfig(data.headerConfig);
+          const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
+          setHeaderConfig(
+            data.headerConfig
+              ? { ...data.headerConfig, durationMinutes: resolvedDuration }
+              : {
+                  title: data.title || 'Examination',
+                  schoolName: '',
+                  subject: 'Assessment',
+                  subjectCode: '',
+                  durationMinutes: resolvedDuration,
+                  instructions: '',
+                }
+          );
           setQuestions(data.questions);
-          if (data.durationMinutes) {
-            setTimeLeft(data.durationMinutes * 60);
-          } else if (data.headerConfig?.durationMinutes) {
-            setTimeLeft(data.headerConfig.durationMinutes * 60);
+          if (!savedExam?.hasStarted) {
+            setTimeLeft(resolvedDuration * 60);
           }
           if (data.isExamMode !== undefined) {
             setIsExamMode(data.isExamMode);
@@ -1760,10 +1784,11 @@ export function StudentQuizRunner({
     await flushClipboard();
 
     const now = Date.now();
-    const end = now + examDurationSec * 1000;
+    const durationToUseSec = (headerConfig?.durationMinutes ? headerConfig.durationMinutes * 60 : (timeLeft || 45 * 60));
+    const end = now + durationToUseSec * 1000;
     setStartTime(now);
     setTargetEndTime(end);
-    setTimeLeft(examDurationSec);
+    setTimeLeft(durationToUseSec);
     if (securityEnabled && containerRef.current) {
       try {
         if (document.documentElement.requestFullscreen) {
@@ -1785,7 +1810,7 @@ export function StudentQuizRunner({
       studentPin: studentPinInput || undefined,
       answers,
       currentIndex,
-      timeLeftSeconds: examDurationSec,
+      timeLeftSeconds: durationToUseSec,
       startTime: now,
       targetEndTime: end,
       flaggedIndices: Array.from(flaggedIndices),
@@ -2218,11 +2243,20 @@ export function StudentQuizRunner({
                 if (refreshed && refreshed.isActive !== false) {
                   setIsQuizPaused(false);
                   setQuestions(refreshed.questions);
-                  if (refreshed.durationMinutes) {
-                    setTimeLeft(refreshed.durationMinutes * 60);
-                  } else if (refreshed.headerConfig?.durationMinutes) {
-                    setTimeLeft(refreshed.headerConfig.durationMinutes * 60);
-                  }
+                  const resolvedDuration = refreshed.durationMinutes || refreshed.headerConfig?.durationMinutes || 45;
+                  setHeaderConfig(
+                    refreshed.headerConfig
+                      ? { ...refreshed.headerConfig, durationMinutes: resolvedDuration }
+                      : {
+                          title: refreshed.title || title || 'Examination',
+                          schoolName: '',
+                          subject: 'Assessment',
+                          subjectCode: '',
+                          durationMinutes: resolvedDuration,
+                          instructions: '',
+                        }
+                  );
+                  setTimeLeft(resolvedDuration * 60);
                   if (refreshed.isExamMode !== undefined) setIsExamMode(refreshed.isExamMode);
                   if (refreshed.securityEnabled !== undefined) setSecurityEnabled(refreshed.securityEnabled);
                   if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
@@ -2287,28 +2321,22 @@ export function StudentQuizRunner({
               <span className="rule-icon">⏱️</span>
               <div>
                 <strong>Duration</strong>
-                <p>{headerConfig?.durationMinutes || 45} minutes total</p>
+                <p>
+                  {isExamMode
+                    ? `${effectiveDurationMinutes} minutes total`
+                    : 'Self-Paced Practice'}
+                </p>
               </div>
             </div>
             <div className="lobby-rule-item">
-              <span className="rule-icon">🔒</span>
+              <span className="rule-icon">{securityEnabled ? '🔒' : '🌐'}</span>
               <div>
                 <strong>Security Guard</strong>
-                <p>Fullscreen & tab-switch tracking active</p>
-              </div>
-            </div>
-            <div className="lobby-rule-item">
-              <span className="rule-icon">🤖</span>
-              <div>
-                <strong>Marking System</strong>
-                <p>Fast-Matcher & AI Examiner active</p>
-              </div>
-            </div>
-            <div className="lobby-rule-item">
-              <span className="rule-icon">📊</span>
-              <div>
-                <strong>Instant Diagnostic</strong>
-                <p>Topic mastery & criteria review</p>
+                <p>
+                  {securityEnabled
+                    ? 'Fullscreen & tab-switch tracking active'
+                    : 'Inactive (Standard Browser)'}
+                </p>
               </div>
             </div>
           </div>
@@ -2635,89 +2663,40 @@ export function StudentQuizRunner({
                 background: 'var(--color-surface-sunken)',
                 border: '1.5px solid var(--color-border)',
                 borderRadius: 'var(--radius-lg)',
-                padding: '14px 18px',
+                padding: '12px 16px',
                 margin: '16px 0',
                 display: 'flex',
-                flexDirection: 'column',
-                gap: '10px',
-                textAlign: 'left',
+                alignItems: 'center',
+                justifyContent: 'space-between',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1.1rem' }}>🛡️</span>
                 <span
                   style={{
                     fontSize: '0.8125rem',
-                    fontWeight: 800,
+                    fontWeight: 700,
                     color: 'var(--color-text-primary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
                   }}
                 >
-                  🛡️ Formal Examination Policy
-                </span>
-                <span
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 800,
-                    background: 'rgba(16, 185, 129, 0.15)',
-                    color: '#10b981',
-                    padding: '3px 8px',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(16, 185, 129, 0.3)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
-                  }}
-                >
-                  Enforced by Teacher
+                  Formal Examination Session
                 </span>
               </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div
-                  style={{
-                    background: 'var(--color-surface)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '8px 12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                  }}
-                >
-                  <span style={{ fontSize: '1.2rem' }}>⏱️</span>
-                  <div>
-                    <strong style={{ fontSize: '0.8rem', display: 'block', color: 'var(--color-text-primary)' }}>
-                      {isExamMode ? `${Math.round(timeLeft / 60)} Mins Countdown` : 'Self-Paced Practice'}
-                    </strong>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
-                      {isExamMode ? 'Strict timer with auto-submit' : 'No time limit'}
-                    </span>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    background: 'var(--color-surface)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '8px 12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                  }}
-                >
-                  <span style={{ fontSize: '1.2rem' }}>🔒</span>
-                  <div>
-                    <strong style={{ fontSize: '0.8rem', display: 'block', color: 'var(--color-text-primary)' }}>
-                      {securityEnabled ? 'Anti-Cheating Monitored' : 'Standard Browser'}
-                    </strong>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
-                      {securityEnabled ? 'Fullscreen & tab-switch tracking' : 'Open browser'}
-                    </span>
-                  </div>
-                </div>
-              </div>
+              <span
+                style={{
+                  fontSize: '0.7rem',
+                  fontWeight: 800,
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  color: '#10b981',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                Enforced by Teacher
+              </span>
             </div>
           ) : (
             <>

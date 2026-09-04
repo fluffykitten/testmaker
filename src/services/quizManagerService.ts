@@ -4,7 +4,7 @@
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
-import { generateQuizCode } from './quizCodeService';
+import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
 import { getSavedSettings } from '../lib/settings';
 
 export interface PublishedQuiz {
@@ -126,8 +126,45 @@ export function recordDeletedQuiz(id?: string, testId?: string, quizCode?: strin
     const arr = Array.from(current);
     const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
     localStorage.setItem(DELETED_QUIZZES_KEY, JSON.stringify(trimmed));
+    // Asynchronously push tombstones to cloud
+    syncDeletedQuizIdsToCloud(trimmed).catch(() => {});
   } catch (err) {
     console.warn('Failed to record deleted quiz tombstone:', err);
+  }
+}
+
+export async function fetchDeletedQuizIdsFromCloud(): Promise<string[]> {
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'deleted_quiz_ids')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Could not fetch deleted quiz ids from Supabase cloud:', err);
+  }
+  return [];
+}
+
+export async function syncDeletedQuizIdsToCloud(deletedIds: string[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any)
+      .upsert({
+        key: 'deleted_quiz_ids',
+        value: JSON.stringify(deletedIds),
+      });
+    if (error) {
+      console.warn('Supabase cloud sync deleted ids notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync deleted ids error:', err);
+    return false;
   }
 }
 
@@ -191,8 +228,34 @@ export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Pro
  * merges both lists safely by ID, quizCode, and testId, updates localStorage, and returns the merged list.
  */
 export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
+  // Sync tombstones first
+  const localDeleted = getDeletedQuizIds();
+  try {
+    const cloudDeleted = await fetchDeletedQuizIdsFromCloud();
+    let hasNewCloudDeleted = false;
+    cloudDeleted.forEach(id => {
+      if (!localDeleted.has(id)) {
+        localDeleted.add(id);
+        hasNewCloudDeleted = true;
+      }
+    });
+    if (hasNewCloudDeleted) {
+      const arr = Array.from(localDeleted);
+      const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+      localStorage.setItem(DELETED_QUIZZES_KEY, JSON.stringify(trimmed));
+    }
+    // Also push local deleted to cloud if we had exclusive local ones
+    if (cloudDeleted.length < localDeleted.size) {
+      const arr = Array.from(localDeleted);
+      const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
+      await syncDeletedQuizIdsToCloud(trimmed);
+    }
+  } catch (err) {
+    console.warn('Error syncing deleted quiz tombstones:', err);
+  }
+
   const localList = getPublishedQuizzes();
-  const deletedIds = getDeletedQuizIds();
+  const deletedIds = getDeletedQuizIds(); // Refresh after potential update
 
   try {
     const rawCloudList = await fetchPublishedQuizzesFromSupabase();
@@ -226,11 +289,30 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
 
 export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQuiz[]> {
   try {
+    const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
+    const mergedHeader = quiz.headerConfig
+      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration }
+      : {
+          title: quiz.title || 'Examination Assessment',
+          schoolName: '',
+          subject: quiz.subject || 'Assessment',
+          subjectCode: '',
+          durationMinutes: resolvedDuration,
+          instructions: '',
+        };
+
     const cleanQuiz: PublishedQuiz = {
       ...quiz,
+      durationMinutes: resolvedDuration,
+      headerConfig: mergedHeader,
       quizCode: quiz.quizCode.trim().toUpperCase(),
       updatedAt: new Date().toISOString(),
     };
+
+    // Invalidate resolution cache so changes take effect immediately
+    clearQuizMemoryCache(cleanQuiz.quizCode);
+    clearQuizMemoryCache(cleanQuiz.id);
+    clearQuizMemoryCache(cleanQuiz.testId);
 
     // 1. Update local storage immediately for zero-lag UI
     const existing = getPublishedQuizzes();
@@ -270,6 +352,10 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     if (targetId && targetId !== cleanId) {
       recordDeletedQuiz(targetId);
     }
+
+    clearQuizMemoryCache(cleanId);
+    clearQuizMemoryCache(targetCode);
+    clearQuizMemoryCache(targetTestId);
 
     const matchesTarget = (q: PublishedQuiz) => {
       const qId = q.id;
@@ -357,6 +443,18 @@ export function createDraftFromTest(
       'Chemistry';
   }
 
+  const dur = existing?.durationMinutes || header?.durationMinutes || 45;
+  const mergedHeader = header
+    ? { ...header, durationMinutes: dur }
+    : {
+        title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
+        schoolName: '',
+        subject: resolvedSubject,
+        subjectCode: '',
+        durationMinutes: dur,
+        instructions: '',
+      };
+
   return {
     id: existing?.id || `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     testId: test.id,
@@ -366,8 +464,8 @@ export function createDraftFromTest(
     totalMarks: tMarks,
     questionCount: qCount,
     questionIds: test.question_ids || (questions ? questions.map((q) => q.id) : existing?.questionIds || []),
-    headerConfig: header,
-    durationMinutes: existing?.durationMinutes || header?.durationMinutes || 45,
+    headerConfig: mergedHeader,
+    durationMinutes: dur,
     isExamMode: existing?.isExamMode ?? true,
     securityEnabled: existing?.securityEnabled ?? true,
     enableWatermark: existing?.enableWatermark ?? (getSavedSettings().defaultEnableWatermark ?? false),

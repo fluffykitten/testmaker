@@ -822,9 +822,15 @@
 
 .student-lobby-rules-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   margin-bottom: 24px;
+}
+
+@media (max-width: 600px) {
+  .student-lobby-rules-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .lobby-rule-item {
