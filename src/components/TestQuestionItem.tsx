@@ -2,6 +2,7 @@ import { useState, memo } from 'react';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { parseMcqOption } from '../utils/mcqUtils';
+import { formatPaperBadge } from '../utils/paperUtils';
 import './TestQuestionItem.css';
 
 interface TestQuestionItemProps {
@@ -57,7 +58,7 @@ function TestQuestionItemComponent({
           </div>
 
           <span className="q-badge q-badge--paper">
-            From Paper {question.paper_number || '1'} ({question.series || 'Exam'} {question.year}) • Orig. Q{question.question_number}
+            From {formatPaperBadge(question.paper_number, question.series, question.year)} • Orig. Q{question.question_number}
           </span>
 
           {question.difficulty && (

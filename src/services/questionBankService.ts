@@ -27,7 +27,7 @@ export interface QuestionFilterParams {
 
 export interface PaperTypesSummary {
   seriesOptions: { value: string; label: string; rawName: string; count: number }[];
-  paperNumberOptions: { value: string; label: string; paperNumber: number; count: number }[];
+  paperNumberOptions: { value: string; label: string; paperNumber: string | number; count: number }[];
 }
 
 export interface QuestionQueryResult {
@@ -233,7 +233,7 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
   }
 
   const seriesMap = new Map<string, number>();
-  const paperNumMap = new Map<number, number>();
+  const paperNumMap = new Map<string, number>();
 
   data.forEach((row: any) => {
     if (row.series && typeof row.series === 'string' && row.series.trim()) {
@@ -241,8 +241,8 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
       seriesMap.set(s, (seriesMap.get(s) || 0) + 1);
     }
     if (row.paper_number !== null && row.paper_number !== undefined) {
-      const p = Number(row.paper_number);
-      if (!isNaN(p)) {
+      const p = String(row.paper_number).trim();
+      if (p) {
         paperNumMap.set(p, (paperNumMap.get(p) || 0) + 1);
       }
     }
@@ -258,13 +258,21 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
     .sort((a, b) => b.count - a.count || a.rawName.localeCompare(b.rawName));
 
   const paperNumberOptions = Array.from(paperNumMap.entries())
-    .map(([num, count]) => ({
-      value: `paper:${num}`,
-      label: `Paper ${num} (${count})`,
-      paperNumber: num,
-      count,
-    }))
-    .sort((a, b) => a.paperNumber - b.paperNumber);
+    .map(([val, count]) => {
+      const isPureDigits = /^\d+$/.test(val);
+      return {
+        value: `paper:${val}`,
+        label: isPureDigits ? `Paper ${val} (${count})` : `${val} (${count})`,
+        paperNumber: val,
+        count,
+      };
+    })
+    .sort((a, b) => {
+      const numA = Number(a.paperNumber);
+      const numB = Number(b.paperNumber);
+      if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+      return a.label.localeCompare(b.label);
+    });
 
   const result = { seriesOptions, paperNumberOptions };
   paperTypesCache.set(cacheKey, { data: result, timestamp: Date.now() });
@@ -445,8 +453,15 @@ export function sortQuestionsList(
         if ((b.year || 0) !== (a.year || 0)) {
           return (b.year || 0) - (a.year || 0);
         }
-        if ((a.paper_number || 0) !== (b.paper_number || 0)) {
-          return (a.paper_number || 0) - (b.paper_number || 0);
+        const pNumA = Number(a.paper_number);
+        const pNumB = Number(b.paper_number);
+        if (!isNaN(pNumA) && !isNaN(pNumB) && pNumA !== pNumB) {
+          return pNumA - pNumB;
+        }
+        const pStrA = String(a.paper_number || '');
+        const pStrB = String(b.paper_number || '');
+        if (pStrA !== pStrB) {
+          return pStrA.localeCompare(pStrB);
         }
         return compareQuestionNumbers(a.question_number, b.question_number);
       });
@@ -547,19 +562,22 @@ export async function fetchQuestions(
       } else if (activePaperType === 'theory' || activePaperType === 'preset:theory') {
         q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
       } else if (activePaperType === 'atp' || activePaperType === 'preset:atp') {
-        q = q.in('paper_number', [6, 61, 62, 63]);
+        q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
       } else if (activePaperType.startsWith('series:')) {
         const seriesVal = activePaperType.replace('series:', '').trim();
         q = q.eq('series', seriesVal);
       } else if (activePaperType.startsWith('paper:')) {
-        const pNum = parseInt(activePaperType.replace('paper:', ''), 10);
-        if (!isNaN(pNum)) {
-          q = q.eq('paper_number', pNum);
+        const rawP = activePaperType.replace('paper:', '').trim();
+        const pNum = Number(rawP);
+        if (!isNaN(pNum) && /^\d+$/.test(rawP)) {
+          q = q.or(`paper_number.eq.${pNum},paper_number.eq.${rawP}`);
+        } else {
+          q = q.eq('paper_number', rawP);
         }
       } else {
         const parsedNum = Number(activePaperType);
-        if (!isNaN(parsedNum)) {
-          q = q.eq('paper_number', parsedNum);
+        if (!isNaN(parsedNum) && /^\d+$/.test(activePaperType.trim())) {
+          q = q.or(`paper_number.eq.${parsedNum},paper_number.eq.${activePaperType.trim()}`);
         } else {
           q = q.ilike('series', `%${activePaperType.trim()}%`);
         }
@@ -567,13 +585,15 @@ export async function fetchQuestions(
     } else {
       if (paperNumber) {
         if (typeof paperNumber === 'number') {
-          q = q.eq('paper_number', paperNumber);
+          q = q.or(`paper_number.eq.${paperNumber},paper_number.eq.${String(paperNumber)}`);
         } else if (paperNumber === 'mcq') {
-          q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
+          q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23, '1', '2', '11', '12', '13', '21', '22', '23']);
         } else if (paperNumber === 'theory') {
-          q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
+          q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43, '3', '4', '31', '32', '33', '41', '42', '43']);
         } else if (paperNumber === 'atp') {
-          q = q.in('paper_number', [6, 61, 62, 63]);
+          q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
+        } else {
+          q = q.eq('paper_number', paperNumber);
         }
       }
 
@@ -854,6 +874,8 @@ export async function updateQuestion(
       error.message.includes('options') ||
       error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
+      error.message.includes('paper_number') ||
+      error.message.includes('invalid input syntax for type integer') ||
       error.message.includes('insert_page_number'))
   ) {
     console.warn('Dedicated column not found in database schema, falling back to embedded mark_scheme:', error.message);
@@ -871,6 +893,9 @@ export async function updateQuestion(
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
     if (error.message.includes('options')) delete fallbackPayload.options;
+    if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
+      fallbackPayload.paper_number = 1;
+    }
     delete fallbackPayload.diagram_source;
     delete fallbackPayload.resource_ref;
     delete fallbackPayload.insert_page_number;
@@ -933,7 +958,9 @@ export async function createQuestion(
     syllabus_id: validSyllabusId,
     year: Number(questionData.year) || new Date().getFullYear(),
     series: questionData.series || 'Variant',
-    paper_number: questionData.paper_number !== undefined && questionData.paper_number !== null ? Number(questionData.paper_number) : 1,
+    paper_number: questionData.paper_number !== undefined && questionData.paper_number !== null
+      ? (typeof questionData.paper_number === 'number' ? questionData.paper_number : String(questionData.paper_number).trim())
+      : '1',
     question_number: questionData.question_number || '1',
     parent_question_id: questionData.parent_question_id || null,
     question_text: typeof questionData.question_text === 'string' ? questionData.question_text : (questionData.question_text ? JSON.stringify(questionData.question_text) : ''),
@@ -991,6 +1018,9 @@ export async function createQuestion(
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
     if (error.message.includes('options')) delete fallbackPayload.options;
+    if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
+      fallbackPayload.paper_number = 1;
+    }
     delete fallbackPayload.diagram_source;
     delete fallbackPayload.resource_ref;
     delete fallbackPayload.insert_page_number;

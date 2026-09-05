@@ -85,7 +85,7 @@ export function QuestionEditorModal({
   const [questionNumber, setQuestionNumber] = useState('1');
   const [year, setYear] = useState(new Date().getFullYear());
   const [series, setSeries] = useState('May/June');
-  const [paperNumber, setPaperNumber] = useState<number | null>(41);
+  const [paperNumber, setPaperNumber] = useState<string | number | null>('1');
   const [questionStyle, setQuestionStyle] = useState<QuestionStyle>('Structured');
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>('Medium');
   const [totalMarks, setTotalMarks] = useState(4);
@@ -183,7 +183,7 @@ export function QuestionEditorModal({
       setQuestionNumber(question.question_number || '1');
       setYear(Number(question.year) || new Date().getFullYear());
       setSeries(question.series || 'May/June');
-      setPaperNumber(question.paper_number !== undefined && question.paper_number !== null ? Number(question.paper_number) : 41);
+      setPaperNumber(question.paper_number !== undefined && question.paper_number !== null ? question.paper_number : '1');
       setQuestionStyle(question.question_style || 'Structured');
       setDifficulty(question.difficulty || 'Medium');
       setTotalMarks(Number(question.marks) || 1);
@@ -624,7 +624,9 @@ export function QuestionEditorModal({
       syllabus_id: syllabusId || (syllabuses[0]?.id ?? ''),
       year: Number(year) || new Date().getFullYear(),
       series: series || 'May/June',
-      paper_number: paperNumber ? Number(paperNumber) : null,
+      paper_number: paperNumber !== undefined && paperNumber !== null && String(paperNumber).trim() !== ''
+        ? (/^\d+$/.test(String(paperNumber).trim()) ? Number(paperNumber) : String(paperNumber).trim())
+        : null,
       question_number: questionNumber || '1',
       parent_question_id: null,
       question_text: questionText,
@@ -1831,15 +1833,15 @@ export function QuestionEditorModal({
 
                 <div className="q-editor-field">
                   <label className="q-editor-label" htmlFor="q-paper-input">
-                    Paper Number:
+                    Paper / Section Name or Number:
                   </label>
                   <input
-                    type="number"
+                    type="text"
                     id="q-paper-input"
                     className="q-editor-input"
                     value={paperNumber ?? ''}
-                    onChange={(e) => setPaperNumber(e.target.value ? parseInt(e.target.value, 10) : null)}
-                    placeholder="e.g. 1, 2, 4, 41, 62"
+                    onChange={(e) => setPaperNumber(e.target.value)}
+                    placeholder="e.g. 1, 2, 4, Try Out TKA 1, Section A"
                   />
                 </div>
               </div>

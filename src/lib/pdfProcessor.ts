@@ -163,7 +163,7 @@ export async function saveExtractedQuestions(
     .insert(records as any)
     .select('id') as { data: { id: string }[] | null; error: any };
 
-  // If columns don't exist in user's Supabase questions table, retry with standard core schema
+  // If columns don't exist in user's Supabase questions table or type mismatch, retry with standard core schema
   if (
     error &&
     error.message &&
@@ -171,18 +171,30 @@ export async function saveExtractedQuestions(
       error.message.includes('resource_ref') ||
       error.message.includes('insert_page_number') ||
       error.message.includes('audio_url') ||
-      error.message.includes('audio_metadata'))
+      error.message.includes('audio_metadata') ||
+      error.message.includes('paper_number') ||
+      error.message.includes('invalid input syntax for type integer'))
   ) {
-    console.warn('Extended columns not found in database, falling back to core schema:', error.message);
-    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, mark_scheme, ...rest }: any) => {
+    console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, mark_scheme, paper_number, ...rest }: any) => {
       const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
       if (audio_url) (ms as any)._audio_url = audio_url;
       if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
       if (diagram_source) (ms as any)._diagram_source = diagram_source;
       if (resource_ref) (ms as any)._resource_ref = resource_ref;
       if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
+
+      let safePaperNum: any = paper_number;
+      if (isNaN(Number(paper_number))) {
+        (ms as any)._custom_paper_number = paper_number;
+        safePaperNum = 1;
+      } else {
+        safePaperNum = Number(paper_number);
+      }
+
       return {
         ...rest,
+        paper_number: safePaperNum,
         mark_scheme: ms,
       };
     });
@@ -232,6 +244,100 @@ function escapeRegex(str: string): string {
 }
 
 /**
+ * Extracts declared question ranges from passage headings/intros.
+ * Examples:
+ * - "questions 1 to 5" -> { start: 1, end: 5 }
+ * - "questions 1–5", "soal no 6-10" -> { start: 6, end: 10 }
+ * - "(Descriptive Text, 5 Questions)" with qNum 1 -> { start: 1, end: 5 }
+ */
+function parseQuestionRange(text: string, currentQNum?: string | number): { start: number; end: number } | null {
+  if (!text) return null;
+
+  // Pattern 1: Explicit question range ("questions 1 to 5", "questions 1–5", "no 6-10", "soal no 1 s.d. 5")
+  const rangeMatch = text.match(/(?:questions?|soal|no\.?)\s*(\d+)\s*(?:to|–|-|s\.?d\.?)\s*(\d+)/i);
+  if (rangeMatch) {
+    return {
+      start: parseInt(rangeMatch[1], 10),
+      end: parseInt(rangeMatch[2], 10),
+    };
+  }
+
+  // Pattern 2: Question count in parentheses ("(Descriptive Text, 5 Questions)", "(4 Questions)")
+  const countMatch = text.match(/(\d+)\s+questions?/i);
+  if (countMatch && currentQNum) {
+    const count = parseInt(countMatch[1], 10);
+    const start = parseInt(String(currentQNum).replace(/\D/g, ''), 10) || 1;
+    return {
+      start,
+      end: start + count - 1,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Robust passage detector that distinguishes:
+ * 1. A question that INCLUDES a full reading passage body (Header + Body Prose + Prompt) -> returns full passage (Header + Body)
+ * 2. A question that only REFERENCES a passage (Header + Prompt, or just Prompt) -> returns null (allowing body propagation)
+ */
+function detectPassageContent(text: string): string | null {
+  if (!text || text.trim().length < 150) return null;
+
+  const trimmed = text.trim();
+
+  // 1. Identify where the final question prompt begins
+  const promptSplitRegex = /(?:\n\s*(?:No\.?\s*)?\d+[\s.:)]+|\n\s*(?:\*{1,2}|#{1,4}\s*)?Question\s*\d*[\s.:*]+|\n\s*\[(?:Matching|Multiple|Table|Fill|Pilihan|Menjodohkan)[^\]]*\]|\n\s*(?:Which|What|How|Why|Where|When|Who|Whom|Whose|Explain|Identify|According to|Based on|In the text|The text|The word|The passage|The author|From the (?:text|passage))\b)/i;
+
+  const match = trimmed.match(promptSplitRegex);
+
+  let passageCandidate = '';
+
+  if (match && match.index !== undefined && match.index > 0) {
+    passageCandidate = trimmed.slice(0, match.index).trim();
+  } else {
+    // If no explicit split keyword, check if split by multi-paragraphs
+    const paragraphs = trimmed.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length >= 2) {
+      const lastP = paragraphs[paragraphs.length - 1];
+      if (lastP.includes('?') || /^(?:Which|What|How|Why|Where|When|Who|Explain|According to|Based on)/i.test(lastP)) {
+        passageCandidate = paragraphs.slice(0, -1).join('\n\n');
+      }
+    }
+  }
+
+  // Also support natural prompt intro formats: "The following text is for questions 1 to 5...", "Read the following text..."
+  if (!passageCandidate) {
+    const promptIntroMatch = trimmed.match(
+      /^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|$))/i
+    );
+    if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 150) {
+      passageCandidate = promptIntroMatch[1].trim();
+    }
+  }
+
+  if (!passageCandidate) {
+    return null;
+  }
+
+  // Check if passageCandidate actually has substantive prose body (excluding header lines)
+  const lines = passageCandidate.split('\n').map((l) => l.trim()).filter(Boolean);
+  const headerOnlyRegex = /^(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*[A-Za-z0-9.:\-_ (≈±)]*$/i;
+
+  const nonHeaderLines = lines.filter(
+    (l) => !headerOnlyRegex.test(l) && !l.startsWith('#') && !/^\([^)]+\)$/.test(l) && l.length > 20
+  );
+  const bodyTextLength = nonHeaderLines.join(' ').length;
+
+  if (bodyTextLength < 100) {
+    // It has no substantive prose body! It's just a header line or title reference!
+    return null;
+  }
+
+  return passageCandidate;
+}
+
+/**
  * Ensures every question that refers to a reading passage contains the full passage text.
  * Detects all passage formats (### Text 1, ### Passage A, "Text 1: ...", "Read the following text...", multi-paragraph stimulus)
  * and automatically attaches the complete passage to subsequent questions in that group.
@@ -241,44 +347,12 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
   let activePassageHeading = '';
   let activePassageHeadingClean = '';
   let activePassageSample = '';
-
-  const detectPassageContent = (text: string): string | null => {
-    if (!text || text.length < 120) return null;
-
-    // Pattern 1: Section heading (with or without ###, markdown bold, etc.) with substantial passage body (> 120 chars)
-    const headerMatch = text.match(
-      /^((?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*[A-Za-z0-9.:\-_ (≈±)]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|\n\s*No\.?\s*\d+|$))/i
-    );
-    if (headerMatch && headerMatch[1] && headerMatch[1].trim().length > 150) {
-      return headerMatch[1].trim();
-    }
-
-    // Pattern 2: Natural exam passage prompt (e.g. "Read the following text...", "The following text is for questions 1 to 5...")
-    const promptIntroMatch = text.match(
-      /^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|$))/i
-    );
-    if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 120) {
-      return promptIntroMatch[1].trim();
-    }
-
-    // Pattern 3: Multi-paragraph stimulus (> 250 chars) where the last paragraph is the actual question prompt
-    const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-    if (paragraphs.length >= 2 && text.length > 250) {
-      const lastP = paragraphs[paragraphs.length - 1];
-      const isQuestionPrompt =
-        lastP.includes('?') ||
-        /^(?:\d+\.|\*\*Question|Question \d+|Which|What|How|Why|Where|When|Who|Explain|The text|According to|Based on|In the text)/i.test(lastP);
-      if (isQuestionPrompt) {
-        return paragraphs.slice(0, -1).join('\n\n');
-      }
-    }
-
-    return null;
-  };
+  let activePassageRange: { start: number; end: number } | null = null;
 
   return questions.map((q) => {
     const text = q.question_text || '';
     const detected = detectPassageContent(text);
+    const qNum = parseInt(String(q.question_number).replace(/\D/g, ''), 10);
 
     if (detected) {
       activePassageBody = detected;
@@ -292,6 +366,9 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
       // Extract core label like "Text 1", "Teks 1", "Passage A", "Text 3", etc.
       const labelMatch = firstLine.match(/^(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*([A-Za-z0-9]+)/i);
       activePassageHeadingClean = labelMatch ? labelMatch[0].trim() : firstLine.replace(/[:(≈±].*$/, '').trim();
+
+      // Detect question range if stated (e.g. questions 1 to 5, 5 Questions)
+      activePassageRange = parseQuestionRange(detected, q.question_number);
 
       // Sample the actual body text (excluding the header line) to accurately detect body presence
       const lines = detected.split('\n').map((l) => l.trim()).filter((l) => l.length > 20 && !l.startsWith('#'));
@@ -307,7 +384,12 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
         (text.length > 300 && text.includes(activePassageBody.slice(0, 80)))
       );
 
-      // 2. Check if current question refers to this active passage (supports ###, **, or plain text reference)
+      // 2. Check if current question is within the declared passage question range
+      const inRange = Boolean(
+        activePassageRange && !isNaN(qNum) && qNum >= activePassageRange.start && qNum <= activePassageRange.end
+      );
+
+      // 3. Check if current question refers to this active passage (supports ###, **, or plain text reference)
       const hasHeadingRef = Boolean(
         (activePassageHeading && text.includes(activePassageHeading)) ||
         (activePassageHeadingClean &&
@@ -315,15 +397,19 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
       );
 
       const hasTextRef =
+        inRange ||
         hasHeadingRef ||
-        /^(?:(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Teks|Reading)\s*\d*|\*\*Question\s*\d+\*\*|Question\s*\d+:|Based on the text|According to the text|In the text|The text primarily|Paragraph (?:one|two|three|four|\d+))/i.test(
-          text.trim()
+        /\b(?:Based on the (?:text|passage)|According to the (?:text|passage)|In the (?:text|passage)|From the (?:text|passage)|The (?:text|passage) primarily|Paragraph (?:one|two|three|four|\d+))\b/i.test(
+          text
         );
 
       if (!alreadyHasPassageBody && hasTextRef) {
         // Strip duplicate heading line from question prompt if present so heading isn't duplicated
-        let cleanPrompt = text
-          .replace(/^(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Teks|Reading)\s*[A-Za-z0-9.:\-_ (≈±)]*\n+/i, '')
+        const cleanPrompt = text
+          .replace(
+            /^(?:(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Teks|Reading|Stimulus|Wacana|Bacaan)\b[^\n]*\n*|\([^\n]+\)\n*)+/i,
+            ''
+          )
           .trim();
 
         return {

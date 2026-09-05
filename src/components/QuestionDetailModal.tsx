@@ -6,6 +6,7 @@ import { ExamMathText } from './ExamMathText';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
 import { enrichQuestionWithGuidance } from '../lib/gemini';
 import { updateQuestionMarkScheme } from '../services/questionBankService';
+import { formatPaperBadge } from '../utils/paperUtils';
 import './QuestionDetailModal.css';
 
 interface QuestionDetailModalProps {
@@ -112,7 +113,7 @@ export function QuestionDetailModal({
           <div className="modal-header-left">
             <h2 className="modal-title">Question {question.question_number}</h2>
             <span className="q-badge q-badge--paper">
-              📄 Paper {question.paper_number || '1'} ({question.series || 'Exam'} {question.year})
+              📄 {formatPaperBadge(question.paper_number, question.series, question.year)}
             </span>
             {question.difficulty && (
               <span className={`q-badge ${difficultyClass(question.difficulty)}`}>

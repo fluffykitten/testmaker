@@ -9,6 +9,7 @@ import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
 import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 import { propagateReadingPassages } from '../lib/pdfProcessor';
+import { formatPaperLabel } from '../utils/paperUtils';
 import './ExtractionReview.css';
 
 interface ExtractionReviewProps {
@@ -560,14 +561,14 @@ export function ExtractionReview({
             isClickable
           />
           <MetaBadge
-            label="Session"
+            label="Paper Type"
             value={`${paperMetadata?.series || 'Series'} ${paperMetadata?.year || new Date().getFullYear()}`}
             onClick={handleOpenMetadataModal}
             isClickable
           />
           <MetaBadge
-            label="Paper"
-            value={`Paper ${paperMetadata?.paper_number || 1}`}
+            label="Paper / Section"
+            value={formatPaperLabel(paperMetadata?.paper_number || '1')}
             onClick={handleOpenMetadataModal}
             isClickable
           />
@@ -1401,12 +1402,17 @@ export function ExtractionReview({
                   </div>
 
                   <div className="review-meta-field">
-                    <label>Session / Term</label>
+                    <label>
+                      Paper Type / Exam Series
+                      <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                        (Question Bank 'Paper Type' filter)
+                      </span>
+                    </label>
                     <input
                       type="text"
                       value={metadataDraft.series}
                       onChange={(e) => setMetadataDraft({ ...metadataDraft, series: e.target.value })}
-                      placeholder="e.g. Midterm, Semester 1, May/June, Final"
+                      placeholder="e.g. Try Out TKA, May/June, Midterm, Semester 1"
                     />
                   </div>
 
@@ -1420,11 +1426,12 @@ export function ExtractionReview({
                   </div>
 
                   <div className="review-meta-field">
-                    <label>Paper / Section Number</label>
+                    <label>Paper / Section Name or Number</label>
                     <input
-                      type="number"
-                      value={metadataDraft.paper_number}
-                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: parseInt(e.target.value) || ('' as any) })}
+                      type="text"
+                      value={metadataDraft.paper_number ?? ''}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: e.target.value })}
+                      placeholder="e.g. 1, 2, Try Out TKA 1, Section A"
                     />
                   </div>
 

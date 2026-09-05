@@ -74,7 +74,7 @@ export interface Question {
   syllabus_id: string;      // FK → syllabuses.id
   year: number;
   series: string | null;    // e.g. "May/June", "Oct/Nov"
-  paper_number: number | null;
+  paper_number: string | number | null;
   question_number: string;  // e.g. "1(a)", "3(b)(ii)"
   question_number_numeric?: number | null; // Generated numeric value for natural sorting
   parent_question_id: string | null; // e.g. "Q1" to group sub-parts
@@ -119,7 +119,7 @@ export interface PaperMetadata {
   subject_code: string;
   year: number;
   series: string;
-  paper_number: number;
+  paper_number: string | number;
   has_insert_booklet?: boolean;
 }
 
@@ -129,7 +129,7 @@ export interface ExtractedQuestion {
   page_number?: number;
   year?: number;
   series?: string;
-  paper_number?: number;
+  paper_number?: string | number;
   question_text: string;
   question_style: QuestionStyle;
   total_marks: number;

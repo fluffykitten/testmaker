@@ -591,7 +591,7 @@ export function revokeLocalDiagramUrls(
  */
 export async function uploadDiagramsToStorage(
   diagramMap: Map<string, DiagramCropItem>,
-  paperInfo: { subject_code: string; year: number; paper_number: number },
+  paperInfo: { subject_code: string; year: number; paper_number: string | number },
   onProgress?: (status: string) => void
 ): Promise<Map<string, string>> {
   const publicUrls = new Map<string, string>();
@@ -601,7 +601,8 @@ export async function uploadDiagramsToStorage(
   for (const [qNum, item] of diagramMap.entries()) {
     current++;
     onProgress?.(`Uploading diagram ${current}/${total} to permanent storage…`);
-    const safeName = `${paperInfo.subject_code}_${paperInfo.year}_p${paperInfo.paper_number}_${qNum.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
+    const safePaperStr = String(paperInfo.paper_number).replace(/[^a-zA-Z0-9]/g, '_');
+    const safeName = `${paperInfo.subject_code}_${paperInfo.year}_p${safePaperStr}_${qNum.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
     const storageUrl = await uploadToStorage(item.blob, safeName);
     if (storageUrl) {
       publicUrls.set(qNum, storageUrl);
@@ -838,7 +839,7 @@ export async function cropDiagramsLocally(
 export async function cropAndUploadDiagrams(
   pdfFile: File,
   questions: QuestionWithDiagram[],
-  paperInfo: { subject_code: string; year: number; paper_number: number },
+  paperInfo: { subject_code: string; year: number; paper_number: string | number },
   onProgress?: (status: string) => void
 ): Promise<Map<string, string>> {
   const localMap = await cropDiagramsLocally(pdfFile, questions, onProgress);
@@ -928,10 +929,11 @@ export async function cropExactCanvasRegion(
  */
 export async function uploadSingleDiagramBlob(
   blob: Blob,
-  pathInfo: { subject_code?: string; year?: number; paper_number?: number; question_number: string }
+  pathInfo: { subject_code?: string; year?: number; paper_number?: string | number; question_number: string }
 ): Promise<string | null> {
   const { subject_code = 'GEN', year = new Date().getFullYear(), paper_number = 1, question_number } = pathInfo;
-  const sanitizedQ = question_number.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const fileName = `${subject_code}_${year}_p${paper_number}_q${sanitizedQ}_${Date.now()}`;
+  const sanitizedQ = question_number.replace(/[^a-zA-Z0-9]/g, '_');
+  const safePaperStr = String(paper_number).replace(/[^a-zA-Z0-9]/g, '_');
+  const fileName = `${subject_code}_${year}_p${safePaperStr}_q${sanitizedQ}_${Date.now()}`;
   return uploadToStorage(blob, fileName);
 }

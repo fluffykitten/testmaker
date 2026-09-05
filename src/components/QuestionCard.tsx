@@ -4,6 +4,7 @@ import { isQuestionBookmarked, toggleBookmarkQuestion } from '../services/questi
 import { getQuestionTags, addQuestionTag, removeQuestionTag } from '../services/questionTagService';
 import { ExamMathText } from './ExamMathText';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
+import { formatPaperBadge } from '../utils/paperUtils';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -136,7 +137,7 @@ function QuestionCardComponent({
           <span className="q-number">Q{question.question_number}</span>
 
           <span className="q-badge q-badge--paper">
-            📄 Paper {question.paper_number || '1'} ({question.series || 'Exam'} {question.year})
+            📄 {formatPaperBadge(question.paper_number, question.series, question.year)}
           </span>
 
           {question.difficulty && (
