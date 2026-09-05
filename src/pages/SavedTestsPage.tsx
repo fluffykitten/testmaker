@@ -9,6 +9,7 @@ import {
 } from '../services/testBuilderService';
 import { ExportModal } from '../components/ExportModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import type { Question, CustomTest } from '../types/database';
 import './SavedTestsPage.css';
 
@@ -42,6 +43,7 @@ export function SavedTestsPage({
   const [isLoading, setIsLoading] = useState(() => tests.length === 0);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; testId: string; title: string }>({ isOpen: false, testId: '', title: '' });
   const [loadingTestId, setLoadingTestId] = useState<string | null>(null);
 
   // 1st Level: Selected Subject (defaults to 'all' or first available subject)
@@ -158,24 +160,26 @@ export function SavedTestsPage({
     }
   };
 
-  const handleDeleteTest = async (testId: string) => {
-    if (!confirm('Are you sure you want to delete this custom exam?')) return;
+  const handleDeleteTest = (testId: string, title: string) => {
+    setDeleteModalState({ isOpen: true, testId, title });
+  };
+
+  const handleConfirmDelete = async () => {
+    const { testId } = deleteModalState;
+    if (!testId) return;
 
     setDeletingId(testId);
-    // Optimistically remove from state immediately for zero-lag UI
-    setTests((prev) => prev.filter((t) => t.id !== testId));
 
     try {
       const ok = await deleteCustomTest(testId);
       if (!ok) {
         alert('Failed to delete custom test from database.');
-        loadTests();
       }
     } catch (err: any) {
       alert(`Failed to delete custom test: ${err?.message || 'Unknown error'}`);
-      loadTests();
     } finally {
       setDeletingId(null);
+      setDeleteModalState({ isOpen: false, testId: '', title: '' });
     }
   };
 
@@ -553,7 +557,7 @@ export function SavedTestsPage({
                             <button
                               type="button"
                               className="saved-card-btn saved-card-btn--delete"
-                              onClick={() => handleDeleteTest(test.id)}
+                              onClick={() => handleDeleteTest(test.id, test.title || 'Untitled Assessment')}
                               disabled={deletingId === test.id}
                               title="Delete saved test"
                             >
@@ -594,6 +598,16 @@ export function SavedTestsPage({
           }}
         />
       )}
+
+      {/* Confirm Delete Modal */}
+      <ConfirmDeleteModal
+        isOpen={deleteModalState.isOpen}
+        title="Delete Custom Exam"
+        message={`Are you sure you want to permanently delete "${deleteModalState.title}"?`}
+        isDeleting={!!deletingId}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteModalState({ isOpen: false, testId: '', title: '' })}
+      />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { resolveMcqCorrectOptionIndex } from './deterministicGradingService';
+import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 
 export function exportOfflineInteractiveHtmlQuiz(
   headerConfig: ExamHeaderConfig,
@@ -20,12 +21,12 @@ export function exportOfflineInteractiveHtmlQuiz(
     questions.map((q, idx) => ({
       id: q.id || `q_${idx + 1}`,
       number: idx + 1,
-      text: ensureInlineMathDelimiters(q.question_text || ''),
+      text: ensureInlineMathDelimiters(stripDuplicateOptionsFromStem(q.question_text || '', q.options)),
       options: (q.options || []).map((opt) => ensureInlineMathDelimiters(opt)),
       correctOptionIndex: q.options && q.options.length > 0 ? resolveMcqCorrectOptionIndex(q) : -1,
       subQuestions: (q.sub_questions || []).map((sq) => ({
         ...sq,
-        question_text: ensureInlineMathDelimiters(sq.question_text || ''),
+        question_text: ensureInlineMathDelimiters(stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options)),
       })),
       marks: q.marks || 1,
       topic: q.topic || 'General',

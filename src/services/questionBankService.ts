@@ -754,6 +754,7 @@ export async function deleteQuestion(id: string): Promise<boolean> {
     return false;
   }
 
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return true;
 }
 
@@ -776,6 +777,7 @@ export async function deleteQuestions(ids: string[]): Promise<{ success: boolean
     return { success: false, deletedCount: 0 };
   }
 
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return { success: true, deletedCount: ids.length };
 }
 
@@ -803,6 +805,7 @@ export async function updateQuestionMarkScheme(
   }
 
   clearQuestionBankCache();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return true;
 }
 
@@ -889,6 +892,8 @@ export async function updateQuestion(
     return null;
   }
 
+  clearQuestionBankCache();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return normalizeQuestionRecord(data);
 }
 
@@ -1007,5 +1012,6 @@ export async function createQuestion(
   }
 
   clearQuestionBankCache();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return normalizeQuestionRecord(data);
 }

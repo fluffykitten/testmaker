@@ -261,13 +261,13 @@ export function cleanMcqOptionContent(text: string, oIdx?: number): string {
   if (!text) return '';
   let clean = text.trim();
   // Strip duplicate prefix like "Option A: A " -> "Option A: "
-  clean = clean.replace(/^Option\s+([A-D]):\s+[A-D][\.\)\s:-]+\s*/i, 'Option $1: ');
+  clean = clean.replace(/^Option\s+([A-F]):\s+[A-F][\.\)\s:-]+\s*/i, 'Option $1: ');
   if (oIdx !== undefined && oIdx >= 0 && oIdx < 26) {
     const letter = String.fromCharCode(65 + oIdx);
     clean = clean.replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '');
   } else {
     // Strip standalone leading "A ", "A. ", "A) ", "(A) ", "A: "
-    clean = clean.replace(/^[([]?[A-Da-d][)\]\.:\s-]+\s*/, '');
+    clean = clean.replace(/^[([]?[A-Fa-f][)\]\.:\s-]+\s*/, '');
   }
   return clean.trim();
 }
@@ -291,7 +291,7 @@ export function formatCandidateAnswer(
   let str = String(ans).trim();
 
   // If already formatted like "Option A: A ...", clean duplicate option letter
-  str = str.replace(/^Option\s+([A-D]):\s+[A-D][\.\)\s:-]+\s*/i, 'Option $1: ');
+  str = str.replace(/^Option\s+([A-F]):\s+[A-F][\.\)\s:-]+\s*/i, 'Option $1: ');
 
   // Check if string is already formatted like "Option A" or "Option A: [text]"
   const optMatch = str.match(/^Option\s+([A-Z])(?::\s*(.*))?$/i);
@@ -304,7 +304,7 @@ export function formatCandidateAnswer(
 
   const num = Number(str);
   const isNumericIndex = !isNaN(num) && Number.isInteger(num) && num >= 0 && num <= 25;
-  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0) || (isNumericIndex && num <= 3);
+  const isMcq = gradingMethod === 'mcq' || (options && options.length > 0) || (isNumericIndex && num <= 5);
 
   if (isMcq && isNumericIndex) {
     const letter = String.fromCharCode(65 + num);
@@ -318,8 +318,8 @@ export function formatCandidateAnswer(
     return `Option ${letter}`;
   }
 
-  // If ans is a single letter like "A", "B", "C", "D"
-  if (str.length === 1 && str.toUpperCase() >= 'A' && str.toUpperCase() <= 'Z' && (isMcq || str.toUpperCase() <= 'D')) {
+  // If ans is a single letter like "A", "B", "C", "D", "E"
+  if (str.length === 1 && str.toUpperCase() >= 'A' && str.toUpperCase() <= 'Z' && (isMcq || str.toUpperCase() <= 'F')) {
     const letter = str.toUpperCase();
     if (compact) {
       return `Option ${letter}`;

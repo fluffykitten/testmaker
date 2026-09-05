@@ -326,6 +326,7 @@ export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQ
     localStorage.setItem(STORAGE_KEY, JSON.stringify(finalMerged));
     await syncPublishedQuizzesToCloud(finalMerged);
 
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('quizzes_updated'));
     return finalMerged;
   } catch (err) {
     console.error('Failed to save published quiz:', err);

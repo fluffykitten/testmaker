@@ -7,6 +7,7 @@ import { QuestionEditorModal } from './QuestionEditorModal';
 import { DiagramCropModal } from './DiagramCropModal';
 import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
+import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 import './ExtractionReview.css';
 
 interface ExtractionReviewProps {
@@ -39,6 +40,17 @@ interface CropTarget {
  * 2. Fast-Edit Teacher Workspace (inline quick-edit, 1-click split/merge, selective save)
  * 3. Quality Assurance (duplicate detection banner, editable paper details & dynamic mark tally verification)
  */
+function cleanExtractedQuestions(qs: ExtractedQuestion[]): ExtractedQuestion[] {
+  return (qs || []).map((q) => ({
+    ...q,
+    question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+    sub_questions: (q.sub_questions || []).map((sq) => ({
+      ...sq,
+      question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+    })),
+  }));
+}
+
 export function ExtractionReview({
   result,
   diagramUrls,
@@ -49,7 +61,7 @@ export function ExtractionReview({
   onCancel,
   isSaving,
 }: ExtractionReviewProps) {
-  const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => result.questions);
+  const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => cleanExtractedQuestions(result.questions));
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
     () => new Set(result.questions.map((_, i) => i))
   );
@@ -88,7 +100,7 @@ export function ExtractionReview({
   // Sync questions & metadata if external result changes
   useEffect(() => {
     if (result?.questions) {
-      setQuestions(result.questions);
+      setQuestions(cleanExtractedQuestions(result.questions));
       setSelectedIndices(new Set(result.questions.map((_, i) => i)));
     }
     if (result?.paper_metadata) {
@@ -404,7 +416,7 @@ export function ExtractionReview({
 
   // ─── Save Confirmation (Filters Selected Questions) ────────────────────────
   const handleSaveClick = () => {
-    const questionsToSave = questions.filter((_, i) => selectedIndices.has(i));
+    const questionsToSave = cleanExtractedQuestions(questions.filter((_, i) => selectedIndices.has(i)));
     onConfirmSave({
       ...result,
       paper_metadata: paperMetadata,
@@ -1401,7 +1413,7 @@ export function ExtractionReview({
                     <input
                       type="number"
                       value={metadataDraft.year}
-                      onChange={(e) => setMetadataDraft({ ...metadataDraft, year: parseInt(e.target.value) || new Date().getFullYear() })}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, year: parseInt(e.target.value) || ('' as any) })}
                     />
                   </div>
 
@@ -1410,7 +1422,7 @@ export function ExtractionReview({
                     <input
                       type="number"
                       value={metadataDraft.paper_number}
-                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: parseInt(e.target.value) || 1 })}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: parseInt(e.target.value) || ('' as any) })}
                     />
                   </div>
 

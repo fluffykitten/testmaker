@@ -187,6 +187,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
     if (!error && data) {
       const saved = { ...(data as CustomTest), header_config: payload.headerConfig || (data as any).header_config };
       saveLocalTest(saved);
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
       return saved;
     }
 
@@ -207,6 +208,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
       if (!retryError && retryData) {
         const saved = { ...(retryData as CustomTest), header_config: payload.headerConfig };
         saveLocalTest(saved);
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
         return saved;
       }
     }
@@ -216,6 +218,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
 
   // Fallback to local storage
   saveLocalTest(localRecord);
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
   return localRecord;
 }
 

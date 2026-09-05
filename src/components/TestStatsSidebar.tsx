@@ -80,7 +80,7 @@ export function TestStatsSidebar({
               max="200"
               className="test-target-input"
               value={targetMarks}
-              onChange={(e) => setTargetMarks(parseInt(e.target.value) || 50)}
+              onChange={(e) => setTargetMarks(parseInt(e.target.value) || ('' as any))}
             />
             <span className="test-target-unit">marks</span>
           </div>

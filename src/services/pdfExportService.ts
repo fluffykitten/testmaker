@@ -12,6 +12,7 @@ import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
+import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 
 const KATEX_OPTIONS = {
   throwOnError: false,
@@ -697,7 +698,7 @@ export function openStudentPaperPrintWindow(
     ${questions
       .map((q, idx) => {
         const qNum = idx + 1;
-        const stem = convertMarkdownTablesToHtml(q.question_text);
+        const stem = convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(q.question_text || '', q.options));
 
         let content = `
           <div class="q-block">
@@ -737,7 +738,7 @@ export function openStudentPaperPrintWindow(
               <div class="sub-block">
                 <div class="sub-row">
                   <div class="sub-id">${sub.sub_id}</div>
-                  <div class="sub-text">${convertMarkdownTablesToHtml(sub.question_text)}</div>
+                  <div class="sub-text">${convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(sub.question_text || '', (sub as any).options || q.options))}</div>
                   <div class="marks">[${sub.marks}]</div>
                 </div>
             `;
@@ -1360,7 +1361,7 @@ export function openTeacherMarkSchemePrintWindow(
   ${questions
     .map((q, idx) => {
       const qNum = idx + 1;
-      const stem = convertMarkdownTablesToHtml(q.question_text || '');
+      const stem = convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(q.question_text || '', q.options));
 
       let subRowsHtml = '';
       if (q.sub_questions && q.sub_questions.length > 0) {

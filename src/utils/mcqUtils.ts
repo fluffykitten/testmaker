@@ -21,7 +21,7 @@ export function parseMcqOption(opt: any, defaultIdx: number): { letter: string; 
   // - "[A] Option text"
   // - "(A) Option text"
   // - "A - Option text"
-  const match = str.match(/^(\*{0,2}|\[|\()?([A-D])(\*{0,2}|\]|\))?[:.)\s\-]+([\s\S]*)$/i);
+  const match = str.match(/^(\*{0,2}|\[|\()?([A-F])(\*{0,2}|\]|\))?[:.)\s\-]+([\s\S]*)$/i);
   if (match) {
     const letter = match[2].toUpperCase();
     let text = match[4].trim();

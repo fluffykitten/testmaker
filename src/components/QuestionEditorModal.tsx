@@ -1022,7 +1022,7 @@ export function QuestionEditorModal({
                                 max={20}
                                 className="q-editor-marks-input"
                                 value={sub.marks}
-                                onChange={(e) => handleUpdateSubQuestion(si, { marks: parseInt(e.target.value, 10) || 1 })}
+                                onChange={(e) => handleUpdateSubQuestion(si, { marks: parseInt(e.target.value, 10) || ('' as any) })}
                               />
                             </div>
                             <button
@@ -1777,7 +1777,7 @@ export function QuestionEditorModal({
                     className="q-editor-input"
                     value={subQuestions.length > 0 && questionStyle === 'Structured' ? subQuestionsTotalMarks : totalMarks}
                     disabled={subQuestions.length > 0 && questionStyle === 'Structured'}
-                    onChange={(e) => setTotalMarks(parseInt(e.target.value, 10) || 1)}
+                    onChange={(e) => setTotalMarks(parseInt(e.target.value, 10) || ('' as any))}
                   />
                   {subQuestions.length > 0 && questionStyle === 'Structured' && (
                     <span className="q-editor-hint">
@@ -1811,7 +1811,7 @@ export function QuestionEditorModal({
                     max={2030}
                     className="q-editor-input"
                     value={year}
-                    onChange={(e) => setYear(parseInt(e.target.value, 10) || 2024)}
+                    onChange={(e) => setYear(parseInt(e.target.value, 10) || ('' as any))}
                   />
                 </div>
 

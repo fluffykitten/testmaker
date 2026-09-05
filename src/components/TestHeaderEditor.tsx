@@ -154,7 +154,7 @@ export function TestHeaderEditor({
                 max="300"
                 className="header-input"
                 value={config.durationMinutes}
-                onChange={(e) => handleFieldChange('durationMinutes', parseInt(e.target.value) || 45)}
+                onChange={(e) => handleFieldChange('durationMinutes', parseInt(e.target.value) || 0)}
               />
             </div>
           </div>

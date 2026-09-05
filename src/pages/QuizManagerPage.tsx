@@ -22,6 +22,7 @@ import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
+import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { getSavedSettings } from '../lib/settings';
 import './QuizManagerPage.css';
 
@@ -65,6 +66,8 @@ export function QuizManagerPage({
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
   const [isGroupedBySubject, setIsGroupedBySubject] = useState<boolean>(false);
   const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
+  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; quizId: string; title: string }>({ isOpen: false, quizId: '', title: '' });
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Modal states
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -347,12 +350,20 @@ export function QuizManagerPage({
     setTimeout(() => setSaveSuccessMsg(null), 4000);
   };
 
-  const handleDeleteQuiz = async (id: string) => {
-    if (confirm('Are you sure you want to unpublish and delete this interactive quiz?')) {
-      // Optimistically remove from state immediately
-      setQuizzes((prev) => prev.filter((q) => q.id !== id && q.testId !== id));
-      const remaining = await deletePublishedQuiz(id);
-      setQuizzes(remaining);
+  const handleDeleteQuiz = (id: string, title: string) => {
+    setDeleteModalState({ isOpen: true, quizId: id, title });
+  };
+
+  const handleConfirmDelete = async () => {
+    const { quizId } = deleteModalState;
+    if (!quizId) return;
+
+    setIsDeleting(true);
+    try {
+      await deletePublishedQuiz(quizId);
+    } finally {
+      setIsDeleting(false);
+      setDeleteModalState({ isOpen: false, quizId: '', title: '' });
     }
   };
 
@@ -625,7 +636,7 @@ export function QuizManagerPage({
             <button
               type="button"
               className="qm-btn qm-btn-danger-text"
-              onClick={() => handleDeleteQuiz(quiz.id)}
+              onClick={() => handleDeleteQuiz(quiz.id, quiz.title || 'Untitled Quiz')}
               title="Delete / Unpublish quiz"
             >
               🗑️
@@ -1139,7 +1150,7 @@ export function QuizManagerPage({
                         onChange={(e) =>
                           setActiveQuizDraft({
                             ...activeQuizDraft,
-                            durationMinutes: Math.max(5, parseInt(e.target.value, 10) || 45),
+                            durationMinutes: parseInt(e.target.value, 10) || 0,
                           })
                         }
                         min={5}
@@ -1505,6 +1516,16 @@ export function QuizManagerPage({
           onClose={() => setSelectedQuizForProctor(null)}
         />
       )}
+
+      {/* Confirm Delete Modal */}
+      <ConfirmDeleteModal
+        isOpen={deleteModalState.isOpen}
+        title="Delete Interactive Quiz"
+        message={`Are you sure you want to unpublish and permanently delete "${deleteModalState.title}"?`}
+        isDeleting={isDeleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteModalState({ isOpen: false, quizId: '', title: '' })}
+      />
     </div>
   );
 }

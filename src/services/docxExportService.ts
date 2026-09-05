@@ -31,6 +31,7 @@ import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConst
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
+import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 
 export interface DocxExportOptions extends Partial<ExportLayoutOptions> {
   includeMarkSchemeInStudentPaper?: boolean;
@@ -932,7 +933,8 @@ export async function exportStudentPaperDocx(
     const qNum = idx + 1;
 
     // Stem with markdown table rendering and hanging indent
-    const stemElements = convertTextAndTablesToDocxElements(q.question_text || '', `${qNum}.  `, 22, fontName);
+    const cleanStem = stripDuplicateOptionsFromStem(q.question_text || '', q.options);
+    const stemElements = convertTextAndTablesToDocxElements(cleanStem, `${qNum}.  `, 22, fontName);
     docParagraphs.push(...stemElements);
 
     // Embed Main Question Diagram if present (only if NOT an insert diagram when booklet is attached)
@@ -1000,7 +1002,7 @@ export async function exportStudentPaperDocx(
             tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
             children: [
               new TextRun({ text: `${sq.sub_id}  `, bold: true, size: 20, font: fontName }),
-              ...parseFormattedTextToDocxRuns(sq.question_text || '', { size: 20, font: fontName }),
+              ...parseFormattedTextToDocxRuns(stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options), { size: 20, font: fontName }),
               new TextRun({ text: `\t[${sq.marks || 1}]`, bold: true, size: 20, color: '4b5563', font: fontName }),
             ],
             spacing: { before: 80, after: 60, line: 260 },
@@ -1571,7 +1573,8 @@ export async function exportTeacherMarkSchemeDocx(
     );
 
     // Stem Box (So teacher sees question context)
-    const stemElements = convertTextAndTablesToDocxElements(q.question_text || '', '', 19, 'Arial');
+    const cleanStem = stripDuplicateOptionsFromStem(q.question_text || '', q.options);
+    const stemElements = convertTextAndTablesToDocxElements(cleanStem, '', 19, 'Arial');
     docParagraphs.push(...stemElements);
 
     // Embed Question Diagram if present

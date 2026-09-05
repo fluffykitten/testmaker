@@ -308,6 +308,7 @@ CRITICAL FORMATTING RULES:
      * Set "has_diagram": true and diagram bounding_box directly on "(b)(i)" if that section introduces a graph or figure!
    - When (a) is a standalone question with marks (e.g. "(a) State the formula... [1]"):
      * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" and marks! NEVER put it in parent question_text.
+12. MULTIPLE CHOICE OPTIONS: All choices must be extracted exclusively into the "options" array. NEVER duplicate or write the choices (A, B, C, D) inside "question_text".
 `;
 }
 
@@ -791,6 +792,7 @@ CRITICAL FORMATTING RULES:
    - Either place the stimulus text in the parent question stem with questions as sub_questions, OR attach the relevant excerpt/context to each linked question's 'question_text' so each question is fully comprehensible.
 8. ANSWER KEYS & SOLUTIONS: If an answer key or solutions table appears on the final page (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
 9. CURRENCY & PRICES: When transcribing prices or costs (e.g. $50, $12.50), write them as regular text without LaTeX math delimiters.
+10. MULTIPLE CHOICE OPTIONS: When a question has multiple choice options, extract them exclusively into the "options" array. NEVER duplicate or include the choices (A, B, C, D, E) inside "question_text".
 `;
 }
 
@@ -843,7 +845,7 @@ Analyze the attached exam paper PDF page(s) and any mark scheme / answer key con
     "subject": "English",
     "subject_code": "ENG",
     "year": 2026,
-    "series": "Tray Out TKA",
+    "series": "Exam",
     "paper_number": 1,
     "has_insert_booklet": false
   }`
@@ -869,7 +871,7 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - You MUST extract and transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom.
    - When a reading passage / stimulus text applies to a group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
      * On the FIRST question of that passage group (e.g. Question 1): provide the complete reading text heading and ALL body paragraphs verbatim in "question_text", followed by the Question 1 prompt.
-     * On subsequent questions in that group (e.g. Questions 2, 3, 4): include the passage header reference (e.g. "### Text 1: Exploring Komodo National Park\\n\\n**Question 2:** The text primarily discusses...") and the specific question stem/options. Our system automatically propagates the complete body paragraphs to all linked questions in the group!
+     * On subsequent questions in that group (e.g. Questions 2, 3, 4): include the passage header reference (e.g. "### Text 1: Exploring Komodo National Park\\n\\n**Question 2:** The text primarily discusses...") and the specific question stem (DO NOT include the choices in "question_text"!). Our system automatically propagates the complete body paragraphs to all linked questions in the group!
      * NEVER omit, shorten, or summarize any paragraph from the reading passage.
    - Format "question_text" cleanly with Markdown:
      "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!"
@@ -883,6 +885,7 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - Set "question_style": "Multiple Choice".
    - Extract ALL 5 options in "options": ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."].
    - Set "total_marks": 1.
+   - CRITICAL (ZERO DUPLICATION): NEVER write or duplicate the choices (A., B., C., D., E.) inside "question_text"! The "question_text" field must contain ONLY the question stem / prompt (e.g. "The word \\"enduring\\" in the last paragraph is closest in meaning to..."). All choices MUST reside exclusively in the "options" array. Placing choices in both fields causes ugly duplicates in the user interface!
 
 4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "[Multiple Select]" / "There is more than one answer"):
    - When a question header specifies "[Multiple Select]" or "(There is more than one correct answer. Tick (✓) on every correct answer!)" or is classified as "Pilihan Ganda Kompleks" in the answer key:
@@ -892,6 +895,7 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
      - Set "acceptable_answers": ["B, C"] (or ["B, C, E"], ["A, C, D"], etc.).
      - Set "marking_points": ["Correct options: B, C [2]"].
    - Assign appropriate total_marks (e.g. 2 or 3 marks).
+   - CRITICAL (ZERO DUPLICATION): NEVER duplicate choices inside "question_text". All choices must be extracted exclusively into the "options" array.
 
 5. MATCHING & CATEGORY TABLES ("Menjodohkan" / Matrix / Categorization):
    - When a question presents a classification table (e.g. "[Matching/Table]" or "Menjodohkan"):
@@ -911,6 +915,11 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - ABSOLUTELY NEVER translate English reading texts or questions into Indonesian.
    - ABSOLUTELY NEVER translate Indonesian instructions, headers, or "Pembahasan" into English.
    - Preserve the exact verbatim text and original language of all passages, questions, options, table rows, and explanations.
+
+8. STRICT PROHIBITION ON DUPLICATING OPTIONS IN QUESTION TEXT:
+   - ABSOLUTELY NEVER copy, duplicate, or include the multiple choice options (A, B, C, D, E or a, b, c, d, e) inside "question_text".
+   - The "question_text" field must contain ONLY the stimulus reading text and the question stem / prompt.
+   - All options MUST be extracted exclusively into the "options" array.
 
 ${fillInRule}
 
@@ -1320,6 +1329,82 @@ export function cleanExtAndLatexArtifacts(text: string): string {
     .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
     // Remove "ext{...}" (e.g. ext{CH}_4 -> CH_4 or ext{CaCO_3} -> CaCO_3)
     .replace(/\bext\{([^{}]+)\}/g, '$1');
+}
+
+/**
+ * Strips duplicate multiple-choice option listings from the question stem if options
+ * have already been extracted into the options array.
+ * 
+ * Handles:
+ * - Multiline options: 'A. Fragile\nB. Temporary\nC. Lasting...' or '(A) ...' or 'a. ...' or 'Option A ...'
+ * - Options separated by blank lines
+ * - Bulleted options matching the options array content
+ * - Inline options trailing at the end of the question stem
+ * 
+ * Preserves question context, attached reading passages, and legitimate text
+ * mentioning 'A and B' or variables.
+ */
+export function stripDuplicateOptionsFromStem(stem: string, options?: string[] | null): string {
+  if (!stem || typeof stem !== 'string' || !options || !Array.isArray(options) || options.length < 2) {
+    return stem || '';
+  }
+
+  const lines = stem.split('\n');
+
+  // 1. Multiline option block check: find candidate line where Option A starts
+  const optAIdx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s])/.test(l));
+
+  if (optAIdx >= 0) {
+    const trailingLines = lines.slice(optAIdx).filter((l) => l.trim().length > 0);
+    // Check if subsequent non-empty lines contain B and C
+    const hasB = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Bb][\.\)\:\-\s]|Option\s+[Bb][\:\.\s])/.test(l));
+    const hasC = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Cc][\.\)\:\-\s]|Option\s+[Cc][\:\.\s])/.test(l));
+
+    if (hasB && (options.length < 3 || hasC)) {
+      return lines.slice(0, optAIdx).join('\n').trim();
+    }
+  }
+
+  // 2. Multiline numeric option block check (e.g. 1. ... 2. ... 3. ...)
+  const opt1Idx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[1][\.\)\:\-\s]|Option\s+[1][\:\.\s])/.test(l));
+  if (opt1Idx >= 0) {
+    const trailingLines = lines.slice(opt1Idx).filter((l) => l.trim().length > 0);
+    const has2 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[2][\.\)\:\-\s]|Option\s+[2][\:\.\s])/.test(l));
+    const has3 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[3][\.\)\:\-\s]|Option\s+[3][\:\.\s])/.test(l));
+    if (has2 && (options.length < 3 || has3)) {
+      return lines.slice(0, opt1Idx).join('\n').trim();
+    }
+  }
+
+  // 3. Verbatim option text matching (for bulleted or unlettered options)
+  const cleanOpt0 = options[0]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
+  if (cleanOpt0 && cleanOpt0.length > 2) {
+    const opt0LineIdx = lines.findIndex((l) => {
+      const cleanL = l.replace(/^[\s-*•\d.)\]:]+/, '').trim();
+      return cleanL.toLowerCase() === cleanOpt0.toLowerCase() || (cleanOpt0.length > 10 && cleanL.toLowerCase().startsWith(cleanOpt0.toLowerCase().slice(0, 20)));
+    });
+
+    if (opt0LineIdx > 0) {
+      const cleanOpt1 = options[1]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
+      const trailing = lines.slice(opt0LineIdx);
+      const hasOpt1 = trailing.some((l) => {
+        const cleanL = l.replace(/^[\s-*•\d.)\]:]+/, '').trim();
+        return Boolean(cleanOpt1 && (cleanL.toLowerCase() === cleanOpt1.toLowerCase() || (cleanOpt1.length > 10 && cleanL.toLowerCase().startsWith(cleanOpt1.toLowerCase().slice(0, 20)))));
+      });
+
+      if (hasOpt1) {
+        return lines.slice(0, opt0LineIdx).join('\n').trim();
+      }
+    }
+  }
+
+  // 4. Inline option pattern check at end of string (e.g. "What is x? A. 1 B. 2 C. 3 D. 4")
+  const inlinePattern = /\s+(?:\(?[Aa][\.\)\:\-]\s+[\s\S]+?)(?:\(?[Bb][\.\)\:\-]\s+[\s\S]+?)(?:\(?[Cc][\.\)\:\-]\s+[\s\S]+?)(?:(?:\(?[Dd][\.\)\:\-]\s+[\s\S]+?))?(?:(?:\(?[Ee][\.\)\:\-]\s+[\s\S]+?))?$/;
+  if (inlinePattern.test(stem)) {
+    return stem.replace(inlinePattern, '').trim();
+  }
+
+  return stem.trim();
 }
 
 export function parseRobustJson<T = any>(rawText: string): T {
@@ -1742,23 +1827,37 @@ export async function extractQuestionsFromPdf(
     throw new Error('Response missing required paper_metadata or questions array.');
   }
 
-  // Normalize all questions to clean ext artifacts and ensure bare LaTeX formulas outside $ are wrapped in $...$
-  parsed.questions = parsed.questions.map((q) => ({
-    ...q,
-    diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : q.has_diagram ? 'qp' : null),
-    question_text: ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(q.question_text || '')),
-    options: Array.isArray(q.options)
+  // Normalize all questions to clean ext artifacts, strip duplicate choices from stem, and ensure bare LaTeX formulas outside $ are wrapped in $...$
+  parsed.questions = parsed.questions.map((q) => {
+    const rawOptions = Array.isArray(q.options)
       ? q.options.map((opt) => (typeof opt === 'string' ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt)) : opt))
-      : q.options,
-    sub_questions: Array.isArray(q.sub_questions)
-      ? q.sub_questions.map((sq) => ({
-          ...sq,
-          diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
-          question_text: ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
-          mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
-        }))
-      : q.sub_questions,
-  }));
+      : q.options;
+    const cleanedText = stripDuplicateOptionsFromStem(
+      ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(q.question_text || '')),
+      rawOptions
+    );
+
+    return {
+      ...q,
+      diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : q.has_diagram ? 'qp' : null),
+      question_text: cleanedText,
+      options: rawOptions,
+      sub_questions: Array.isArray(q.sub_questions)
+        ? q.sub_questions.map((sq) => {
+            const sqOptions = Array.isArray((sq as any).options) ? (sq as any).options : null;
+            return {
+              ...sq,
+              diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
+              question_text: stripDuplicateOptionsFromStem(
+                ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
+                sqOptions || rawOptions
+              ),
+              mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
+            };
+          })
+        : q.sub_questions,
+    };
+  });
 
   // Ensure Cambridge Paper 4 section setups and standalone sub-parts are properly preserved
   parsed.questions = normalizePaper4SubQuestions(parsed.questions);

@@ -25,6 +25,7 @@ import {
   exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { ExamMathText } from '../components/ExamMathText';
+import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
@@ -204,17 +205,7 @@ function renderStructuredModelAnswer(markScheme: any) {
 
 // ─── Module-Level Pure Text Parsing Helpers (Zero TDZ) ─────────────────────
 function cleanQuestionStem(stem: string, options?: string[] | null): string {
-  if (!stem) return '';
-  if (!options || options.length === 0) return stem;
-  const lines = stem.split('\n');
-  const optStartIdx = lines.findIndex((l) => /^\s*A[.)\s:-]/.test(l));
-  if (optStartIdx > 0 && lines.length - optStartIdx <= 6) {
-    const remaining = lines.slice(optStartIdx).join('\n');
-    if (/\bB[.)\s:-]/.test(remaining) && /\bC[.)\s:-]/.test(remaining)) {
-      return lines.slice(0, optStartIdx).join('\n').trim();
-    }
-  }
-  return stem || '';
+  return stripDuplicateOptionsFromStem(stem, options);
 }
 
 function cleanOptionText(text: string, oIdx: number): string {

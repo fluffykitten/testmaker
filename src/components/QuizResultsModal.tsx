@@ -29,6 +29,7 @@ import {
 } from '../services/quizReportPdfService';
 import { supabase } from '../lib/supabase';
 import { ExamMathText } from './ExamMathText';
+import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import './QuizResultsModal.css';
 
 interface QuizResultsModalProps {
@@ -72,6 +73,15 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     total: 0,
     text: '',
   });
+
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    type: 'single' | 'bulk';
+    submissionId?: string;
+    title: string;
+    message: string;
+  }>({ isOpen: false, type: 'single', title: '', message: '' });
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const refreshSubmissions = useCallback(async () => {
     try {
@@ -596,20 +606,39 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     });
   }, [submissions, searchFilter, statusFilter, selectedClass]);
 
-  const handleDelete = async (id: string, e?: React.MouseEvent) => {
+  const handleDelete = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (confirm('Delete this submission record?')) {
-      await deleteSubmission(id);
-      if (selectedSubmission?.id === id) setSelectedSubmission(null);
-      await refreshSubmissions();
-    }
+    setDeleteModalState({
+      isOpen: true,
+      type: 'single',
+      submissionId: id,
+      title: 'Delete Submission',
+      message: 'Are you sure you want to delete this submission record?',
+    });
   };
 
-  const handleClearAll = async () => {
-    if (confirm(`Are you sure you want to delete all ${submissions.length} submission records for this quiz?`)) {
-      await clearSubmissionsForQuiz(quiz.id, quiz.quizCode);
-      setSelectedSubmission(null);
-      await refreshSubmissions();
+  const handleClearAll = () => {
+    setDeleteModalState({
+      isOpen: true,
+      type: 'bulk',
+      title: 'Delete All Submissions',
+      message: `Are you sure you want to delete all ${submissions.length} submission records for this quiz?`,
+    });
+  };
+
+  const handleConfirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+      if (deleteModalState.type === 'single' && deleteModalState.submissionId) {
+        await deleteSubmission(deleteModalState.submissionId);
+        if (selectedSubmission?.id === deleteModalState.submissionId) setSelectedSubmission(null);
+      } else if (deleteModalState.type === 'bulk') {
+        await clearSubmissionsForQuiz(quiz.id, quiz.quizCode);
+        setSelectedSubmission(null);
+      }
+    } finally {
+      setIsDeleting(false);
+      setDeleteModalState((s) => ({ ...s, isOpen: false }));
     }
   };
 
@@ -1274,7 +1303,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                           min={0}
                           max={selectedSubmission.totalMarks}
                           value={editTotalScoreInput}
-                          onChange={(e) => setEditTotalScoreInput(Math.max(0, Math.min(selectedSubmission.totalMarks, Number(e.target.value))))}
+                          onChange={(e) => setEditTotalScoreInput(e.target.value ? Number(e.target.value) : ('' as any))}
                           style={{
                             width: '56px',
                             padding: '4px',
@@ -1480,7 +1509,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                                   min={0}
                                   max={qr.maxMarks}
                                   value={editMarksInput}
-                                  onChange={(e) => setEditMarksInput(Math.max(0, Math.min(qr.maxMarks, Number(e.target.value))))}
+                                  onChange={(e) => setEditMarksInput(e.target.value ? Number(e.target.value) : ('' as any))}
                                   style={{
                                     width: '48px',
                                     padding: '2px 4px',
@@ -1808,6 +1837,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         </div>
       )}
+
+      {/* Confirm Delete Modal */}
+      <ConfirmDeleteModal
+        isOpen={deleteModalState.isOpen}
+        title={deleteModalState.title}
+        message={deleteModalState.message}
+        isDeleting={isDeleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteModalState((s) => ({ ...s, isOpen: false }))}
+      />
     </div>,
     document.body
   );

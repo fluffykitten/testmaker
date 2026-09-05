@@ -10,6 +10,7 @@ import {
   getGeminiApiKeys,
   getApiKeyForChunk,
   normalizePaper4SubQuestions,
+  stripDuplicateOptionsFromStem,
   type SubjectDomain,
 } from './gemini';
 import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
@@ -128,7 +129,7 @@ export async function saveExtractedQuestions(
       paper_number: q.paper_number || paper_metadata.paper_number,
       question_number: q.question_number,
       parent_question_id: q.parent_question_id || null,
-      question_text: q.question_text,
+      question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
       question_style: q.question_style,
       topic: q.topic,
       sub_topic: q.sub_topic || null,
@@ -141,6 +142,7 @@ export async function saveExtractedQuestions(
       options: q.options || null,
       sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
         ...sub,
+        question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
         diagram_source: sub.diagram_source || null,
         resource_ref: sub.resource_ref || null,
         insert_page_number: sub.insert_page_number || null,
@@ -222,6 +224,10 @@ export async function saveExtractedQuestions(
   return insertedCount;
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Ensures every question that refers to a reading passage contains the full passage text.
  * Detects all passage formats (### Text 1, ### Passage A, "Read the following text...", multi-paragraph stimulus)
@@ -230,19 +236,21 @@ export async function saveExtractedQuestions(
 export function propagateReadingPassages(questions: ExtractedQuestion[]): ExtractedQuestion[] {
   let activePassageBody = '';
   let activePassageHeading = '';
+  let activePassageHeadingClean = '';
+  let activePassageSample = '';
 
   const detectPassageContent = (text: string): string | null => {
-    if (!text || text.length < 100) return null;
+    if (!text || text.length < 120) return null;
 
-    // Pattern 1: Explicit markdown section heading (e.g. ### Text 1, ### Passage A, ### Reading Text, etc.)
-    const headerMatch = text.match(/^(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part)\s*[A-Za-z0-9.:\-_ ]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-E]\.|\n\s*No\.?\s*\d+|$))/i);
-    if (headerMatch && headerMatch[1] && headerMatch[1].trim().length > 80) {
+    // Pattern 1: Explicit markdown section heading with substantial passage body (> 120 chars)
+    const headerMatch = text.match(/^(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*[A-Za-z0-9.:\-_ (≈±)]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|\n\s*No\.?\s*\d+|$))/i);
+    if (headerMatch && headerMatch[1] && headerMatch[1].trim().length > 150) {
       return headerMatch[1].trim();
     }
 
     // Pattern 2: Natural exam passage prompt (e.g. "Read the following text...", "The following text is for questions 1 to 5...")
-    const promptIntroMatch = text.match(/^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-E]\.|$))/i);
-    if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 80) {
+    const promptIntroMatch = text.match(/^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|$))/i);
+    if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 120) {
       return promptIntroMatch[1].trim();
     }
 
@@ -267,20 +275,46 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
 
     if (detected) {
       activePassageBody = detected;
-      activePassageHeading = detected.split('\n')[0].replace(/^###\s*/, '').trim();
+      const firstLine = detected.split('\n')[0].replace(/^###\s*/, '').trim();
+      activePassageHeading = firstLine;
+      activePassageHeadingClean = firstLine.replace(/[\s(≈±].*$/, '').trim(); // e.g. "Text 1", "Text 3", "Teks 4"
+
+      // Sample the actual body text (excluding the header line) to accurately detect body presence
+      const lines = detected.split('\n').map((l) => l.trim()).filter((l) => l.length > 20 && !l.startsWith('#'));
+      activePassageSample = lines.length > 0 ? lines[0].slice(0, 50) : '';
       return q;
     }
 
-    // If there is an active passage and current question does NOT already contain it
+    // Check if there is an active passage to propagate to linked questions
     if (activePassageBody) {
-      const alreadyHasPassage =
-        (activePassageHeading && text.includes(activePassageHeading)) ||
-        (text.length > 200 && text.includes(activePassageBody.slice(0, 60)));
+      // 1. Check if current question text already contains the passage body text
+      const alreadyHasPassageBody = Boolean(
+        (activePassageSample && text.includes(activePassageSample)) ||
+        (text.length > 300 && text.includes(activePassageBody.slice(0, 80)))
+      );
 
-      if (!alreadyHasPassage) {
+      // 2. Check if current question refers to this active passage
+      const hasHeadingRef = Boolean(
+        (activePassageHeading && text.includes(activePassageHeading)) ||
+        (activePassageHeadingClean && new RegExp(`###?\\s*${escapeRegex(activePassageHeadingClean)}\\b`, 'i').test(text))
+      );
+
+      const hasTextRef =
+        hasHeadingRef ||
+        /^(?:###?\s*(?:Text|Passage|Teks|Reading)\b|\*\*Question\s*\d+\*\*|Question\s*\d+:|Based on the text|According to the text|In the text|The text primarily|Paragraph (?:one|two|three|four|\d+))/i.test(
+          text.trim()
+        );
+
+      if (!alreadyHasPassageBody && hasTextRef) {
+        // Strip duplicate heading line from question prompt if present so heading isn't duplicated
+        let cleanPrompt = text;
+        if (hasHeadingRef) {
+          cleanPrompt = cleanPrompt.replace(/^###\s*[^\n]+\n+/, '').trim();
+        }
+
         return {
           ...q,
-          question_text: `${activePassageBody}\n\n${text}`,
+          question_text: `${activePassageBody}\n\n${cleanPrompt}`,
         };
       }
     }
@@ -488,7 +522,15 @@ export async function runExtractionPipeline(
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(allQuestions);
-      const finalizedQuestions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
+      const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
+      const finalizedQuestions = normalized.map((q) => ({
+        ...q,
+        question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+        sub_questions: (q.sub_questions || []).map((sq) => ({
+          ...sq,
+          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+        })),
+      }));
 
       // Merge insert_resources across chunks
       const mergedInsertResources = chunkResults.flatMap((cr) => cr.insert_resources || []);
@@ -543,7 +585,14 @@ export async function runExtractionPipeline(
           isIgcse: options.isIgcse !== false,
         }
       );
-      result.questions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagateReadingPassages(result.questions)));
+      result.questions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagateReadingPassages(result.questions))).map((q) => ({
+        ...q,
+        question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+        sub_questions: (q.sub_questions || []).map((sq) => ({
+          ...sq,
+          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+        })),
+      }));
     }
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)
