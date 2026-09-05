@@ -8,6 +8,7 @@ import { DiagramCropModal } from './DiagramCropModal';
 import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
 import { stripDuplicateOptionsFromStem } from '../lib/gemini';
+import { propagateReadingPassages } from '../lib/pdfProcessor';
 import './ExtractionReview.css';
 
 interface ExtractionReviewProps {
@@ -41,7 +42,8 @@ interface CropTarget {
  * 3. Quality Assurance (duplicate detection banner, editable paper details & dynamic mark tally verification)
  */
 function cleanExtractedQuestions(qs: ExtractedQuestion[]): ExtractedQuestion[] {
-  return (qs || []).map((q) => ({
+  const propagated = propagateReadingPassages(qs || []);
+  return propagated.map((q) => ({
     ...q,
     question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
     sub_questions: (q.sub_questions || []).map((sq) => ({

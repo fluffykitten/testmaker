@@ -115,7 +115,10 @@ export async function saveExtractedQuestions(
   // 4. Insert questions with permanent Supabase public URLs
   onProgress?.(`Inserting ${questions.length} questions into database…`);
 
-  const records = questions.map((q: ExtractedQuestion) => {
+  // Ensure reading passages are completely propagated across all questions in the paper
+  const finalizedQuestions = propagateReadingPassages(questions);
+
+  const records = finalizedQuestions.map((q: ExtractedQuestion) => {
     // Preserve full insert_resources catalog inside question mark_scheme JSONB metadata
     const ms = typeof q.mark_scheme === 'object' && q.mark_scheme !== null ? { ...q.mark_scheme } : { raw: q.mark_scheme };
     if (insert_resources && insert_resources.length > 0) {
@@ -230,7 +233,7 @@ function escapeRegex(str: string): string {
 
 /**
  * Ensures every question that refers to a reading passage contains the full passage text.
- * Detects all passage formats (### Text 1, ### Passage A, "Read the following text...", multi-paragraph stimulus)
+ * Detects all passage formats (### Text 1, ### Passage A, "Text 1: ...", "Read the following text...", multi-paragraph stimulus)
  * and automatically attaches the complete passage to subsequent questions in that group.
  */
 export function propagateReadingPassages(questions: ExtractedQuestion[]): ExtractedQuestion[] {
@@ -242,14 +245,18 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
   const detectPassageContent = (text: string): string | null => {
     if (!text || text.length < 120) return null;
 
-    // Pattern 1: Explicit markdown section heading with substantial passage body (> 120 chars)
-    const headerMatch = text.match(/^(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*[A-Za-z0-9.:\-_ (≈±)]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|\n\s*No\.?\s*\d+|$))/i);
+    // Pattern 1: Section heading (with or without ###, markdown bold, etc.) with substantial passage body (> 120 chars)
+    const headerMatch = text.match(
+      /^((?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*[A-Za-z0-9.:\-_ (≈±)]*[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|\n\s*No\.?\s*\d+|$))/i
+    );
     if (headerMatch && headerMatch[1] && headerMatch[1].trim().length > 150) {
       return headerMatch[1].trim();
     }
 
     // Pattern 2: Natural exam passage prompt (e.g. "Read the following text...", "The following text is for questions 1 to 5...")
-    const promptIntroMatch = text.match(/^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|$))/i);
+    const promptIntroMatch = text.match(
+      /^((?:The following text is for questions|Read the following (?:text|passage|dialogue|article)|Questions \d+[–-]\d+ are based on the following|Based on the text below)[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|\n\s*\[(?:Matching|Multiple)|\n\s*[A-F]\.|$))/i
+    );
     if (promptIntroMatch && promptIntroMatch[1] && promptIntroMatch[1].trim().length > 120) {
       return promptIntroMatch[1].trim();
     }
@@ -275,9 +282,16 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
 
     if (detected) {
       activePassageBody = detected;
-      const firstLine = detected.split('\n')[0].replace(/^###\s*/, '').trim();
+      const firstLine = detected
+        .split('\n')[0]
+        .replace(/^#{1,4}\s*/, '')
+        .replace(/^\*{1,2}|\*{1,2}$/g, '')
+        .trim();
       activePassageHeading = firstLine;
-      activePassageHeadingClean = firstLine.replace(/[\s(≈±].*$/, '').trim(); // e.g. "Text 1", "Text 3", "Teks 4"
+
+      // Extract core label like "Text 1", "Teks 1", "Passage A", "Text 3", etc.
+      const labelMatch = firstLine.match(/^(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Section|Part|Teks)\s*([A-Za-z0-9]+)/i);
+      activePassageHeadingClean = labelMatch ? labelMatch[0].trim() : firstLine.replace(/[:(≈±].*$/, '').trim();
 
       // Sample the actual body text (excluding the header line) to accurately detect body presence
       const lines = detected.split('\n').map((l) => l.trim()).filter((l) => l.length > 20 && !l.startsWith('#'));
@@ -293,24 +307,24 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
         (text.length > 300 && text.includes(activePassageBody.slice(0, 80)))
       );
 
-      // 2. Check if current question refers to this active passage
+      // 2. Check if current question refers to this active passage (supports ###, **, or plain text reference)
       const hasHeadingRef = Boolean(
         (activePassageHeading && text.includes(activePassageHeading)) ||
-        (activePassageHeadingClean && new RegExp(`###?\\s*${escapeRegex(activePassageHeadingClean)}\\b`, 'i').test(text))
+        (activePassageHeadingClean &&
+          new RegExp(`(?:#{1,4}\\s*|\\*{1,2})?${escapeRegex(activePassageHeadingClean)}\\b`, 'i').test(text))
       );
 
       const hasTextRef =
         hasHeadingRef ||
-        /^(?:###?\s*(?:Text|Passage|Teks|Reading)\b|\*\*Question\s*\d+\*\*|Question\s*\d+:|Based on the text|According to the text|In the text|The text primarily|Paragraph (?:one|two|three|four|\d+))/i.test(
+        /^(?:(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Teks|Reading)\s*\d*|\*\*Question\s*\d+\*\*|Question\s*\d+:|Based on the text|According to the text|In the text|The text primarily|Paragraph (?:one|two|three|four|\d+))/i.test(
           text.trim()
         );
 
       if (!alreadyHasPassageBody && hasTextRef) {
         // Strip duplicate heading line from question prompt if present so heading isn't duplicated
-        let cleanPrompt = text;
-        if (hasHeadingRef) {
-          cleanPrompt = cleanPrompt.replace(/^###\s*[^\n]+\n+/, '').trim();
-        }
+        let cleanPrompt = text
+          .replace(/^(?:#{1,4}\s*|\*{1,2})?(?:Text|Passage|Teks|Reading)\s*[A-Za-z0-9.:\-_ (≈±)]*\n+/i, '')
+          .trim();
 
         return {
           ...q,
