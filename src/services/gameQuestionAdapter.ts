@@ -17,6 +17,7 @@ export interface GamePlayableItem {
   contextStem?: string;          // shared scenario / apparatus context
   questionText: string;          // prompt for this round
   diagramUrl?: string;
+  svgContent?: string;
   type: 'mcq' | 'structured';    // 'mcq' (choices) or 'structured' (typed answer)
   options?: string[];
   correctOptionIndex?: number;
@@ -193,7 +194,8 @@ export function flattenQuizQuestionsForGame(
           title: `Question ${qNum}(${sq.sub_id || String.fromCharCode(97 + sIdx)})`,
           contextStem: q.question_text?.trim() ? q.question_text : undefined,
           questionText: sq.question_text || `Part (${sq.sub_id})`,
-          diagramUrl: sq.diagram_url || q.diagram_url || undefined,
+          diagramUrl: sq.svg_content || q.svg_content ? undefined : (sq.diagram_url || q.diagram_url || undefined),
+          svgContent: sq.svg_content || q.svg_content || undefined,
           type: isSqMcq ? 'mcq' : 'structured',
           options: sqOptions,
           correctOptionIndex: correctOpt,
@@ -223,7 +225,8 @@ export function flattenQuizQuestionsForGame(
         roundNumber: roundCount++,
         title: `Question ${qNum}`,
         questionText: q.question_text || 'Select the correct option:',
-        diagramUrl: q.diagram_url || undefined,
+        diagramUrl: q.svg_content ? undefined : (q.diagram_url || undefined),
+        svgContent: q.svg_content || undefined,
         type: 'mcq',
         options: finalOptions,
         correctOptionIndex: finalCorrectOpt,
@@ -245,7 +248,8 @@ export function flattenQuizQuestionsForGame(
         roundNumber: roundCount++,
         title: `Question ${qNum}`,
         questionText: q.question_text || 'Enter your chemical formula or calculation:',
-        diagramUrl: q.diagram_url || undefined,
+        diagramUrl: q.svg_content ? undefined : (q.diagram_url || undefined),
+        svgContent: q.svg_content || undefined,
         type: 'structured',
         correctAnswerText: answerText,
         acceptableAnswers,

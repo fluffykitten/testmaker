@@ -3251,8 +3251,16 @@ export function StudentQuizRunner({
                       <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
                     </div>
 
-                    {/* Question Diagram if present */}
-                    {q.diagram_url && (
+                    {/* Question Diagram / SVG if present */}
+                    {q.svg_content ? (
+                      <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
+                        <div
+                          className="exam-svg-wrap"
+                          style={{ margin: '0 auto', maxWidth: '600px' }}
+                          dangerouslySetInnerHTML={{ __html: q.svg_content }}
+                        />
+                      </div>
+                    ) : q.diagram_url ? (
                       <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
                         <img
                           src={q.diagram_url}
@@ -3271,7 +3279,7 @@ export function StudentQuizRunner({
                           title="Click to zoom diagram"
                         />
                       </div>
-                    )}
+                    ) : null}
 
                     {/* Sub-Questions Results Breakdown if present */}
                     {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
@@ -3302,8 +3310,16 @@ export function StudentQuizRunner({
                                 </div>
                               )}
 
-                              {/* Sub Question Diagram if present */}
-                              {subQ?.diagram_url && (
+                              {/* Sub Question Diagram / SVG if present */}
+                              {subQ?.svg_content ? (
+                                <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                                  <div
+                                    className="exam-svg-wrap"
+                                    style={{ margin: '0 auto', maxWidth: '540px' }}
+                                    dangerouslySetInnerHTML={{ __html: subQ.svg_content }}
+                                  />
+                                </div>
+                              ) : subQ?.diagram_url ? (
                                 <div style={{ margin: '8px 0', textAlign: 'center' }}>
                                   <img
                                     src={subQ.diagram_url}
@@ -3322,7 +3338,7 @@ export function StudentQuizRunner({
                                     title="Click to zoom diagram"
                                   />
                                 </div>
-                              )}
+                              ) : null}
 
                               <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
                                 Your Answer:{' '}
@@ -3940,8 +3956,26 @@ export function StudentQuizRunner({
               </div>
             )}
 
-            {/* Diagram Image if available */}
-            {currentQuestion?.diagram_url && (
+            {/* Diagram / SVG Visual if available */}
+            {currentQuestion?.svg_content ? (
+              <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
+                <div
+                  className="exam-svg-wrap"
+                  style={{ margin: '0 auto', maxWidth: '620px' }}
+                  dangerouslySetInnerHTML={{ __html: currentQuestion.svg_content }}
+                />
+                {securityEnabled && enableWatermark && (
+                  <CandidateWatermark
+                    candidateName={candidateName}
+                    candidateNumber={candidateNumber}
+                    candidateClass={candidateClass}
+                    quizCode={resolvedQuizCode}
+                    sessionHash={sessionHash}
+                    variant="diagram"
+                  />
+                )}
+              </div>
+            ) : currentQuestion?.diagram_url ? (
               <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
                 <img
                   src={currentQuestion.diagram_url}
@@ -3963,7 +3997,7 @@ export function StudentQuizRunner({
                   />
                 )}
               </div>
-            )}
+            ) : null}
 
             {/* 1. MCQ / Multi-Select Choices Input */}
             {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (
@@ -4062,8 +4096,26 @@ export function StudentQuizRunner({
                         </div>
                       )}
 
-                      {/* Sub-Question Diagram (if specifically attached to this sub-part) */}
-                      {sub.diagram_url && (
+                      {/* Sub-Question Diagram / SVG (if specifically attached to this sub-part) */}
+                      {sub.svg_content ? (
+                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
+                          <div
+                            className="exam-svg-wrap"
+                            style={{ margin: '0 auto', maxWidth: '540px' }}
+                            dangerouslySetInnerHTML={{ __html: sub.svg_content }}
+                          />
+                          {securityEnabled && enableWatermark && (
+                            <CandidateWatermark
+                              candidateName={candidateName}
+                              candidateNumber={candidateNumber}
+                              candidateClass={candidateClass}
+                              quizCode={resolvedQuizCode}
+                              sessionHash={sessionHash}
+                              variant="diagram"
+                            />
+                          )}
+                        </div>
+                      ) : sub.diagram_url ? (
                         <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
                           <img
                             src={sub.diagram_url}
@@ -4086,7 +4138,7 @@ export function StudentQuizRunner({
                             />
                           )}
                         </div>
-                      )}
+                      ) : null}
 
                       {/* Quick Symbol Insert Bar for sub-question (STEM only) */}
                       {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && !hasInlineGaps(sub.question_text || '') && (

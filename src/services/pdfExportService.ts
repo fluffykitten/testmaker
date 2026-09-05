@@ -3,7 +3,7 @@
 // with support for authentic Cambridge, Modern Worksheet, Answer Booklet, and Mark Scheme layouts.
 
 import katex from 'katex';
-import type { Question } from '../types/database';
+import type { Question, ExamDataTable } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import type { ExportLayoutOptions } from '../types/exportTemplates';
 import { getCambridgeCoverDetails, renderCambridgeCoverPageHtml, renderMcqAnswerSheetHtml } from './cambridgeCoverService';
@@ -12,7 +12,11 @@ import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
-import { stripDuplicateOptionsFromStem } from '../lib/gemini';
+import {
+  stripDuplicateOptionsFromStem,
+  stripDuplicateSubQuestionsFromStem,
+  extractSvgFromDiagramUrl,
+} from '../lib/gemini';
 
 const KATEX_OPTIONS = {
   throwOnError: false,
@@ -310,15 +314,32 @@ function convertMarkdownTablesToHtml(text: string): string {
         });
 
         let flowHtml =
-          '<div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:10px; margin:14px 0; padding:12px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px;">';
+          '<div style="margin: 14px 0; display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">';
         stages.forEach((stage, sIdx) => {
-          flowHtml += `<div style="display:inline-flex; align-items:center; justify-content:center; min-width:95px; min-height:48px; padding:6px 14px; border:1.5px solid #1f2937; background:white; font-weight:500; text-align:center;">${formatLatexForHtml(stage)}</div>`;
+          flowHtml += `<div style="border: 1.5px solid #374151; padding: 6px 14px; background: #ffffff; border-radius: 4px; font-weight: 500; font-size: 13px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">${formatLatexForHtml(stage)}</div>`;
           if (sIdx < stages.length - 1) {
-            flowHtml += '<span style="font-weight:bold; font-size:16px; color:#4b5563;">→</span>';
+            flowHtml += `<div style="font-size: 16px; font-weight: bold; color: #4b5563;">→</div>`;
           }
         });
         flowHtml += '</div>';
         result.push(flowHtml);
+        continue;
+      }
+
+      // Check for Fill-in-the-blank Lines with marks bracket at the end: e.g. "...... [1]"
+      const blankLineMatch = trimmed.match(/((\.{3,}|_{3,})\s*\[\s*(\d+)\s*\]\s*)$/);
+      if (blankLineMatch) {
+        const prefixText = trimmed.slice(0, trimmed.length - blankLineMatch[0].length).trim();
+        const markNum = blankLineMatch[3];
+        const blankHtml = `
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; margin: 8px 0; width: 100%;">
+            <div style="flex: 1; border-bottom: 1px dotted #374151; min-height: 20px; margin-right: 12px;">
+              ${prefixText ? `<span style="background: white; padding-right: 6px;">${formatLatexForHtml(prefixText)}</span>` : ''}
+            </div>
+            <span style="font-weight: bold; font-size: 13px; white-space: nowrap;">[${markNum}]</span>
+          </div>
+        `;
+        result.push(blankHtml);
         continue;
       }
 
@@ -347,6 +368,44 @@ function convertMarkdownTablesToHtml(text: string): string {
   if (inTable) flushTable();
 
   return result.join('<br />');
+}
+
+/**
+ * Converts structured ExamDataTable array into styled HTML tables for PDF export
+ */
+export function renderDataTablesToHtml(tables?: ExamDataTable[]): string {
+  if (!tables || !Array.isArray(tables) || tables.length === 0) return '';
+  return tables
+    .map((tbl) => {
+      if (!tbl || !Array.isArray(tbl.headers) || !Array.isArray(tbl.rows)) return '';
+      let html =
+        '<div style="margin: 12px 0; overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; border: 1.5px solid #374151; font-size: 13px; background: white;">';
+      if (tbl.id || tbl.title) {
+        html += `<caption style="caption-side: top; text-align: left; font-weight: bold; margin-bottom: 6px; font-size: 13px; color: #1e293b;">${tbl.id ? tbl.id + ': ' : ''}${tbl.title || ''}</caption>`;
+      }
+      html +=
+        '<thead><tr>' +
+        tbl.headers
+          .map(
+            (h) =>
+              `<th style="border: 1px solid #4b5563; padding: 6px 10px; background: #f3f4f6; font-weight: bold; text-align: center;">${formatLatexForHtml(h)}</th>`
+          )
+          .join('') +
+        '</tr></thead><tbody>';
+
+      tbl.rows.forEach((row, ri) => {
+        html += `<tr style="${ri % 2 === 1 ? 'background-color: #f9fafb;' : ''}">`;
+        row.forEach((cell) => {
+          const val = cell && typeof cell === 'object' ? (cell as any).value : String(cell ?? '');
+          html += `<td style="border: 1px solid #6b7280; padding: 6px 10px; text-align: center;">${formatLatexForHtml(val)}</td>`;
+        });
+        html += '</tr>';
+      });
+
+      html += '</tbody></table></div>';
+      return html;
+    })
+    .join('');
 }
 
 /**
@@ -698,7 +757,15 @@ export function openStudentPaperPrintWindow(
     ${questions
       .map((q, idx) => {
         const qNum = idx + 1;
-        const stem = convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(q.question_text || '', q.options));
+        const rawStem = stripDuplicateSubQuestionsFromStem(
+          stripDuplicateOptionsFromStem(q.question_text || '', q.options),
+          q.sub_questions
+        );
+        const hasMarkdownTable = rawStem.includes('|') && rawStem.includes('\n|');
+        let stem = convertMarkdownTablesToHtml(rawStem);
+        if (!hasMarkdownTable && q.data_tables && q.data_tables.length > 0) {
+          stem += renderDataTablesToHtml(q.data_tables);
+        }
 
         let content = `
           <div class="q-block">
@@ -709,12 +776,13 @@ export function openStudentPaperPrintWindow(
         `;
 
         const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+        const svgContent = q.svg_content || extractSvgFromDiagramUrl(diagramUrl);
         const isInsert = isInsertResource(q);
         // Only show diagram on the question paper if an insert booklet is NOT attached, or if it is a QP diagram
-        if (diagramUrl && (!options.includeInsertBooklet || !isInsert)) {
+        if ((svgContent || diagramUrl) && (!options.includeInsertBooklet || !isInsert)) {
           content += `
             <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
-              <img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />
+              ${svgContent ? `<div style="max-width: 85%; max-height: 280px; margin: 0 auto; display: inline-block;">${svgContent}</div>` : `<img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />`}
               <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${q.resource_ref || `Fig. ${qNum}.1`}</div>
             </div>
           `;
@@ -738,18 +806,27 @@ export function openStudentPaperPrintWindow(
               <div class="sub-block">
                 <div class="sub-row">
                   <div class="sub-id">${sub.sub_id}</div>
-                  <div class="sub-text">${convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(sub.question_text || '', (sub as any).options || q.options))}</div>
+                  <div class="sub-text">${(() => {
+                    const rawSubText = stripDuplicateOptionsFromStem(sub.question_text || '', (sub as any).options || q.options);
+                    const hasSubTable = rawSubText.includes('|') && rawSubText.includes('\n|');
+                    let sText = convertMarkdownTablesToHtml(rawSubText);
+                    if (!hasSubTable && sub.data_tables && sub.data_tables.length > 0) {
+                      sText += renderDataTablesToHtml(sub.data_tables);
+                    }
+                    return sText;
+                  })()}</div>
                   <div class="marks">[${sub.marks}]</div>
                 </div>
             `;
 
             const subDiagramUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
+            const subSvgContent = (sub as any).svg_content || extractSvgFromDiagramUrl(subDiagramUrl);
             const isSubInsert = isInsertResource(sub);
             // Only show sub-diagram on question paper if booklet is NOT attached, or if it is a QP diagram
-            if (subDiagramUrl && (!options.includeInsertBooklet || !isSubInsert)) {
+            if ((subSvgContent || subDiagramUrl) && (!options.includeInsertBooklet || !isSubInsert)) {
               content += `
                 <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
-                  <img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />
+                  ${subSvgContent ? `<div style="max-width: 80%; max-height: 220px; margin: 0 auto; display: inline-block;">${subSvgContent}</div>` : `<img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />`}
                   <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${sub.resource_ref || `Fig. ${qNum}.2`}</div>
                 </div>
               `;
@@ -1361,7 +1438,15 @@ export function openTeacherMarkSchemePrintWindow(
   ${questions
     .map((q, idx) => {
       const qNum = idx + 1;
-      const stem = convertMarkdownTablesToHtml(stripDuplicateOptionsFromStem(q.question_text || '', q.options));
+      const rawStem = stripDuplicateSubQuestionsFromStem(
+        stripDuplicateOptionsFromStem(q.question_text || '', q.options),
+        q.sub_questions
+      );
+      const hasMarkdownTable = rawStem.includes('|') && rawStem.includes('\n|');
+      let stem = convertMarkdownTablesToHtml(rawStem);
+      if (!hasMarkdownTable && q.data_tables && q.data_tables.length > 0) {
+        stem += renderDataTablesToHtml(q.data_tables);
+      }
 
       let subRowsHtml = '';
       if (q.sub_questions && q.sub_questions.length > 0) {

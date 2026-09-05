@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import type { ExtractionResult, ExtractedQuestion, SubQuestion, PaperMetadata } from '../types/database';
+import type { ExtractionResult, ExtractedQuestion, SubQuestion, PaperMetadata, ExtractedPassage } from '../types/database';
 import { type DiagramCropItem } from '../lib/diagramCropper';
 import { ExamMathText } from './ExamMathText';
 import { QuestionEditorModal } from './QuestionEditorModal';
@@ -8,7 +8,7 @@ import { DiagramCropModal } from './DiagramCropModal';
 import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
 import { stripDuplicateOptionsFromStem } from '../lib/gemini';
-import { propagateReadingPassages } from '../lib/pdfProcessor';
+import { propagateReadingPassages, stitchPassagesToQuestions } from '../lib/pdfProcessor';
 import { formatPaperLabel } from '../utils/paperUtils';
 import './ExtractionReview.css';
 
@@ -42,8 +42,9 @@ interface CropTarget {
  * 2. Fast-Edit Teacher Workspace (inline quick-edit, 1-click split/merge, selective save)
  * 3. Quality Assurance (duplicate detection banner, editable paper details & dynamic mark tally verification)
  */
-function cleanExtractedQuestions(qs: ExtractedQuestion[]): ExtractedQuestion[] {
-  const propagated = propagateReadingPassages(qs || []);
+function cleanExtractedQuestions(qs: ExtractedQuestion[], passages?: ExtractedPassage[]): ExtractedQuestion[] {
+  const stitched = stitchPassagesToQuestions(qs || [], passages);
+  const propagated = propagateReadingPassages(stitched);
   return propagated.map((q) => ({
     ...q,
     question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
@@ -64,7 +65,7 @@ export function ExtractionReview({
   onCancel,
   isSaving,
 }: ExtractionReviewProps) {
-  const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => cleanExtractedQuestions(result.questions));
+  const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => cleanExtractedQuestions(result.questions, result.passages));
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
     () => new Set(result.questions.map((_, i) => i))
   );
@@ -103,7 +104,7 @@ export function ExtractionReview({
   // Sync questions & metadata if external result changes
   useEffect(() => {
     if (result?.questions) {
-      setQuestions(cleanExtractedQuestions(result.questions));
+      setQuestions(cleanExtractedQuestions(result.questions, result.passages));
       setSelectedIndices(new Set(result.questions.map((_, i) => i)));
     }
     if (result?.paper_metadata) {
@@ -280,19 +281,34 @@ export function ExtractionReview({
       total_marks: Math.max(1, (Number(parentQ.total_marks) || subMarks) - subMarks),
     };
 
+    const parentStem = parentQ.question_text?.trim() || '';
+    const isContextAlreadyPresent = parentStem && sub.question_text.includes(parentStem.slice(0, 30));
+    const selfContainedText = !isContextAlreadyPresent && parentStem
+      ? `[Scenario Context: ${parentStem}]\n\n${sub.question_text}`
+      : sub.question_text;
+
+    const subHasSvg = Boolean(sub.svg_content);
+    const subHasDiagram = Boolean(sub.diagram_url);
+    const inheritedSvg = subHasSvg ? sub.svg_content : (!subHasDiagram ? parentQ.svg_content : null);
+    const inheritedDiagramUrl = subHasDiagram ? sub.diagram_url : (!subHasSvg ? (parentQ.diagram_url || null) : null);
+
     const newQuestion: ExtractedQuestion = {
       question_number: `${parentQ.question_number}${sub.sub_id.replace(/[()]/g, '')}`,
       parent_question_id: `Q${parentQ.question_number}`,
       year: parentQ.year || paperMetadata?.year,
       series: parentQ.series || paperMetadata?.series,
       paper_number: parentQ.paper_number || paperMetadata?.paper_number,
-      question_text: sub.question_text,
+      question_text: selfContainedText,
       question_style: parentQ.question_style,
       total_marks: subMarks,
       estimated_difficulty: parentQ.estimated_difficulty,
       topic: parentQ.topic,
       sub_topic: parentQ.sub_topic,
-      has_diagram: !!sub.diagram_url,
+      has_diagram: Boolean(inheritedSvg || inheritedDiagramUrl),
+      svg_content: inheritedSvg || null,
+      diagram_url: inheritedDiagramUrl || null,
+      diagram_type: sub.diagram_type || parentQ.diagram_type || null,
+      has_embedded_values: sub.has_embedded_values !== undefined ? sub.has_embedded_values : parentQ.has_embedded_values,
       bounding_box: null,
       options: sub.options || null,
       sub_questions: [],

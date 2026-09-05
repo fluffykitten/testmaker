@@ -4,6 +4,7 @@
 
 import type { ExtractionResult, ExtractedQuestion, Question, SubQuestion, QuestionStyle } from '../types/database';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
+import { cleanSvgContent } from '../components/ExamVisualRender';
 
 /**
  * Collects and deduplicates all available Gemini API keys from environment variables.
@@ -101,7 +102,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
 1. INTRODUCTORY SCENARIO STEMS VS SUB-QUESTIONS:
    - In Cambridge structured papers, section (a) often begins with an introductory experimental setup, apparatus description, reaction equation, or diagram, followed by sub-parts (i), (ii).
    - NEVER drop or skip the introductory setup text of (a)! 
-     * Place the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true).
+     * Place ONLY the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true). DO NOT duplicate sub-parts (a), (b), (c) inside parent question_text! Sub-parts belong exclusively in the "sub_questions" array.
      * In the first sub-question "(a)(i)", ALSO preserve the section context (e.g. "(a) A student investigates the reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.") so that sub-question (a)(i) is completely self-contained!
    - When section (b) or section (c) introduces a new scenario, reaction, or graph followed by (i), (ii):
      * Prepend the section introductory text to the first sub-part "(b)(i)" (e.g. "(b) The student repeats the experiment using powdered marble chips.\\\\n\\\\n(i) Explain why the rate of reaction increases.").
@@ -110,12 +111,34 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
      * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" or "(c)" and its marks. NEVER swallow it into parent question_text where it loses its marks and student answer box!
 
 2. "total_marks": Sum of all sub-question marks.
-3. "sub_questions": Array containing all sub-parts with their respective text, marks, and mark schemes.`
+3. "sub_questions": Array containing all sub-parts with their respective text, marks, and mark schemes.
+
+4. DIAGRAM TYPOLOGY & EMBEDDED VALUE DETECTION:
+   - "diagram_type": Classify visual content if present:
+     * "graph": Cartesian coordinate graphs, axes with units (e.g. speed-time, extension-load, cooling curve).
+     * "circuit": Electrical circuits, schematics with components (resistors, switches, power supplies, ammeters).
+     * "choice_grid": Multiple-choice question with 4 graphical diagram choices A, B, C, D. Set bounding_box around all 4 diagrams together, and provide descriptive text labels in "options".
+     * "apparatus": Laboratory apparatus setup or diagram.
+     * "photo": Real photographic image or biological specimen.
+   - "has_embedded_values": Set true if the visual contains explicit numbers, dimensions, or coordinates (e.g. "1.4 m", "12 V", "20 cm³") that govern the calculations.
+
+5. SUB-QUESTION DEPENDENCY MAPPING:
+   - "depends_on_sub_ids": In multi-part structured questions, if a sub-part requires the numerical answer or result of a previous sub-part (e.g. "using your value from (b)(i)", "hence calculate the energy transferred..."), record the IDs of those prerequisite sub-parts in an array (e.g. ["(b)(i)"]).
+
+6. MULTI-PAGE STRADDLING QUESTIONS & CONTINUATION FRAGMENTS:
+   - Cambridge structured questions regularly span across 2 pages (e.g. parent scenario, Figure 4.1, (a), (b), (c) on one page; (d), Figure 4.3, [Total: 7] on the next page).
+   - NEVER drop earlier sub-parts when a question continues onto a second page!
+   - If a chunk begins with a continuation sub-part (e.g. "(d)", "(b)(iv)", "(c)") without a large question number heading:
+     * Deduce the parent question number from context (e.g. followed by Question 5 -> belongs to Question 4).
+     * Always set "question_number": "4" (clean integer only, NEVER "4(d)", "4 d", or "(d)").
+     * Extract the sub-part into "sub_questions" with sub_id "(d)".`
     : `QUESTION STRUCTURE RULES (GENERAL / NON-IGCSE):
 - If a question has sub-parts (e.g. (a), (b), (i), (ii), or 1.1, 1.2), group them under the parent question container object in 'sub_questions'.
 - If questions are standalone numbered questions (e.g. 1, 2, 3, 4, 5...) without sub-parts, extract each as its own top-level question object with an empty 'sub_questions: []' array.
+- If a chunk begins mid-question with an orphaned sub-part (e.g. (d) or (iv)), group it under its parent question number (e.g. "4"), NEVER naming the question "4(d)".
 - Do NOT force Cambridge/IGCSE sub-part labelling or assume Paper 1/2/4/6 conventions.
-- In 'paper_metadata', extract whatever subject, year, or title is actually present on the paper. Do NOT hallucinate Cambridge series like 'May/June' or 'Oct/Nov' or 'paper_number' if not stated on the exam paper.`;
+- In 'paper_metadata', extract whatever subject, year, or title is actually present on the paper. Do NOT hallucinate Cambridge series like 'May/June' or 'Oct/Nov' or 'paper_number' if not stated on the exam paper.
+- Tag 'diagram_type' ('graph' | 'circuit' | 'choice_grid' | 'apparatus' | 'photo' | null) and 'has_embedded_values' (boolean).`;
 
   const metadataSnippet = isIgcse
     ? `"paper_metadata": {
@@ -229,6 +252,19 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "bounding_box": [150, 45, 420, 550],
       "options": null,
       "sub_questions": ${subQuestionsSnippet},
+      "data_tables": [
+        {
+          "id": "Table 1.1",
+          "title": "Rate of reaction measurements",
+          "headers": ["Time / s", "Volume of gas / cm³", "State of mixture"],
+          "rows": [
+            ["0", "0.0", "liquid + solid"],
+            ["30", "15.5", "effervescence"],
+            ["60", "28.0", "effervescence"],
+            ["120", "42.0", "reaction complete"]
+          ]
+        }
+      ],
       "mark_scheme": {
         "marking_points": ["See sub-question breakdown [${isIgcse ? 9 : 7}]"],
         "acceptable_answers": []${guidanceSchemaSnippet}
@@ -261,11 +297,23 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
 }
 
 CRITICAL FORMATTING RULES:
-1. MANDATORY TABLE TRANSCRIPTION IN SUB-QUESTIONS & MAIN QUESTIONS (TOP PRIORITY):
-   - Whenever ANY sub-question (e.g. (a), (b)(i), (c)) or main question contains or refers to a data table, experimental observations, titration readings, physical properties matrix, or student fill-in completion grid:
-     a) You MUST transcribe the COMPLETE Markdown Table (| Header 1 | Header 2 | ... |\\n|---|---|...|\\n| Row 1 | Val 1 | ... |) directly in that sub_question's "question_text" field.
-     b) ABSOLUTELY NEVER omit the table or replace it with placeholder text.
-     c) Preserve ALL column headers, row labels, units (e.g. $g/cm^3$, $^\\circ\\text{C}$, $s$, $cm^3$, $kJ/mol$, $bpm$, $arbitrary units$), given values, and blank fill-in cells represented as '[       ]'.
+1. MANDATORY DUAL-REPRESENTATION TABLE TRANSCRIPTION (TOP PRIORITY):
+   - Whenever ANY question or sub-question contains or refers to a data table, experimental observations, titration readings, physical properties matrix, or student fill-in completion grid:
+     a) Markdown Table: You MUST transcribe the COMPLETE Markdown Table (| Header 1 | Header 2 | ... |\\n|---|---|...|\\n| Row 1 | Val 1 | ... |) directly in that (sub_)question's "question_text" field. This guarantees 100% backward compatibility with PDF and Word document export.
+     b) Structured JSON "data_tables": You MUST ALSO extract the structured tabular data into the "data_tables" array:
+        "data_tables": [
+          {
+            "id": "Table 1.1",
+            "title": "Optional Table Title",
+            "headers": ["Compound", "Formula", "State at r.t.p."],
+            "rows": [
+              ["Methane", "$CH_4$", "gas"],
+              ["Calcium carbonate", "$CaCO_3$", "solid"],
+              ["Sodium chloride", { "value": "[       ]", "is_blank": true, "expected_answer": "$NaCl$" }, { "value": "[       ]", "is_blank": true, "expected_answer": "solid" }]
+            ]
+          }
+        ]
+     c) ABSOLUTELY NEVER omit tables or replace them with placeholder text. Preserve all column headers, row labels, units, and blank fill-in cells '[       ]'.
 2. BIOLOGY SPECIALIZED PATTERNS (CRITICAL):
    - DICHOTOMOUS KEYS & MULTI-SPECIMEN COLLAGES (e.g. Fig. 1.1 showing species A–F on one page, and Key table on the next page):
      * Crop the specimen collage (all specimens A to F together with the Fig title) as the diagram on that question/sub-question.
@@ -283,8 +331,10 @@ CRITICAL FORMATTING RULES:
    - FILL-IN-THE-BLANK SENTENCES:
      * Transcribe completion statements with clear blank lines (e.g. 'Organisms are classified into groups by the .......................................... that they share.') and mark brackets [ ].
 3. Group all sub-questions inside their parent question's sub_questions array if the question has sub-parts. For standalone questions, keep sub_questions empty.
-4. CHEMICAL FORMULAS, WORD EQUATIONS & MATH:
-   - Convert ALL mathematical symbols, chemical formulas, and equations to LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
+4. CHEMICAL FORMULAS, WORD EQUATIONS & KATEX MATH STANDARDIZATION:
+   - Convert ALL mathematical symbols, chemical formulas, and equations to KaTeX-compatible LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
+   - Use explicit multiplication: write '\\times' instead of bare '*' or 'x'.
+   - NEVER write unescaped '%' inside LaTeX math mode as KaTeX treats '%' as a comment delimiter that truncates formulas. Write '\\%' or keep percentages in plain text outside dollar signs (e.g. '85%' or '$85\\%$').
    - For Biology word equations and reaction paths, use arrows: '$glucose \\rightarrow alcohol + carbon dioxide$' or '$carbon dioxide + water \\rightarrow glucose + oxygen$'.
    - For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}'.
 5. Identify paper provenance: series (or exam session/period), year, paper_number (or paper title if applicable).
@@ -865,16 +915,19 @@ Analyze the attached exam paper PDF page(s) and any mark scheme / answer key con
 
 Extract every numbered question (e.g. Question 1, 2, 3... 30) as a structured JSON object.
 
-CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
-1. FULL VERBATIM PASSAGE DUPLICATION (NO TRUNCATION / NO ELLIPSIS):
-   - ABSOLUTELY NEVER USE ELLIPSIS (...) OR TRUNCATE A READING TEXT!
-   - You MUST extract and transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom.
-   - When a reading passage / stimulus text applies to a group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
-     * You MUST copy the complete reading text heading and ALL body paragraphs verbatim into the "question_text" of EVERY SINGLE QUESTION in that group (e.g. Question 1, Question 2, Question 3, and Question 4).
-     * DO NOT use references or links. EVERY question must have its own full, independent copy of the reading passage followed by its specific question stem.
-     * NEVER omit, shorten, or summarize any paragraph from the reading passage.
-   - Format "question_text" cleanly with Markdown:
-     "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!"
+CRITICAL READING COMPREHENSION & PASSAGE CATALOG RULES:
+1. ROOT "passages" ARRAY (EXTRACT EACH PASSAGE EXACTLY ONCE):
+   - When a reading passage, stimulus text, article, dialogue, or wacana applies to a question or group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
+   - Extract the entire reading text ONCE into the top-level "passages" array:
+     * "id": Unique identifier for the passage (e.g. "Text 1", "Text 2", "Passage A").
+     * "heading": The full text title/heading verbatim (e.g. "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)").
+     * "body": Transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom. ABSOLUTELY NEVER USE ELLIPSIS (...) OR TRUNCATE!
+     * "page_number": The PDF page number where this passage begins.
+     * "target_questions": Array of question numbers referencing this passage (e.g. ["1", "2", "3", "4"]).
+   - In "questions":
+     * For EVERY question belonging to this passage, set "passage_ref": "<id>" (e.g. "passage_ref": "Text 1").
+     * In "question_text", DO NOT copy or duplicate the reading passage body! Include ONLY the question prompt/stem (e.g. "1. [Matching/Table] What is the main purpose of visitors coming to these places...").
+     * If a question is standalone and NOT based on any passage, set "passage_ref": null.
 
 2. EXTRACT 100% OF ALL QUESTIONS WITHOUT SKIPPING ANY:
    - You MUST extract every numbered question (e.g. Question 1 to Question 30+) present across all pages.
@@ -887,8 +940,8 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
    - Set "total_marks": 1.
    - CRITICAL (ZERO DUPLICATION): NEVER write or duplicate the choices (A., B., C., D., E.) inside "question_text"! The "question_text" field must contain ONLY the question stem / prompt (e.g. "The word \\"enduring\\" in the last paragraph is closest in meaning to..."). All choices MUST reside exclusively in the "options" array. Placing choices in both fields causes ugly duplicates in the user interface!
 
-4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "[Multiple Select]" / "There is more than one answer"):
-   - When a question header specifies "[Multiple Select]" or "(There is more than one correct answer. Tick (✓) on every correct answer!)" or is classified as "Pilihan Ganda Kompleks" in the answer key:
+4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "MCC" / "[Multiple Select]" / "Choose more than one"):
+   - When a question header specifies "[Multiple Select]", "(Choose more than one)", "(There is more than one correct answer)", or is classified as "MCC" / "Pilihan Ganda Kompleks" in the answer key:
    - Set "question_style": "Multiple Select".
    - Extract ALL choices (A–E) in "options".
    - In "mark_scheme":
@@ -908,7 +961,7 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
 
 6. IN-PDF ANSWER KEYS & EXPLANATIONS ("Kunci Jawaban dan Pembahasan"):
    - Match each question number in the table (e.g. No. 1 to No. 30) with its question.
-   - Extract the correct answer into "acceptable_answers" and "marking_points".
+   - Extract the correct answer into "acceptable_answers" and "marking_points". Note: "MCC" means Multiple Choice Complex (Multiple Select) and "MC" means Multiple Choice.
    - Extract the complete pedagogical explanation / reasoning ("Pembahasan") verbatim into "guidance" or "marking_points". DO NOT summarize the Pembahasan!
 
 7. STRICT VERBATIM LANGUAGE PRESERVATION (ZERO UNWANTED TRANSLATIONS):
@@ -918,7 +971,7 @@ CRITICAL READING COMPREHENSION & PASSAGE ASSOCIATION RULES:
 
 8. STRICT PROHIBITION ON DUPLICATING OPTIONS IN QUESTION TEXT:
    - ABSOLUTELY NEVER copy, duplicate, or include the multiple choice options (A, B, C, D, E or a, b, c, d, e) inside "question_text".
-   - The "question_text" field must contain ONLY the stimulus reading text and the question stem / prompt.
+   - The "question_text" field must contain ONLY the question stem / prompt (and markdown table if structured).
    - All options MUST be extracted exclusively into the "options" array.
 
 ${fillInRule}
@@ -927,15 +980,25 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
 
 {
   ${metadataSnippet},
+  "passages": [
+    {
+      "id": "Text 1",
+      "heading": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)",
+      "body": "Komodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.",
+      "page_number": 3,
+      "target_questions": ["1", "2", "3"]
+    }
+  ],
   "questions": [
     {
       "question_number": "1",
       "parent_question_id": "Q1",
+      "passage_ref": "Text 1",
       "page_number": 3,
       "year": ${exampleYear},
       "series": "${exampleSeries}",
       "paper_number": 1,
-      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!\\n\\n| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | | |\\n| Padar Island | | |\\n| Pink Beach | | |",
+      "question_text": "1. [Matching/Table] What is the main purpose of visitors coming to these places: supporting conservation or enjoying natural beauty? Click Conservation or Natural Beauty for each place!\\n\\n| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | | |\\n| Padar Island | | |\\n| Pink Beach | | |",
       "question_style": "Structured",
       "total_marks": 3,
       "estimated_difficulty": "Medium",
@@ -960,11 +1023,12 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
     {
       "question_number": "2",
       "parent_question_id": "Q2",
+      "passage_ref": "Text 1",
       "page_number": 4,
       "year": ${exampleYear},
       "series": "${exampleSeries}",
       "paper_number": 1,
-      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n2. [Multiple Choice]\\nThe text primarily discusses...",
+      "question_text": "2. [Multiple Choice]\\nThe text primarily discusses...",
       "question_style": "Multiple Choice",
       "total_marks": 1,
       "estimated_difficulty": "Easy",
@@ -989,11 +1053,12 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
     {
       "question_number": "3",
       "parent_question_id": "Q3",
+      "passage_ref": "Text 1",
       "page_number": 4,
       "year": ${exampleYear},
       "series": "${exampleSeries}",
       "paper_number": 1,
-      "question_text": "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)\\n\\nKomodo National Park (KNP) in East Nusa Tenggara is a UNESCO World Heritage Site. The park was established to protect the endangered Komodo dragon and its habitat, but it also safeguards amazing marine and terrestrial biodiversity. The surrounding waters are part of the Coral Triangle, making it one of the planet's richest areas in terms of marine life.\\n\\nOne of its main attractions is Padar Island. A challenging trek takes visitors to the summit for an iconic view of three bays with different colored sand. This view is a paradise for photographers. Another popular attraction is Pink Beach, named after its unique sand color—a mixture of white sand and red coral fragments. The spot offers tranquility for swimming and relaxing.\\n\\nA visit to KNP is more than just tourism; it's a contribution to conservation. Every ticket purchased supports the protection of the endangered Komodo dragon. Through responsible exploration, visitors can enjoy the natural beauty while helping ensure the survival of this unique ecosystem.\\n\\n3. [Multiple Select]\\nWhich parts of the text best support the description of Komodo National Park as an \\"ecological paradise\\"? (There is more than one correct answer. Click on every correct answer!)",
+      "question_text": "3. [Multiple Select]\\nWhich parts of the text best support the description of Komodo National Park as an \\"ecological paradise\\"? (There is more than one correct answer. Click on every correct answer!)",
       "question_style": "Multiple Select",
       "total_marks": 2,
       "estimated_difficulty": "Medium",
@@ -1405,6 +1470,163 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
   }
 
   return stem.trim();
+}
+
+/**
+ * Strips duplicate sub-questions (e.g. (a), (b)(i), (c)...) from the parent question stem
+ * when structured sub-questions are already broken out into sub_questions array.
+ * Keeps only the authentic introductory scenario, apparatus description, or reaction context.
+ */
+export function stripDuplicateSubQuestionsFromStem(
+  stem?: string | null,
+  subQuestions?: SubQuestion[] | null
+): string {
+  if (!stem || typeof stem !== 'string') return '';
+  if (!subQuestions || !Array.isArray(subQuestions) || subQuestions.length === 0) {
+    return stem.trim();
+  }
+
+  const trimmedStem = stem.trim();
+  const firstSub = subQuestions[0];
+  const firstSubId = (firstSub?.sub_id || '').trim();
+
+  const lines = trimmedStem.split('\n');
+
+  // Candidate regex patterns for sub-question start
+  // Matches: "(a)", "(a)(i)", "(i)", "a.", "a)", "1.", "(1)"
+  const subStartPattern = /^\s*(?:\([a-z0-9]+\)(?:\([a-z0-9]+\))?|[a-z0-9]+[.)])\s+/i;
+
+  let exactFirstSubRegex: RegExp | null = null;
+  if (firstSubId) {
+    const escaped = firstSubId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    exactFirstSubRegex = new RegExp(`^\\s*${escaped}\\s+`, 'i');
+  }
+
+  let cutIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const matchesExact = exactFirstSubRegex ? exactFirstSubRegex.test(line) : false;
+    const matchesGeneral = subStartPattern.test(line);
+
+    if (matchesExact || (i > 0 && matchesGeneral)) {
+      const remainingText = lines.slice(i).join('\n');
+      const hasMarksOrDots = /\[\d+\]|\.{4,}/.test(remainingText);
+      const hasNextSub = lines.slice(i + 1).some((l) => subStartPattern.test(l));
+
+      const cleanFirstSubText = (firstSub.question_text || '')
+        .replace(/^[\s(a-z0-9.)\]:]+/i, '')
+        .trim()
+        .slice(0, 20);
+
+      const matchesText =
+        cleanFirstSubText.length > 5 &&
+        line.toLowerCase().includes(cleanFirstSubText.toLowerCase());
+
+      if (matchesExact || hasNextSub || (hasMarksOrDots && matchesText)) {
+        cutIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (cutIndex >= 0) {
+    return lines.slice(0, cutIndex).join('\n').trim();
+  }
+
+  // Also check inline match if all content was compressed into a single line
+  if (cutIndex < 0 && exactFirstSubRegex && firstSubId) {
+    const escaped = firstSubId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const inlineMatch = trimmedStem.match(new RegExp(`(\\s+)(${escaped}\\s+[\\s\\S]+)`, 'i'));
+    if (inlineMatch && inlineMatch.index !== undefined && inlineMatch.index > 0) {
+      const candidateStem = trimmedStem.slice(0, inlineMatch.index).trim();
+      if (candidateStem.length > 0) {
+        return candidateStem;
+      }
+    }
+  }
+
+  return trimmedStem;
+}
+
+/**
+ * Extracts raw SVG string from an SVG Data URI (data:image/svg+xml;utf8,... or data:image/svg+xml;base64,...)
+ */
+export function extractSvgFromDiagramUrl(diagramUrl?: string | null): string | null {
+  if (!diagramUrl || typeof diagramUrl !== 'string') return null;
+  if (diagramUrl.startsWith('data:image/svg+xml;utf8,')) {
+    try {
+      return decodeURIComponent(diagramUrl.slice('data:image/svg+xml;utf8,'.length));
+    } catch {
+      return null;
+    }
+  }
+  if (diagramUrl.startsWith('data:image/svg+xml;base64,')) {
+    try {
+      if (typeof atob !== 'undefined') {
+        return atob(diagramUrl.slice('data:image/svg+xml;base64,'.length));
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalizes question options into a clean, uniform string array (e.g. ["A. ...", "B. ...", "C. ...", "D. ..."]).
+ * Handles:
+ * - string[] (plain strings or already formatted)
+ * - Array of objects (e.g. [{ letter: 'A', text: '...' }], [{ label: 'A', value: '...' }], [{ key: 'A', text: '...' }])
+ * - Key-value object (e.g. { A: '...', B: '...' })
+ * - Missing letter prefixes (auto-assigns A., B., C., D.)
+ * Prevents any accidental "[object Object]" data corruption.
+ */
+export function normalizeOptions(rawOptions: any): string[] | null {
+  if (!rawOptions) return null;
+
+  let candidateList: any[] = [];
+
+  if (Array.isArray(rawOptions)) {
+    candidateList = rawOptions;
+  } else if (typeof rawOptions === 'object') {
+    const keys = Object.keys(rawOptions);
+    if (keys.length > 0 && keys.every((k) => /^[A-Ea-e\d]$/.test(k))) {
+      candidateList = keys.sort().map((k) => ({ letter: k, text: rawOptions[k] }));
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  if (candidateList.length === 0) return null;
+
+  const alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+  return candidateList.map((item, idx) => {
+    const fallbackLetter = alphabet[idx] || String(idx + 1);
+
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (/^[([]?[A-Ha-h\d][)\]\.:\s-]/i.test(trimmed)) {
+        return trimmed;
+      }
+      return `${fallbackLetter}. ${trimmed}`;
+    }
+
+    if (item && typeof item === 'object') {
+      const letter = String(item.letter || item.key || item.label || fallbackLetter).trim().toUpperCase();
+      const text = String(item.text || item.value || item.content || item.description || '').trim();
+      if (!text && typeof item.toString === 'function' && item.toString() !== '[object Object]') {
+        return `${letter}. ${item.toString()}`;
+      }
+      return `${letter}. ${text}`;
+    }
+
+    return `${fallbackLetter}. ${String(item || '')}`.trim();
+  });
 }
 
 export function parseRobustJson<T = any>(rawText: string): T {
@@ -1827,11 +2049,19 @@ export async function extractQuestionsFromPdf(
     throw new Error('Response missing required paper_metadata or questions array.');
   }
 
-  // Normalize all questions to clean ext artifacts, strip duplicate choices from stem, and ensure bare LaTeX formulas outside $ are wrapped in $...$
+  if (Array.isArray(parsed.passages)) {
+    parsed.passages = parsed.passages.map((p) => ({
+      ...p,
+      heading: p.heading ? cleanExtAndLatexArtifacts(p.heading) : p.heading,
+      body: p.body ? cleanExtAndLatexArtifacts(p.body) : p.body,
+    }));
+  }
+
+  // Normalize all questions to clean ext artifacts, normalize options, preserve data_tables, and ensure bare LaTeX formulas outside $ are wrapped in $...$
   parsed.questions = parsed.questions.map((q) => {
-    const rawOptions = Array.isArray(q.options)
-      ? q.options.map((opt) => (typeof opt === 'string' ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt)) : opt))
-      : q.options;
+    const rawOptions = normalizeOptions(q.options)?.map((opt) =>
+      ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt))
+    ) || null;
     const cleanedText = stripDuplicateOptionsFromStem(
       ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(q.question_text || '')),
       rawOptions
@@ -1842,9 +2072,12 @@ export async function extractQuestionsFromPdf(
       diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : q.has_diagram ? 'qp' : null),
       question_text: cleanedText,
       options: rawOptions,
+      data_tables: Array.isArray(q.data_tables) ? q.data_tables : undefined,
       sub_questions: Array.isArray(q.sub_questions)
         ? q.sub_questions.map((sq) => {
-            const sqOptions = Array.isArray((sq as any).options) ? (sq as any).options : null;
+            const sqOptions = normalizeOptions((sq as any).options)?.map((opt) =>
+              ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt))
+            ) || null;
             return {
               ...sq,
               diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
@@ -1852,6 +2085,8 @@ export async function extractQuestionsFromPdf(
                 ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
                 sqOptions || rawOptions
               ),
+              options: sqOptions,
+              data_tables: Array.isArray((sq as any).data_tables) ? (sq as any).data_tables : undefined,
               mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
             };
           })
@@ -2063,6 +2298,11 @@ YOU MUST STRICTLY ADHERE TO THIS INSTRUCTION:
 `
     : '';
 
+  const cleanedOriginalStem = stripDuplicateSubQuestionsFromStem(
+    stripDuplicateOptionsFromStem(original.question_text || '', original.options),
+    original.sub_questions
+  );
+
   const prompt = `You are an expert exam author for Cambridge IGCSE, GCSE, and A-Level assessments.
 Create a new syllabus-aligned variant of the following exam question.
 
@@ -2072,8 +2312,8 @@ ORIGINAL QUESTION DETAILS:
 - Style: ${original.question_style}
 - Difficulty: ${original.difficulty}
 - Total Marks: ${original.marks}
-- Stem: ${original.question_text}
-${original.diagram_url ? `- Has Diagram/Visual Resource: Yes (${original.resource_ref ? `Referenced as ${original.resource_ref}` : 'Visual figure/diagram attached'}). The variant question retains this visual context.` : ''}
+- Stem: ${cleanedOriginalStem}
+${original.diagram_url ? `- Has Diagram/Visual Resource: Yes (${original.resource_ref ? `Referenced as ${original.resource_ref}` : 'Visual figure/diagram attached'}). Diagram Type: ${original.diagram_type || 'unclassified'}.` : ''}
 ${original.options ? `- Original Options: ${JSON.stringify(original.options)}` : ''}
 ${original.sub_questions && original.sub_questions.length > 0 ? `- Original Sub-questions: ${JSON.stringify(original.sub_questions)}` : ''}
 ${original.mark_scheme ? `- Original Mark Scheme: ${JSON.stringify(original.mark_scheme)}` : ''}
@@ -2082,27 +2322,80 @@ GENERATION GOAL:
 ${modeInstruction}
 ${customInstructionDirective}
 
+CRITICAL STEM ANTI-HALLUCINATION & 4-PHASE SCIENTIFIC SCRATCHPAD (MANDATORY):
+Before writing question text or mark schemes, you MUST execute a rigorous derivation in a "scratchpad" object:
+1. "bounds_and_constraints": Define physical/mathematical domain boundaries:
+   - Physics: masses $m > 0$, time $t > 0$, speed $v < c$, non-negative radicands ($u^2 + 2as \ge 0$), efficiency $\le 100\%$.
+   - Chemistry: feasible reactions (reactivity series compliant, valid valencies/oxidation states, e.g. Group 1: +1, Group 2: +2).
+   - Math: non-negative quadratic discriminants ($b^2 - 4ac \ge 0$), clean rational or terminating decimal roots.
+2. "independent_variables": Choose realistic, well-behaved numbers with standard SI units and 2–3 Significant Figures precision (e.g. mass $m = 0.35\text{ kg}$, height $h = 2.4\text{ m}$, acceleration $g = 9.8\text{ m/s}^2$ or $10\text{ m/s}^2$, voltage $V = 12\text{ V}$, resistance $R = 4\,\Omega$).
+3. "derivations_and_laws": Calculate all dependent values step-by-step with explicit formulas and standard units:
+   - Physics/Math: e.g. $\Delta E_p = mgh = 0.35 \times 9.8 \times 2.4 = 8.232\text{ J} \approx 8.2\text{ J}$ (2 s.f.); $v = \sqrt{2gh} = \sqrt{2 \times 9.8 \times 2.4} = 6.86\text{ m/s} \approx 6.9\text{ m/s}$.
+   - Chemistry: Atom count on both sides AND total net ionic charge on both sides (charge balance).
+4. "synchronization_checklist":
+   - "SHOW THAT [VALUE]" SYNCHRONIZATION: Whenever a sub-part includes "Show that [value]..." or references a previous part's calculated value, you MUST update that target value to match the newly derived scratchpad value exactly!
+   - ALL numbers in "question_text", "sub_questions", "mark_scheme", and "svg_content" MUST match these derived scratchpad values with ZERO discrepancy.
+   - For multi-part dependent questions, explicitly include "allow ecf (error carried forward)" in the sub-question mark schemes.
+
+PARAMETRIC SVG GENERATION (DIAGRAM-VALUE COHERENCE):
+Does this question require or reference a quantitative/schematic visual?
+- WHITELIST (ONLY GENERATE SVG FOR THESE):
+  * Cartesian coordinate graphs (axes with ticks & units, speed-time, extension-load, cooling curve, reaction profile).
+  * Electrical circuit schematics (standard symbols: cell/battery, switch, lamp, resistors, ammeter, voltmeter).
+  * Ray optics & lens schematics (straight rays, focal points, principal axis).
+  * Mechanics schematics (slanted ramp with angle $\theta$, hanging pulley with masses, lever balance, spring).
+  SVG TECHNICAL REQUIREMENTS:
+  - <svg viewBox="0 0 500 300" xmlns="http://www.w3.org/2000/svg" class="exam-svg-graphic">
+  - Charcoal line art aesthetic: strokes "#1e293b" (stroke-width 2 or 1.5), fill "none" or "#f8fafc", standard hatching for ground/surfaces.
+  - Text labels: <text> elements in the SVG MUST display the EXACT values derived in your scratchpad (e.g. "2.4 m", "0.35 kg", "12 V").
+  - Native Hotspots: If labels need to be identified by the student, use <text class="hotspot-label" data-hotspot="A" x="..." y="...">[ A ]</text>.
+  - Fluid Responsive: Do NOT specify fixed pixel width or height on the outer <svg> tag.
+- BLACKLIST (DO NOT GENERATE SVG):
+  * If it is a real photograph, biological anatomical specimen/tissue, or complex laboratory glassware setup:
+    Set "svg_content": null and preserve the visual reference so the original image crop is retained!
+
+DIAGNOSTIC DISTRACTOR ENGINEERING (FOR MULTIPLE CHOICE):
+If generating an MCQ, provide a "distractor_analysis" object mapping each option (A, B, C, D) to its specific diagnostic rationale:
+- Identify the 1 CORRECT answer and show its exact calculation.
+- For each WRONG option, identify the specific student misconception trap (e.g. "Inverted formula: divides instead of multiplying", "Omitted unit conversion: used cm instead of m", "Forgot to square the velocity").
+
+TABULAR DATA (DUAL-REPRESENTATION):
+If the question contains a table of data, observations, or fill-in completion cells:
+- Transcribe the complete Markdown table in "question_text" (ensuring universal export compatibility).
+- ALSO provide the structured JSON array in "data_tables": [{ "id": "Table 1.1", "title": "...", "headers": ["..."], "rows": [["..."]] }].
+
 REQUIREMENTS:
-${trimmedCustomInstruction ? `1. MANDATORY TEACHER INSTRUCTION: The generated variant MUST explicitly satisfy and incorporate the teacher's custom instruction: "${trimmedCustomInstruction}". Do NOT ignore or skip this instruction.\n2.` : '1.'} Wrap ALL chemical formulas, scientific notation, units, and math equations in LaTeX ($...$ for inline, $$...$$ for block). Example: $CaCO_3$, $\\frac{2}{3}$, $1.5\\times 10^5\\text{ Pa}$, $dm^3$.
+${trimmedCustomInstruction ? `1. MANDATORY TEACHER INSTRUCTION: The generated variant MUST explicitly satisfy and incorporate the teacher's custom instruction: "${trimmedCustomInstruction}". Do NOT ignore or skip this instruction.\n2.` : '1.'} Wrap ALL chemical formulas, scientific notation, units, and math equations in LaTeX ($...$ for inline, $$...$$ for block). Use \\times for multiplication. NEVER write unescaped '%' inside math delimiters; write '\\%' or keep outside math mode.
 ${trimmedCustomInstruction ? '3.' : '2.'} For structured questions, generate a coherent stem and an array of sub_questions, each with sub_id, question_text, marks, and mark_scheme. "options" MUST BE null!
 ${trimmedCustomInstruction ? '4.' : '3.'} For MCQ questions, generate 4 options A, B, C, D and leave sub_questions empty.
-${trimmedCustomInstruction ? '5.' : '4.'} If the original question contains or references a diagram, figure, chart, or apparatus (e.g. "Fig. 1.1", "the diagram shows...", etc.), retain or adapt appropriate references to the diagram/figure so that the generated variant makes sense with the transferred diagram/picture.
-${trimmedCustomInstruction ? '6.' : '5.'} Provide a complete, rigorous mark_scheme object containing:
-   - "marking_points": string array with mark allocations in square brackets (e.g. "Calculates moles of $HCl$: $0.05\\text{ mol}$ [1]")
-   - "acceptable_answers": string array of allowed alternatives
-   - "guidance": string array with examiner advice
-   - "common_misconceptions": string array of student mistakes
-${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
+${trimmedCustomInstruction ? '5.' : '4.'} Provide a complete, rigorous mark_scheme object containing marking_points, acceptable_answers, guidance, and common_misconceptions.
+${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON object matching the schema below (no code block ticks, no markdown formatting outside JSON):
 
 {
-  "question_text": "The main question stem or context",
+  "scratchpad": {
+    "bounds_and_constraints": "Mass m > 0, height h > 0, real velocity v = sqrt(2gh).",
+    "independent_variables": "m = 0.35 kg, h = 2.4 m, g = 9.8 m/s^2",
+    "derivations_and_laws": "Ep = mgh = 0.35 * 9.8 * 2.4 = 8.232 J ≈ 8.2 J; v = sqrt(2gh) = 6.86 m/s ≈ 6.9 m/s. Energy conserved.",
+    "synchronization_checklist": "Verified: Ep is 8.2 J, v is 6.9 m/s in all parts, mark scheme, and SVG labels."
+  },
+  "question_text": "CRITICAL: Output ONLY the opening scenario, introductory context, or apparatus setup. DO NOT duplicate sub-questions (a), (b), (c) inside question_text! Sub-questions MUST ONLY be in the 'sub_questions' array.",
   "question_style": "${options.mode === 'mcq' ? 'Multiple Choice' : options.mode === 'structured' ? 'Structured' : original.question_style || 'Structured'}",
   "marks": ${options.mode === 'mcq' ? 1 : original.marks || 4},
   "difficulty": "${options.mode === 'scaffold' ? 'Easy' : options.mode === 'extension' ? 'Hard' : original.difficulty || 'Medium'}",
   "topic": "${original.topic}",
   "sub_topic": "${original.sub_topic || ''}",
+  "svg_content": "<svg viewBox=\\"0 0 500 300\\" xmlns=\\"http://www.w3.org/2000/svg\\">...</svg>",
+  "diagram_type": "${original.diagram_type || 'graph'}",
+  "has_embedded_values": true,
   "options": ${options.mode === 'mcq' ? '["A. ...", "B. ...", "C. ...", "D. ..."]' : 'null'},
-  "sub_questions": ${options.mode === 'mcq' ? '[]' : '[{"sub_id": "(a)", "question_text": "...", "marks": 2, "mark_scheme": "Mark point [2]"}]'},
+  "sub_questions": ${options.mode === 'mcq' ? '[]' : '[{"sub_id": "(a)", "question_text": "...", "marks": 2, "mark_scheme": "Mark point [2]", "depends_on_sub_ids": []}]'},
+  "data_tables": null,
+  "distractor_analysis": {
+    "A": "Misconception explanation for option A",
+    "B": "Misconception explanation for option B",
+    "C": "CORRECT answer calculation",
+    "D": "Misconception explanation for option D"
+  },
   "mark_scheme": {
     "marking_points": ["Mark point [1]"],
     "acceptable_answers": ["Alternative answer"],
@@ -2127,7 +2420,7 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: 'application/json',
-            temperature: 0.4,
+            temperature: 0.35,
             maxOutputTokens: 8192,
           },
         }),
@@ -2150,17 +2443,28 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
 
   const parsed = parseRobustJson<any>(text);
 
-  // Sanitize sub-questions while preserving diagram and metadata from original where applicable
+  // Extract clean SVG content if generated by AI
+  const cleanTopSvg = cleanSvgContent(parsed.svg_content);
+  const topSvgDataUrl = cleanTopSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(cleanTopSvg)}` : null;
+
+  // Sanitize sub-questions while preserving diagram, data_tables, and metadata from original where applicable
   let sanitizedSubs: SubQuestion[] = Array.isArray(parsed.sub_questions)
     ? parsed.sub_questions.map((sub: any, idx: number) => {
         const origSub = original.sub_questions?.find((os) => os.sub_id === sub.sub_id) || original.sub_questions?.[idx];
-        const subDiagramUrl = sub.diagram_url || origSub?.diagram_url || null;
+        const subSvg = cleanSvgContent(sub.svg_content);
+        const subSvgDataUrl = subSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(subSvg)}` : null;
+        const subDiagramUrl = subSvgDataUrl || sub.diagram_url || origSub?.diagram_url || null;
+        const subOptions = normalizeOptions(sub.options) || (origSub?.options ? normalizeOptions(origSub.options) : null);
         return {
           sub_id: String(sub.sub_id || ''),
           question_text: String(sub.question_text || ''),
           marks: Number(sub.marks) || 1,
-          has_diagram: Boolean(subDiagramUrl || sub.has_diagram || origSub?.has_diagram),
+          has_diagram: Boolean(subSvg || subDiagramUrl || sub.has_diagram || origSub?.has_diagram),
           diagram_url: subDiagramUrl,
+          svg_content: subSvg || (subDiagramUrl ? extractSvgFromDiagramUrl(subDiagramUrl) : (origSub?.svg_content || null)),
+          diagram_type: sub.diagram_type || origSub?.diagram_type || null,
+          has_embedded_values: sub.has_embedded_values !== undefined ? Boolean(sub.has_embedded_values) : origSub?.has_embedded_values,
+          depends_on_sub_ids: Array.isArray(sub.depends_on_sub_ids) ? sub.depends_on_sub_ids.map(String) : (origSub?.depends_on_sub_ids || []),
           diagram_source: sub.diagram_source || origSub?.diagram_source || null,
           resource_ref: sub.resource_ref || origSub?.resource_ref || null,
           page_number: sub.page_number || origSub?.page_number || null,
@@ -2168,7 +2472,8 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
           bounding_box: sub.bounding_box || origSub?.bounding_box || null,
           audio_url: sub.audio_url || origSub?.audio_url || null,
           audio_metadata: sub.audio_metadata || origSub?.audio_metadata || null,
-          options: Array.isArray(sub.options) ? sub.options : (origSub?.options || null),
+          options: subOptions,
+          data_tables: Array.isArray(sub.data_tables) ? sub.data_tables : (origSub?.data_tables || undefined),
           mark_scheme: typeof sub.mark_scheme === 'string'
             ? sub.mark_scheme
             : (sub.mark_scheme?.marking_points
@@ -2207,10 +2512,12 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
   let finalOptions: string[] | null = null;
   let finalSubs: SubQuestion[] | undefined = undefined;
 
+  const normalizedTopOptions = normalizeOptions(parsed.options);
+
   if (options.mode === 'mcq') {
     finalStyle = 'Multiple Choice';
-    finalOptions = Array.isArray(parsed.options) && parsed.options.length > 0
-      ? parsed.options.map(String)
+    finalOptions = normalizedTopOptions && normalizedTopOptions.length > 0
+      ? normalizedTopOptions
       : ['A. Option A', 'B. Option B', 'C. Option C', 'D. Option D'];
     finalSubs = undefined;
   } else if (options.mode === 'structured') {
@@ -2219,9 +2526,7 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
     finalSubs = sanitizedSubs.length > 0 ? sanitizedSubs : undefined;
   } else {
     finalStyle = (parsed.question_style as QuestionStyle) || original.question_style || 'Structured';
-    finalOptions = finalStyle === 'Multiple Choice' && Array.isArray(parsed.options)
-      ? parsed.options.map(String)
-      : null;
+    finalOptions = finalStyle === 'Multiple Choice' ? normalizedTopOptions : null;
     finalSubs = finalStyle !== 'Multiple Choice' && sanitizedSubs.length > 0
       ? sanitizedSubs
       : undefined;
@@ -2231,6 +2536,17 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
   const computedMarks = finalSubs && finalSubs.length > 0
     ? finalSubs.reduce((sum, s) => sum + s.marks, 0)
     : (finalStyle === 'Multiple Choice' ? 1 : Number(parsed.marks) || original.marks || 1);
+
+  // Compile misconceptions including diagnostic distractor analysis
+  const baseMisconceptions: string[] = Array.isArray(parsed.mark_scheme?.common_misconceptions)
+    ? parsed.mark_scheme.common_misconceptions.map(String)
+    : [];
+
+  if (parsed.distractor_analysis && typeof parsed.distractor_analysis === 'object') {
+    Object.entries(parsed.distractor_analysis).forEach(([letter, desc]) => {
+      baseMisconceptions.push(`Option ${letter}: ${desc}`);
+    });
+  }
 
   // Sanitize mark scheme
   const sanitizedMarkScheme = {
@@ -2243,10 +2559,14 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
     guidance: Array.isArray(parsed.mark_scheme?.guidance)
       ? parsed.mark_scheme.guidance.map(String)
       : [],
-    common_misconceptions: Array.isArray(parsed.mark_scheme?.common_misconceptions)
-      ? parsed.mark_scheme.common_misconceptions.map(String)
-      : [],
+    common_misconceptions: baseMisconceptions,
   };
+
+  // Strip any accidental sub-questions embedded into parent question_text
+  const cleanedParsedStem = stripDuplicateSubQuestionsFromStem(
+    stripDuplicateOptionsFromStem(parsed.question_text || '', parsed.options),
+    finalSubs
+  );
 
   return {
     syllabus_id: original.syllabus_id,
@@ -2254,7 +2574,7 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
     series: original.series || 'Variant',
     paper_number: original.paper_number || 1,
     question_number: `${original.question_number} (Variant)`,
-    question_text: String(parsed.question_text || ''),
+    question_text: cleanedParsedStem,
     question_style: finalStyle,
     topic: parsed.topic || original.topic,
     sub_topic: parsed.sub_topic || original.sub_topic,
@@ -2263,7 +2583,13 @@ ${trimmedCustomInstruction ? '7.' : '6.'} Return strictly a single valid JSON ob
     options: finalOptions,
     sub_questions: finalSubs,
     mark_scheme: sanitizedMarkScheme,
-    diagram_url: original.diagram_url || null,
+    data_tables: Array.isArray(parsed.data_tables) ? parsed.data_tables : (original.data_tables || undefined),
+    scratchpad: parsed.scratchpad || undefined,
+    // If a brand new parametric SVG was generated, serialize it as an SVG data URL in diagram_url so it persists in Supabase & prints universally!
+    svg_content: cleanTopSvg || (original.diagram_url ? extractSvgFromDiagramUrl(original.diagram_url) : (original.svg_content || null)),
+    diagram_url: topSvgDataUrl || original.diagram_url || null,
+    diagram_type: parsed.diagram_type || original.diagram_type || (cleanTopSvg ? 'circuit' : null),
+    has_embedded_values: parsed.has_embedded_values !== undefined ? Boolean(parsed.has_embedded_values) : original.has_embedded_values,
     diagram_source: original.diagram_source || null,
     resource_ref: original.resource_ref || null,
     insert_page_number: original.insert_page_number || null,

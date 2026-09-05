@@ -4,7 +4,10 @@ import { isQuestionBookmarked, toggleBookmarkQuestion } from '../services/questi
 import { getQuestionTags, addQuestionTag, removeQuestionTag } from '../services/questionTagService';
 import { ExamMathText } from './ExamMathText';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
+import { ExamVisualRender } from './ExamVisualRender';
+import { ExamDataTable } from './ExamDataTable';
 import { formatPaperBadge } from '../utils/paperUtils';
+import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../lib/gemini';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -58,12 +61,11 @@ function QuestionCardComponent({
 
   const handleAddTagSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (tagInput.trim()) {
-      const updated = addQuestionTag(question.id, tagInput.trim());
-      setTags(updated);
-      setTagInput('');
-      setIsAddingTag(false);
-    }
+    if (!tagInput.trim()) return;
+    const updated = addQuestionTag(question.id, tagInput.trim());
+    setTags(updated);
+    setTagInput('');
+    setIsAddingTag(false);
   };
 
   const handleRemoveTag = (e: React.MouseEvent, tag: string) => {
@@ -72,25 +74,27 @@ function QuestionCardComponent({
     setTags(updated);
   };
 
-  const cleanOptionText = (text: string, oIdx: number) => {
+  const cleanOptionText = (text: any, oIdx: number) => {
     if (!text) return '';
+    let str = '';
+    if (typeof text === 'string') {
+      str = text;
+    } else if (typeof text === 'object') {
+      str = text.text || text.value || text.content || JSON.stringify(text);
+    } else {
+      str = String(text);
+    }
     const letter = String.fromCharCode(65 + oIdx);
-    return text
+    return str
       .replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '')
       .trim();
   };
 
-  const cleanQuestionStem = (stem: string, options?: string[] | null) => {
-    if (!stem || !options || options.length === 0) return stem;
-    const lines = stem.split('\n');
-    const optStartIdx = lines.findIndex((l) => /^\s*A[.)\s:-]/.test(l));
-    if (optStartIdx > 0 && lines.length - optStartIdx <= 6) {
-      const remaining = lines.slice(optStartIdx).join('\n');
-      if (/\bB[.)\s:-]/.test(remaining) && /\bC[.)\s:-]/.test(remaining)) {
-        return lines.slice(0, optStartIdx).join('\n').trim();
-      }
-    }
-    return stem;
+  const cleanQuestionStem = (stem: string, options?: string[] | null, subQuestions?: Question['sub_questions']) => {
+    return stripDuplicateSubQuestionsFromStem(
+      stripDuplicateOptionsFromStem(stem || '', options),
+      subQuestions
+    );
   };
 
   const difficultyClass = (diff: string | null) => {
@@ -197,7 +201,7 @@ function QuestionCardComponent({
       {/* ─── Question Stem & Content ───────────────────────────────────────── */}
       <div className="q-card-body">
         <div className="q-stem-text">
-          <ExamMathText content={cleanQuestionStem(question.question_text, question.options)} />
+          <ExamMathText content={cleanQuestionStem(question.question_text, question.options, question.sub_questions)} />
         </div>
 
         {/* Audio Track Player if present */}
@@ -212,19 +216,20 @@ function QuestionCardComponent({
           </div>
         )}
 
-        {/* Diagram Preview */}
-        {question.diagram_url && (
-          <div className="q-diagram-container">
-            <img
-              src={question.diagram_url}
-              alt={`Diagram for Question ${question.question_number}`}
-              className="q-diagram-img"
-              loading="lazy"
-              decoding="async"
-              onClick={() => onViewDetails?.(question)}
-              title="Click to view high resolution diagram"
-            />
-          </div>
+        {/* Diagram / SVG Preview */}
+        <ExamVisualRender
+          svgContent={question.svg_content}
+          diagramUrl={question.diagram_url}
+          resourceRef={question.resource_ref}
+          alt={`Diagram for Question ${question.question_number}`}
+          diagramType={question.diagram_type}
+          hasEmbeddedValues={question.has_embedded_values}
+          onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+        />
+
+        {/* Structured Data Tables if present */}
+        {question.data_tables && question.data_tables.length > 0 && (
+          <ExamDataTable tables={question.data_tables} />
         )}
 
         {/* MCQ Options (Paper 1 / Paper 2) */}
@@ -299,19 +304,20 @@ function QuestionCardComponent({
                   <span className="q-sub-marks">[{sub.marks}]</span>
                 </div>
 
-                {/* Sub-question diagram preview */}
-                {sub.diagram_url && (
-                  <div className="q-sub-diagram-container">
-                    <img
-                      src={sub.diagram_url}
-                      alt={`Diagram for ${sub.sub_id}`}
-                      className="q-sub-diagram-img"
-                      loading="lazy"
-                      decoding="async"
-                      onClick={() => onViewDetails?.(question)}
-                      title={`Click to view diagram for ${sub.sub_id}`}
-                    />
-                  </div>
+                {/* Sub-question diagram / SVG preview */}
+                <ExamVisualRender
+                  svgContent={sub.svg_content}
+                  diagramUrl={sub.diagram_url}
+                  resourceRef={sub.resource_ref}
+                  alt={`Diagram for ${sub.sub_id}`}
+                  diagramType={sub.diagram_type}
+                  hasEmbeddedValues={sub.has_embedded_values}
+                  onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+                />
+
+                {/* Sub-question data tables if present */}
+                {sub.data_tables && sub.data_tables.length > 0 && (
+                  <ExamDataTable tables={sub.data_tables} />
                 )}
 
                 {/* Sub-question mark scheme */}

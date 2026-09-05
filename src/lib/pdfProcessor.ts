@@ -11,6 +11,7 @@ import {
   getApiKeyForChunk,
   normalizePaper4SubQuestions,
   stripDuplicateOptionsFromStem,
+  stripDuplicateSubQuestionsFromStem,
   type SubjectDomain,
 } from './gemini';
 import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
@@ -22,6 +23,13 @@ import {
 } from './diagramCropper';
 import type { ExtractionResult, ExtractedQuestion, SubQuestion } from '../types/database';
 import { compareQuestionNumbers } from '../services/questionBankService';
+import {
+  extractTextFromPdfPages,
+  verifyAndRepairPassages,
+  stitchPassagesToQuestions,
+} from './passageExtractor';
+
+export { stitchPassagesToQuestions } from './passageExtractor';
 
 // ─── Pipeline State ────────────────────────────────────────────────────────────
 
@@ -89,7 +97,7 @@ export async function saveExtractedQuestions(
   _insertFile?: File | null,
   onProgress?: (status: string) => void
 ): Promise<number> {
-  const { paper_metadata, questions, insert_resources } = result;
+  const { paper_metadata, questions, insert_resources, passages } = result;
 
   // 1. Upload cropped diagram blobs to Supabase Storage (WebP compressed)
   let permanentDiagramUrls = new Map<string, string>();
@@ -115,14 +123,19 @@ export async function saveExtractedQuestions(
   // 4. Insert questions with permanent Supabase public URLs
   onProgress?.(`Inserting ${questions.length} questions into database…`);
 
-  // Ensure reading passages are completely propagated across all questions in the paper
-  const finalizedQuestions = propagateReadingPassages(questions);
+  // Ensure reading passages are completely stitched and propagated across all questions in the paper
+  const finalizedQuestions = propagateReadingPassages(
+    stitchPassagesToQuestions(questions, passages)
+  );
 
   const records = finalizedQuestions.map((q: ExtractedQuestion) => {
-    // Preserve full insert_resources catalog inside question mark_scheme JSONB metadata
+    // Preserve full insert_resources and passages catalogs inside question mark_scheme JSONB metadata
     const ms = typeof q.mark_scheme === 'object' && q.mark_scheme !== null ? { ...q.mark_scheme } : { raw: q.mark_scheme };
     if (insert_resources && insert_resources.length > 0) {
       (ms as any)._insert_resources = insert_resources;
+    }
+    if (passages && passages.length > 0) {
+      (ms as any)._passages = passages;
     }
 
     return {
@@ -547,11 +560,20 @@ export async function runExtractionPipeline(
 
       // Merge questions from all parallel chunks with boundary stitching & deep merging
       const questionMap = new Map<string, ExtractedQuestion>();
-      const normalizeQNum = (num: string | number) =>
-        String(num)
+      const normalizeQNum = (num: string | number) => {
+        const raw = String(num)
           .replace(/^(?:Question|Q|Soal|No\.?)\s*/i, '')
           .replace(/[.:]$/, '')
           .trim();
+        // If question number is followed by a sub-id (e.g. "4(d)", "4 d", "4.d"), extract parent number "4"
+        const parentMatch = raw.match(/^(\d+)\s*(?:\([a-zA-Z0-9]+\)|[a-zA-Z])$/);
+        if (parentMatch) {
+          return parentMatch[1];
+        }
+        return raw;
+      };
+
+      const normSubKey = (id: string) => (id || '').replace(/[().\s]/g, '').toLowerCase();
 
       chunkResults.forEach((cr, cIdx) => {
         const chunkOffset = chunks[cIdx].startPage - 1;
@@ -559,6 +581,7 @@ export async function runExtractionPipeline(
           const qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
           const adjustedQ: ExtractedQuestion = {
             ...q,
+            question_number: qNumClean,
             page_number: (q.page_number || 1) + chunkOffset,
             sub_questions: (q.sub_questions || []).map((sq) => ({
               ...sq,
@@ -570,32 +593,72 @@ export async function runExtractionPipeline(
             questionMap.set(qNumClean, adjustedQ);
           } else {
             // Straddling Question Boundary Stitching:
-            // If the same question was extracted by both chunks on the boundary page,
-            // merge their sub-questions and keep the most complete content!
+            // If the same question was extracted across chunk boundaries,
+            // deep-merge sub-questions (union of all parts a, b, c, d) and keep the opening scenario setup!
             const existing = questionMap.get(qNumClean)!;
 
-            // Merge sub-questions by sub_id
+            // Deep-merge sub-questions by normalized sub_id key
             const mergedSubMap = new Map<string, SubQuestion>();
-            (existing.sub_questions || []).forEach((sq) => mergedSubMap.set(sq.sub_id, sq));
+            (existing.sub_questions || []).forEach((sq) => {
+              const k = normSubKey(sq.sub_id) || sq.sub_id;
+              mergedSubMap.set(k, sq);
+            });
+
             (adjustedQ.sub_questions || []).forEach((sq) => {
-              if (
-                !mergedSubMap.has(sq.sub_id) ||
-                (sq.question_text && sq.question_text.length > (mergedSubMap.get(sq.sub_id)?.question_text?.length || 0))
-              ) {
-                mergedSubMap.set(sq.sub_id, sq);
+              const k = normSubKey(sq.sub_id) || sq.sub_id;
+              const prev = mergedSubMap.get(k);
+              if (!prev) {
+                // If existing question already has a diagram and this continuation sub-question has its own diagram,
+                // attach the diagram specifically to this sub-question!
+                mergedSubMap.set(k, {
+                  ...sq,
+                  has_diagram: sq.has_diagram || (adjustedQ.has_diagram && !existing.has_diagram ? true : false),
+                  diagram_source: sq.diagram_source || (adjustedQ.diagram_source && !existing.diagram_source ? adjustedQ.diagram_source : null),
+                  bounding_box: sq.bounding_box || (adjustedQ.bounding_box && !existing.bounding_box ? adjustedQ.bounding_box : null),
+                });
+              } else {
+                // Keep the more complete version of the sub-question text
+                mergedSubMap.set(k, {
+                  ...prev,
+                  question_text:
+                    sq.question_text && sq.question_text.length > (prev.question_text?.length || 0)
+                      ? sq.question_text
+                      : prev.question_text,
+                  marks: sq.marks || prev.marks,
+                  mark_scheme: sq.mark_scheme || prev.mark_scheme,
+                  options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
+                  has_diagram: prev.has_diagram || sq.has_diagram,
+                  diagram_source: prev.diagram_source || sq.diagram_source,
+                  bounding_box: prev.bounding_box || sq.bounding_box,
+                });
               }
             });
 
-            const mergedSubs = Array.from(mergedSubMap.values());
+            // Naturally sort merged sub-questions: (a), (b), (c), (d), (a)(i), etc.
+            const mergedSubs = Array.from(mergedSubMap.values()).sort((a, b) => {
+              const ka = normSubKey(a.sub_id);
+              const kb = normSubKey(b.sub_id);
+              return ka.localeCompare(kb, undefined, { numeric: true });
+            });
+
             const totalSubMarks = mergedSubs.reduce((sum, s) => sum + (Number(s.marks) || 0), 0);
+
+            // Determine parent question text:
+            // Do NOT let a continuation chunk's partial caption overwrite the opening scenario setup!
+            const isAdjustedContinuation =
+              (adjustedQ.sub_questions && adjustedQ.sub_questions.length > 0) &&
+              !adjustedQ.sub_questions.some((s) => normSubKey(s.sub_id) === 'a' || normSubKey(s.sub_id).startsWith('a'));
+
+            const chosenQuestionText =
+              isAdjustedContinuation && existing.question_text
+                ? existing.question_text
+                : existing.question_text && existing.question_text.length >= (adjustedQ.question_text?.length || 0)
+                ? existing.question_text
+                : (adjustedQ.question_text || existing.question_text);
 
             questionMap.set(qNumClean, {
               ...existing,
-              // Use the longer / richer question stem text
-              question_text:
-                adjustedQ.question_text && adjustedQ.question_text.length > existing.question_text.length
-                  ? adjustedQ.question_text
-                  : existing.question_text,
+              question_text: chosenQuestionText,
               options:
                 adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
                   ? adjustedQ.options
@@ -620,12 +683,39 @@ export async function runExtractionPipeline(
       // Sort naturally by question number (1, 2, 3 ... 40)
       allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
 
+      // Merge passages across chunks
+      const mergedPassages = chunkResults.flatMap((cr) => cr.passages || []);
+      const seenPassageIds = new Set<string>();
+      const uniquePassages = mergedPassages.filter((p) => {
+        const idKey = (p.id || '').toLowerCase().trim();
+        if (!idKey || seenPassageIds.has(idKey)) return false;
+        seenPassageIds.add(idKey);
+        return true;
+      });
+
+      // Verify / repair passages from source PDF if in Language domain
+      let verifiedPassages = uniquePassages;
+      if (options.domain === 'languages') {
+        try {
+          const pageTexts = await extractTextFromPdfPages(bytesToChunk);
+          verifiedPassages = verifyAndRepairPassages(uniquePassages, pageTexts);
+        } catch (err) {
+          console.warn('PDF passage verification skipped:', err);
+        }
+      }
+
+      // Stitch reading passages directly into questions referencing them
+      const stitchedQuestions = stitchPassagesToQuestions(allQuestions, verifiedPassages);
+
       // Propagate reading passages across all questions in each text group
-      const propagated = propagateReadingPassages(allQuestions);
+      const propagated = propagateReadingPassages(stitchedQuestions);
       const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
       const finalizedQuestions = normalized.map((q) => ({
         ...q,
-        question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+        question_text: stripDuplicateSubQuestionsFromStem(
+          stripDuplicateOptionsFromStem(q.question_text, q.options),
+          q.sub_questions
+        ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
           question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
@@ -662,6 +752,7 @@ export async function runExtractionPipeline(
         },
         questions: finalizedQuestions,
         insert_resources: uniqueInsertResources.length > 0 ? uniqueInsertResources : undefined,
+        passages: verifiedPassages.length > 0 ? verifiedPassages : undefined,
       };
     } else {
       // Single chunk for short documents
@@ -685,14 +776,31 @@ export async function runExtractionPipeline(
           isIgcse: options.isIgcse !== false,
         }
       );
-      result.questions = normalizePaper4SubQuestions(normalizeQuestionStyles(propagateReadingPassages(result.questions))).map((q) => ({
+      let verifiedPassages = result.passages || [];
+      if (options.domain === 'languages') {
+        try {
+          const pageTexts = await extractTextFromPdfPages(bytesToChunk);
+          verifiedPassages = verifyAndRepairPassages(verifiedPassages, pageTexts);
+        } catch (err) {
+          console.warn('PDF passage verification skipped:', err);
+        }
+      }
+
+      const stitched = stitchPassagesToQuestions(result.questions, verifiedPassages);
+      result.questions = normalizePaper4SubQuestions(
+        normalizeQuestionStyles(propagateReadingPassages(stitched))
+      ).map((q) => ({
         ...q,
-        question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+        question_text: stripDuplicateSubQuestionsFromStem(
+          stripDuplicateOptionsFromStem(q.question_text, q.options),
+          q.sub_questions
+        ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
           question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
         })),
       }));
+      result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;
     }
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)

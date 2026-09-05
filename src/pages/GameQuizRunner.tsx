@@ -83,6 +83,7 @@ interface ActiveQuestionDisplay {
   questionType?: 'mcq' | 'structured';
   options: string[];
   imageUrl?: string;
+  svgContent?: string;
   hasImage?: boolean;
   correctAnswerText?: string;
 }
@@ -355,7 +356,8 @@ export function GameQuizRunner({
         questionType: item.type,
         options: item.options || [],
         imageUrl: item.diagramUrl || undefined,
-        hasImage: !!item.diagramUrl,
+        svgContent: item.svgContent || undefined,
+        hasImage: !!item.diagramUrl || !!item.svgContent,
         correctAnswerText: item.correctAnswerText,
       });
     }
@@ -919,11 +921,19 @@ export function GameQuizRunner({
             <div className="gq-q-text">
               <ExamMathText content={activeDisplayQuestion.questionText} />
             </div>
-            {activeDisplayQuestion.imageUrl && (
+            {activeDisplayQuestion.svgContent ? (
+              <div className="gq-q-diagram" style={{ textAlign: 'center' }}>
+                <div
+                  className="exam-svg-wrap"
+                  style={{ margin: '0 auto', maxWidth: '520px', background: '#ffffff', borderRadius: '12px' }}
+                  dangerouslySetInnerHTML={{ __html: activeDisplayQuestion.svgContent }}
+                />
+              </div>
+            ) : activeDisplayQuestion.imageUrl ? (
               <div className="gq-q-diagram">
                 <img src={activeDisplayQuestion.imageUrl} alt="Exam Figure" />
               </div>
-            )}
+            ) : null}
           </div>
 
           {/* ─── Type A: 4 Large Colored MCQ Option Buttons ─── */}

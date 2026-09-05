@@ -3,6 +3,7 @@ import type { Question, Syllabus, QuestionDifficulty, QuestionStyle } from '../t
 import { getBookmarkedQuestionIds } from './questionBookmarkService';
 import { getAllQuestionTagsMap } from './questionTagService';
 import { expandFormulaSearch } from '../lib/formulaSearch';
+import { extractSvgFromDiagramUrl } from '../lib/gemini';
 
 export interface QuestionFilterParams {
   searchQuery?: string;
@@ -839,9 +840,19 @@ export function normalizeQuestionRecord(q: any): Question {
   const diagramSource = q.diagram_source || q.mark_scheme?._diagram_source || null;
   const resourceRef = q.resource_ref || q.mark_scheme?._resource_ref || null;
   const insertPageNumber = q.insert_page_number || q.mark_scheme?._insert_page_number || null;
+  const svgContent = q.svg_content || extractSvgFromDiagramUrl(q.diagram_url) || null;
+
+  const normalizedSubs = Array.isArray(q.sub_questions)
+    ? q.sub_questions.map((sub: any) => ({
+        ...sub,
+        svg_content: sub.svg_content || extractSvgFromDiagramUrl(sub.diagram_url) || null,
+      }))
+    : q.sub_questions;
 
   return {
     ...q,
+    svg_content: svgContent,
+    sub_questions: normalizedSubs,
     audio_url: audioUrl,
     audio_metadata: audioMetadata,
     diagram_source: diagramSource,
@@ -968,15 +979,25 @@ export async function createQuestion(
     topic: questionData.topic || 'General',
     sub_topic: questionData.sub_topic || null,
     difficulty: questionData.difficulty || 'Medium',
-    marks: Number(questionData.marks) || 1,
-    diagram_url: questionData.diagram_url || null,
+    diagram_url:
+      questionData.diagram_url ||
+      (questionData.svg_content
+        ? `data:image/svg+xml;utf8,${encodeURIComponent(questionData.svg_content)}`
+        : null),
     diagram_source: (questionData as any).diagram_source || null,
     resource_ref: (questionData as any).resource_ref || null,
     insert_page_number: (questionData as any).insert_page_number || null,
     audio_url: questionData.audio_url || null,
     audio_metadata: questionData.audio_metadata || null,
     options: Array.isArray(questionData.options) ? questionData.options : null,
-    sub_questions: Array.isArray(questionData.sub_questions) ? questionData.sub_questions : [],
+    sub_questions: Array.isArray(questionData.sub_questions)
+      ? questionData.sub_questions.map((sub: any) => ({
+          ...sub,
+          diagram_url:
+            sub.diagram_url ||
+            (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
+        }))
+      : [],
     mark_scheme: questionData.mark_scheme || null,
   };
 

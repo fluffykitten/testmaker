@@ -41,12 +41,37 @@ export interface InsertResourceItem {
   target_questions?: string[]; // e.g. ["1(a)", "1(b)"]
 }
 
+export interface ExtractedPassage {
+  id: string;                  // e.g. "Text 1", "Passage A", "Teks 2"
+  heading?: string;            // e.g. "Text 1: Exploring Komodo National Park"
+  body: string;               // Full text of the reading passage
+  page_number?: number;
+  target_questions?: string[]; // e.g. ["1", "2", "3", "4"]
+}
+
+export interface ExamDataTableCell {
+  value: string;
+  is_blank?: boolean;        // True if this cell represents an empty answer box to be completed
+  expected_answer?: string;  // Correct answer for automated grading / verification
+}
+
+export interface ExamDataTable {
+  id?: string;               // e.g. "Table 1.1", "Table 2"
+  title?: string;            // e.g. "Physical properties of elements at r.t.p."
+  headers: string[];         // Column headers
+  rows: (string | ExamDataTableCell)[][]; // Rows with text or interactive blank cells
+}
+
 export interface SubQuestion {
   sub_id: string;           // e.g. "(a)", "(b)(i)"
   question_text: string;    // LaTeX-enriched text
   marks: number;
   has_diagram?: boolean;    // Sub-question has diagram/figure
   diagram_url?: string | null; // Optional sub-question diagram image URL
+  svg_content?: string | null; // AI-generated parametric SVG vector graphic
+  diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null; // Classification of diagram
+  has_embedded_values?: boolean; // True if visual displays numbers/labels that depend on problem variables
+  depends_on_sub_ids?: string[]; // IDs of preceding sub-questions this part relies upon (e.g. ["(a)", "(b)(i)"])
   diagram_source?: 'qp' | 'insert' | null; // Indicates whether the visual is from QP or Insert Booklet
   resource_ref?: string | null; // e.g. "Fig. 1.2", "Figs. 2.2, 2.3 and 2.4", "Photograph A"
   page_number?: number | null;  // QP page number if diagram is from Question Paper
@@ -58,6 +83,7 @@ export interface SubQuestion {
   common_misconceptions?: string[]; // Sub-question specific common student errors
   audio_url?: string | null; // Optional audio URL for this sub-part
   audio_metadata?: AudioMetadata | null; // Audio configuration & transcript
+  data_tables?: ExamDataTable[]; // Structured tabular data for this sub-question
 }
 
 // ─── Table Interfaces ──────────────────────────────────────────────────────────
@@ -85,6 +111,9 @@ export interface Question {
   difficulty: QuestionDifficulty | null;
   marks: number;
   diagram_url: string | null;       // Supabase Storage public URL
+  svg_content?: string | null;      // AI-generated parametric SVG vector graphic
+  diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
+  has_embedded_values?: boolean;
   diagram_source?: 'qp' | 'insert' | null; // Source document for diagram
   resource_ref?: string | null;     // Reference to Insert figure/photo (e.g. "Fig. 1.1")
   insert_page_number?: number | null;
@@ -93,6 +122,8 @@ export interface Question {
   options?: string[] | null;        // Multiple choice options [A, B, C, D]
   sub_questions: SubQuestion[];     // JSONB array of nested parts
   mark_scheme: MarkScheme | null;   // JSONB marking structure
+  data_tables?: ExamDataTable[];    // Structured tabular data
+  scratchpad?: any;                 // AI mathematical & scientific derivation scratchpad
   created_at: string;
 }
 
@@ -137,6 +168,10 @@ export interface ExtractedQuestion {
   topic: string;
   sub_topic: string | null;
   has_diagram: boolean;
+  diagram_url?: string | null;
+  svg_content?: string | null;
+  diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
+  has_embedded_values?: boolean;
   diagram_source?: 'qp' | 'insert' | null;
   resource_ref?: string | null;
   insert_page_number?: number | null;
@@ -144,14 +179,18 @@ export interface ExtractedQuestion {
   options: string[] | null;
   audio_url?: string | null;
   audio_metadata?: AudioMetadata | null;
+  passage_ref?: string | null;
   sub_questions?: SubQuestion[];
   mark_scheme: MarkScheme | null;
+  data_tables?: ExamDataTable[];
+  scratchpad?: any;
 }
 
 export interface ExtractionResult {
   paper_metadata: PaperMetadata;
   questions: ExtractedQuestion[];
   insert_resources?: InsertResourceItem[];
+  passages?: ExtractedPassage[];
 }
 
 // ─── Supabase Typed Client Helper ──────────────────────────────────────────────

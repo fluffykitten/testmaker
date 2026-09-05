@@ -31,7 +31,10 @@ import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConst
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
-import { stripDuplicateOptionsFromStem } from '../lib/gemini';
+import {
+  stripDuplicateOptionsFromStem,
+  stripDuplicateSubQuestionsFromStem,
+} from '../lib/gemini';
 
 export interface DocxExportOptions extends Partial<ExportLayoutOptions> {
   includeMarkSchemeInStudentPaper?: boolean;
@@ -933,7 +936,10 @@ export async function exportStudentPaperDocx(
     const qNum = idx + 1;
 
     // Stem with markdown table rendering and hanging indent
-    const cleanStem = stripDuplicateOptionsFromStem(q.question_text || '', q.options);
+    const cleanStem = stripDuplicateSubQuestionsFromStem(
+      stripDuplicateOptionsFromStem(q.question_text || '', q.options),
+      q.sub_questions
+    );
     const stemElements = convertTextAndTablesToDocxElements(cleanStem, `${qNum}.  `, 22, fontName);
     docParagraphs.push(...stemElements);
 
@@ -1573,7 +1579,10 @@ export async function exportTeacherMarkSchemeDocx(
     );
 
     // Stem Box (So teacher sees question context)
-    const cleanStem = stripDuplicateOptionsFromStem(q.question_text || '', q.options);
+    const cleanStem = stripDuplicateSubQuestionsFromStem(
+      stripDuplicateOptionsFromStem(q.question_text || '', q.options),
+      q.sub_questions
+    );
     const stemElements = convertTextAndTablesToDocxElements(cleanStem, '', 19, 'Arial');
     docParagraphs.push(...stemElements);
 

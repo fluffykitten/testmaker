@@ -172,16 +172,28 @@ export async function splitPdfForParallelExtraction(
       ];
     }
 
-    // Determine number of chunks (50:50 2-chunk split for 4-18 pages, 3 chunks for 19+ pages)
-    const numChunks = totalPages <= 18 ? 2 : Math.min(3, Math.ceil(totalPages / maxPagesPerChunk));
+    // Determine number of chunks (balanced distribution):
+    // 1-3 pages: single chunk
+    // 4-9 pages: 2 chunks (~3-5 pages each)
+    // 10-24 pages (e.g. 12-20 page Paper 4 / Theory / Extended): 3 chunks (~4-7 pages each)
+    // 25+ pages: up to 4 chunks
+    const numChunks =
+      totalPages <= 3 ? 1 :
+      totalPages <= 9 ? 2 :
+      totalPages <= 24 ? 3 :
+      Math.min(4, Math.ceil(totalPages / maxPagesPerChunk));
+
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
+    // Overlap for straddling questions (e.g. 2-page structured physics/chemistry questions):
+    // Use 3-page overlap for 10+ page papers so 2-page questions are never severed across chunks.
+    const overlapPages = totalPages >= 10 ? 3 : 2;
 
     const chunks: PdfChunk[] = [];
 
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const rawStart = chunkIdx * pagesPerChunk;
-      // 2-page safety overlap for chunks after the first, so reading passages and straddling questions are never severed
-      const startIdx = chunkIdx > 0 ? Math.max(0, rawStart - 2) : rawStart;
+      // Safety overlap for chunks after the first so multi-page structured questions and reading passages are never severed
+      const startIdx = chunkIdx > 0 ? Math.max(0, rawStart - overlapPages) : rawStart;
       const endIdx = Math.min(rawStart + pagesPerChunk, totalPages);
 
       if (startIdx >= totalPages) break;

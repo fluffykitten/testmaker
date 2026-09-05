@@ -137,10 +137,15 @@ const UNIT_NORMALIZATION_MAP: Record<string, string> = {
 
 export function parseNumericWithUnit(raw: string): ParsedNumeric | null {
   if (!raw) return null;
-  let str = raw.trim().replace(/,/g, ''); // strip thousands commas
+  let str = raw
+    .trim()
+    .replace(/[\$\{\}]/g, '') // strip LaTeX math delimiters and curly braces
+    .replace(/\\,/g, '')      // strip LaTeX thin space (e.g. 100\,000 -> 100000)
+    .replace(/,/g, '')        // strip thousands commas
+    .replace(/\\times\b/g, 'x'); // normalize \times to x
 
   // Match: optional sign (+/-), number (integer/float/scientific notation like 2.5e-3 or 2.5 x 10^-3), optional unit
-  const match = str.match(/^([+-]?\d*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:x\s*10\^?\{?([+-]?\d+)\}?)?\s*(.*)$/);
+  const match = str.match(/^([+-]?\d*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?:x\s*10\^?\{?([+-]?\d+)\}?)?\s*(.*)$/i);
   if (!match) return null;
 
   let baseNum = parseFloat(match[1]);

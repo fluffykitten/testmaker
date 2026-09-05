@@ -3,7 +3,15 @@ import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
-import { generateQuestionVariant, type VariantMode } from '../lib/gemini';
+import { ExamVisualRender } from './ExamVisualRender';
+import { ExamDataTable } from './ExamDataTable';
+import {
+  generateQuestionVariant,
+  stripDuplicateSubQuestionsFromStem,
+  stripDuplicateOptionsFromStem,
+  extractSvgFromDiagramUrl,
+  type VariantMode,
+} from '../lib/gemini';
 import { createQuestion } from '../services/questionBankService';
 import './QuestionVariantModal.css';
 
@@ -94,6 +102,22 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           customInstruction: trimmedInstruction || undefined,
         });
 
+        const finalSubs = targetMode === 'mcq' ? [] : (generated.sub_questions || []);
+        const cleanStem = stripDuplicateSubQuestionsFromStem(
+          stripDuplicateOptionsFromStem(generated.question_text || '', generated.options),
+          finalSubs
+        );
+
+        const resolvedSvg =
+          generated.svg_content ||
+          extractSvgFromDiagramUrl(generated.diagram_url) ||
+          extractSvgFromDiagramUrl(question.diagram_url) ||
+          null;
+
+        const resolvedDiagramUrl =
+          generated.diagram_url ||
+          (resolvedSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(resolvedSvg)}` : (question.diagram_url || null));
+
         const fullVariant: Question = {
           id: `variant-temp-${Date.now()}`,
           created_at: new Date().toISOString(),
@@ -103,20 +127,23 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           paper_number: question.paper_number || 1,
           question_number: `${question.question_number}V`,
           parent_question_id: null,
-          question_text: generated.question_text || '',
+          question_text: cleanStem,
           question_style: targetMode === 'structured' ? 'Structured' : targetMode === 'mcq' ? 'Multiple Choice' : (generated.question_style || question.question_style),
           topic: generated.topic || question.topic,
           sub_topic: generated.sub_topic || question.sub_topic,
           difficulty: generated.difficulty || question.difficulty,
           marks: generated.marks || (targetMode === 'mcq' ? 1 : question.marks),
-          diagram_url: generated.diagram_url !== undefined ? generated.diagram_url : (question.diagram_url || null),
+          svg_content: resolvedSvg,
+          diagram_url: resolvedDiagramUrl,
+          diagram_type: generated.diagram_type !== undefined ? generated.diagram_type : (question.diagram_type || null),
+          has_embedded_values: generated.has_embedded_values !== undefined ? generated.has_embedded_values : (question.has_embedded_values || false),
           diagram_source: generated.diagram_source !== undefined ? generated.diagram_source : (question.diagram_source || null),
           resource_ref: generated.resource_ref !== undefined ? generated.resource_ref : (question.resource_ref || null),
           insert_page_number: generated.insert_page_number !== undefined ? generated.insert_page_number : (question.insert_page_number || null),
           audio_url: generated.audio_url !== undefined ? generated.audio_url : (question.audio_url || null),
           audio_metadata: generated.audio_metadata !== undefined ? generated.audio_metadata : (question.audio_metadata || null),
           options: targetMode === 'structured' ? null : (generated.options || null),
-          sub_questions: targetMode === 'mcq' ? [] : (generated.sub_questions || []),
+          sub_questions: finalSubs,
           mark_scheme: generated.mark_scheme || null,
         };
 
@@ -384,6 +411,11 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                 </div>
               )}
 
+              {/* Original Structured Data Tables if present */}
+              {question.data_tables && question.data_tables.length > 0 && (
+                <ExamDataTable tables={question.data_tables} />
+              )}
+
               {/* Original Sub-questions */}
               {question.sub_questions && question.sub_questions.length > 0 && (
                 <div className="variant-sub-list">
@@ -405,6 +437,9 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                             className="variant-diagram-img"
                           />
                         </div>
+                      )}
+                      {sub.data_tables && sub.data_tables.length > 0 && (
+                        <ExamDataTable tables={sub.data_tables} />
                       )}
                       {sub.mark_scheme && showMarkScheme && (
                         <div className="variant-sub-ms">
@@ -477,18 +512,19 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                     <ExamMathText content={variant.question_text} />
                   </div>
 
-                  {/* Transferred Diagram Preview */}
-                  {variant.diagram_url && (
-                    <div className="variant-diagram-box variant-diagram-box--transferred">
-                      <span className="variant-diagram-badge variant-diagram-badge--transferred">
-                        ✨ Transferred Diagram
-                      </span>
-                      <img
-                        src={variant.diagram_url}
-                        alt="Transferred diagram for variant question"
-                        className="variant-diagram-img"
-                      />
-                    </div>
+                  {/* Transferred Diagram / Generated SVG Preview */}
+                  <ExamVisualRender
+                    svgContent={variant.svg_content}
+                    diagramUrl={variant.diagram_url}
+                    resourceRef={variant.resource_ref}
+                    alt="Visual diagram for variant question"
+                    diagramType={variant.diagram_type}
+                    hasEmbeddedValues={variant.has_embedded_values}
+                  />
+
+                  {/* Variant Structured Data Tables if present */}
+                  {variant.data_tables && variant.data_tables.length > 0 && (
+                    <ExamDataTable tables={variant.data_tables} />
                   )}
 
                   {/* Variant Sub-questions */}
@@ -503,17 +539,17 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                             </div>
                             <span className="variant-sub-marks">[{sub.marks}]</span>
                           </div>
-                          {sub.diagram_url && (
-                            <div className="variant-diagram-box variant-diagram-box--transferred" style={{ marginTop: '6px' }}>
-                              <span className="variant-diagram-badge variant-diagram-badge--transferred">
-                                ✨ Transferred Diagram for {sub.sub_id}
-                              </span>
-                              <img
-                                src={sub.diagram_url}
-                                alt={`Diagram for ${sub.sub_id}`}
-                                className="variant-diagram-img"
-                              />
-                            </div>
+                          {/* Sub-question Visual / SVG Preview */}
+                          <ExamVisualRender
+                            svgContent={sub.svg_content}
+                            diagramUrl={sub.diagram_url}
+                            resourceRef={sub.resource_ref}
+                            alt={`Diagram for ${sub.sub_id}`}
+                            diagramType={sub.diagram_type}
+                            hasEmbeddedValues={sub.has_embedded_values}
+                          />
+                          {sub.data_tables && sub.data_tables.length > 0 && (
+                            <ExamDataTable tables={sub.data_tables} />
                           )}
                           {sub.mark_scheme && showMarkScheme && (
                             <div className="variant-sub-ms">
@@ -573,6 +609,49 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                           {variant.mark_scheme.common_misconceptions.map((m, i) => (
                             <div key={i}><ExamMathText content={m} /></div>
                           ))}
+                        </div>
+                      )}
+
+                      {/* AI Scientific Scratchpad Verification Badge */}
+                      {variant.scratchpad && (
+                        <div
+                          className="variant-scratchpad-box animate-fade-in"
+                          style={{
+                            marginTop: '12px',
+                            padding: '10px 12px',
+                            background: '#f8fafc',
+                            border: '1px solid #cbd5e1',
+                            borderRadius: '6px',
+                            fontSize: '0.82rem',
+                          }}
+                        >
+                          <div style={{ fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
+                            🧪 Scientific Derivation Verification:
+                          </div>
+                          {variant.scratchpad.bounds_and_constraints && (
+                            <div style={{ marginBottom: '4px' }}>
+                              <strong style={{ color: '#475569' }}>Domain Bounds:</strong>{' '}
+                              <span>{variant.scratchpad.bounds_and_constraints}</span>
+                            </div>
+                          )}
+                          {variant.scratchpad.independent_variables && (
+                            <div style={{ marginBottom: '4px' }}>
+                              <strong style={{ color: '#475569' }}>Variables:</strong>{' '}
+                              <span>{typeof variant.scratchpad.independent_variables === 'object' ? JSON.stringify(variant.scratchpad.independent_variables) : variant.scratchpad.independent_variables}</span>
+                            </div>
+                          )}
+                          {variant.scratchpad.derivations_and_laws && (
+                            <div style={{ marginBottom: '4px' }}>
+                              <strong style={{ color: '#475569' }}>Derivations:</strong>{' '}
+                              <span>{typeof variant.scratchpad.derivations_and_laws === 'object' ? JSON.stringify(variant.scratchpad.derivations_and_laws) : variant.scratchpad.derivations_and_laws}</span>
+                            </div>
+                          )}
+                          {variant.scratchpad.synchronization_checklist && (
+                            <div>
+                              <strong style={{ color: '#475569' }}>Checklist:</strong>{' '}
+                              <span style={{ color: '#059669' }}>{variant.scratchpad.synchronization_checklist}</span>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

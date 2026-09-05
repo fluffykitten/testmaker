@@ -17,6 +17,11 @@ const KATEX_OPTIONS = {
     '\\degreeC': '^\\circ\\text{C}',
     '\\celsius': '^\\circ\\text{C}',
     '\\ce': '#1',
+    '\\pu': '#1',
+    '\\unit': '\\text{#1}',
+    '\\ohm': '\\Omega',
+    '\\micro': '\\mu',
+    '\\angstrom': '\\text{\\AA}',
   },
 };
 
@@ -29,10 +34,19 @@ function renderCachedKaTeX(math: string, displayMode: boolean): string {
   const cached = KATEX_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const html = katex.renderToString(math, {
-    ...KATEX_OPTIONS,
-    displayMode,
-  });
+  // Pre-escape unescaped % signs inside math that are not already preceded by \
+  const safeMath = (math || '').replace(/(^|[^\\])%/g, '$1\\%');
+
+  let html = '';
+  try {
+    html = katex.renderToString(safeMath, {
+      ...KATEX_OPTIONS,
+      displayMode,
+    });
+  } catch {
+    // Graceful fallback: render escaped math string safely without crashing
+    html = `<span class="katex-fallback">${safeMath.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+  }
 
   if (KATEX_CACHE.size >= MAX_KATEX_CACHE_SIZE) {
     const it = KATEX_CACHE.keys();
@@ -129,9 +143,10 @@ const COMMON_ENGLISH_WORDS_REGEX =
 
 export function protectCurrencySymbols(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
-  // Match currency like $15, $25.50, $1,000, $0.99 where $ is directly followed by digit
+  // Match currency like $15, $25.50, $1,000, $0.99 where $ is directly followed by digit.
+  // (?!\.?\d) prevents backtracking on decimals when followed by a closing $ (e.g. $1.50$, $9.81$).
   return text.replace(
-    /(?<=^|[\s(.,;:!?\[{"'/\-])\$(\d+(?:,\d{3})*(?:\.\d+)?)(?=[^$\w]|$)/g,
+    /(?<=^|[\s(.,;:!?\[{"'/\-])\$(\d+(?:,\d{3})*(?:\.\d+)?)(?!\.?\d)(?=[^$\w]|$)/g,
     (match, num, offset, fullStr) => {
       const afterIndex = offset + match.length;
       const remaining = fullStr.slice(afterIndex);
@@ -154,19 +169,37 @@ export function protectCurrencySymbols(text: string): string {
         return `${CURRENCY_USD_PLACEHOLDER}${num}`;
       }
 
+      // If the next $ is ALSO followed by a digit (e.g. $15 and $20, or $15 + $20, or $1, $2, $3),
+      // then that next $ is another currency amount, NOT a closing math delimiter!
+      const afterNextDollar = remaining.slice(nextDollar);
+      if (/^\$\d/.test(afterNextDollar)) {
+        return `${CURRENCY_USD_PLACEHOLDER}${num}`;
+      }
+
+      // If between is a math comma-separated list of numbers (e.g. $1, 2, 3$ or $1, 2$), keep as math!
+      if (/^(\s*,\s*\d+(\.\d+)?)+\s*$/.test(between)) {
+        return match;
+      }
+
+      // If between contains LaTeX commands (\text{...}, \times, \, etc.) or math formatting (^, _), it's math!
+      // Must check this BEFORE English words so units like \text{ A} or \text{ in} aren't matched as English words
+      if (/\\[a-zA-Z]+|[\\^_{}]/.test(between)) {
+        return match;
+      }
+
+      // If between contains math operators (=, +, -, /, *, etc.)
+      if (/[=+\-*/<>]/.test(between) || /\b(times|cdot|frac|sqrt|pm|approx)\b/.test(between)) {
+        return match;
+      }
+
       // If the text between contains English sentence words, this is currency
       if (COMMON_ENGLISH_WORDS_REGEX.test(between)) {
         return `${CURRENCY_USD_PLACEHOLDER}${num}`;
       }
 
       // If between contains punctuation that ends sentences/clauses (. ? ! ; ,) followed by whitespace
-      if (/[.?!;,]\s+/.test(between)) {
+      if (/[.?!;]\s+|,\s+[a-zA-Z]/.test(between)) {
         return `${CURRENCY_USD_PLACEHOLDER}${num}`;
-      }
-
-      // If between contains math operators (=, +, -, \times, \div, etc.) or LaTeX commands, it's math!
-      if (/[=+\-*/\\^_{}]/.test(between) || /\b(times|cdot|frac|sqrt|pm|approx)\b/.test(between)) {
-        return match; // Keep as math
       }
 
       // If nothing between except spaces/words, it's not valid math

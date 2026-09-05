@@ -27,11 +27,14 @@ export function exportOfflineInteractiveHtmlQuiz(
       subQuestions: (q.sub_questions || []).map((sq) => ({
         ...sq,
         question_text: ensureInlineMathDelimiters(stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options)),
+        dataTables: sq.data_tables || null,
       })),
+      dataTables: q.data_tables || null,
       marks: q.marks || 1,
       topic: q.topic || 'General',
       subTopic: q.sub_topic || '',
       diagramUrl: q.diagram_url || '',
+      svgContent: q.svg_content || '',
       audioUrl: q.audio_url || '',
       audioMetadata: q.audio_metadata || null,
       markScheme: q.mark_scheme,
@@ -131,6 +134,7 @@ export function exportOfflineInteractiveHtmlQuiz(
         <span id="qMarks" class="q-marks">1 mark</span>
       </div>
       <div id="qText" class="q-text">Loading question...</div>
+      <div id="qDiagram" style="text-align: center; margin-bottom: 16px; display: none;"></div>
       <div id="qInputs"></div>
 
       <div class="nav-actions">
@@ -189,6 +193,20 @@ export function exportOfflineInteractiveHtmlQuiz(
       document.getElementById('qBadge').innerText = 'Question ' + (idx + 1) + ' of ' + questions.length;
       document.getElementById('qMarks').innerText = '[' + q.marks + ' mark' + (q.marks > 1 ? 's' : '') + ']';
       document.getElementById('qText').innerHTML = q.text;
+
+      const dBox = document.getElementById('qDiagram');
+      if (dBox) {
+        if (q.svgContent) {
+          dBox.innerHTML = '<div style="max-width: 520px; margin: 0 auto; background: #ffffff; padding: 12px; border-radius: 10px; border: 1px solid var(--border); overflow: hidden;">' + q.svgContent + '</div>';
+          dBox.style.display = 'block';
+        } else if (q.diagramUrl) {
+          dBox.innerHTML = '<img src="' + q.diagramUrl + '" style="max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px;" />';
+          dBox.style.display = 'block';
+        } else {
+          dBox.innerHTML = '';
+          dBox.style.display = 'none';
+        }
+      }
 
       const container = document.getElementById('qInputs');
       container.innerHTML = '';

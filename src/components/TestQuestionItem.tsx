@@ -1,8 +1,11 @@
 import { useState, memo } from 'react';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
+import { ExamVisualRender } from './ExamVisualRender';
+import { ExamDataTable } from './ExamDataTable';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { formatPaperBadge } from '../utils/paperUtils';
+import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../lib/gemini';
 import './TestQuestionItem.css';
 
 interface TestQuestionItemProps {
@@ -134,20 +137,22 @@ function TestQuestionItemComponent({
       {/* ─── Question Body ─────────────────────────────────────────────────── */}
       <div className="test-q-body">
         <div className="test-q-stem">
-          <ExamMathText content={question.question_text} />
+          <ExamMathText content={stripDuplicateSubQuestionsFromStem(stripDuplicateOptionsFromStem(question.question_text, question.options), question.sub_questions)} />
         </div>
 
-        {/* Diagram */}
-        {question.diagram_url && (
-          <div className="test-q-diagram-container">
-            <img
-              src={question.diagram_url}
-              alt={`Diagram for Question ${index + 1}`}
-              className="test-q-diagram-img"
-              loading="lazy"
-              decoding="async"
-            />
-          </div>
+        {/* Diagram / SVG Visual */}
+        <ExamVisualRender
+          svgContent={question.svg_content}
+          diagramUrl={question.diagram_url}
+          resourceRef={question.resource_ref}
+          alt={`Diagram for Question ${index + 1}`}
+          diagramType={question.diagram_type}
+          hasEmbeddedValues={question.has_embedded_values}
+        />
+
+        {/* Structured Data Tables if present */}
+        {question.data_tables && question.data_tables.length > 0 && (
+          <ExamDataTable tables={question.data_tables} />
         )}
 
         {/* MCQ Choices */}
@@ -179,6 +184,21 @@ function TestQuestionItemComponent({
                   </div>
                   <span className="test-q-sub-marks">[{sub.marks}]</span>
                 </div>
+
+                {/* Sub-question diagram / SVG */}
+                <ExamVisualRender
+                  svgContent={sub.svg_content}
+                  diagramUrl={sub.diagram_url}
+                  resourceRef={sub.resource_ref}
+                  alt={`Diagram for ${sub.sub_id}`}
+                  diagramType={sub.diagram_type}
+                  hasEmbeddedValues={sub.has_embedded_values}
+                />
+
+                {/* Sub-question data tables if present */}
+                {sub.data_tables && sub.data_tables.length > 0 && (
+                  <ExamDataTable tables={sub.data_tables} />
+                )}
 
                 {/* Sub mark scheme */}
                 {sub.mark_scheme && showMarkScheme && (
