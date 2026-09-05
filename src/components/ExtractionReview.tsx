@@ -1403,16 +1403,16 @@ export function ExtractionReview({
 
                   <div className="review-meta-field">
                     <label>
-                      Paper Type / Exam Series
+                      Exam Event / Paper Type
                       <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
-                        (Question Bank 'Paper Type' filter)
+                        (Use this for text like 'Try Out TKA 1', 'Midterm')
                       </span>
                     </label>
                     <input
                       type="text"
                       value={metadataDraft.series}
                       onChange={(e) => setMetadataDraft({ ...metadataDraft, series: e.target.value })}
-                      placeholder="e.g. Try Out TKA, May/June, Midterm, Semester 1"
+                      placeholder="e.g. Try Out TKA 1, May/June, Midterm, Semester 1"
                     />
                   </div>
 
@@ -1426,12 +1426,17 @@ export function ExtractionReview({
                   </div>
 
                   <div className="review-meta-field">
-                    <label>Paper / Section Name or Number</label>
+                    <label>
+                      Paper Number
+                      <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                        (Must be a number. For text, use Exam Event above)
+                      </span>
+                    </label>
                     <input
-                      type="text"
+                      type="number"
                       value={metadataDraft.paper_number ?? ''}
-                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: e.target.value })}
-                      placeholder="e.g. 1, 2, Try Out TKA 1, Section A"
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, paper_number: parseInt(e.target.value) || ('' as any) })}
+                      placeholder="e.g. 1, 2, 3"
                     />
                   </div>
 
