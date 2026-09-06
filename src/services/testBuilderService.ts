@@ -222,6 +222,75 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
   return localRecord;
 }
 
+/**
+ * Updates an existing custom exam test in Supabase and local storage
+ */
+export async function updateCustomTest(
+  testId: string,
+  payload: SaveTestPayload
+): Promise<CustomTest> {
+  const existingLocal = getLocalTests().find((t) => t.id === testId);
+  const updatedRecord: CustomTest = {
+    id: testId,
+    user_id: existingLocal?.user_id || null,
+    title: payload.title,
+    total_marks: payload.totalMarks,
+    question_ids: payload.questionIds,
+    created_at: existingLocal?.created_at || new Date().toISOString(),
+    header_config: payload.headerConfig,
+  };
+
+  try {
+    if (UUID_REGEX.test(testId)) {
+      const { data, error } = await (supabase.from('custom_tests' as any) as any)
+        .update({
+          title: payload.title,
+          total_marks: payload.totalMarks,
+          question_ids: payload.questionIds,
+          header_config: payload.headerConfig,
+        })
+        .eq('id', testId)
+        .select('*')
+        .single();
+
+      if (!error && data) {
+        const saved = { ...(data as CustomTest), header_config: payload.headerConfig || (data as any).header_config };
+        saveLocalTest(saved);
+        clearCustomTestsCache();
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
+        return saved;
+      }
+
+      if (error && error.message && error.message.includes('header_config')) {
+        const { data: retryData, error: retryError } = await (supabase.from('custom_tests' as any) as any)
+          .update({
+            title: payload.title,
+            total_marks: payload.totalMarks,
+            question_ids: payload.questionIds,
+          })
+          .eq('id', testId)
+          .select('*')
+          .single();
+
+        if (!retryError && retryData) {
+          const saved = { ...(retryData as CustomTest), header_config: payload.headerConfig };
+          saveLocalTest(saved);
+          clearCustomTestsCache();
+          if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
+          return saved;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Supabase update failed, updating local storage:', err);
+  }
+
+  saveLocalTest(updatedRecord);
+  clearCustomTestsCache();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
+  return updatedRecord;
+}
+
 // ─── High-Performance In-Memory Cache for Custom Tests ─────────────────────────
 let customTestsMetadataCache: { data: CustomTestWithDetails[]; timestamp: number } | null = null;
 const CUSTOM_TESTS_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
@@ -525,19 +594,34 @@ export async function fetchCustomTestWithQuestions(
     return { test, questions: [] };
   }
 
-  // Fetch all questions matching the IDs
-  const { data: qData, error: qError } = await supabase
-    .from('questions')
-    .select('*')
-    .in('id', questionIds);
-
-  if (qError || !qData) {
-    console.error('Failed to fetch test questions:', qError);
-    return { test, questions: [] };
+  // Fetch all questions matching the IDs with batch chunking (avoids HTTP 414 URI Too Long)
+  const chunkSize = 100;
+  const chunks: string[][] = [];
+  for (let i = 0; i < questionIds.length; i += chunkSize) {
+    chunks.push(questionIds.slice(i, i + chunkSize));
   }
 
   const questionsMap = new Map<string, Question>();
-  (qData as Question[]).forEach((q) => questionsMap.set(q.id, q));
+  try {
+    const results = await Promise.all(
+      chunks.map((chunk) =>
+        supabase
+          .from('questions')
+          .select('*')
+          .in('id', chunk)
+      )
+    );
+
+    results.forEach(({ data: qData, error: qError }) => {
+      if (!qError && qData && Array.isArray(qData)) {
+        (qData as Question[]).forEach((q) => questionsMap.set(q.id, q));
+      } else if (qError) {
+        console.warn('Batch fetch test questions error:', qError.message);
+      }
+    });
+  } catch (err) {
+    console.error('Failed to fetch test questions batch:', err);
+  }
 
   // Maintain the exact array order specified in question_ids
   const orderedQuestions: Question[] = [];

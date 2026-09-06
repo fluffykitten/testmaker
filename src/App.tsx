@@ -188,14 +188,19 @@ function App() {
     });
   }, []);
 
+  const [builderLoadedHeaderConfig, setBuilderLoadedHeaderConfig] = useState<ExamHeaderConfig | undefined>();
+  const [builderLoadedEditingTestId, setBuilderLoadedEditingTestId] = useState<string | undefined>();
+
   const handleClearSelection = () => {
     setSelectedQuestions(new Map());
   };
 
-  const handleLoadTestIntoBuilder = (questions: Question[]) => {
+  const handleLoadTestIntoBuilder = (questions: Question[], headerConfig?: ExamHeaderConfig, testId?: string) => {
     const map = new Map<string, Question>();
     questions.forEach((q) => map.set(q.id, q));
     setSelectedQuestions(map);
+    setBuilderLoadedHeaderConfig(headerConfig);
+    setBuilderLoadedEditingTestId(testId);
     setCurrentPage('builder');
   };
 
@@ -448,6 +453,12 @@ function App() {
             {currentPage === 'builder' && (
               <TestBuilderPage
                 initialQuestions={questionsList}
+                initialHeaderConfig={builderLoadedHeaderConfig}
+                initialTestId={builderLoadedEditingTestId}
+                onClearLoadedState={() => {
+                  setBuilderLoadedHeaderConfig(undefined);
+                  setBuilderLoadedEditingTestId(undefined);
+                }}
                 onRemoveQuestion={handleRemoveQuestionFromTest}
                 onUpdateQuestions={handleUpdateTestQuestions}
                 onNavigateToBank={() => setCurrentPage('bank')}

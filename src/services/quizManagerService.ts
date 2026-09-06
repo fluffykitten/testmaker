@@ -42,6 +42,7 @@ export interface PublishedQuiz {
   questionTimerSeconds?: number;          // Per-question countdown (default 20)
   shuffleQuestions?: boolean;             // Randomize question order
   shuffleOptions?: boolean;               // Randomize MCQ option order
+  previousCodes?: string[];               // Historical access codes alias list to prevent student lockout
 }
 
 const STORAGE_KEY = 'fluffykitten_published_quizzes';
@@ -64,15 +65,12 @@ export function deduplicateQuizzes(quizzes: PublishedQuiz[]): PublishedQuiz[] {
 
   const seenIds = new Set<string>();
   const seenCodes = new Set<string>();
-  const seenTestIds = new Set<string>();
   const cleanList: PublishedQuiz[] = [];
 
   for (const q of sorted) {
     if (!q) continue;
     const cleanId = String(q.id || '').trim();
     const cleanCode = String(q.quizCode || '').trim().toUpperCase();
-    const cleanTestId = String(q.testId || '').trim();
-    const isOffline = cleanCode.startsWith('OFFLINE_') || cleanTestId.startsWith('OFFLINE_') || Boolean((q as any).isOffline);
 
     // Check duplicate by ID
     if (cleanId && seenIds.has(cleanId)) {
@@ -84,14 +82,8 @@ export function deduplicateQuizzes(quizzes: PublishedQuiz[]): PublishedQuiz[] {
       continue;
     }
 
-    // Check duplicate by Test ID (for standard custom tests, 1 test = 1 published quiz)
-    if (!isOffline && cleanTestId && seenTestIds.has(cleanTestId)) {
-      continue;
-    }
-
     if (cleanId) seenIds.add(cleanId);
     if (cleanCode) seenCodes.add(cleanCode);
-    if (!isOffline && cleanTestId) seenTestIds.add(cleanTestId);
 
     cleanList.push(q);
   }
@@ -117,12 +109,10 @@ export function getDeletedQuizIds(): Set<string> {
 /**
  * Records a deleted quiz in the persistent tombstone registry.
  */
-export function recordDeletedQuiz(id?: string, testId?: string, quizCode?: string): void {
+export function recordDeletedQuiz(id?: string): void {
   try {
     const current = getDeletedQuizIds();
     if (id) current.add(id.trim());
-    if (testId) current.add(testId.trim());
-    if (quizCode) current.add(quizCode.trim().toUpperCase());
     const arr = Array.from(current);
     const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
     localStorage.setItem(DELETED_QUIZZES_KEY, JSON.stringify(trimmed));
@@ -176,9 +166,7 @@ export function getPublishedQuizzes(): PublishedQuiz[] {
     const activeOnly = list.filter((q) => {
       if (!q) return false;
       const qId = String(q.id || '').trim();
-      const qTestId = String(q.testId || '').trim();
-      const qCode = String(q.quizCode || '').trim().toUpperCase();
-      return !deletedIds.has(qId) && !deletedIds.has(qTestId) && !deletedIds.has(qCode);
+      return !deletedIds.has(qId);
     });
     return deduplicateQuizzes(activeOnly);
   } catch (err) {
@@ -263,9 +251,7 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
     const cloudList = rawCloudList.filter((q) => {
       if (!q) return false;
       const qId = String(q.id || '').trim();
-      const qTestId = String(q.testId || '').trim();
-      const qCode = String(q.quizCode || '').trim().toUpperCase();
-      return !deletedIds.has(qId) && !deletedIds.has(qTestId) && !deletedIds.has(qCode);
+      return !deletedIds.has(qId);
     });
 
     // Authoritatively merge and deduplicate both cloud and local lists
@@ -287,25 +273,43 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
   }
 }
 
-export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQuiz[]> {
+export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: string): Promise<PublishedQuiz[]> {
   try {
     const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
+    const cleanSubject = quiz.subject || quiz.headerConfig?.subject || 'Chemistry';
+    const effectiveTeacherPin = quiz.teacherPin || quiz.headerConfig?.teacherPin || '1234';
+    const cleanQuizCode = quiz.quizCode.trim().toUpperCase();
+
+    // Track previous code aliases to avoid student lockouts
+    const prevCodesSet = new Set<string>(quiz.previousCodes || []);
+    if (oldQuizCode) {
+      const cleanOld = oldQuizCode.trim().toUpperCase();
+      if (cleanOld && cleanOld !== cleanQuizCode) {
+        prevCodesSet.add(cleanOld);
+      }
+    }
+    const updatedPrevCodes = Array.from(prevCodesSet).slice(-5);
+
     const mergedHeader = quiz.headerConfig
-      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration }
+      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration, subject: cleanSubject, teacherPin: effectiveTeacherPin }
       : {
           title: quiz.title || 'Examination Assessment',
           schoolName: '',
-          subject: quiz.subject || 'Assessment',
+          subject: cleanSubject,
           subjectCode: '',
           durationMinutes: resolvedDuration,
           instructions: '',
+          teacherPin: effectiveTeacherPin,
         };
 
     const cleanQuiz: PublishedQuiz = {
       ...quiz,
       durationMinutes: resolvedDuration,
       headerConfig: mergedHeader,
-      quizCode: quiz.quizCode.trim().toUpperCase(),
+      subject: cleanSubject,
+      teacherPin: effectiveTeacherPin,
+      quizCode: cleanQuizCode,
+      previousCodes: updatedPrevCodes,
       updatedAt: new Date().toISOString(),
     };
 
@@ -313,6 +317,10 @@ export async function savePublishedQuiz(quiz: PublishedQuiz): Promise<PublishedQ
     clearQuizMemoryCache(cleanQuiz.quizCode);
     clearQuizMemoryCache(cleanQuiz.id);
     clearQuizMemoryCache(cleanQuiz.testId);
+    updatedPrevCodes.forEach((code) => clearQuizMemoryCache(code));
+    if (oldQuizCode) {
+      clearQuizMemoryCache(oldQuizCode.trim().toUpperCase());
+    }
 
     // 1. Update local storage immediately for zero-lag UI
     const existing = getPublishedQuizzes();
@@ -338,53 +346,91 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
   try {
     const cleanId = id.trim();
     const existing = getPublishedQuizzes();
-    const target = existing.find(
-      (q) =>
-        q.id === cleanId ||
-        q.testId === cleanId ||
-        q.quizCode.toUpperCase() === cleanId.toUpperCase()
-    );
-    const targetId = target?.id || cleanId;
-    const targetCode = (target?.quizCode || cleanId).toUpperCase();
-    const targetTestId = target?.testId || cleanId;
 
-    // Record in tombstone registry so this quiz cannot resurrect
-    recordDeletedQuiz(cleanId, targetTestId, targetCode);
-    if (targetId && targetId !== cleanId) {
+    // 1. Direct Quiz ID Deletion (standard from QuizManagerPage)
+    const directQuiz = existing.find((q) => q.id === cleanId);
+    if (directQuiz) {
+      const targetId = directQuiz.id;
+      const targetCode = directQuiz.quizCode?.trim().toUpperCase();
+
       recordDeletedQuiz(targetId);
+      clearQuizMemoryCache(targetId);
+      if (targetCode) clearQuizMemoryCache(targetCode);
+
+      // Only delete this exact quiz ID - NEVER touch sibling quizzes from same test
+      const matchesTarget = (q: PublishedQuiz) => q.id === targetId;
+
+      const updated = existing.filter((q) => !matchesTarget(q));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
+      await syncPublishedQuizzesToCloud(updatedCloud);
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: targetId } }));
+      }
+      return updated;
     }
 
+    // 2. Test ID Deletion (e.g. called from testBuilderService when an entire test paper is deleted)
+    const matchingByTest = existing.filter((q) => q.testId === cleanId);
+    if (matchingByTest.length > 0) {
+      matchingByTest.forEach((q) => {
+        recordDeletedQuiz(q.id);
+        clearQuizMemoryCache(q.id);
+        if (q.quizCode) clearQuizMemoryCache(q.quizCode.trim().toUpperCase());
+      });
+
+      const matchesTarget = (q: PublishedQuiz) => q.testId === cleanId;
+
+      const updated = existing.filter((q) => !matchesTarget(q));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
+      await syncPublishedQuizzesToCloud(updatedCloud);
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
+      }
+      return updated;
+    }
+
+    // 3. Fallback: match by Quiz Code
+    const cleanCodeUpper = cleanId.toUpperCase();
+    const matchingByCode = existing.filter((q) => q.quizCode.toUpperCase() === cleanCodeUpper);
+    if (matchingByCode.length > 0) {
+      matchingByCode.forEach((q) => {
+        recordDeletedQuiz(q.id);
+        clearQuizMemoryCache(q.id);
+        clearQuizMemoryCache(cleanCodeUpper);
+      });
+
+      const matchesTarget = (q: PublishedQuiz) => q.quizCode.toUpperCase() === cleanCodeUpper;
+
+      const updated = existing.filter((q) => !matchesTarget(q));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
+      await syncPublishedQuizzesToCloud(updatedCloud);
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
+      }
+      return updated;
+    }
+
+    // 4. If not found in local cache, record cleanId tombstone and prune cloud
+    recordDeletedQuiz(cleanId);
     clearQuizMemoryCache(cleanId);
-    clearQuizMemoryCache(targetCode);
-    clearQuizMemoryCache(targetTestId);
-
-    const matchesTarget = (q: PublishedQuiz) => {
-      const qId = q.id;
-      const qCode = q.quizCode.toUpperCase();
-      const qTestId = q.testId;
-      return (
-        qId === cleanId ||
-        qId === targetId ||
-        qTestId === cleanId ||
-        qTestId === targetTestId ||
-        qCode === cleanId.toUpperCase() ||
-        qCode === targetCode
-      );
-    };
-
-    const updated = existing.filter((q) => !matchesTarget(q));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
     const cloudList = await fetchPublishedQuizzesFromSupabase();
-    const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
+    const updatedCloud = cloudList.filter((q) => q.id !== cleanId && q.testId !== cleanId && q.quizCode.toUpperCase() !== cleanCodeUpper);
     await syncPublishedQuizzesToCloud(updatedCloud);
 
-    // Broadcast quiz deletion event to UI
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
-    }
-
-    return updated;
+    return existing;
   } catch (err) {
     console.error('Failed to delete published quiz:', err);
     return getPublishedQuizzes();
@@ -427,8 +473,8 @@ export function createDraftFromTest(
   customCode?: string,
   existingQuiz?: PublishedQuiz
 ): PublishedQuiz {
-  // If an existing published quiz already exists for this test, preserve its ID and configuration
-  const existing = existingQuiz || getPublishedQuizzes().find((q) => q.testId === test.id);
+  // If an existing published quiz is explicitly provided (e.g. editing), preserve its ID and configuration
+  const existing = existingQuiz;
   const generated = customCode?.trim().toUpperCase() || existing?.quizCode || generateQuizCode(test);
   const header = test.header_config || existing?.headerConfig;
   const qCount = questions?.length || test.question_ids?.length || existing?.questionCount || 0;
@@ -445,8 +491,9 @@ export function createDraftFromTest(
   }
 
   const dur = existing?.durationMinutes || header?.durationMinutes || 45;
+  const pin = existing?.teacherPin || header?.teacherPin || test.header_config?.teacherPin || '1234';
   const mergedHeader = header
-    ? { ...header, durationMinutes: dur }
+    ? { ...header, durationMinutes: dur, teacherPin: pin }
     : {
         title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
         schoolName: '',
@@ -454,6 +501,7 @@ export function createDraftFromTest(
         subjectCode: '',
         durationMinutes: dur,
         instructions: '',
+        teacherPin: pin,
       };
 
   return {
@@ -461,6 +509,7 @@ export function createDraftFromTest(
     testId: test.id,
     title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
     quizCode: generated,
+    previousCodes: existing?.previousCodes || [],
     subject: resolvedSubject,
     totalMarks: tMarks,
     questionCount: qCount,
@@ -472,7 +521,7 @@ export function createDraftFromTest(
     enableWatermark: existing?.enableWatermark ?? (getSavedSettings().defaultEnableWatermark ?? false),
     enableMultiMonitorDetection: existing?.enableMultiMonitorDetection ?? (getSavedSettings().defaultEnableMultiMonitor ?? false),
     requireTeacherUnlock: existing?.requireTeacherUnlock ?? true,
-    teacherPin: existing?.teacherPin || '1234',
+    teacherPin: pin,
     maxViolations: existing?.maxViolations || 3,
     showInstantSolutions: existing?.showInstantSolutions ?? false,
     isActive: existing?.isActive ?? true,

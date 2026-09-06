@@ -75,7 +75,16 @@ export function saveToSubmissionOutbox(
         lastError,
       });
     }
-    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(outbox));
+
+    // Prune old synced items to prevent unbounded storage growth
+    const now = Date.now();
+    const pruned = outbox.filter((item) => {
+      if (item.status !== 'synced') return true;
+      const ageHrs = (now - new Date(item.queuedAt).getTime()) / (1000 * 60 * 60);
+      return ageHrs < 24;
+    }).slice(0, 100);
+
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruned));
   } catch (err) {
     console.warn('Could not save to submission outbox:', err);
   }
@@ -90,7 +99,15 @@ export function markOutboxSynced(submissionId: string): void {
     const updated = outbox.map((item) =>
       item.submission.id === submissionId ? { ...item, status: 'synced' as const, lastError: undefined } : item
     );
-    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(updated));
+    
+    const now = Date.now();
+    const pruned = updated.filter((item) => {
+      if (item.status !== 'synced') return true;
+      const ageHrs = (now - new Date(item.queuedAt).getTime()) / (1000 * 60 * 60);
+      return ageHrs < 24;
+    }).slice(0, 100);
+
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruned));
   } catch (err) {
     console.warn('Could not mark outbox item synced:', err);
   }
@@ -375,29 +392,96 @@ export interface StudentSubmission {
 const SUBMISSIONS_STORAGE_KEY = 'fluffykitten_quiz_submissions';
 const DEVICE_RECEIPTS_KEY = 'fluffykitten_device_exam_receipts';
 
+// In-memory cache for high-frequency operations (e.g. badge counters, dashboard stats)
+let submissionsMemoryCache: StudentSubmission[] | null = null;
+
+/**
+ * Safely persists submissions to localStorage with multi-stage quota recovery.
+ * Prevents browser crashes and unhandled QuotaExceededError when storing hundreds of student attempts.
+ */
+export function safeSaveSubmissionsToLocalStorage(submissions: StudentSubmission[]): void {
+  // Always update in-memory cache first so current app session has immediate, full fidelity
+  submissionsMemoryCache = submissions;
+  try {
+    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(submissions));
+  } catch (err: any) {
+    console.warn('LocalStorage quota exceeded while saving submissions, attempting progressive pruning:', err);
+    // Stage 1: Sort by most recent submission time first
+    const sorted = [...submissions].sort(
+      (a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime()
+    );
+    // Try saving recent 100
+    try {
+      localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(sorted.slice(0, 100)));
+      return;
+    } catch (e1) {
+      // Stage 2: Try saving recent 40 with heavy audit logs stripped for non-recent submissions
+      try {
+        const compacted = sorted.slice(0, 40).map((s, idx) => {
+          if (idx < 10) return s; // Keep first 10 submissions fully detailed
+          return {
+            ...s,
+            proctoringLogs: [],
+            questionResults: (s.questionResults || []).map((qr) => ({
+              questionId: qr.questionId,
+              questionNumber: qr.questionNumber,
+              topic: qr.topic,
+              maxMarks: qr.maxMarks,
+              earnedMarks: qr.earnedMarks,
+              isCorrect: qr.isCorrect,
+              studentAnswer: qr.studentAnswer,
+              correctAnswer: qr.correctAnswer,
+            })),
+          };
+        });
+        localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(compacted));
+      } catch (e2) {
+        console.error('Critical: unable to save even compacted submissions to localStorage quota:', e2);
+      }
+    }
+  }
+}
+
 export function getAllSubmissions(): StudentSubmission[] {
+  if (submissionsMemoryCache !== null) {
+    return submissionsMemoryCache;
+  }
   try {
     const raw = localStorage.getItem(SUBMISSIONS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    submissionsMemoryCache = parsed;
+    return parsed;
   } catch (err) {
     console.error('Failed to load submissions from localStorage:', err);
     return [];
   }
 }
 
-export function getSubmissionsForQuiz(quizId: string, quizCode?: string, testId?: string): StudentSubmission[] {
+export function getSubmissionsForQuiz(quizId: string, quizCode?: string, _testId?: string): StudentSubmission[] {
   const all = getAllSubmissions();
   const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
-  const cleanTestId = testId ? testId.toUpperCase() : undefined;
+  const cleanTestId = _testId ? _testId.toUpperCase() : undefined;
 
   return all.filter((s) => {
     const sQuizId = (s.quizId || '').toUpperCase();
     const sCode = (s.quizCode || '').toUpperCase();
-    return (
-      s.quizId === quizId ||
-      (cleanCode && sCode === cleanCode) ||
-      (cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId))
-    );
+
+    // 1. Primary strict match on quizId (matches published ID e.g. quiz_174...)
+    if (s.quizId && s.quizId === quizId) {
+      return true;
+    }
+
+    // 2. Underlying Test UUID match (if submitted with testId instead of publishedId)
+    if (cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId)) {
+      return true;
+    }
+
+    // 3. Quiz Code match (e.g. 6-character token)
+    if (cleanCode && sCode === cleanCode) {
+      return true;
+    }
+
+    return false;
   });
 }
 
@@ -406,7 +490,7 @@ export function saveQuizSubmission(submission: StudentSubmission): void {
     const existing = getAllSubmissions();
     const filtered = existing.filter((s) => s.id !== submission.id);
     const updated = [submission, ...filtered];
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    safeSaveSubmissionsToLocalStorage(updated);
   } catch (err) {
     console.error('Failed to save quiz submission:', err);
   }
@@ -437,10 +521,15 @@ export async function fetchSubmissionsFromAppConfig(): Promise<StudentSubmission
  */
 export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[]): Promise<boolean> {
   try {
+    // Cap fallback backup to the 200 most recent submissions to prevent unbounded growth and row size limit errors
+    const recentSubmissions = [...submissions]
+      .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
+      .slice(0, 200);
+      
     const { error } = await (supabase.from('app_config' as any) as any)
       .upsert({
         key: 'quiz_submissions',
-        value: JSON.stringify(submissions),
+        value: JSON.stringify(recentSubmissions),
       });
     if (error) {
       console.warn('app_config submissions sync notice:', error.message);
@@ -572,7 +661,7 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
     const subIds = new Set(submissions.map((s) => s.id));
     const filtered = existing.filter((s) => !subIds.has(s.id));
     const updated = [...submissions, ...filtered];
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    safeSaveSubmissionsToLocalStorage(updated);
     window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
     console.error('Failed to batch save submissions locally:', err);
@@ -642,7 +731,7 @@ export async function deleteSubmission(id: string): Promise<void> {
   try {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.id !== id);
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    safeSaveSubmissionsToLocalStorage(updated);
   } catch (err) {
     console.error('Failed to delete submission from localStorage:', err);
   }
@@ -670,7 +759,7 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
   try {
     const existing = getAllSubmissions();
     const updated = existing.filter((s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode));
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(updated));
+    safeSaveSubmissionsToLocalStorage(updated);
   } catch (err) {
     console.error('Failed to clear submissions from localStorage:', err);
   }
@@ -790,8 +879,8 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
 
     const merged = Array.from(mergedMap.values());
 
-    // 3. Update localStorage
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(merged));
+    // 3. Update localStorage safely
+    safeSaveSubmissionsToLocalStorage(merged);
     window.dispatchEvent(new Event('submissions_updated'));
 
     // 4. If local had items not yet in cloud (e.g. graded on localhost), sync to cloud
@@ -882,7 +971,7 @@ export async function fetchSubmissionsFromSupabase(
           const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
           return !matchPubId && !matchCode && !matchTestId;
         });
-        localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
+        safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
       } catch {}
 
       return merged;
@@ -921,7 +1010,7 @@ export async function fetchSubmissionsFromSupabase(
           const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
           return !matchPubId && !matchCode && !matchTestId;
         });
-        localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify([...merged, ...allLocal]));
+        safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
       } catch {}
       return merged;
     }
@@ -1065,7 +1154,7 @@ export async function setQuizSubmissionsStatus(
       }
       return s;
     });
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(all));
+    safeSaveSubmissionsToLocalStorage(all);
   } catch {}
 
   return true;
@@ -1233,39 +1322,62 @@ export function exportAllSubmissionsExcel(
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Gradebook Summary');
 
   // ── Sheet 2: Question Item Analysis ────────────────────────────────────────
-  if (submissions[0]?.questionResults) {
-    const qCount = submissions[0].questionResults.length;
-    const itemAnalysis = [];
+  // Group by question identifier to remain 100% accurate even when questions were shuffled
+  const questionMap = new Map<string, {
+    key: string;
+    questionNumber: number;
+    topic: string;
+    maxMarks: number;
+    correctCount: number;
+    totalEarned: number;
+    attemptCount: number;
+  }>();
 
-    for (let i = 0; i < qCount; i++) {
-      const qNum = i + 1;
-      const topic = submissions[0].questionResults[i]?.topic || 'General';
-      const maxMarks = submissions[0].questionResults[i]?.maxMarks || 1;
-      
-      let correctCount = 0;
-      let totalEarned = 0;
-
-      submissions.forEach((sub) => {
-        const qr = sub.questionResults[i];
-        if (qr) {
-          if (qr.isCorrect) correctCount++;
-          totalEarned += qr.earnedMarks;
+  submissions.forEach((sub) => {
+    if (sub.questionResults && Array.isArray(sub.questionResults)) {
+      sub.questionResults.forEach((qr, idx) => {
+        const qKey = qr.questionId || `q_${qr.questionNumber || idx + 1}`;
+        let item = questionMap.get(qKey);
+        if (!item) {
+          item = {
+            key: qKey,
+            questionNumber: qr.questionNumber || idx + 1,
+            topic: qr.topic || 'General',
+            maxMarks: qr.maxMarks || 1,
+            correctCount: 0,
+            totalEarned: 0,
+            attemptCount: 0,
+          };
+          questionMap.set(qKey, item);
         }
-      });
-
-      const accuracy = ((correctCount / submissions.length) * 100).toFixed(1);
-      const avgEarned = (totalEarned / submissions.length).toFixed(2);
-
-      itemAnalysis.push({
-        'Question #': `Q${qNum}`,
-        'Topic': topic,
-        'Max Marks': maxMarks,
-        'Class Accuracy (%)': `${accuracy}%`,
-        'Correct Submissions': correctCount,
-        'Incorrect Submissions': submissions.length - correctCount,
-        'Avg Earned Marks': avgEarned,
+        item.attemptCount++;
+        if (qr.isCorrect) item.correctCount++;
+        item.totalEarned += qr.earnedMarks || 0;
       });
     }
+  });
+
+  if (questionMap.size > 0) {
+    const sortedQuestions = Array.from(questionMap.values()).sort(
+      (a, b) => a.questionNumber - b.questionNumber
+    );
+
+    const itemAnalysis = sortedQuestions.map((item, idx) => {
+      const qNum = item.questionNumber || idx + 1;
+      const totalAttempts = item.attemptCount || submissions.length || 1;
+      const accuracy = ((item.correctCount / totalAttempts) * 100).toFixed(1);
+      const avgEarned = (item.totalEarned / totalAttempts).toFixed(2);
+
+      return {
+        'Question #': `Q${qNum}`,
+        'Topic': item.topic,
+        'Max Marks': item.maxMarks,
+        'Class Accuracy (%)': `${accuracy}%`,
+        'Correct Submissions': item.correctCount,
+        'Incorrect Submissions': totalAttempts - item.correctCount,
+        'Avg Earned Marks': avgEarned,
+      };
+    });
 
     const wsItem = XLSX.utils.json_to_sheet(itemAnalysis);
     wsItem['!cols'] = [
@@ -1359,10 +1471,8 @@ export function exportSingleSubmissionExcel(submission: StudentSubmission): void
       'Topic': qr.topic,
       'Marks': `${qr.earnedMarks} / ${qr.maxMarks}`,
       'Result': qr.isCorrect ? 'Correct ✓' : 'Incorrect ✗',
-      'Student Answer': typeof qr.studentAnswer === 'number'
-        ? `Option ${String.fromCharCode(65 + qr.studentAnswer)}`
-        : String(qr.studentAnswer || '(No answer)'),
-      'Model Solution / Correct Answer': qr.correctAnswer || '',
+      'Student Answer': formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, false),
+      'Model Solution / Correct Answer': formatCandidateAnswer(qr.correctAnswer, qr.options, qr.gradingMethod, false) || qr.correctAnswer || '',
       'Misconception Alerts': qr.misconceptions?.join('; ') || '',
     }));
 

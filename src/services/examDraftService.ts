@@ -82,9 +82,10 @@ export async function saveExamDraft(draft: ExamDraftPayload): Promise<boolean> {
  */
 export async function fetchExamDraft(
   quizCode: string,
+  quizId: string,
   studentIdentifier: string
 ): Promise<ExamDraftPayload | null> {
-  if (!quizCode || !studentIdentifier) return null;
+  if (!quizCode || !quizId || !studentIdentifier) return null;
 
   const draftKey = getDraftKey(quizCode, studentIdentifier);
 
@@ -94,6 +95,10 @@ export async function fetchExamDraft(
     if (local) {
       const parsed: ExamDraftPayload = JSON.parse(local);
       if (parsed && parsed.status === 'in_progress') {
+        if (parsed.quizId !== quizId) {
+          console.warn(`Draft bleed prevented locally: old draft belongs to ${parsed.quizId}, but current exam is ${quizId}`);
+          return null;
+        }
         // Verify not stale (> 24 hours)
         const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
         if (ageHours < 24) {
@@ -115,6 +120,10 @@ export async function fetchExamDraft(
     if (!error && data?.value) {
       const parsed: ExamDraftPayload = JSON.parse(data.value);
       if (parsed && parsed.status === 'in_progress') {
+        if (parsed.quizId !== quizId) {
+          console.warn(`Draft bleed prevented via cloud: old draft belongs to ${parsed.quizId}, current exam is ${quizId}`);
+          return null;
+        }
         const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
         if (ageHours < 24) {
           // Cache to local for this device
@@ -137,9 +146,10 @@ export async function fetchExamDraft(
  */
 export async function clearExamDraft(
   quizCode: string,
+  quizId: string,
   studentIdentifier: string
 ): Promise<void> {
-  if (!quizCode || !studentIdentifier) return;
+  if (!quizCode || !quizId || !studentIdentifier) return;
 
   const draftKey = getDraftKey(quizCode, studentIdentifier);
 
@@ -203,7 +213,7 @@ export async function checkStudentAttemptSubmitted(
 
   // 2. Check local outbox / device receipts as fallback
   try {
-    const receiptsRaw = localStorage.getItem('fluffykitten_device_receipts');
+    const receiptsRaw = localStorage.getItem('fluffykitten_device_exam_receipts');
     if (receiptsRaw) {
       const receipts = JSON.parse(receiptsRaw);
       if (Array.isArray(receipts)) {

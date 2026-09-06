@@ -1,0 +1,251 @@
+/* ─── Candidate Name Autocomplete Styles ─────────────────────────────────── */
+
+.candidate-autocomplete-root {
+  position: relative;
+  width: 100%;
+}
+
+.candidate-autocomplete-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.candidate-autocomplete-icon {
+  position: absolute;
+  left: 14px;
+  font-size: 1rem;
+  color: var(--color-text-tertiary, #94a3b8);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.candidate-autocomplete-input {
+  width: 100%;
+  padding: 11px 40px 11px 40px;
+  border-radius: var(--radius-lg, 10px);
+  border: 1.5px solid var(--color-border, #334155);
+  background: var(--color-surface-sunken, #090d16);
+  color: var(--color-text-primary, #f8fafc);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.candidate-autocomplete-input::placeholder {
+  color: var(--color-text-tertiary, #64748b);
+  font-weight: 500;
+}
+
+.candidate-autocomplete-input:hover:not(:disabled) {
+  border-color: var(--color-border-hover, #475569);
+}
+
+.candidate-autocomplete-input:focus {
+  border-color: var(--color-primary-500, #6366f1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  background: var(--color-surface, #0f172a);
+}
+
+.candidate-autocomplete-input.has-error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
+}
+
+.candidate-autocomplete-actions {
+  position: absolute;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.candidate-autocomplete-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary, #94a3b8);
+  font-size: 0.8125rem;
+  padding: 4px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.candidate-autocomplete-clear-btn:hover {
+  color: var(--color-text-primary, #f8fafc);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.candidate-autocomplete-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary, #94a3b8);
+  font-size: 0.75rem;
+  padding: 4px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.candidate-autocomplete-toggle-btn:hover {
+  color: var(--color-text-primary, #f8fafc);
+}
+
+.candidate-autocomplete-toggle-btn.open {
+  transform: rotate(180deg);
+}
+
+/* ─── Dropdown Menu ──────────────────────────────────────────────────────── */
+
+.candidate-autocomplete-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 270px;
+  overflow-y: auto;
+  background: var(--color-surface-elevated, #1e293b);
+  border: 1.5px solid var(--color-border, #334155);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.45), 0 6px 12px -2px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  padding: 6px 0;
+  margin: 0;
+  list-style: none;
+  animation: autocompleteFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+@keyframes autocompleteFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.candidate-autocomplete-header {
+  padding: 6px 14px 4px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary, #94a3b8);
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.06));
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.candidate-autocomplete-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
+  user-select: none;
+}
+
+.candidate-autocomplete-item:hover,
+.candidate-autocomplete-item.highlighted {
+  background: rgba(99, 102, 241, 0.14);
+  border-left-color: var(--color-primary-500, #6366f1);
+}
+
+.candidate-autocomplete-item.selected {
+  background: rgba(99, 102, 241, 0.2);
+  border-left-color: var(--color-primary-500, #6366f1);
+}
+
+.candidate-autocomplete-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.candidate-autocomplete-name {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #f8fafc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.candidate-autocomplete-highlight {
+  color: var(--color-primary-400, #818cf8);
+  background: rgba(99, 102, 241, 0.2);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.candidate-autocomplete-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.candidate-autocomplete-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--color-primary-400, #818cf8);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  display: inline-flex;
+  align-items: center;
+}
+
+.candidate-autocomplete-badge.current-class {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.candidate-autocomplete-id-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary, #94a3b8);
+}
+
+.candidate-autocomplete-empty {
+  padding: 14px 16px;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #94a3b8);
+  text-align: center;
+}
+
+.candidate-autocomplete-empty strong {
+  display: block;
+  color: var(--color-text-primary, #f8fafc);
+  margin-bottom: 2px;
+}
+
+.candidate-autocomplete-empty span {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary, #64748b);
+}

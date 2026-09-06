@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { Question, Syllabus } from '../types/database';
 import {
   saveCustomTest,
+  updateCustomTest,
   type ExamHeaderConfig,
 } from '../services/testBuilderService';
 import { fetchSyllabuses } from '../services/questionBankService';
@@ -179,6 +180,9 @@ function inferSubjectFromQuestions(
 
 interface TestBuilderPageProps {
   initialQuestions: Question[];
+  initialHeaderConfig?: ExamHeaderConfig;
+  initialTestId?: string;
+  onClearLoadedState?: () => void;
   onRemoveQuestion: (questionId: string) => void;
   onNavigateToBank: () => void;
   onUpdateQuestions?: (questions: Question[]) => void;
@@ -188,6 +192,9 @@ interface TestBuilderPageProps {
 
 export function TestBuilderPage({
   initialQuestions,
+  initialHeaderConfig,
+  initialTestId,
+  onClearLoadedState: _onClearLoadedState,
   onRemoveQuestion,
   onNavigateToBank,
   onUpdateQuestions,
@@ -195,6 +202,7 @@ export function TestBuilderPage({
   onLaunchGameRun,
 }: TestBuilderPageProps) {
   const [questions, setQuestions] = useState<Question[]>(initialQuestions);
+  const [currentTestId, setCurrentTestId] = useState<string | null>(initialTestId || null);
   const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -216,8 +224,18 @@ export function TestBuilderPage({
     setQuestions(initialQuestions);
   }, [initialQuestions]);
 
+  // Sync loaded test ID if props change
+  useEffect(() => {
+    if (initialTestId) {
+      setCurrentTestId(initialTestId);
+    }
+  }, [initialTestId]);
+
   // Exam Header Settings with session persistence
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig>(() => {
+    if (initialHeaderConfig) {
+      return initialHeaderConfig;
+    }
     try {
       const saved = sessionStorage.getItem('testmaker_builder_header_config');
       if (saved) return JSON.parse(saved);
@@ -235,6 +253,13 @@ export function TestBuilderPage({
       additionalMaterials: initialDetected.additionalMaterials,
     };
   });
+
+  // Sync loaded header config if props change
+  useEffect(() => {
+    if (initialHeaderConfig) {
+      setHeaderConfig(initialHeaderConfig);
+    }
+  }, [initialHeaderConfig]);
 
   // Dynamically auto-adapt subject when questions or syllabuses change
   useEffect(() => {
@@ -312,21 +337,31 @@ export function TestBuilderPage({
     });
   };
 
-  // Save to Supabase & Local Storage
-  const handleSaveTest = async () => {
+  // Save or Update Custom Test
+  const handleSaveTest = async (saveAsNew: boolean = false) => {
     if (questions.length === 0) return;
     setIsSaving(true);
     setSavedSuccessMsg(null);
 
     try {
-      const saved = await saveCustomTest({
-        title: headerConfig.title || 'Custom Exam Test',
-        totalMarks,
-        questionIds: questions.map((q) => q.id),
-        headerConfig,
-      });
-
-      setSavedSuccessMsg(`Custom exam saved successfully! (ID: ${saved.id.slice(0, 8)})`);
+      if (currentTestId && !saveAsNew) {
+        const saved = await updateCustomTest(currentTestId, {
+          title: headerConfig.title || 'Custom Exam Test',
+          totalMarks,
+          questionIds: questions.map((q) => q.id),
+          headerConfig,
+        });
+        setSavedSuccessMsg(`Custom exam "${saved.title}" updated successfully! (ID: ${saved.id.slice(0, 8)})`);
+      } else {
+        const saved = await saveCustomTest({
+          title: headerConfig.title || 'Custom Exam Test',
+          totalMarks,
+          questionIds: questions.map((q) => q.id),
+          headerConfig,
+        });
+        setCurrentTestId(saved.id);
+        setSavedSuccessMsg(`Custom exam "${saved.title}" saved successfully! (ID: ${saved.id.slice(0, 8)})`);
+      }
       setTimeout(() => setSavedSuccessMsg(null), 6000);
     } catch (err: any) {
       alert(`Save failed: ${err?.message || 'Unknown error'}`);
@@ -506,7 +541,9 @@ export function TestBuilderPage({
               <div className="builder-sidebar-column">
                 <TestStatsSidebar
                   questions={questions}
-                  onSaveTest={handleSaveTest}
+                  onSaveTest={() => handleSaveTest(false)}
+                  onSaveAsNew={() => handleSaveTest(true)}
+                  isEditingExisting={Boolean(currentTestId)}
                   isSaving={isSaving}
                   onNavigateToBank={onNavigateToBank}
                   onTogglePreviewMode={() => setIsPreviewMode(!isPreviewMode)}

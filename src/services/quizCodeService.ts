@@ -6,6 +6,7 @@ import type { PublishedQuiz } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 
 export interface StudentQuizData {
+  publishedId?: string;
   testId: string;
   quizCode: string;
   title: string;
@@ -84,15 +85,16 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 
   // 1. Check Configured Published Quizzes in LocalStorage first
+  const matchQuiz = (p: PublishedQuiz) =>
+    p.quizCode.toUpperCase() === cleanInput ||
+    p.id.toUpperCase() === cleanInput ||
+    p.testId.toUpperCase() === cleanInput ||
+    (p.previousCodes && p.previousCodes.some((c) => c.toUpperCase() === cleanInput));
+
   let published: PublishedQuiz | undefined;
   try {
     const publishedList = getPublishedQuizzes();
-    published = publishedList.find(
-      (p) =>
-        p.quizCode.toUpperCase() === cleanInput ||
-        p.id.toUpperCase() === cleanInput ||
-        p.testId.toUpperCase() === cleanInput
-    );
+    published = publishedList.find(matchQuiz);
   } catch (err) {
     console.warn('Local published lookup error:', err);
   }
@@ -101,12 +103,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   if (!published) {
     try {
       const cloudQuizzes = await fetchPublishedQuizzesFromSupabase();
-      published = cloudQuizzes.find(
-        (p) =>
-          p.quizCode.toUpperCase() === cleanInput ||
-          p.id.toUpperCase() === cleanInput ||
-          p.testId.toUpperCase() === cleanInput
-      );
+      published = cloudQuizzes.find(matchQuiz);
       if (published) {
         try {
           const localList = getPublishedQuizzes();
@@ -151,8 +148,9 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
     }
     const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
+    const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
     const syncedHeader = published.headerConfig
-      ? { ...published.headerConfig, durationMinutes: effectiveDuration }
+      ? { ...published.headerConfig, durationMinutes: effectiveDuration, teacherPin: effectiveTeacherPin }
       : {
           title: published.title || 'Examination Assessment',
           schoolName: '',
@@ -160,9 +158,11 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
           subjectCode: '',
           durationMinutes: effectiveDuration,
           instructions: '',
+          teacherPin: effectiveTeacherPin,
         };
 
     const result: StudentQuizData = {
+      publishedId: published.id,
       testId: published.testId,
       quizCode: published.quizCode,
       title: published.title,
@@ -176,7 +176,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       enableWatermark: published.enableWatermark ?? false,
       enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
       requireTeacherUnlock: published.requireTeacherUnlock,
-      teacherPin: published.teacherPin,
+      teacherPin: effectiveTeacherPin,
       maxViolations: published.maxViolations,
       showInstantSolutions: published.showInstantSolutions,
       requireStudentPin: published.requireStudentPin ?? false,
@@ -317,19 +317,33 @@ export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
 
   if (missingIds.length > 0) {
     try {
-      const { data, error } = await supabase
-        .from('questions')
-        .select('*')
-        .in('id', missingIds);
-
-      if (!error && data && Array.isArray(data)) {
-        (data as any[]).forEach((raw) => {
-          const norm = normalizeQuestionRecord(raw);
-          questionObjectCache.set(norm.id, norm);
-        });
+      const chunkSize = 100;
+      const chunks: string[][] = [];
+      for (let i = 0; i < missingIds.length; i += chunkSize) {
+        chunks.push(missingIds.slice(i, i + chunkSize));
       }
+
+      const results = await Promise.all(
+        chunks.map((chunk) =>
+          supabase
+            .from('questions')
+            .select('*')
+            .in('id', chunk)
+        )
+      );
+
+      results.forEach(({ data, error }) => {
+        if (!error && data && Array.isArray(data)) {
+          (data as any[]).forEach((raw) => {
+            const norm = normalizeQuestionRecord(raw);
+            questionObjectCache.set(norm.id, norm);
+          });
+        } else if (error) {
+          console.warn('fetchQuestionsByIds chunk error:', error.message);
+        }
+      });
     } catch (err) {
-      console.warn('fetchQuestionsByIds error:', err);
+      console.warn('fetchQuestionsByIds exception:', err);
     }
   }
 

@@ -5,6 +5,8 @@ import './TestStatsSidebar.css';
 interface TestStatsSidebarProps {
   questions: Question[];
   onSaveTest: () => void;
+  onSaveAsNew?: () => void;
+  isEditingExisting?: boolean;
   isSaving: boolean;
   onNavigateToBank: () => void;
   onTogglePreviewMode: () => void;
@@ -15,6 +17,8 @@ interface TestStatsSidebarProps {
 export function TestStatsSidebar({
   questions,
   onSaveTest,
+  onSaveAsNew,
+  isEditingExisting,
   isSaving,
   onNavigateToBank,
   onTogglePreviewMode,
@@ -194,8 +198,20 @@ export function TestStatsSidebar({
           disabled={isSaving || totalQuestions === 0}
           id="save-custom-test-btn"
         >
-          {isSaving ? 'Saving…' : '💾 Save Custom Test'}
+          {isSaving ? 'Saving…' : isEditingExisting ? '💾 Update Test Paper' : '💾 Save Custom Test'}
         </button>
+
+        {isEditingExisting && onSaveAsNew && (
+          <button
+            type="button"
+            className="test-action-btn test-action-btn--preview"
+            onClick={onSaveAsNew}
+            disabled={isSaving || totalQuestions === 0}
+            title="Save as a new separate test copy without overwriting the original"
+          >
+            ➕ Save as New Copy
+          </button>
+        )}
 
         <button
           type="button"

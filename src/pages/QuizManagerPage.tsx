@@ -75,12 +75,17 @@ export function QuizManagerPage({
   const [securityDefaults, setSecurityDefaults] = useState(() => getSavedSettings());
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
+  const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
   } | null>(null);
   const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
-  const configModalDismiss = useBackdropDismiss(() => setIsConfigModalOpen(false));
+  const configModalDismiss = useBackdropDismiss(() => {
+    setIsConfigModalOpen(false);
+    setActiveQuizDraft(null);
+    setOriginalQuizCode(null);
+  });
 
   // ─── 1. Load Data on Mount (Cache-First + Parallelized Sync) ────────────────
   useEffect(() => {
@@ -209,15 +214,16 @@ export function QuizManagerPage({
 
     const firstTest = savedTests[0];
     setSelectedTestId(firstTest.id);
-    const existing = quizzes.find((q) => q.testId === firstTest.id);
-    const draft = createDraftFromTest(firstTest, undefined, undefined, existing);
+    const draft = createDraftFromTest(firstTest);
     draft.quizMode = initialMode;
+    draft.isExamMode = initialMode === 'exam';
     if (!currentSettings.defaultEnableWatermark) {
       draft.enableWatermark = false;
     }
     if (!currentSettings.defaultEnableMultiMonitor) {
       draft.enableMultiMonitorDetection = false;
     }
+    setOriginalQuizCode(null);
     setActiveQuizDraft(draft);
     setIsConfigModalOpen(true);
   };
@@ -267,8 +273,13 @@ export function QuizManagerPage({
     if (selected) {
       const currentSettings = getSavedSettings();
       setSecurityDefaults(currentSettings);
-      const existing = quizzes.find((q) => q.testId === testId);
-      const draft = createDraftFromTest(selected, undefined, undefined, existing);
+      const isEditing = Boolean(originalQuizCode);
+      const draft = createDraftFromTest(
+        selected,
+        undefined,
+        undefined,
+        isEditing ? activeQuizDraft || undefined : undefined
+      );
       if (activeQuizDraft?.quizMode) {
         draft.quizMode = activeQuizDraft.quizMode;
       }
@@ -285,6 +296,7 @@ export function QuizManagerPage({
   const handleOpenEditModal = (quiz: PublishedQuiz) => {
     const currentSettings = getSavedSettings();
     setSecurityDefaults(currentSettings);
+    setOriginalQuizCode(quiz.quizCode);
     setActiveQuizDraft({
       ...quiz,
       quizMode: quiz.quizMode || 'exam',
@@ -313,13 +325,36 @@ export function QuizManagerPage({
       return;
     }
 
+    // Prevent token collisions with other active quizzes
+    const duplicate = quizzes.find(
+      (q) => q.id !== activeQuizDraft.id && q.quizCode.trim().toUpperCase() === cleanCode
+    );
+    if (duplicate) {
+      alert(
+        `The Quiz Code "${cleanCode}" is already in use by quiz "${duplicate.title}". Please choose a different code so students can join the right quiz.`
+      );
+      return;
+    }
+
+    // Safety check: warn if changing code on a quiz with existing submissions
+    if (originalQuizCode && originalQuizCode.trim().toUpperCase() !== cleanCode) {
+      const existingSubsCount = getSubmissionsForQuiz(activeQuizDraft.id, originalQuizCode, activeQuizDraft.testId).length;
+      if (existingSubsCount > 0) {
+        const proceed = window.confirm(
+          `Notice: This quiz already has ${existingSubsCount} candidate submission(s) recorded under code "${originalQuizCode}". Changing the code to "${cleanCode}" will redirect future candidates to the new code. Existing submissions will remain intact. Proceed with updating the code?`
+        );
+        if (!proceed) return;
+      }
+    }
+
     const cleanSubject = activeQuizDraft.subject?.trim() || 'Chemistry';
+    const effectiveTeacherPin = activeQuizDraft.teacherPin || '1234';
     const currentSettings = getSavedSettings();
 
     const isExam = activeQuizDraft.isExamMode ?? true;
     const resolvedDuration = activeQuizDraft.durationMinutes || 45;
     const updatedHeader = activeQuizDraft.headerConfig
-      ? { ...activeQuizDraft.headerConfig, durationMinutes: resolvedDuration }
+      ? { ...activeQuizDraft.headerConfig, durationMinutes: resolvedDuration, subject: cleanSubject, teacherPin: effectiveTeacherPin }
       : {
           title: activeQuizDraft.title || 'Examination',
           schoolName: '',
@@ -327,11 +362,13 @@ export function QuizManagerPage({
           subjectCode: '',
           durationMinutes: resolvedDuration,
           instructions: '',
+          teacherPin: effectiveTeacherPin,
         };
 
     const updated: PublishedQuiz = {
       ...activeQuizDraft,
       quizCode: cleanCode,
+      teacherPin: effectiveTeacherPin,
       subject: cleanSubject,
       durationMinutes: resolvedDuration,
       headerConfig: updatedHeader,
@@ -342,11 +379,27 @@ export function QuizManagerPage({
       updatedAt: new Date().toISOString(),
     };
 
-    const saved = await savePublishedQuiz(updated);
+    const saved = await savePublishedQuiz(updated, originalQuizCode || undefined);
     setQuizzes(saved);
+
+    // Visual filter synchronization: ensure newly saved quiz isn't hidden by active filters
+    if (selectedSubject !== 'all' && selectedSubject.toLowerCase() !== cleanSubject.toLowerCase()) {
+      setSelectedSubject('all');
+    }
+    const qSearch = searchQuery.toLowerCase().trim();
+    if (
+      qSearch &&
+      !updated.title.toLowerCase().includes(qSearch) &&
+      !updated.quizCode.toLowerCase().includes(qSearch) &&
+      !cleanSubject.toLowerCase().includes(qSearch)
+    ) {
+      setSearchQuery('');
+    }
+
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
-    setSaveSuccessMsg(`✨ Quiz "${updated.title}" configured with Code [${updated.quizCode}]!`);
+    setOriginalQuizCode(null);
+    setSaveSuccessMsg(`✨ Quiz "${updated.title}" saved successfully with Code [${updated.quizCode}]!`);
     setTimeout(() => setSaveSuccessMsg(null), 4000);
   };
 
@@ -879,13 +932,23 @@ export function QuizManagerPage({
           <div className="qm-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
             <div className="qm-modal-header">
               <div>
-                <h2 className="qm-modal-title">Configure Interactive Quiz Settings</h2>
-                <p className="qm-modal-sub">Set up student access code, subject, timer rules, and anti-cheating controls</p>
+                <h2 className="qm-modal-title">
+                  {originalQuizCode ? `Edit Quiz: ${activeQuizDraft.title}` : 'Configure Interactive Quiz Settings'}
+                </h2>
+                <p className="qm-modal-sub">
+                  {originalQuizCode
+                    ? 'Update access token, PIN, time limit, and anti-cheating rules'
+                    : 'Set up student access code, subject, timer rules, and anti-cheating controls'}
+                </p>
               </div>
               <button
                 type="button"
                 className="qm-modal-close"
-                onClick={() => setIsConfigModalOpen(false)}
+                onClick={() => {
+                  setIsConfigModalOpen(false);
+                  setActiveQuizDraft(null);
+                  setOriginalQuizCode(null);
+                }}
               >
                 ✕
               </button>
@@ -899,6 +962,7 @@ export function QuizManagerPage({
                   className="qm-form-select"
                   value={selectedTestId || ''}
                   onChange={(e) => handleSelectSavedTest(e.target.value)}
+                  disabled={Boolean(originalQuizCode)}
                 >
                   {savedTests.map((t) => (
                     <option key={t.id} value={t.id}>
@@ -906,6 +970,11 @@ export function QuizManagerPage({
                     </option>
                   ))}
                 </select>
+                {originalQuizCode && (
+                  <span className="qm-form-hint" style={{ fontSize: '0.78rem' }}>
+                    Source test questions are locked to this quiz. To publish a different test, create a new interactive quiz.
+                  </span>
+                )}
               </div>
 
               {/* Step 2: Subject & Title */}
@@ -962,9 +1031,20 @@ export function QuizManagerPage({
                     maxLength={16}
                   />
                 </div>
-                <span className="qm-form-hint">
-                  Students will use this exact code to join on the landing page.
-                </span>
+                {activeQuizDraft.quizCode.trim().length > 0 &&
+                  quizzes.some(
+                    (q) =>
+                      q.id !== activeQuizDraft.id &&
+                      q.quizCode.trim().toUpperCase() === activeQuizDraft.quizCode.trim().toUpperCase()
+                  ) ? (
+                  <span style={{ color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'block', marginTop: '6px' }}>
+                    ⚠️ This Quiz Code is already in use by another quiz. Please choose a unique code.
+                  </span>
+                ) : (
+                  <span className="qm-form-hint">
+                    Students will use this exact code to join on the landing page.
+                  </span>
+                )}
               </div>
 
               {/* Step 4: Assessment Format (Formal Exam vs Quizizz Game) */}
@@ -1410,7 +1490,11 @@ export function QuizManagerPage({
               <button
                 type="button"
                 className="qm-btn qm-btn-secondary"
-                onClick={() => setIsConfigModalOpen(false)}
+                onClick={() => {
+                  setIsConfigModalOpen(false);
+                  setActiveQuizDraft(null);
+                  setOriginalQuizCode(null);
+                }}
               >
                 Cancel
               </button>
@@ -1419,7 +1503,7 @@ export function QuizManagerPage({
                 className="qm-btn qm-btn-primary"
                 onClick={handleSaveQuizConfig}
               >
-                🚀 Save & Publish Quiz
+                {originalQuizCode ? '💾 Save Changes' : '🚀 Save & Publish Quiz'}
               </button>
             </div>
           </div>

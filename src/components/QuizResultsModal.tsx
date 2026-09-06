@@ -675,12 +675,61 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       return q;
     });
 
+    // Synchronize topic breakdown so deterministic AI reports reflect the teacher's adjustment
+    const updatedTopicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+    if (selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0) {
+      Object.entries(selectedSubmission.topicBreakdown).forEach(([k, v]) => {
+        updatedTopicBreakdown[k] = { ...v };
+      });
+    } else if (selectedSubmission.questionResults && selectedSubmission.questionResults.length > 0) {
+      selectedSubmission.questionResults.forEach((q) => {
+        const top = q.topic || 'General';
+        if (!updatedTopicBreakdown[top]) {
+          updatedTopicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+        }
+        updatedTopicBreakdown[top].totalMarks += q.maxMarks || 1;
+        updatedTopicBreakdown[top].earnedMarks += q.earnedMarks || 0;
+      });
+      Object.keys(updatedTopicBreakdown).forEach((top) => {
+        const item = updatedTopicBreakdown[top];
+        item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+      });
+    }
+
+    const topicKey = qr.topic || 'General';
+    let matchingKey = Object.keys(updatedTopicBreakdown).find(
+      (k) => k.toLowerCase().trim() === topicKey.toLowerCase().trim()
+    );
+    if (!matchingKey && updatedTopicBreakdown[topicKey]) {
+      matchingKey = topicKey;
+    }
+
+    if (matchingKey) {
+      const current = updatedTopicBreakdown[matchingKey];
+      const newEarned = Math.max(0, Math.min(current.totalMarks, current.earnedMarks + diff));
+      const newPercentage = current.totalMarks > 0 ? (newEarned / current.totalMarks) * 100 : 0;
+      updatedTopicBreakdown[matchingKey] = {
+        ...current,
+        earnedMarks: newEarned,
+        percentage: newPercentage,
+      };
+    } else {
+      const maxMarks = qr.maxMarks || 1;
+      const earned = Math.max(0, Math.min(maxMarks, editMarksInput));
+      updatedTopicBreakdown[topicKey] = {
+        totalMarks: maxMarks,
+        earnedMarks: earned,
+        percentage: maxMarks > 0 ? (earned / maxMarks) * 100 : 0,
+      };
+    }
+
     const updatedSubmission: StudentSubmission = {
       ...selectedSubmission,
       score: newScore,
       percentage: newPct,
       questionResults: updatedQuestionResults,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
+      topicBreakdown: updatedTopicBreakdown,
     };
 
     await updateSubmission(updatedSubmission);
@@ -695,11 +744,77 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     const newPct = selectedSubmission.totalMarks > 0 ? Math.round((newScore / selectedSubmission.totalMarks) * 100) : 0;
     const diff = newScore - selectedSubmission.score;
 
+    // Clone or initialize topic breakdown
+    const updatedTopicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+    if (selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0) {
+      Object.entries(selectedSubmission.topicBreakdown).forEach(([k, v]) => {
+        updatedTopicBreakdown[k] = { ...v };
+      });
+    } else if (selectedSubmission.questionResults && selectedSubmission.questionResults.length > 0) {
+      selectedSubmission.questionResults.forEach((q) => {
+        const top = q.topic || 'General';
+        if (!updatedTopicBreakdown[top]) {
+          updatedTopicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+        }
+        updatedTopicBreakdown[top].totalMarks += q.maxMarks || 1;
+        updatedTopicBreakdown[top].earnedMarks += q.earnedMarks || 0;
+      });
+      Object.keys(updatedTopicBreakdown).forEach((top) => {
+        const item = updatedTopicBreakdown[top];
+        item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+      });
+    }
+
+    if (Object.keys(updatedTopicBreakdown).length === 0) {
+      updatedTopicBreakdown['General'] = {
+        totalMarks: selectedSubmission.totalMarks || 1,
+        earnedMarks: newScore,
+        percentage: newPct,
+      };
+    } else if (diff > 0) {
+      // Distribute positive bonus marks starting from the lowest-performing topics
+      let remainingDiff = diff;
+      const topicKeys = Object.keys(updatedTopicBreakdown).sort(
+        (a, b) => updatedTopicBreakdown[a].percentage - updatedTopicBreakdown[b].percentage
+      );
+
+      for (const t of topicKeys) {
+        if (remainingDiff <= 0) break;
+        const item = updatedTopicBreakdown[t];
+        const headroom = Math.max(0, item.totalMarks - item.earnedMarks);
+        if (headroom > 0) {
+          const addMarks = Math.min(remainingDiff, headroom);
+          item.earnedMarks += addMarks;
+          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+          remainingDiff -= addMarks;
+        }
+      }
+    } else if (diff < 0) {
+      // Deduct marks starting from the highest-performing topics
+      let remainingDeduct = Math.abs(diff);
+      const topicKeys = Object.keys(updatedTopicBreakdown).sort(
+        (a, b) => updatedTopicBreakdown[b].percentage - updatedTopicBreakdown[a].percentage
+      );
+
+      for (const t of topicKeys) {
+        if (remainingDeduct <= 0) break;
+        const item = updatedTopicBreakdown[t];
+        const removable = item.earnedMarks;
+        if (removable > 0) {
+          const deductMarks = Math.min(remainingDeduct, removable);
+          item.earnedMarks -= deductMarks;
+          item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+          remainingDeduct -= deductMarks;
+        }
+      }
+    }
+
     const updatedSubmission: StudentSubmission = {
       ...selectedSubmission,
       score: newScore,
       percentage: newPct,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
+      topicBreakdown: updatedTopicBreakdown,
     };
 
     await updateSubmission(updatedSubmission);

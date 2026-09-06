@@ -55,6 +55,7 @@ import {
   verifyStudentPin,
   type PublicRosterStudent,
 } from '../services/studentRosterService';
+import { CandidateNameAutocomplete } from '../components/CandidateNameAutocomplete';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -212,6 +213,13 @@ function cleanOptionText(text: string, oIdx: number): string {
   return cleanMcqOptionContent(text, oIdx);
 }
 
+function getWordCount(text: string): { words: number; chars: number } {
+  if (!text || !text.trim()) return { words: 0, chars: 0 };
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  return { words, chars: trimmed.length };
+}
+
 interface QuestionParts {
   passageText: string | null;
   promptText: string;
@@ -352,6 +360,7 @@ export function StudentQuizRunner({
   const [showResourceBooklet, setShowResourceBooklet] = useState<boolean>(false);
   const [showMobileNav, setShowMobileNav] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
+  const [isStemScrolledPast, setIsStemScrolledPast] = useState<boolean>(false);
 
   // Grading, Verification & AI Evaluation State
   const [isGrading, setIsGrading] = useState<boolean>(false);
@@ -363,6 +372,7 @@ export function StudentQuizRunner({
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
   const [resolvedQuizCode, setResolvedQuizCode] = useState<string>(() => (testIdOrCode || 'EXAM').toUpperCase());
   const [resolvedTestId, setResolvedTestId] = useState<string>(() => testIdOrCode || 'direct_quiz');
+  const [resolvedPublishedId, setResolvedPublishedId] = useState<string | null>(null);
 
   // 🔒 Security & Anti-Cheating State
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
@@ -494,6 +504,7 @@ export function StudentQuizRunner({
           setIsQuizPaused(true);
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
+          if (data.publishedId) setResolvedPublishedId(data.publishedId);
           setTitle(data.title);
           const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
           setHeaderConfig(
@@ -512,6 +523,7 @@ export function StudentQuizRunner({
           setIsQuizPaused(false);
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
+          if (data.publishedId) setResolvedPublishedId(data.publishedId);
           setTitle(data.title);
           const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
           setHeaderConfig(
@@ -547,6 +559,8 @@ export function StudentQuizRunner({
           }
           if (data.teacherPin) {
             setTeacherPin(data.teacherPin);
+          } else if (data.headerConfig?.teacherPin) {
+            setTeacherPin(data.headerConfig.teacherPin);
           }
           if (data.requireStudentPin !== undefined) {
             setRequireStudentPin(data.requireStudentPin);
@@ -920,62 +934,100 @@ export function StudentQuizRunner({
     };
   }, [hasStarted, resolvedQuizCode, sessionHash]);
 
-  // Periodic and reactive heartbeat
+  // Use a ref to always hold the freshest state without triggering re-renders in the interval
+  const latestStateForHeartbeat = useRef({
+    isSubmitted,
+    isGrading,
+    isSubmitting: isSubmittingRef.current,
+    isLockedByProctor,
+    lockReason,
+    multiMonitorDetected,
+    documentHidden: typeof document !== 'undefined' ? document.hidden : false,
+    quizStats,
+    currentIndex,
+    timeLeft,
+    violations
+  });
+
   useEffect(() => {
+    latestStateForHeartbeat.current = {
+      isSubmitted,
+      isGrading,
+      isSubmitting: isSubmittingRef.current,
+      isLockedByProctor,
+      lockReason,
+      multiMonitorDetected,
+      documentHidden: typeof document !== 'undefined' ? document.hidden : false,
+      quizStats,
+      currentIndex,
+      timeLeft,
+      violations
+    };
+  });
+
+  const sendCurrentHeartbeat = useCallback(() => {
     if (!hasStarted || !resolvedQuizCode) return;
+    const s = latestStateForHeartbeat.current;
+    const isSubmittingOrFinished = s.isSubmitted || s.isGrading || s.isSubmitting;
+    
+    const currentStatus: StudentExamStatus = isSubmittingOrFinished
+      ? 'submitted'
+      : s.isLockedByProctor
+      ? 'locked'
+      : s.documentHidden
+      ? 'warning'
+      : 'active';
 
+    sendStudentHeartbeat({
+      studentId: sessionHash,
+      studentName: candidateName || 'Candidate',
+      candidateNumber: candidateNumber || '',
+      candidateClass: candidateClass || '',
+      status: currentStatus,
+      answeredCount: s.quizStats.answeredItems,
+      totalQuestions: s.quizStats.totalItems,
+      currentIndex: s.currentIndex + 1,
+      timeLeftSeconds: isSubmittingOrFinished ? 0 : s.timeLeft,
+      violationsCount: s.violations.length,
+      lastViolation: s.violations[s.violations.length - 1]?.detail,
+      lockReason: s.isLockedByProctor ? s.lockReason : undefined,
+      multiMonitorDetected: isSubmittingOrFinished ? false : s.multiMonitorDetected,
+      deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+      lastHeartbeat: Date.now(),
+      recentViolations: s.violations.map((v) => ({
+        timestamp: v.timestamp,
+        detail: v.detail,
+        type: v.type,
+      })),
+    });
+  }, [hasStarted, resolvedQuizCode, sessionHash, candidateName, candidateNumber, candidateClass]);
+
+  // 1. Periodic Heartbeat (Every 15s) - Maintains liveness without spamming WebSockets
+  useEffect(() => {
+    if (!hasStarted) return;
+    const interval = setInterval(() => {
+      sendCurrentHeartbeat();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [hasStarted, sendCurrentHeartbeat]);
+
+  // 2. Reactive Heartbeat (Triggered ONLY on significant state changes, heavily debounced)
+  useEffect(() => {
+    if (!hasStarted) return;
     const timer = setTimeout(() => {
-      const isSubmittingOrFinished = isSubmitted || isGrading || isSubmittingRef.current;
-      const currentStatus: StudentExamStatus = isSubmittingOrFinished
-        ? 'submitted'
-        : isLockedByProctor
-        ? 'locked'
-        : document.hidden
-        ? 'warning'
-        : 'active';
-
-      sendStudentHeartbeat({
-        studentId: sessionHash,
-        studentName: candidateName || 'Candidate',
-        candidateNumber: candidateNumber || '',
-        candidateClass: candidateClass || '',
-        status: currentStatus,
-        answeredCount: quizStats.answeredItems,
-        totalQuestions: quizStats.totalItems,
-        currentIndex: currentIndex + 1,
-        timeLeftSeconds: isSubmittingOrFinished ? 0 : timeLeft,
-        violationsCount: violations.length,
-        lastViolation: violations[violations.length - 1]?.detail,
-        lockReason: isLockedByProctor ? lockReason : undefined,
-        multiMonitorDetected: isSubmittingOrFinished ? false : multiMonitorDetected,
-        deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
-        lastHeartbeat: Date.now(),
-        recentViolations: violations.map((v) => ({
-          timestamp: v.timestamp,
-          detail: v.detail,
-          type: v.type,
-        })),
-      });
+      sendCurrentHeartbeat();
     }, 400);
-
     return () => clearTimeout(timer);
   }, [
     hasStarted,
     isSubmitted,
     isGrading,
-    resolvedQuizCode,
-    sessionHash,
-    candidateName,
-    candidateNumber,
-    candidateClass,
     isLockedByProctor,
     quizStats.answeredItems,
-    quizStats.totalItems,
     currentIndex,
-    timeLeft,
     violations.length,
-    lockReason,
     multiMonitorDetected,
+    sendCurrentHeartbeat
   ]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
@@ -1117,7 +1169,7 @@ export function StudentQuizRunner({
         });
 
         const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
-        const finalQuizId = resolvedTestId || testIdOrCode || 'direct_quiz';
+        const finalQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
 
         const submission: StudentSubmission = {
           id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -1170,7 +1222,7 @@ export function StudentQuizRunner({
           try {
             localStorage.removeItem(sessionKey);
             sessionStorage.removeItem(sessionKey);
-            clearExamDraft(finalQuizCode, studentPinInput || candidateName).catch(() => {});
+            clearExamDraft(finalQuizCode, finalQuizId, studentPinInput || candidateName).catch(() => {});
           } catch {}
         } else {
           setSyncStatus('offline_failed');
@@ -1329,7 +1381,7 @@ export function StudentQuizRunner({
       });
 
       const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
-      const finalQuizId = resolvedTestId || testIdOrCode || 'direct_quiz';
+      const finalQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
 
       const submission: StudentSubmission = {
         id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -1372,7 +1424,7 @@ export function StudentQuizRunner({
         try {
           localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
-          clearExamDraft(finalQuizCode, studentPinInput || candidateName).catch(() => {});
+          clearExamDraft(finalQuizCode, finalQuizId, studentPinInput || candidateName).catch(() => {});
         } catch {}
       } else {
         setSyncStatus('offline_failed');
@@ -1404,7 +1456,7 @@ export function StudentQuizRunner({
         try {
           localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
-          clearExamDraft(resolvedQuizCode, studentPinInput || candidateName).catch(() => {});
+          clearExamDraft(completedSubmission.quizCode, completedSubmission.quizId, studentPinInput || candidateName).catch(() => {});
         } catch {}
       } else {
         setSyncErrorMessage(syncResult.error || 'Retry attempt failed. Please check internet connection.');
@@ -1629,7 +1681,8 @@ export function StudentQuizRunner({
     }
 
     const timer = setTimeout(async () => {
-      const draft = await fetchExamDraft(resolvedQuizCode, studentPinInput || candidateName);
+      const finalId = resolvedTestId || testIdOrCode || 'direct_quiz';
+      const draft = await fetchExamDraft(resolvedQuizCode, finalId, studentPinInput || candidateName);
       if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
         setDetectedDraft(draft);
       } else {
@@ -1638,7 +1691,7 @@ export function StudentQuizRunner({
     }, 600);
 
     return () => clearTimeout(timer);
-  }, [candidateName, studentPinInput, resolvedQuizCode, hasStarted, isSubmitted, requireStudentPin]);
+  }, [candidateName, studentPinInput, resolvedQuizCode, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleResumeDraft = async () => {
@@ -1968,6 +2021,24 @@ export function StudentQuizRunner({
       window.scrollTo({ top: y, behavior: 'smooth' });
     }
   };
+
+  // Track when question stem has scrolled past top navigation header (57px)
+  useEffect(() => {
+    if (!hasStarted || isSubmitted) return;
+
+    const handleScroll = () => {
+      if (!questionTargetRef.current) return;
+      const rect = questionTargetRef.current.getBoundingClientRect();
+      setIsStemScrolledPast(rect.bottom < 60);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [hasStarted, isSubmitted, currentIndex]);
+
+  useEffect(() => {
+    setIsStemScrolledPast(false);
+  }, [currentIndex]);
 
   // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
   const currentTable = useMemo(() => {
@@ -2370,16 +2441,12 @@ export function StudentQuizRunner({
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, marginBottom: 4, color: 'var(--color-text-primary)' }}>
                 Candidate Full Name: <span style={{ color: '#ef4444' }}>*</span>
               </label>
-              <input
-                type="text"
-                list="roster-candidate-suggestions"
-                className="student-name-input"
+              <CandidateNameAutocomplete
                 value={candidateName}
-                onChange={(e) => {
-                  const val = e.target.value;
+                onChange={(val) => {
                   setCandidateName(val);
                   if (lobbyError) setLobbyError(null);
-                  // Auto-fill class and candidate number if matching roster student selected
+                  // Auto-fill class and candidate number if exact matching roster student typed manually
                   const matched = schoolRoster.find(
                     (s) => s.name.trim().toLowerCase() === val.trim().toLowerCase()
                   );
@@ -2391,29 +2458,22 @@ export function StudentQuizRunner({
                     if (matched.candidateNumber) setCandidateNumber(matched.candidateNumber);
                   }
                 }}
-                placeholder={requireStudentPin ? "Select or type your name..." : "e.g. Alex Johnson"}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: 'var(--radius-lg)',
-                  border: '1.5px solid var(--color-border)',
-                  background: 'var(--color-surface-sunken)',
-                  color: 'var(--color-text-primary)',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                  outline: 'none',
-                  boxSizing: 'border-box',
+                onSelectCandidate={(student) => {
+                  setCandidateName(student.name);
+                  if (student.class) {
+                    setCandidateClass(student.class);
+                    setIsCustomClass(false);
+                  }
+                  if (student.candidateNumber) {
+                    setCandidateNumber(student.candidateNumber);
+                  }
+                  if (lobbyError) setLobbyError(null);
                 }}
+                roster={schoolRoster}
+                selectedClass={candidateClass}
+                placeholder={requireStudentPin ? "Select or type your name..." : "e.g. Alex Johnson"}
+                hasError={!!lobbyError && !candidateName.trim()}
               />
-              <datalist id="roster-candidate-suggestions">
-                {schoolRoster
-                  .filter((s) => !candidateClass || s.class === candidateClass)
-                  .map((s) => (
-                    <option key={s.id} value={s.name}>
-                      {s.name} ({s.class}{s.candidateNumber ? ` • #${s.candidateNumber}` : ''})
-                    </option>
-                  ))}
-              </datalist>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
@@ -3844,6 +3904,33 @@ export function StudentQuizRunner({
 
 
 
+      {/* ─── Pinned Question Bar Under Navigation Bar ────────────────────────────── */}
+      {hasStarted && !isSubmitted && isStemScrolledPast && currentQuestion && (
+        <div className="sq-pinned-question-bar animate-fade-in">
+          <div className="sq-pinned-question-container">
+            <div className="sq-pinned-question-left">
+              <span className="sq-pinned-question-badge">
+                Q{currentIndex + 1}
+                <span style={{ opacity: 0.85, fontSize: '0.6875rem', fontWeight: 600 }}>
+                  [{currentQuestion.marks || 1}m]
+                </span>
+              </span>
+              <div className="sq-pinned-question-text">
+                <ExamMathText content={promptText} />
+              </div>
+            </div>
+            <button
+              type="button"
+              className="sq-pinned-scroll-down-btn"
+              onClick={handleScrollToQuestionStem}
+              title="Return to Question Prompt"
+            >
+              <span>⬆️ Question Prompt</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Runner Body */}
       <main className="sq-runner-body">
         {/* Left / Center: Question View */}
@@ -4175,8 +4262,12 @@ export function StudentQuizRunner({
                             value={subVal}
                             onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
                             rows={3}
+                            spellCheck={false}
+                            autoCorrect="off"
+                            autoCapitalize="none"
                             style={{
                               width: '100%',
+                              minHeight: '80px',
                               padding: '10px 14px',
                               borderRadius: 'var(--radius-md)',
                               border: '1.5px solid var(--color-border)',
@@ -4185,11 +4276,23 @@ export function StudentQuizRunner({
                               fontSize: '0.875rem',
                               outline: 'none',
                               boxSizing: 'border-box',
+                              resize: 'vertical',
                             }}
                           />
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
+                            <span>Auto-saved continuously</span>
+                            {subVal.trim() && (
+                              <span style={{ fontWeight: 600 }}>
+                                {getWordCount(subVal).words} word{getWordCount(subVal).words !== 1 ? 's' : ''} • {getWordCount(subVal).chars} chars
+                              </span>
+                            )}
+                          </div>
                           {subVal.trim() && (
-                            <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                              <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
+                            <div className="sq-answer-preview-card" style={{ marginTop: 6 }}>
+                              <div className="sq-answer-preview-header">
+                                <span>👁️</span>
+                                <span>Part ({sub.sub_id}) Formatted Preview</span>
+                              </div>
                               <ExamMathText content={subVal} />
                             </div>
                           )}
@@ -4278,14 +4381,22 @@ export function StudentQuizRunner({
               </div>
             ) : (currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(currentQuestion?.question_text || '')) ? null : (
               /* 4. Structured Single Response Text Box */
-              <div className="sq-structured-input-box" style={{ marginTop: 16 }}>
-                <label className="sq-input-label" style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: 8 }}>
-                  {isLanguageExam ? 'Your Response / Written Answer:' : 'Your Response / Chemical Formula / Calculation:'}
-                </label>
+              <div className="sq-structured-input-box">
+                <div className="sq-input-label-row">
+                  <label className="sq-input-label">
+                    <span>✍️</span>
+                    <span>{isLanguageExam ? 'Your Response / Written Answer:' : 'Your Response / Chemical Formula / Calculation:'}</span>
+                  </label>
+                  {answers[currentIndex] && (
+                    <span className="sq-answer-counter-badge">
+                      {getWordCount(String(answers[currentIndex])).words} words • {getWordCount(String(answers[currentIndex])).chars} chars
+                    </span>
+                  )}
+                </div>
 
                 {/* Quick Symbol Insert Bar (STEM only) */}
                 {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && (
-                  <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
+                  <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 10 }}>
                     <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
                     {QUICK_CHEM_SYMBOLS.map((sym) => (
                       <button
@@ -4296,8 +4407,8 @@ export function StudentQuizRunner({
                           background: 'var(--color-surface-elevated)',
                           border: '1px solid var(--color-border)',
                           borderRadius: 'var(--radius-sm)',
-                          padding: '2px 6px',
-                          fontSize: '0.75rem',
+                          padding: '2px 8px',
+                          fontSize: '0.8125rem',
                           cursor: 'pointer',
                           color: 'var(--color-text-primary)',
                         }}
@@ -4320,10 +4431,22 @@ export function StudentQuizRunner({
                   value={String(answers[currentIndex] || '')}
                   onChange={(e) => handleTextAnswerChange(e.target.value)}
                   rows={5}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="none"
                 />
+
+                <div className="sq-answer-meta-bar">
+                  <span>Auto-saved continuously • Press Tab to navigate</span>
+                  <span>LaTeX math supported with $...$</span>
+                </div>
+
                 {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
-                  <div style={{ marginTop: 6, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                    <span style={{ fontWeight: 700, marginRight: 6 }}>Live Preview:</span>
+                  <div className="sq-answer-preview-card">
+                    <div className="sq-answer-preview-header">
+                      <span>👁️</span>
+                      <span>Live Response & Formula Preview</span>
+                    </div>
                     <ExamMathText content={String(answers[currentIndex])} />
                   </div>
                 )}
@@ -4403,165 +4526,178 @@ export function StudentQuizRunner({
             </div>
           </div>
 
-          {/* ─── Question Context & Choices Card (Under Question Navigator) ─── */}
-          {currentQuestion && (
-            <div className="sq-sidebar-context-card animate-fade-in">
-              <div className="sq-sidebar-context-header">
-                <div className="sq-sidebar-context-title-group">
-                  <span className="sq-sidebar-context-pin">📌</span>
-                  <strong className="sq-sidebar-context-title">
-                    Question {currentIndex + 1}
-                  </strong>
-                </div>
-                <div className="sq-sidebar-context-actions">
-                  <button
-                    type="button"
-                    className="sq-sidebar-context-btn"
-                    onClick={handleScrollToQuestionStem}
-                    title="Jump down to answer this question"
-                  >
-                    ⬇️ Answer
-                  </button>
-                </div>
-              </div>
-
-              <div className="sq-sidebar-context-body">
-                {/* Question Stem / Prompt Text */}
-                <div className="sq-sidebar-stem-snippet">
-                  <ExamMathText content={promptText} />
-                </div>
-
-                {/* 1. If MCQ / Multiple Select: Show Choices (A, B, C, D) */}
-                {(currentQuestion.question_style === 'Multiple Choice' ||
-                  currentQuestion.question_style === 'Multiple Select' ||
-                  (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
+          {/* ─── Question Context & Quick Response Card (Under Question Navigator) ─── */}
+          {(() => {
+            const isMcq = Boolean(
+              currentQuestion &&
                 currentQuestion.options &&
-                currentQuestion.options.length > 0 ? (
-                  <div className="sq-sidebar-choices-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: isMultiSelect ? '#38bdf8' : 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      {isMultiSelect ? '☑ Multiple Select Choices:' : 'Choices:'}
-                    </div>
-                    {currentQuestion.options.map((opt, oIdx) => {
-                      const letter = String.fromCharCode(65 + oIdx);
-                      const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
-                      const isSelected = isMultiSelect
-                        ? selectedLetters.includes(letter)
-                        : Number(answers[currentIndex]) === oIdx;
-                      return (
-                        <button
-                          key={oIdx}
-                          type="button"
-                          onClick={() => handleSelectOption(oIdx)}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            padding: '6px 10px',
-                            borderRadius: '8px',
-                            background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.04)',
-                            border: `1.5px solid ${isSelected ? '#3b82f6' : 'var(--color-border)'}`,
-                            color: isSelected ? '#38bdf8' : 'var(--color-text-primary)',
-                            cursor: 'pointer',
-                            textAlign: 'left',
-                            fontSize: '0.8125rem',
-                            transition: 'all 0.15s ease',
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontWeight: 800,
-                              minWidth: '20px',
-                              height: '20px',
-                              borderRadius: '4px',
-                              background: isSelected ? '#2563eb' : 'rgba(255, 255, 255, 0.08)',
-                              color: isSelected ? '#ffffff' : 'var(--color-text-secondary)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '0.75rem',
-                            }}
-                          >
-                            {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
-                          </span>
-                          <span style={{ flex: 1 }}>
-                            <ExamMathText content={cleanOptionText(opt, oIdx)} />
-                          </span>
-                        </button>
-                      );
-                    })}
+                currentQuestion.options.length > 0 &&
+                (currentQuestion.question_style === 'Multiple Choice' ||
+                  currentQuestion.question_style === 'Multiple Select' ||
+                  currentQuestion.question_style !== 'Structured')
+            );
+            const isTable = Boolean(currentTable && currentTable.rows && currentTable.rows.length > 0);
+
+            if (!currentQuestion || (!isMcq && !isTable)) return null;
+
+            return (
+              <div className="sq-sidebar-context-card animate-fade-in">
+                <div className="sq-sidebar-context-header">
+                  <div className="sq-sidebar-context-title-group">
+                    <span className="sq-sidebar-context-pin">📌</span>
+                    <strong className="sq-sidebar-context-title">
+                      Question {currentIndex + 1}
+                    </strong>
+                    <span style={{ fontSize: '0.6875rem', opacity: 0.85, color: 'var(--color-primary-400)', fontWeight: 700 }}>
+                      [{currentQuestion.marks || 1}m]
+                    </span>
                   </div>
-                ) : currentTable ? (
-                  /* 2. If Matching Table Matrix: Show compact matching overview */
-                  <div className="sq-sidebar-table-snippet" style={{ marginTop: '8px', padding: '10px 12px', background: 'rgba(59, 130, 246, 0.08)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.25)' }}>
-                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-                      📊 Matching Matrix ({currentTable.rows.length} Items):
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
-                      {Object.keys(currentTableSelections).length} of {currentTable.rows.length} matched
-                    </div>
+                  <div className="sq-sidebar-context-actions">
                     <button
                       type="button"
+                      className="sq-sidebar-context-btn"
                       onClick={handleScrollToQuestionStem}
-                      style={{
-                        width: '100%',
-                        padding: '6px 10px',
-                        background: 'rgba(59, 130, 246, 0.2)',
-                        border: '1px solid #3b82f6',
-                        borderRadius: '6px',
-                        color: '#38bdf8',
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
+                      title="Jump down to question on page"
                     >
-                      ⬇️ Match Table Below
+                      ⬇️ Focus
                     </button>
                   </div>
-                ) : currentQuestion.question_style === 'Fill in the Blank' || hasInlineGaps(promptText) ? (
-                  /* 3. If Fill in the Blank: Show compact prompt */
-                  <div style={{ marginTop: '8px', padding: '8px 10px', background: 'rgba(255, 255, 255, 0.04)', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                    <span style={{ fontWeight: 700, color: 'var(--color-primary-500)' }}>✍️ Fill in the Blank:</span> Click "⬇️ Answer" to type directly into the gaps below.
+                </div>
+
+                <div className="sq-sidebar-context-body">
+                  {/* Question Stem / Prompt Text */}
+                  <div className="sq-sidebar-stem-snippet">
+                    <ExamMathText content={promptText} />
                   </div>
-                ) : currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0 ? (
-                  /* 4. If Structured with sub-questions: Show sub-question prompts only */
-                  <div className="sq-sidebar-subq-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                    <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Question Parts:
-                    </div>
-                    {currentQuestion.sub_questions.map((sub, sIdx) => {
-                      const subKey = `${currentIndex}_${sIdx}`;
-                      const val = answers[subKey] !== undefined ? answers[subKey] : (answers[currentIndex] as any)?.[sIdx];
-                      const isAnswered = val !== undefined && String(val).trim().length > 0;
-                      return (
-                        <div
-                          key={sIdx}
-                          style={{
-                            padding: '6px 10px',
-                            borderRadius: '8px',
-                            background: isAnswered ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.03)',
-                            border: `1px solid ${isAnswered ? 'rgba(34, 197, 94, 0.3)' : 'var(--color-border)'}`,
-                            fontSize: '0.75rem',
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '6px' }}>
-                            <strong style={{ color: isAnswered ? '#22c55e' : '#38bdf8' }}>
-                              ({sub.sub_id || String.fromCharCode(97 + sIdx)})
-                            </strong>
-                            <span style={{ opacity: 0.7, fontWeight: 700 }}>
-                              [{sub.marks || 1}m] {isAnswered ? '✓' : ''}
+
+                  {/* 1. Multiple Choices / Multiple Select Buttons */}
+                  {isMcq && currentQuestion.options && (
+                    <div className="sq-sidebar-choices-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                      <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: isMultiSelect ? '#38bdf8' : 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        {isMultiSelect ? '☑ Multiple Select Choices:' : 'Choices:'}
+                      </div>
+                      {currentQuestion.options.map((opt, oIdx) => {
+                        const letter = String.fromCharCode(65 + oIdx);
+                        const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
+                        const isSelected = isMultiSelect
+                          ? selectedLetters.includes(letter)
+                          : Number(answers[currentIndex]) === oIdx;
+                        return (
+                          <button
+                            key={oIdx}
+                            type="button"
+                            onClick={() => handleSelectOption(oIdx)}
+                            disabled={isSubmitted}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              padding: '7px 10px',
+                              borderRadius: '8px',
+                              background: isSelected ? 'rgba(59, 130, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                              border: `1.5px solid ${isSelected ? '#3b82f6' : 'var(--color-border)'}`,
+                              color: isSelected ? '#38bdf8' : 'var(--color-text-primary)',
+                              cursor: isSubmitted ? 'default' : 'pointer',
+                              textAlign: 'left',
+                              fontSize: '0.8125rem',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontWeight: 800,
+                                minWidth: '20px',
+                                height: '20px',
+                                borderRadius: '4px',
+                                background: isSelected ? '#2563eb' : 'rgba(255, 255, 255, 0.08)',
+                                color: isSelected ? '#ffffff' : 'var(--color-text-secondary)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '0.75rem',
+                              }}
+                            >
+                              {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
                             </span>
-                          </div>
-                          <div style={{ marginTop: '2px', color: 'var(--color-text-secondary)' }}>
-                            <ExamMathText content={sub.question_text || ''} />
-                          </div>
+                            <span style={{ flex: 1, lineHeight: '1.4' }}>
+                              <ExamMathText content={cleanOptionText(opt, oIdx)} />
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* 2. Interactive Matching / Classification Table */}
+                  {isTable && currentTable && (
+                    <div className="sq-sidebar-table-snippet">
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
+                        <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          📊 Classification Table:
                         </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--color-text-secondary)' }}>
+                            {Object.keys(currentTableSelections).length}/{currentTable.rows.length}
+                          </span>
+                          {Object.keys(currentTableSelections).length > 0 && !isSubmitted && (
+                            <button
+                              type="button"
+                              onClick={handleClearTable}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#ef4444',
+                                fontSize: '0.6875rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                textDecoration: 'underline',
+                                padding: 0,
+                              }}
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {currentTable.rows.map((row, ri) => {
+                        const selectedCol = currentTableSelections[row.label];
+                        return (
+                          <div
+                            key={ri}
+                            className={`sq-sidebar-table-row ${selectedCol ? 'is-answered' : ''}`}
+                          >
+                            <div className="sq-sidebar-table-row-label">
+                              <span style={{ color: '#38bdf8', fontWeight: 800, marginRight: '4px' }}>{ri + 1}.</span>
+                              <ExamMathText content={row.label} />
+                            </div>
+                            <div className="sq-sidebar-table-options">
+                              {currentTable.headerCells.slice(1).map((colName, ci) => {
+                                const isSelected = selectedCol === colName;
+                                return (
+                                  <button
+                                    key={ci}
+                                    type="button"
+                                    onClick={() => handleTableSelectCell(row.label, colName)}
+                                    disabled={isSubmitted}
+                                    className={`sq-sidebar-table-col-btn ${isSelected ? 'is-active' : ''}`}
+                                    title={`Select "${colName}" for statement ${ri + 1}`}
+                                  >
+                                    {isSelected && <span style={{ fontWeight: 800 }}>✓</span>}
+                                    <span>{colName}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </aside>
       </main>
 

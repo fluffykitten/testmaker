@@ -322,12 +322,112 @@ export interface StudentImprovementPlan {
 }
 
 /**
+ * Deterministically generates personalized, actionable improvement feedback based on test performance
+ * with intelligent rule-based pedagogical heuristics and encouraging teacher words. Zero latency and rate-limit immune.
+ */
+export function generateDeterministicStudentImprovementPlan(
+  submission: any
+): StudentImprovementPlan {
+  const percentage = submission.percentage ?? 0;
+  const isPerfect = submission.score === submission.totalMarks && submission.totalMarks > 0;
+
+  // Encouraging Words based on score
+  const getEncouragingWords = (): string => {
+    if (isPerfect) {
+      return '🌟 Flawless achievement! Your exceptional precision and mastery are truly inspiring. Keep striving for the highest horizons!';
+    }
+    if (percentage >= 80) {
+      return '🌟 Outstanding dedication and stellar subject mastery! Keep sharpening your analytical thinking and precision—you are well on track for top-tier academic excellence. Believe in your limitless potential!';
+    }
+    if (percentage >= 60) {
+      return '🚀 Great effort and strong foundational understanding! With targeted revision on the key focus areas above, you have every tool needed to reach the highest grade boundary. Keep up this wonderful momentum!';
+    }
+    if (percentage >= 40) {
+      return '💡 Solid effort and positive engagement! Every challenge on this paper is a stepping stone for growth. Consistent practice of the key concepts and worked examples will unlock remarkable progress. You can do it!';
+    }
+    return '🌱 Every journey of mastery begins with understanding where to focus next. With dedicated review of core definitions and step-by-step guidance, you will make steady, confident strides. Believe in your growth!';
+  };
+
+  const strengths: string[] = [];
+  const weaknesses: string[] = [];
+  const improvementSteps: string[] = [];
+
+  if (submission.topicBreakdown) {
+    Object.entries(submission.topicBreakdown).forEach(([topic, data]: [string, any]) => {
+      if (data.percentage >= 75) {
+        strengths.push(`Strong mastery in ${topic} (${Math.round(data.percentage)}% score).`);
+      } else if (data.percentage < 60) {
+        weaknesses.push(`Encountered difficulty in ${topic} (${data.earnedMarks}/${data.totalMarks} marks).`);
+        improvementSteps.push(`Review core definitions, formulas, and diagrams for ${topic}.`);
+      }
+    });
+  }
+
+  if (strengths.length === 0) {
+    if (submission.score > 0) {
+      strengths.push(`Demonstrated solid effort across multiple question categories.`);
+    } else {
+      strengths.push(`Attempted questions and engaged with the examination.`);
+    }
+  }
+
+  if (weaknesses.length === 0 && !isPerfect) {
+    weaknesses.push(`Minor precision or calculation inaccuracies on isolated questions.`);
+    improvementSteps.push(`Double-check calculations and re-read questions carefully before submitting.`);
+  }
+
+  if (isPerfect) {
+    return {
+      strengths: [
+        `Outstanding mastery across all syllabus topics tested.`,
+        `Flawless precision in both question analysis and technical execution.`,
+      ],
+      weaknesses: [`No significant weaknesses identified on this assessment.`],
+      improvementSteps: [
+        `Continue solving challenging past paper variants to maintain top-tier exam technique.`,
+        `Explore extension and synoptic multi-topic exam problems.`,
+      ],
+      teacherSummary: `Superb performance! Full marks (${submission.score}/${submission.totalMarks}) achieved with exceptional understanding and accuracy.`,
+      encouragingWords: getEncouragingWords(),
+    };
+  }
+
+  if (improvementSteps.length === 0) {
+    improvementSteps.push(`Practice 5-10 past paper questions focusing on missed question types.`);
+    improvementSteps.push(`Review the official mark scheme criteria and examiners' tips.`);
+  }
+
+  improvementSteps.push(`Create summary flashcards for key terms and practice active recall.`);
+
+  const teacherSummary =
+    percentage >= 70
+      ? `Strong foundation demonstrated (${submission.score}/${submission.totalMarks}). Focusing on the ${weaknesses.length} key areas above will easily push your grade to an A*.`
+      : percentage >= 50
+      ? `Good working knowledge shown (${submission.score}/${submission.totalMarks}). Targeted revision on the identified topics above will bring a significant score increase.`
+      : `Consistent revision of core topic concepts and solving worked examples will help build confidence and secure higher marks.`;
+
+  return {
+    strengths: strengths.slice(0, 3),
+    weaknesses: weaknesses.slice(0, 3),
+    improvementSteps: improvementSteps.slice(0, 4),
+    teacherSummary,
+    encouragingWords: getEncouragingWords(),
+  };
+}
+
+/**
  * Generates personalized, actionable improvement feedback based on test performance
  * with an intelligent rule-based fallback and encouraging teacher words.
  */
 export async function generateStudentImprovementPlan(
-  submission: any
+  submission: any,
+  useAi: boolean = true
 ): Promise<StudentImprovementPlan> {
+  const fallback = generateDeterministicStudentImprovementPlan(submission);
+  if (!useAi) {
+    return fallback;
+  }
+
   const percentage = submission.percentage ?? 0;
   const grade =
     percentage >= 90
@@ -366,98 +466,10 @@ export async function generateStudentImprovementPlan(
     });
   }
 
-  const isPerfect = submission.score === submission.totalMarks && submission.totalMarks > 0;
-
-  // Encouraging Words based on score
-  const getEncouragingWords = (): string => {
-    if (isPerfect) {
-      return '🌟 Flawless achievement! Your exceptional precision and mastery are truly inspiring. Keep striving for the highest horizons!';
-    }
-    if (percentage >= 80) {
-      return '🌟 Outstanding dedication and stellar subject mastery! Keep sharpening your analytical thinking and precision—you are well on track for top-tier academic excellence. Believe in your limitless potential!';
-    }
-    if (percentage >= 60) {
-      return '🚀 Great effort and strong foundational understanding! With targeted revision on the key focus areas above, you have every tool needed to reach the highest grade boundary. Keep up this wonderful momentum!';
-    }
-    if (percentage >= 40) {
-      return '💡 Solid effort and positive engagement! Every challenge on this paper is a stepping stone for growth. Consistent practice of the key concepts and worked examples will unlock remarkable progress. You can do it!';
-    }
-    return '🌱 Every journey of mastery begins with understanding where to focus next. With dedicated review of core definitions and step-by-step guidance, you will make steady, confident strides. Believe in your growth!';
-  };
-
-  // 1. Intelligent Heuristic Rule-Based Fallback
-  const generateFallbackPlan = (): StudentImprovementPlan => {
-    const strengths: string[] = [];
-    const weaknesses: string[] = [];
-    const improvementSteps: string[] = [];
-
-    if (submission.topicBreakdown) {
-      Object.entries(submission.topicBreakdown).forEach(([topic, data]: [string, any]) => {
-        if (data.percentage >= 75) {
-          strengths.push(`Strong mastery in ${topic} (${Math.round(data.percentage)}% score).`);
-        } else if (data.percentage < 60) {
-          weaknesses.push(`Encountered difficulty in ${topic} (${data.earnedMarks}/${data.totalMarks} marks).`);
-          improvementSteps.push(`Review core definitions, formulas, and diagrams for ${topic}.`);
-        }
-      });
-    }
-
-    if (strengths.length === 0) {
-      if (submission.score > 0) {
-        strengths.push(`Demonstrated solid effort across multiple question categories.`);
-      } else {
-        strengths.push(`Attempted questions and engaged with the examination.`);
-      }
-    }
-
-    if (weaknesses.length === 0 && !isPerfect) {
-      weaknesses.push(`Minor precision or calculation inaccuracies on isolated questions.`);
-      improvementSteps.push(`Double-check calculations and re-read questions carefully before submitting.`);
-    }
-
-    if (isPerfect) {
-      return {
-        strengths: [
-          `Outstanding mastery across all syllabus topics tested.`,
-          `Flawless precision in both question analysis and technical execution.`,
-        ],
-        weaknesses: [`No significant weaknesses identified on this assessment.`],
-        improvementSteps: [
-          `Continue solving challenging past paper variants to maintain top-tier exam technique.`,
-          `Explore extension and synoptic multi-topic exam problems.`,
-        ],
-        teacherSummary: `Superb performance! Full marks (${submission.score}/${submission.totalMarks}) achieved with exceptional understanding and accuracy.`,
-        encouragingWords: getEncouragingWords(),
-      };
-    }
-
-    if (improvementSteps.length === 0) {
-      improvementSteps.push(`Practice 5-10 past paper questions focusing on missed question types.`);
-      improvementSteps.push(`Review the official mark scheme criteria and examiners' tips.`);
-    }
-
-    improvementSteps.push(`Create summary flashcards for key terms and practice active recall.`);
-
-    const teacherSummary =
-      percentage >= 70
-        ? `Strong foundation demonstrated (${submission.score}/${submission.totalMarks}). Focusing on the ${weaknesses.length} key areas above will easily push your grade to an A*.`
-        : percentage >= 50
-        ? `Good working knowledge shown (${submission.score}/${submission.totalMarks}). Targeted revision on the identified topics above will bring a significant score increase.`
-        : `Consistent revision of core topic concepts and solving worked examples will help build confidence and secure higher marks.`;
-
-    return {
-      strengths: strengths.slice(0, 3),
-      weaknesses: weaknesses.slice(0, 3),
-      improvementSteps: improvementSteps.slice(0, 4),
-      teacherSummary,
-      encouragingWords: getEncouragingWords(),
-    };
-  };
-
   // 2. Attempt Gemini Enrichment if API key is active
   const activeKey = getApiKeyForChunk(0) || (import.meta.env as any)?.VITE_GEMINI_API_KEY || '';
   if (!activeKey) {
-    return generateFallbackPlan();
+    return fallback;
   }
 
   const prompt = `You are an expert Cambridge International examiner and personal academic mentor.
@@ -516,8 +528,8 @@ Return ONLY valid JSON matching this exact schema:
               strengths: parsed.strengths.filter(Boolean).slice(0, 3),
               weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses.filter(Boolean).slice(0, 3) : [],
               improvementSteps: parsed.improvementSteps.filter(Boolean).slice(0, 4),
-              teacherSummary: parsed.teacherSummary || generateFallbackPlan().teacherSummary,
-              encouragingWords: parsed.encouragingWords || getEncouragingWords(),
+              teacherSummary: parsed.teacherSummary || fallback.teacherSummary,
+              encouragingWords: parsed.encouragingWords || fallback.encouragingWords,
             };
           }
         }
@@ -527,5 +539,5 @@ Return ONLY valid JSON matching this exact schema:
     }
   }
 
-  return generateFallbackPlan();
+  return fallback;
 }

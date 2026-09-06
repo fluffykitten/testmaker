@@ -46,7 +46,8 @@ export function exportCanvasMoodleQtiXml(
 
     if (isMcq) {
       const choices = q.options || [];
-      const correctIndex = 0; // Standard default or first option
+      const resolvedIdx = resolveMcqCorrectOptionIndex(q);
+      const correctIndex = resolvedIdx >= 0 ? resolvedIdx : 0;
 
       itemsXml += `
     <assessmentItem identifier="q_${idx + 1}" title="Question ${qNum}" adaptive="false" timeDependent="false">

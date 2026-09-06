@@ -6,7 +6,7 @@
 import type { StudentSubmission } from './quizSubmissionService';
 import { formatProctorTimestamp, formatCandidateAnswer, formatSubmissionDateTime } from './quizSubmissionService';
 import { formatLatexForHtml } from './pdfExportService';
-import { generateStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
+import { generateStudentImprovementPlan, generateDeterministicStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
 
 /**
  * Derives Cambridge letter grade from percentage with tier list rarity color styling
@@ -953,16 +953,14 @@ export async function exportBatchStudentFeedbackReportPdf(
     return;
   }
 
-  // Generate improvement plans for all candidates concurrently
-  const plans = await Promise.all(
-    filteredSubmissions.map(async (sub) => {
-      try {
-        return await generateStudentImprovementPlan(sub);
-      } catch {
-        return undefined;
-      }
-    })
-  );
+  // Generate improvement plans for all candidates deterministically to prevent Gemini API 429 storms & browser hangs
+  const plans = filteredSubmissions.map((sub) => {
+    try {
+      return generateDeterministicStudentImprovementPlan(sub);
+    } catch {
+      return undefined;
+    }
+  });
 
   const studentPagesHtml = filteredSubmissions.map((sub, idx) => {
     return renderSingleStudentFeedbackReportHtml(sub, plans[idx] || ({} as any), options);
