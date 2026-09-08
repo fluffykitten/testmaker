@@ -500,7 +500,22 @@ function App() {
                 onNavigateToSaved={() => setCurrentPage('saved')}
               />
             )}
-            {currentPage === 'upload' && <UploadPage />}
+            {currentPage === 'upload' && (
+              <UploadPage
+                onBuildTest={async (ids) => {
+                  try {
+                    const { fetchQuestionsByIds } = await import('./services/quizCodeService');
+                    const fetched = await fetchQuestionsByIds(ids);
+                    if (fetched && fetched.length > 0) {
+                      handleAddMultipleQuestionsToTest(fetched);
+                      setCurrentPage('builder');
+                    }
+                  } catch (e) {
+                    console.error('Failed to load questions for test builder', e);
+                  }
+                }}
+              />
+            )}
             {currentPage === 'advanced_settings' && (
               <AdvancedSettingsPage
                 onBack={() => setCurrentPage('home')}

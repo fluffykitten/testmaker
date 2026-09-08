@@ -17,6 +17,8 @@ interface TestQuestionItemProps {
   onRemove: (questionId: string) => void;
   onEdit?: (question: Question) => void;
   onGenerateVariant?: (question: Question) => void;
+  isCustomized?: boolean;
+  onRevert?: (questionId: string) => void;
 }
 
 function TestQuestionItemComponent({
@@ -28,6 +30,8 @@ function TestQuestionItemComponent({
   onRemove,
   onEdit,
   onGenerateVariant,
+  isCustomized,
+  onRevert,
 }: TestQuestionItemProps) {
   const [showMarkScheme, setShowMarkScheme] = useState(false);
 
@@ -69,6 +73,12 @@ function TestQuestionItemComponent({
               {question.difficulty}
             </span>
           )}
+
+          {isCustomized && (
+            <span className="q-badge" style={{ backgroundColor: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
+              ✏️ Customised for this test
+            </span>
+          )}
         </div>
 
         <div className="test-q-header-right">
@@ -97,6 +107,19 @@ function TestQuestionItemComponent({
               ▼
             </button>
           </div>
+
+          {/* Revert button */}
+          {isCustomized && onRevert && (
+            <button
+              type="button"
+              className="test-q-revert-btn"
+              onClick={() => onRevert(question.id)}
+              title="Revert to original Question Bank version"
+              style={{ padding: '4px 8px', fontSize: '12px', background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d', borderRadius: '4px', cursor: 'pointer' }}
+            >
+              ↺ Revert
+            </button>
+          )}
 
           {/* Edit button */}
           {onEdit && (

@@ -55,6 +55,8 @@ export function clearQuestionBankCache(): void {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('questions_updated', clearQuestionBankCache);
+  window.addEventListener('tags_updated', clearQuestionBankCache);
+  window.addEventListener('bookmarks_updated', clearQuestionBankCache);
 }
 
 /**
@@ -647,27 +649,55 @@ export async function fetchQuestions(
       q = q.in('id', taggedIds);
     }
 
-    // Filter: Full-text search with Chemical Formula & LaTeX Symbol Expansion
+    // Filter: Full-text search with Chemical Formula, LaTeX Symbol & Custom Tag Expansion
     if (searchQuery && searchQuery.trim()) {
-      const term = searchQuery.trim();
-      const formulaExp = expandFormulaSearch(term);
+      const rawTerm = searchQuery.trim();
+      const isTagQuery = rawTerm.startsWith('#');
+      const tagMap = getAllQuestionTagsMap();
 
-      const tokensToSearch = Array.from(
-        new Set(
-          [term, ...formulaExp.expandedTokens]
-            .map((t) => t.trim())
-            .filter((t) => t.length > 0)
-        )
-      );
-
-      if (tokensToSearch.length > 1) {
-        const orClauses = tokensToSearch
-          .slice(0, 20)
-          .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`)
-          .join(',');
-        q = q.or(orClauses);
+      if (isTagQuery) {
+        // Explicit tag search: e.g. #tka, #mock2026, #homework
+        const cleanTag = rawTerm.replace(/^#+/, '').trim().toLowerCase();
+        const matchedTagIds = Object.keys(tagMap).filter((id) =>
+          tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
+        );
+        if (matchedTagIds.length === 0) {
+          // If no questions match this explicit tag, return null so empty state renders
+          return null;
+        }
+        q = q.in('id', matchedTagIds);
       } else {
-        q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+        const term = rawTerm;
+        const formulaExp = expandFormulaSearch(term);
+        const lowerTerm = term.toLowerCase();
+
+        // Check if search term matches any custom teacher tags
+        const tagMatchedIds = Object.keys(tagMap).filter((id) =>
+          tagMap[id].some((t) => t.toLowerCase() === lowerTerm || t.toLowerCase().includes(lowerTerm))
+        );
+
+        const tokensToSearch = Array.from(
+          new Set(
+            [term, ...formulaExp.expandedTokens]
+              .map((t) => t.trim())
+              .filter((t) => t.length > 0)
+          )
+        );
+
+        const textClauses = tokensToSearch
+          .slice(0, 15)
+          .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`);
+
+        if (tagMatchedIds.length > 0) {
+          const idClause = tagMatchedIds.length === 1
+            ? `id.eq.${tagMatchedIds[0]}`
+            : `id.in.(${tagMatchedIds.slice(0, 50).join(',')})`;
+          q = q.or([idClause, ...textClauses].join(','));
+        } else if (textClauses.length > 1) {
+          q = q.or(textClauses.join(','));
+        } else {
+          q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+        }
       }
     }
 

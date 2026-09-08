@@ -17,6 +17,7 @@ export interface ExamHeaderConfig {
   additionalMaterials?: string;
   layoutTemplate?: 'cambridge' | 'standard';
   teacherPin?: string;
+  questionOverrides?: Record<string, Question>;
 }
 
 export interface SaveTestPayload {
@@ -625,9 +626,16 @@ export async function fetchCustomTestWithQuestions(
 
   // Maintain the exact array order specified in question_ids
   const orderedQuestions: Question[] = [];
+  const overrides = test.header_config?.questionOverrides || {};
+  
   questionIds.forEach((qid) => {
-    const found = questionsMap.get(qid);
-    if (found) orderedQuestions.push(found);
+    const override = overrides[qid];
+    if (override) {
+      orderedQuestions.push(override as Question);
+    } else {
+      const found = questionsMap.get(qid);
+      if (found) orderedQuestions.push(found);
+    }
   });
 
   return { test, questions: orderedQuestions };

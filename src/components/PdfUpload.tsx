@@ -8,7 +8,7 @@ interface PdfUploadProps {
     questionPaper: File,
     markScheme: File | null,
     insertFile: File | null,
-    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean }
+    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; tags?: string }
   ) => void;
   isProcessing: boolean;
 }
@@ -22,6 +22,7 @@ interface PdfUploadProps {
 export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [domain, setDomain] = useState<SubjectDomain>('stem');
   const [isIgcse, setIsIgcse] = useState<boolean>(true);
+  const [tags, setTags] = useState<string>('');
 
   const [qpDragOver, setQpDragOver] = useState(false);
   const [msDragOver, setMsDragOver] = useState(false);
@@ -106,6 +107,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         includeGuidance,
         domain,
         isIgcse,
+        tags,
       });
     }
   };
@@ -440,6 +442,32 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
             <span className="upload-switch-slider" />
           </div>
         </label>
+      </div>
+
+      {/* ─── Question Tags Input ─────────────────────────────────────────── */}
+      <div className="upload-ai-options-card" style={{ marginBottom: '12px' }}>
+        <label className="upload-toggle-label" htmlFor="tags-input-field">
+          <div className="upload-toggle-info">
+            <div className="upload-toggle-heading">
+              <span className="upload-toggle-icon">🏷️</span>
+              <span className="upload-toggle-title">Question Tags (Optional)</span>
+            </div>
+            <p className="upload-toggle-desc">
+              Apply tags to all extracted questions for easy filtering in the Question Bank (e.g. mock2026, chapter1). Separate with commas or spaces.
+            </p>
+          </div>
+        </label>
+        <div className="upload-tags-input-container" style={{ marginTop: '12px', width: '100%' }}>
+          <input
+            id="tags-input-field"
+            type="text"
+            className="upload-tags-input"
+            placeholder="e.g. mock2026, term1, #hard"
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: 'white', fontSize: '0.9rem' }}
+          />
+        </div>
       </div>
 
       {/* ─── API Key Engine Status Indicator ─────────────────────────────── */}

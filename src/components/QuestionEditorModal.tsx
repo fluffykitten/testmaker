@@ -28,6 +28,7 @@ interface QuestionEditorModalProps {
   isOpen: boolean;
   question: Question | null;
   syllabuses?: Syllabus[];
+  targetContext?: 'bank' | 'test' | 'extraction';
   onClose: () => void;
   onSave: (saved: Question) => void;
 }
@@ -57,6 +58,7 @@ export function QuestionEditorModal({
   isOpen,
   question,
   syllabuses: propSyllabuses,
+  targetContext = 'bank',
   onClose,
   onSave,
 }: QuestionEditorModalProps) {
@@ -65,6 +67,7 @@ export function QuestionEditorModal({
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [localSyllabuses, setLocalSyllabuses] = useState<Syllabus[]>(propSyllabuses || []);
+  const [alsoUpdateBank, setAlsoUpdateBank] = useState(false);
 
   useEffect(() => {
     if (propSyllabuses && propSyllabuses.length > 0) {
@@ -646,6 +649,12 @@ export function QuestionEditorModal({
     try {
       const isDbRecord = question?.id && !question.id.startsWith('temp-') && !question.id.startsWith('local-');
 
+      if (targetContext === 'test' && !alsoUpdateBank) {
+        onSave({ ...question, ...payload, id: question?.id || `local-custom-${Date.now()}` } as Question);
+        onClose();
+        return;
+      }
+
       if (isDbRecord && question?.id) {
         // Update existing question in Supabase
         const updated = await updateQuestion(question.id, payload);
@@ -698,9 +707,15 @@ export function QuestionEditorModal({
               <h2 className="q-editor-title">
                 {isCreate ? 'Create Custom Question' : `Edit Question ${question?.question_number || ''}`}
               </h2>
-              <p className="q-editor-subtitle">
-                Author & customize questions with real-time KaTeX math formulas, sub-questions, and marking insights.
-              </p>
+              {targetContext === 'test' ? (
+                <p className="q-editor-subtitle" style={{ color: '#10b981', fontWeight: 500 }}>
+                  📝 Exam Customization (Does not alter Question Bank)
+                </p>
+              ) : (
+                <p className="q-editor-subtitle">
+                  Author & customize questions with real-time KaTeX math formulas, sub-questions, and marking insights.
+                </p>
+              )}
             </div>
           </div>
 
@@ -1867,6 +1882,16 @@ export function QuestionEditorModal({
               >
                 ← Main Question
               </button>
+            )}
+            {targetContext === 'test' && (
+              <label className="q-editor-bank-update-label" style={{ display: 'flex', alignItems: 'center', gap: '6px', marginRight: '12px', fontSize: '13px', color: '#64748b' }}>
+                <input
+                  type="checkbox"
+                  checked={alsoUpdateBank}
+                  onChange={(e) => setAlsoUpdateBank(e.target.checked)}
+                />
+                Also update in Question Bank
+              </label>
             )}
             <button
               type="button"

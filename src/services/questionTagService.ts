@@ -65,3 +65,43 @@ export function getDistinctCustomTags(): { tag: string; count: number }[] {
     .map(([tag, count]) => ({ tag, count }))
     .sort((a, b) => b.count - a.count);
 }
+
+export function parseTagString(tagString: string): string[] {
+  if (!tagString) return [];
+  return tagString
+    .split(/[,\s]+/)
+    .map((t) => t.trim().replace(/^#/, '').toLowerCase())
+    .filter(Boolean);
+}
+
+export function addTagsToQuestions(questionIds: string[], tagsOrString: string[] | string): void {
+  const tags = Array.isArray(tagsOrString) 
+    ? tagsOrString.map(t => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean)
+    : parseTagString(tagsOrString);
+    
+  if (tags.length === 0 || questionIds.length === 0) return;
+
+  const map = getAllQuestionTagsMap();
+  let hasChanges = false;
+
+  for (const qid of questionIds) {
+    if (!qid) continue;
+    const existing = map[qid] || [];
+    let modified = false;
+    for (const tag of tags) {
+      if (!existing.includes(tag)) {
+        existing.push(tag);
+        modified = true;
+      }
+    }
+    if (modified) {
+      map[qid] = existing;
+      hasChanges = true;
+    }
+  }
+
+  if (hasChanges) {
+    localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(map));
+    window.dispatchEvent(new CustomEvent('tags_updated', { detail: { batch: true, tags } }));
+  }
+}

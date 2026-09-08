@@ -216,8 +216,15 @@ export function restoreCurrencySymbols(text: string): string {
 export function ensureInlineMathDelimiters(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
-  // Standardize LaTeX delimiters: \[...\] -> $$...$$, \(...\) -> $...$
+  // Unwrap any temperature formulas enclosed in math delimiters ($78°C$ -> 78°C)
   let normalized = text
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?|\\(?:degreeC|celsius))\s*(?:\\text\{\s*C\s*\}|\\mathrm\{\s*C\s*\}|C)?\s*\$/gi, '$1°C')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*(?:\\text\{\s*F\s*\}|\\mathrm\{\s*F\s*\}|F)?\s*\$/gi, '$1°F')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*\$/gi, '$1°')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?\s*°[CFK]?)\s*\$/gi, '$1');
+
+  // Standardize LaTeX delimiters: \[...\] -> $$...$$, \(...\) -> $...$
+  normalized = normalized
     .replace(/\\\[([\s\S]*?)\\\]/g, '$$$$1$$')
     .replace(/\\\(([\s\S]*?)\\\)/g, '$$$1$$');
 
@@ -297,22 +304,18 @@ export function normalizeLatexString(raw: string): string {
     .replace(/\\!/g, '')
     .replace(/\\ /g, ' ')
     .replace(/~/g, ' ')
-    // Comprehensive Temperature formats: 25^\circ C, 25^{\circ}\text{C}, 25\degree C, 25\celsius, 45\,°C
-    .replace(/\\(degreeC|celsius)\b/g, '°C')
-    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*C\b/gi, '°C')
-    .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
-    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\^\{\\circ\s*C\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*F\s*\}/gi, '°F')
-    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
-    .replace(/\^\{\\circ\}/g, '°')
-    .replace(/\^\\circ/g, '°')
-    .replace(/\\degree\b/g, '°')
+    // Comprehensive Temperature formats for KaTeX math mode: ensure KaTeX-compatible ^\circ rather than literal °
+    .replace(/\\(degreeC|celsius)\b/g, '^\\circ\\text{C}')
+    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '^\\circ\\text{C}')
+    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '^\\circ\\text{C}')
+    .replace(/\\degree\s*C\b/gi, '^\\circ\\text{C}')
+    .replace(/\^\{\\circ\s*C\}/gi, '^\\circ\\text{C}')
+    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '^\\circ\\text{C}')
+    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '^\\circ\\text{F}')
+    .replace(/\\degree\b/g, '^\\circ')
+    .replace(/°\s*C\b|°C/g, '^\\circ\\text{C}')
+    .replace(/°\s*F\b|°F/g, '^\\circ\\text{F}')
+    .replace(/°/g, '^\\circ')
     // Clean ext artifacts inside LaTeX strings
     .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
     .replace(/\bext\{([^{}]+)\}/g, '$1')

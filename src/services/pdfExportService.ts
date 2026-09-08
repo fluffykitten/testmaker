@@ -39,21 +39,18 @@ function normalizeLatexForPrint(raw: string): string {
     .replace(/\\!/g, '')
     .replace(/\\ /g, ' ')
     .replace(/~/g, ' ')
-    .replace(/\\(degreeC|celsius)\b/g, '°C')
-    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*C\b/gi, '°C')
-    .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
-    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\^\{\\circ\s*C\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*F\s*\}/gi, '°F')
-    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
-    .replace(/\^\{\\circ\}/g, '°')
-    .replace(/\^\\circ/g, '°')
-    .replace(/\\degree\b/g, '°')
+    // Comprehensive Temperature formats for KaTeX math mode: ensure KaTeX-compatible ^\circ rather than literal °
+    .replace(/\\(degreeC|celsius)\b/g, '^\\circ\\text{C}')
+    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '^\\circ\\text{C}')
+    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '^\\circ\\text{C}')
+    .replace(/\\degree\s*C\b/gi, '^\\circ\\text{C}')
+    .replace(/\^\{\\circ\s*C\}/gi, '^\\circ\\text{C}')
+    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '^\\circ\\text{C}')
+    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '^\\circ\\text{F}')
+    .replace(/\\degree\b/g, '^\\circ')
+    .replace(/°\s*C\b|°C/g, '^\\circ\\text{C}')
+    .replace(/°\s*F\b|°F/g, '^\\circ\\text{F}')
+    .replace(/°/g, '^\\circ')
     .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
     .replace(/\bext\{([^{}]+)\}/g, '$1')
     .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
@@ -175,8 +172,15 @@ function formatPlainTextForPrint(raw: string): string {
  */
 export function formatLatexForHtml(text: string): string {
   if (!text) return '';
+  // 0. Unwrap any temperature formulas enclosed in math delimiters ($78°C$ -> 78°C)
+  const unwrapTemp = text
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?|\\(?:degreeC|celsius))\s*(?:\\text\{\s*C\s*\}|\\mathrm\{\s*C\s*\}|C)?\s*\$/gi, '$1°C')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*(?:\\text\{\s*F\s*\}|\\mathrm\{\s*F\s*\}|F)?\s*\$/gi, '$1°F')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*\$/gi, '$1°')
+    .replace(/\$\s*(-?\d+(?:[.,]\d+)?\s*°[CFK]?)\s*\$/gi, '$1');
+
   // 1. Unescape literal '\n' sequences from database/JSON strings
-  const unescaped = text.replace(/\\n/g, '\n');
+  const unescaped = unwrapTemp.replace(/\\n/g, '\n');
   const protectedText = protectCurrencySymbols(unescaped);
 
   // 2. Standardize LaTeX delimiters: \[...\] -> $$...$$, \(...\) -> $...$

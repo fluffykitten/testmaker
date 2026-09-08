@@ -250,7 +250,15 @@ function QuestionCardComponent({
         <div className="q-tags-container">
           <span className="q-tags-label">🏷️</span>
           {tags.map((t) => (
-            <span key={t} className="q-tag-chip">
+            <span
+              key={t}
+              className="q-tag-chip"
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(new CustomEvent('filter_by_tag', { detail: { tag: t } }));
+              }}
+              title={`Click to filter question bank by #${t}`}
+            >
               #{t}
               <button
                 type="button"

@@ -48,6 +48,29 @@ export function QuestionFilters({
     };
   }, []);
 
+  // Listen for tag click events from question cards to filter immediately
+  useEffect(() => {
+    const handleFilterByTag = (e: any) => {
+      const tag = e.detail?.tag;
+      if (tag) {
+        onFilterChange({
+          ...filters,
+          customTag: tag,
+          page: 1,
+        });
+      }
+    };
+    window.addEventListener('filter_by_tag', handleFilterByTag);
+    return () => {
+      window.removeEventListener('filter_by_tag', handleFilterByTag);
+    };
+  }, [filters, onFilterChange]);
+
+  // Keep searchInput synchronized when filters.searchQuery is cleared or modified externally
+  useEffect(() => {
+    setSearchInput(filters.searchQuery || '');
+  }, [filters.searchQuery]);
+
   // Dynamically load available paper types & series for selected syllabus or all
   useEffect(() => {
     let isMounted = true;
@@ -275,7 +298,7 @@ export function QuestionFilters({
             id="q-search-input"
             type="text"
             className="search-input"
-            placeholder="Search topic, formula (e.g. H2SO4)…"
+            placeholder="Search topic, formula, or #tag (e.g. H2SO4, #mock)…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
@@ -290,30 +313,63 @@ export function QuestionFilters({
             </button>
           )}
         </div>
-        <p className="filter-search-hint">💡 Auto-expands formulas: <code>H2SO4</code>, <code>KMnO4</code>, <code>\Delta H</code></p>
+        <p className="filter-search-hint">💡 Auto-expands formulas: <code>H2SO4</code>, <code>\Delta H</code> or <code>#tags</code></p>
       </div>
 
-      {/* Custom Teacher Tag Selector */}
-      {customTags.length > 0 && (
-        <div className="filter-group">
+      {/* Custom Teacher Tag Selector - Always visible */}
+      <div className="filter-group">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <label className="filter-label" htmlFor="tag-select">
             🏷️ Teacher Custom Tag
           </label>
-          <select
-            id="tag-select"
-            className="filter-select"
-            value={filters.customTag || ''}
-            onChange={handleCustomTagChange}
-          >
-            <option value="">All Tags ({customTags.reduce((acc, t) => acc + t.count, 0)})</option>
-            {customTags.map((t) => (
-              <option key={t.tag} value={t.tag}>
-                #{t.tag} ({t.count})
-              </option>
-            ))}
-          </select>
+          {filters.customTag && (
+            <button
+              type="button"
+              className="filter-clear-link"
+              onClick={() => onFilterChange({ ...filters, customTag: undefined, page: 1 })}
+              title="Clear tag filter"
+              style={{
+                fontSize: '0.75rem',
+                color: '#38bdf8',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '0 2px',
+                fontWeight: 600,
+              }}
+            >
+              ✕ Clear Tag
+            </button>
+          )}
         </div>
-      )}
+        <select
+          id="tag-select"
+          className="filter-select"
+          value={filters.customTag || ''}
+          onChange={handleCustomTagChange}
+          disabled={customTags.length === 0 && !filters.customTag}
+        >
+          {customTags.length > 0 ? (
+            <>
+              <option value="">All Tags ({customTags.reduce((acc, t) => acc + t.count, 0)})</option>
+              {filters.customTag && !customTags.some((t) => t.tag.toLowerCase() === filters.customTag?.toLowerCase()) && (
+                <option value={filters.customTag}>
+                  #{filters.customTag} (active)
+                </option>
+              )}
+              {customTags.map((t) => (
+                <option key={t.tag} value={t.tag}>
+                  #{t.tag} ({t.count})
+                </option>
+              ))}
+            </>
+          ) : filters.customTag ? (
+            <option value={filters.customTag}>#{filters.customTag} (active)</option>
+          ) : (
+            <option value="">No tags created yet (use + Tag on questions)</option>
+          )}
+        </select>
+      </div>
 
       {/* Subject / Syllabus Selector */}
       <div className="filter-group">

@@ -120,7 +120,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 
   if (published) {
-    let questions = await fetchQuestionsByIds(published.questionIds || []);
+    let questions = await fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides);
 
     // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
     // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
@@ -210,7 +210,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
         generated === cleanInput
       ) {
         // Fetch question objects
-        const questions = await fetchQuestionsByIds(test.question_ids || []);
+        const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
         const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
         return {
           testId: test.id,
@@ -238,7 +238,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
         .single() as { data: CustomTest | null; error: any };
 
       if (!error && test) {
-        const questions = await fetchQuestionsByIds(test.question_ids || []);
+        const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
         const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
         return {
           testId: test.id,
@@ -267,7 +267,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
           test.id.toUpperCase().startsWith(cleanInput) ||
           test.id.replace(/-/g, '').toUpperCase().startsWith(cleanInput.replace(/-/g, ''))
         ) {
-          const questions = await fetchQuestionsByIds(test.question_ids || []);
+          const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
           const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
           return {
             testId: test.id,
@@ -349,4 +349,28 @@ export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
 
   // Return questions in the exact requested order
   return ids.map((id) => questionObjectCache.get(id)).filter(Boolean) as Question[];
+}
+
+/**
+ * Helper to fetch questions and cleanly merge any test-specific overrides
+ */
+export async function fetchAndApplyOverrides(
+  questionIds: string[],
+  overrides?: Record<string, any>
+): Promise<Question[]> {
+  const dbQuestions = await fetchQuestionsByIds(questionIds);
+  if (!overrides || Object.keys(overrides).length === 0) return dbQuestions;
+  
+  const dbMap = new Map(dbQuestions.map(q => [q.id, q]));
+  const result: Question[] = [];
+  
+  for (const qid of questionIds) {
+    if (overrides[qid]) {
+      result.push(overrides[qid] as Question);
+    } else if (dbMap.has(qid)) {
+      result.push(dbMap.get(qid)!);
+    }
+  }
+  
+  return result;
 }

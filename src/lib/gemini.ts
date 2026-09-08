@@ -292,7 +292,36 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
         "marking_points": ["C [1]"],
         "acceptable_answers": ["C"]${guidanceSchemaSnippet}
       }
-    }
+    }${!isIgcse ? `,
+    {
+      "question_number": "3",
+      "parent_question_id": "Q3",
+      "page_number": 2,
+      "year": ${exampleYear},
+      "series": "${exampleSeries}",
+      "paper_number": ${examplePaper2},
+      "question_text": "Seorang siswa membandingkan titik didih beberapa senyawa.\\n\\n| Senyawa | Rumus Molekul | Titik Didih |\\n|---|---|---|\\n| A | $CH_3CH_2OH$ | 78°C |\\n| B | $CH_3OCH_3$ | -25°C |\\n| C | $CH_3CH_2CH_3$ | -42°C |\\n| D | $CH_3CH_2CH_2OH$ | 97°C |\\n\\nBerdasarkan data dan struktur molekul tersebut, pilih semua kesimpulan yang benar.",
+      "question_style": "Multiple Select",
+      "total_marks": 2,
+      "estimated_difficulty": "Medium",
+      "topic": "Ikatan Kimia",
+      "sub_topic": "Gaya Antarmolekul",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. Senyawa A memiliki titik didih lebih tinggi daripada B karena dapat membentuk ikatan hidrogen antarmolekul.",
+        "B. Senyawa B memiliki titik didih lebih tinggi daripada C karena gaya antarmolekulnya lebih kuat.",
+        "C. Senyawa D memiliki titik didih lebih tinggi daripada A karena memiliki ukuran molekul lebih besar dan tetap mampu membentuk ikatan hidrogen.",
+        "D. Titik didih C relatif tinggi karena molekul propana dapat membentuk ikatan hidrogen.",
+        "E. Semua senyawa pada tabel hanya memiliki gaya London sebagai gaya antarmolekul."
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["Pernyataan A, B, dan C benar [3]"],
+        "acceptable_answers": ["A, B, C"]${guidanceSchemaSnippet}
+      }
+    }` : ''}
   ]
 }
 
@@ -335,6 +364,7 @@ CRITICAL FORMATTING RULES:
    - Convert ALL mathematical symbols, chemical formulas, and equations to KaTeX-compatible LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
    - Use explicit multiplication: write '\\times' instead of bare '*' or 'x'.
    - NEVER write unescaped '%' inside LaTeX math mode as KaTeX treats '%' as a comment delimiter that truncates formulas. Write '\\%' or keep percentages in plain text outside dollar signs (e.g. '85%' or '$85\\%$').
+   - TEMPERATURES & DEGREES: DO NOT wrap temperatures or degrees in LaTeX dollar signs ($...$). Write temperatures strictly as plain text (e.g. '78°C', '25°C', '100°C', '-10°C', NOT '$78°C$' or '$78^\\circ\\text{C}$'). The degree symbol breaks KaTeX math mode.
    - For Biology word equations and reaction paths, use arrows: '$glucose \\rightarrow alcohol + carbon dioxide$' or '$carbon dioxide + water \\rightarrow glucose + oxygen$'.
    - For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}'.
 5. Identify paper provenance: series (or exam session/period), year, paper_number (or paper title if applicable).
@@ -359,6 +389,69 @@ CRITICAL FORMATTING RULES:
    - When (a) is a standalone question with marks (e.g. "(a) State the formula... [1]"):
      * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" and marks! NEVER put it in parent question_text.
 12. MULTIPLE CHOICE OPTIONS: All choices must be extracted exclusively into the "options" array. NEVER duplicate or write the choices (A, B, C, D) inside "question_text".
+${!isIgcse ? `13. NON-IGCSE & INDONESIAN TKA / UTBK / AKM / NATIONAL STEM EXAMS (TOP PRIORITY):
+   A. TRUE MULTIPLE SELECT ("Pilihan Ganda Kompleks" / "Pilih semua kesimpulan yang benar" / "Pilih semua pernyataan yang benar"):
+      - When a question explicitly asks to choose all correct conclusions or statements (e.g. "pilih semua kesimpulan yang benar", "pilih semua pernyataan yang benar", "select all that apply", "[Multiple Select]"), AND the options (A, B, C, D, E) are independent statements (NOT combination bundles like "1 dan 2"):
+        * Set "question_style": "Multiple Select".
+        * Set "options": ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."].
+        * Set "sub_questions": [].
+        * NEVER duplicate choices A–E inside "question_text"! "question_text" must contain ONLY the prompt, stimulus data table, and question stem.
+        * In "mark_scheme": populate multiple correct option letters in "acceptable_answers" (e.g. ["A, B, C"] or ["A, B"]) and "marking_points": ["Correct options: A, B, C [3]"].
+        * Set "total_marks" equal to the number of correct statements or standard 2–3 marks.
+
+   B. COMBINATION MULTIPLE CHOICE ("Pilihan Ganda Asosiatif" / Statements 1, 2, 3, 4 + Options A–E):
+      - When a question presents numbered statements (1, 2, 3, 4, 5 or I, II, III, IV, V) and asks "Pernyataan yang benar adalah...", "Manakah pernyataan yang tepat...", or "Pilih semua pernyataan yang benar", followed by combination options:
+        A. 1 dan 2
+        B. 1 dan 3
+        C. 2 dan 4
+        D. 1, 2, dan 3
+        E. 1, 2, 3, dan 4
+        * This is a SINGLE-SELECT Multiple Choice question!
+        * Set "question_style": "Multiple Choice".
+        * ALWAYS preserve all numbered statements 1, 2, 3, 4, 5 inside "question_text"! NEVER omit or strip these statements.
+        * Extract ONLY the combination choices into "options": ["A. 1 dan 2", "B. 1 dan 3", "C. 2 dan 4", "D. 1, 2, dan 3", "E. 1, 2, 3, dan 4"].
+        * Set "sub_questions": [].
+        * In "mark_scheme": set single correct letter in "acceptable_answers": ["D"] and "marking_points": ["D [1]"].
+        * Set "total_marks": 1.
+
+   C. TRUE/FALSE MATRIX & CATEGORY TABLES ("Tabel Benar/Salah" / "Menjodohkan" / Matrix Questions):
+      - When a question asks whether statements are Benar or Salah (True or False), or provides a grid with checkboxes (✓) for each statement (e.g. TKA Questions 8 and 11):
+        * Set "question_style": "Structured".
+        * Set "options": null (MUST be null or empty so the UI renders the interactive classification table).
+        * Set "sub_questions": [].
+        * Format the matrix as a clean 3-column Markdown Table inside "question_text":
+          | Pernyataan | Benar | Salah |
+          |---|---|---|
+          | 1. Larutan P bersifat asam. | [ ] | [ ] |
+          | 2. Larutan Q bersifat basa. | [ ] | [ ] |
+          | 3. Larutan R dapat dianggap netral berdasarkan hasil pengujian indikator. | [ ] | [ ] |
+          | 4. Larutan P memiliki konsentrasi ion OH⁻ lebih besar daripada konsentrasi ion H⁺. | [ ] | [ ] |
+          | 5. Larutan Q memiliki konsentrasi ion H⁺ lebih besar daripada konsentrasi ion OH⁻. | [ ] | [ ] |
+          (IMPORTANT: Merge the statement index into the "Pernyataan" column so there are exactly 3 columns: Pernyataan, Benar, Salah).
+        * In "mark_scheme":
+          - Set "acceptable_answers": ["1. Larutan P bersifat asam.: Benar; 2. Larutan Q bersifat basa.: Benar; 3. Larutan R dapat dianggap netral berdasarkan hasil pengujian indikator.: Benar; 4. Larutan P memiliki konsentrasi ion OH⁻ lebih besar daripada konsentrasi ion H⁺.: Salah; 5. Larutan Q memiliki konsentrasi ion H⁺ lebih besar daripada konsentrasi ion OH⁻.: Salah"].
+          - Set "marking_points": ["1. Larutan P bersifat asam = Benar [1]", "2. Larutan Q bersifat basa = Benar [1]", "3. Larutan R dapat dianggap netral = Benar [1]", "4. Larutan P konsentrasi OH- > H+ = Salah [1]", "5. Larutan Q konsentrasi H+ > OH- = Salah [1]"].
+        * Set "total_marks" equal to the number of rows/statements (e.g. 5).
+
+   D. STIMULUS DATA TABLES:
+      - For questions with experimental data tables (e.g. electron configurations, boiling points, melting points, indicator results, bond energies, kinetics rates, Le Chatelier proposals):
+        * Transcribe the complete Markdown table in "question_text".
+        * ALSO extract into the "data_tables" JSON array with "id", "title", "headers", and "rows".
+        * If a question has BOTH a stimulus data table AND a Benar/Salah response table (like Question 8), keep both tables in "question_text" (stimulus table first, then prompt, then Benar/Salah table), and put the stimulus table in "data_tables".
+
+   E. SCIENTIFIC NOTATION, DECIMALS & KATEX:
+      - Render all chemical formulas and reactions in KaTeX enclosed in single dollar signs ($CaCO_3$, $H_2SO_4$, $Zn(s) + Cu^{2+}(aq) \\rightarrow Zn^{2+}(aq) + Cu(s)$, $\\Delta H = -92\\text{ kJ}$, $E^\\circ_{\\text{sel}} = +1{,}10\\text{ V}$).
+      - Preserve decimal commas in Indonesian quantities (e.g. $0{,}10\\text{ M}$, $5{,}00\\text{ g}$, $1{,}12\\text{ L}$).
+      - For temperatures, write them as normal plain text without LaTeX delimiters (e.g. 78°C, 25°C, 100°C, NOT $78°C$ or $78^\circ\text{C}$) to prevent KaTeX rendering errors with the degree symbol.
+
+   F. STRICT VERBATIM INDONESIAN LANGUAGE PRESERVATION:
+      - ABSOLUTELY NEVER translate Indonesian questions, statements, options, or tables into English.
+      - Keep all text in the original Indonesian verbatim as printed in the exam paper.
+
+   G. QUOTED STATEMENTS & CLEAN UNESCAPED TEXT:
+      - If a question stem, statement, or option quotes a phrase or statement (e.g. "Karena ketiga molekul..."), transcribe standard single or double quotes without redundant nested quotes or literal escaped quotes (e.g. write "Karena..." NOT "\"Karena...\"").
+      - NEVER wrap the entire "question_text" string in redundant outer quotation marks.
+` : ''}
 `;
 }
 
@@ -1375,13 +1468,49 @@ function extractQuestionsArrayFallback(text: string): { paper_metadata?: any; qu
 }
 
 /**
+ * Unescapes literal backslash-escaped quotes, cleans redundant outer quotes,
+ * and unwraps temperature measurements mistakenly enclosed in LaTeX delimiters ($78°C$ -> 78°C).
+ * Preserves leading LaTeX backslashes (\Delta, \frac, \text) and internal balanced quotes.
+ */
+export function cleanQuotesAndTemperatures(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+  let res = text.trim();
+
+  // 1. Unescape literal backslash-escaped quotes: \" -> "
+  res = res.replace(/\\"/g, '"');
+
+  // 2. Collapse redundant boundary quotes: ""Karena..."" -> "Karena..."
+  res = res.replace(/^[“”"]{2,}/, '"').replace(/[“”"]{2,}$/, '"');
+
+  // 3. Unwrap full-string bounding quotes safely if balanced:
+  // e.g. "Karena ketiga molekul..." -> Karena ketiga molekul...
+  if ((res.startsWith('"') && res.endsWith('"')) || (res.startsWith('“') && res.endsWith('”'))) {
+    const inner = res.slice(1, -1).trim();
+    const quoteCount = (inner.match(/"/g) || []).length;
+    if (quoteCount % 2 === 0) {
+      res = inner;
+    }
+  }
+
+  // 4. Unwrap temperatures from LaTeX delimiters ($78°C$ -> 78°C)
+  res = res.replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?|\\(?:degreeC|celsius))\s*(?:\\text\{\s*C\s*\}|\\mathrm\{\s*C\s*\}|C)?\s*\$/gi, '$1°C');
+  res = res.replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*(?:\\text\{\s*F\s*\}|\\mathrm\{\s*F\s*\}|F)?\s*\$/gi, '$1°F');
+  res = res.replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*\$/gi, '$1°');
+  res = res.replace(/\$\s*(-?\d+(?:[.,]\d+)?\s*°[CFK]?)\s*\$/gi, '$1');
+
+  return res;
+}
+
+/**
  * Normalizes and removes common LLM extraction glitches like "extCH4", "ext{CH4}",
  * and raw control characters from accidental \t / \r / \f JSON parses.
  */
 export function cleanExtAndLatexArtifacts(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
-  return text
+  const cleaned = cleanQuotesAndTemperatures(text);
+
+  return cleaned
     // Replace tab-corrupted \text, \times, \theta, \rightarrow, \frac
     .replace(/\t+ext(?=\{|\s*[A-Za-z0-9])/g, '\\text')
     .replace(/\t+imes\b/g, '\\times')
@@ -1411,10 +1540,11 @@ export function cleanExtAndLatexArtifacts(text: string): string {
  */
 export function stripDuplicateOptionsFromStem(stem: string, options?: string[] | null): string {
   if (!stem || typeof stem !== 'string' || !options || !Array.isArray(options) || options.length < 2) {
-    return stem || '';
+    return cleanQuotesAndTemperatures(stem || '');
   }
 
   const lines = stem.split('\n');
+  const cleanOpt0 = options[0]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
 
   // 1. Multiline option block check: find candidate line where Option A starts
   const optAIdx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s])/.test(l));
@@ -1425,24 +1555,35 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
     const hasB = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Bb][\.\)\:\-\s]|Option\s+[Bb][\:\.\s])/.test(l));
     const hasC = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Cc][\.\)\:\-\s]|Option\s+[Cc][\:\.\s])/.test(l));
 
-    if (hasB && (options.length < 3 || hasC)) {
-      return lines.slice(0, optAIdx).join('\n').trim();
+    // Verify candidate text correlates with options[0] so stimulus items (e.g. "• A: ...") are not stripped
+    const candidateTextA = lines[optAIdx].replace(/^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s])/, '').trim();
+    const matchesOpt0 = !cleanOpt0 || !candidateTextA || (
+      cleanOpt0.toLowerCase().startsWith(candidateTextA.toLowerCase().slice(0, 15)) ||
+      candidateTextA.toLowerCase().startsWith(cleanOpt0.toLowerCase().slice(0, 15))
+    );
+
+    if (hasB && (options.length < 3 || hasC) && matchesOpt0) {
+      return cleanQuotesAndTemperatures(lines.slice(0, optAIdx).join('\n').trim());
     }
   }
 
   // 2. Multiline numeric option block check (e.g. 1. ... 2. ... 3. ...)
-  const opt1Idx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[1][\.\)\:\-\s]|Option\s+[1][\:\.\s])/.test(l));
-  if (opt1Idx >= 0) {
-    const trailingLines = lines.slice(opt1Idx).filter((l) => l.trim().length > 0);
-    const has2 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[2][\.\)\:\-\s]|Option\s+[2][\:\.\s])/.test(l));
-    const has3 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[3][\.\)\:\-\s]|Option\s+[3][\:\.\s])/.test(l));
-    if (has2 && (options.length < 3 || has3)) {
-      return lines.slice(0, opt1Idx).join('\n').trim();
+  // ONLY if the options array itself actually contains numeric labels (e.g. "1. ...", "1", "(1)")!
+  // If options are lettered (A, B, C, D, E), numbered lines (1., 2., 3., 4.) are statements/stimulus lines, NOT options!
+  const optionsAreNumeric = options.every((opt) => /^\s*(?:\(?[0-9]+[\.\)\:\-\s]|Option\s+[0-9]+[\:\.\s])/i.test(opt.trim()));
+  if (optionsAreNumeric) {
+    const opt1Idx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[1][\.\)\:\-\s]|Option\s+[1][\:\.\s])/.test(l));
+    if (opt1Idx >= 0) {
+      const trailingLines = lines.slice(opt1Idx).filter((l) => l.trim().length > 0);
+      const has2 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[2][\.\)\:\-\s]|Option\s+[2][\:\.\s])/.test(l));
+      const has3 = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[3][\.\)\:\-\s]|Option\s+[3][\:\.\s])/.test(l));
+      if (has2 && (options.length < 3 || has3)) {
+        return cleanQuotesAndTemperatures(lines.slice(0, opt1Idx).join('\n').trim());
+      }
     }
   }
 
   // 3. Verbatim option text matching (for bulleted or unlettered options)
-  const cleanOpt0 = options[0]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
   if (cleanOpt0 && cleanOpt0.length > 2) {
     const opt0LineIdx = lines.findIndex((l) => {
       const cleanL = l.replace(/^[\s-*•\d.)\]:]+/, '').trim();
@@ -1458,18 +1599,26 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
       });
 
       if (hasOpt1) {
-        return lines.slice(0, opt0LineIdx).join('\n').trim();
+        return cleanQuotesAndTemperatures(lines.slice(0, opt0LineIdx).join('\n').trim());
       }
     }
   }
 
-  // 4. Inline option pattern check at end of string (e.g. "What is x? A. 1 B. 2 C. 3 D. 4")
-  const inlinePattern = /\s+(?:\(?[Aa][\.\)\:\-]\s+[\s\S]+?)(?:\(?[Bb][\.\)\:\-]\s+[\s\S]+?)(?:\(?[Cc][\.\)\:\-]\s+[\s\S]+?)(?:(?:\(?[Dd][\.\)\:\-]\s+[\s\S]+?))?(?:(?:\(?[Ee][\.\)\:\-]\s+[\s\S]+?))?$/;
-  if (inlinePattern.test(stem)) {
-    return stem.replace(inlinePattern, '').trim();
+  // 4. Safe Inline option pattern check at end of string (e.g. "What is x? A. 1 B. 2 C. 3 D. 4")
+  // MUST NOT match words ending with A like "Kondisi A:", "Tipe A:", "Kelompok A:"
+  // AND must correlate with the actual options array (options[0])!
+  const inlineMatch = stem.match(/(?:(?<=[?.!:]|\n)\s*|^\s*)(?:\(?[Aa][\.\)\:\-]\s+)([\s\S]+?)(?=\s+\(?[Bb][\.\)\:\-]\s+)/);
+  if (inlineMatch && inlineMatch.index !== undefined) {
+    const candidateOptA = inlineMatch[1].trim();
+    if (cleanOpt0 && candidateOptA && (
+      cleanOpt0.toLowerCase().startsWith(candidateOptA.toLowerCase().slice(0, 15)) ||
+      candidateOptA.toLowerCase().startsWith(cleanOpt0.toLowerCase().slice(0, 15))
+    )) {
+      return cleanQuotesAndTemperatures(stem.slice(0, inlineMatch.index).trim());
+    }
   }
 
-  return stem.trim();
+  return cleanQuotesAndTemperatures(stem.trim());
 }
 
 /**

@@ -2041,6 +2041,7 @@ export function StudentQuizRunner({
   }, [currentIndex]);
 
   // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
+  // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
   const currentTable = useMemo(() => {
     if (!currentQuestion || (currentQuestion.options && currentQuestion.options.length > 0) || (currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0)) {
       return null;
@@ -2049,24 +2050,6 @@ export function StudentQuizRunner({
     if (!qText.includes('|')) return null;
 
     const lines = qText.split('\n');
-    const tableLines: string[] = [];
-    const preLines: string[] = [];
-    let inTable = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      const isPipe = trimmed.startsWith('|') || (trimmed.match(/\|/g) || []).length >= 2;
-      if (isPipe) {
-        inTable = true;
-        tableLines.push(line);
-      } else if (inTable) {
-        break;
-      } else {
-        preLines.push(line);
-      }
-    }
-
-    if (tableLines.length < 2) return null;
 
     const isSeparatorRow = (l: string) => {
       const clean = l.trim().replace(/^\|/, '').replace(/\|$/, '');
@@ -2081,34 +2064,145 @@ export function StudentQuizRunner({
       return clean.split('|').map((c) => c.trim());
     };
 
-    const rawRows = tableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
-    if (rawRows.length < 2) return null;
+    interface TableCandidate {
+      startLineIdx: number;
+      endLineIdx: number;
+      headerCells: string[];
+      rows: { label: string; cells: string[] }[];
+      isInteractive: boolean;
+    }
 
-    const headerCells = parseRow(rawRows[0]);
-    if (headerCells.length < 2) return null;
+    const tableBlocks: TableCandidate[] = [];
+    let curTableLines: string[] = [];
+    let curStartIdx = -1;
 
-    const rows = rawRows
-      .slice(1)
-      .map((r) => {
-        const cells = parseRow(r);
-        return {
-          label: cells[0] || '',
-          cells: cells.slice(1),
-        };
-      })
-      .filter((r) => r.label.trim().length > 0);
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      const isPipe = trimmed.startsWith('|') || (trimmed.match(/\|/g) || []).length >= 2;
+      if (isPipe) {
+        if (curTableLines.length === 0) curStartIdx = i;
+        curTableLines.push(lines[i]);
+      } else {
+        if (curTableLines.length >= 2) {
+          const rawRows = curTableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
+          if (rawRows.length >= 2) {
+            let headerCells = parseRow(rawRows[0]);
+            let rows = rawRows.slice(1).map((r) => {
+              const cells = parseRow(r);
+              return { label: cells[0] || '', cells: cells.slice(1) };
+            });
 
-    if (rows.length === 0) return null;
+            // If 4 columns: [No., Pernyataan, Benar, Salah] or [#, Statement, True, False]
+            // where col 0 is index / number, merge col 0 into col 1
+            if (
+              headerCells.length >= 4 &&
+              /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
+              /^(?:pernyataan|statement|aspek|kategori)$/i.test(headerCells[1])
+            ) {
+              headerCells = [headerCells[1], ...headerCells.slice(2)];
+              rows = rawRows.slice(1).map((r) => {
+                const cells = parseRow(r);
+                const num = cells[0] ? `${cells[0]}. ` : '';
+                return {
+                  label: `${num}${cells[1] || ''}`.trim(),
+                  cells: cells.slice(2),
+                };
+              });
+            }
+
+            const colChoices = headerCells.slice(1).map((h) => h.toLowerCase());
+            const hasInteractiveHeaders = colChoices.some((h) =>
+              /^(?:benar|salah|true|false|ya|tidak|yes|no)$/i.test(h)
+            );
+            const hasInteractiveCells = rows.some((row) =>
+              row.cells.some((cell) => /\[\s*[✓xX]?\s*\]|☐|☑/i.test(cell))
+            );
+
+            tableBlocks.push({
+              startLineIdx: curStartIdx,
+              endLineIdx: i,
+              headerCells,
+              rows: rows.filter((r) => r.label.trim().length > 0),
+              isInteractive: hasInteractiveHeaders || hasInteractiveCells,
+            });
+          }
+        }
+        curTableLines = [];
+        curStartIdx = -1;
+      }
+    }
+
+    if (curTableLines.length >= 2) {
+      const rawRows = curTableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
+      if (rawRows.length >= 2) {
+        let headerCells = parseRow(rawRows[0]);
+        let rows = rawRows.slice(1).map((r) => {
+          const cells = parseRow(r);
+          return { label: cells[0] || '', cells: cells.slice(1) };
+        });
+
+        if (
+          headerCells.length >= 4 &&
+          /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
+          /^(?:pernyataan|statement|aspek|kategori)$/i.test(headerCells[1])
+        ) {
+          headerCells = [headerCells[1], ...headerCells.slice(2)];
+          rows = rawRows.slice(1).map((r) => {
+            const cells = parseRow(r);
+            const num = cells[0] ? `${cells[0]}. ` : '';
+            return {
+              label: `${num}${cells[1] || ''}`.trim(),
+              cells: cells.slice(2),
+            };
+          });
+        }
+
+        const colChoices = headerCells.slice(1).map((h) => h.toLowerCase());
+        const hasInteractiveHeaders = colChoices.some((h) =>
+          /^(?:benar|salah|true|false|ya|tidak|yes|no)$/i.test(h)
+        );
+        const hasInteractiveCells = rows.some((row) =>
+          row.cells.some((cell) => /\[\s*[✓xX]?\s*\]|☐|☑/i.test(cell))
+        );
+
+        tableBlocks.push({
+          startLineIdx: curStartIdx,
+          endLineIdx: lines.length,
+          headerCells,
+          rows: rows.filter((r) => r.label.trim().length > 0),
+          isInteractive: hasInteractiveHeaders || hasInteractiveCells,
+        });
+      }
+    }
+
+    if (tableBlocks.length === 0) return null;
+
+    // Pick the interactive table candidate if available, else pick the last table block
+    const chosen = tableBlocks.find((tb) => tb.isInteractive) || tableBlocks[tableBlocks.length - 1];
+    if (!chosen || chosen.rows.length === 0) return null;
+
+    // All lines before chosen.startLineIdx belong to preTableText (which keeps stimulus data tables!)
+    const preText = lines.slice(0, chosen.startLineIdx).join('\n').trim();
 
     return {
-      headerCells,
-      rows,
-      preTableText: preLines.join('\n').trim(),
+      headerCells: chosen.headerCells,
+      rows: chosen.rows,
+      preTableText: preText,
     };
   }, [currentQuestion]);
 
   const isMultiSelect = useMemo(() => {
     if (!currentQuestion) return false;
+
+    // Guard: If all options are combination bundles (e.g. "A. 1 dan 2", "B. 1, 2, dan 3"),
+    // this is a SINGLE-SELECT Multiple Choice question.
+    const isCombinationMcq = Boolean(
+      currentQuestion.options &&
+      currentQuestion.options.length > 0 &&
+      currentQuestion.options.every((opt) => /^[A-Ea-e][.:\s]+(?:\d+|[I|V|X]+)\s*(?:dan|and|,)/i.test(opt.trim()))
+    );
+    if (isCombinationMcq) return false;
+
     const stem = (currentQuestion.question_text || '').toLowerCase();
     const markPoints = (currentQuestion.mark_scheme as any)?.marking_points || [];
     const acceptable = (currentQuestion.mark_scheme as any)?.acceptable_answers || [];
@@ -2123,7 +2217,11 @@ export function StudentQuizRunner({
       stem.includes('more than one answer') ||
       stem.includes('tick (✓) on every correct answer') ||
       stem.includes('pilihan ganda kompleks') ||
-      stem.includes('select all that apply')
+      stem.includes('select all that apply') ||
+      stem.includes('pilih semua kesimpulan yang benar') ||
+      stem.includes('pilih semua pernyataan yang benar') ||
+      stem.includes('pilih semua kesimpulan') ||
+      stem.includes('pilihlah semua')
     );
   }, [currentQuestion]);
 

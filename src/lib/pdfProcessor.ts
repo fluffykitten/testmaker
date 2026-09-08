@@ -12,6 +12,7 @@ import {
   normalizePaper4SubQuestions,
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
+  cleanQuotesAndTemperatures,
   type SubjectDomain,
 } from './gemini';
 import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
@@ -28,6 +29,7 @@ import {
   verifyAndRepairPassages,
   stitchPassagesToQuestions,
 } from './passageExtractor';
+import { addTagsToQuestions } from '../services/questionTagService';
 
 export { stitchPassagesToQuestions } from './passageExtractor';
 
@@ -95,8 +97,9 @@ export async function saveExtractedQuestions(
   _qpFile?: File | null,
   _msFile?: File | null,
   _insertFile?: File | null,
-  onProgress?: (status: string) => void
-): Promise<number> {
+  onProgress?: (status: string) => void,
+  tags?: string
+): Promise<{ count: number; insertedIds: string[] }> {
   const { paper_metadata, questions, insert_resources, passages } = result;
 
   // 1. Upload cropped diagram blobs to Supabase Storage (WebP compressed)
@@ -155,10 +158,11 @@ export async function saveExtractedQuestions(
       diagram_source: q.diagram_source || null,
       resource_ref: q.resource_ref || null,
       insert_page_number: q.insert_page_number || null,
-      options: q.options || null,
+      options: (q.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
       sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
         ...sub,
         question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
+        options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
         diagram_source: sub.diagram_source || null,
         resource_ref: sub.resource_ref || null,
         insert_page_number: sub.insert_page_number || null,
@@ -248,8 +252,15 @@ export async function saveExtractedQuestions(
   }
 
   const insertedCount = data?.length ?? 0;
+  const insertedIds = data?.map((d) => d.id) || [];
+  
+  if (tags && insertedIds.length > 0) {
+    onProgress?.('Applying question tags…');
+    addTagsToQuestions(insertedIds, tags);
+  }
+  
   onProgress?.(`Successfully saved ${insertedCount} questions.`);
-  return insertedCount;
+  return { count: insertedCount, insertedIds };
 }
 
 function escapeRegex(str: string): string {
@@ -445,10 +456,39 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
     const accAnswers = q.mark_scheme?.acceptable_answers || [];
     const hasMultiLetters = accAnswers.some((a) => (String(a).match(/[A-Za-z]/g) || []).length > 1);
 
-    const isMulti =
-      /\[Multiple\s*Select\]|pilihan\s*ganda\s*kompleks|more\s*than\s*one\s*(?:correct\s*)?answer|tick\s*(?:\(✓\)\s*)?on\s*every/i.test(
+    // Safeguard for Benar/Salah (True/False) matrix tables: ensure options are null and style is Structured
+    const isTrueFalseTable =
+      /\|\s*Pernyataan\s*\|\s*Benar\s*\|\s*Salah\s*\||\|\s*Benar\s*\|\s*Salah\s*\||tabel\s+benar\s*\/\s*salah/i.test(
         text
-      ) || hasMultiLetters;
+      );
+    if (isTrueFalseTable) {
+      return {
+        ...q,
+        options: null,
+        question_style: 'Structured',
+      };
+    }
+
+    // Check if options are combination bundles (e.g. "A. 1 dan 2", "B. 1, 2, dan 3", "C. I and II")
+    const isCombinationMcq = Boolean(
+      q.options &&
+      q.options.length > 0 &&
+      q.options.every((opt) => /^[A-Ea-e][.:\s]+(?:\d+|[I|V|X]+)\s*(?:dan|and|,)/i.test(opt.trim()))
+    );
+
+    if (isCombinationMcq) {
+      return {
+        ...q,
+        question_style: 'Multiple Choice',
+      };
+    }
+
+    const isMultiPhrase =
+      /\[Multiple\s*Select\]|pilihan\s*ganda\s*kompleks|more\s*than\s*one\s*(?:correct\s*)?answer|tick\s*(?:\(✓\)\s*)?on\s*every|pilih(?:lah)?\s+semua\s+(?:kesimpulan|pernyataan|jawaban|opsi)?/i.test(
+        text
+      );
+
+    const isMulti = isMultiPhrase || hasMultiLetters || q.question_style === 'Multiple Select';
 
     if (isMulti && q.options && q.options.length > 0) {
       return {
@@ -456,6 +496,15 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
         question_style: 'Multiple Select',
       };
     }
+
+    // Ensure questions with markdown table and no options default to 'Structured'
+    if ((!q.options || q.options.length === 0) && text.includes('|') && text.includes('\n|') && !q.question_style) {
+      return {
+        ...q,
+        question_style: 'Structured',
+      };
+    }
+
     return q;
   });
 }

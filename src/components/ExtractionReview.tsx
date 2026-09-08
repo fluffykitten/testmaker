@@ -18,9 +18,11 @@ interface ExtractionReviewProps {
   pdfFile?: File | null;
   insertFile?: File | null;
   onUpdateDiagram?: (qNum: string, item: DiagramCropItem) => void;
-  onConfirmSave: (customResult?: ExtractionResult) => void;
+  onConfirmSave: (customResult?: ExtractionResult, tags?: string) => void;
   onCancel: () => void;
   isSaving: boolean;
+  initialTags?: string;
+  onUpdateTags?: (tags: string) => void;
 }
 
 interface CropTarget {
@@ -64,8 +66,12 @@ export function ExtractionReview({
   onConfirmSave,
   onCancel,
   isSaving,
+  initialTags = '',
+  onUpdateTags,
 }: ExtractionReviewProps) {
   const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => cleanExtractedQuestions(result.questions, result.passages));
+  const [tags, setTags] = useState<string>(initialTags);
+  const [tagsDraft, setTagsDraft] = useState<string>(initialTags);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
     () => new Set(result.questions.map((_, i) => i))
   );
@@ -116,6 +122,7 @@ export function ExtractionReview({
   const handleOpenMetadataModal = () => {
     setMetadataDraft({ ...paperMetadata });
     setTargetMarksDraft(customTargetMarks ? String(customTargetMarks) : (expectedMarks ? String(expectedMarks) : ''));
+    setTagsDraft(tags);
     setIsEditingMetadata(true);
   };
 
@@ -123,6 +130,8 @@ export function ExtractionReview({
     setPaperMetadata({ ...metadataDraft });
     const parsedTarget = targetMarksDraft.trim() ? parseInt(targetMarksDraft.trim(), 10) : null;
     setCustomTargetMarks(!isNaN(Number(parsedTarget)) && (parsedTarget || 0) > 0 ? parsedTarget : null);
+    setTags(tagsDraft);
+    onUpdateTags?.(tagsDraft);
     setIsEditingMetadata(false);
   };
 
@@ -436,16 +445,19 @@ export function ExtractionReview({
   // ─── Save Confirmation (Filters Selected Questions) ────────────────────────
   const handleSaveClick = () => {
     const questionsToSave = cleanExtractedQuestions(questions.filter((_, i) => selectedIndices.has(i)));
-    onConfirmSave({
-      ...result,
-      paper_metadata: paperMetadata,
-      questions: questionsToSave.map((q) => ({
-        ...q,
-        year: paperMetadata.year,
-        series: paperMetadata.series,
-        paper_number: paperMetadata.paper_number,
-      })),
-    });
+    onConfirmSave(
+      {
+        ...result,
+        paper_metadata: paperMetadata,
+        questions: questionsToSave.map((q) => ({
+          ...q,
+          year: paperMetadata.year,
+          series: paperMetadata.series,
+          paper_number: paperMetadata.paper_number,
+        })),
+      },
+      tags
+    );
   };
 
   const difficultyColor = (d: string) => {
@@ -585,6 +597,12 @@ export function ExtractionReview({
           <MetaBadge
             label="Paper / Section"
             value={formatPaperLabel(paperMetadata?.paper_number || '1')}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
+          <MetaBadge
+            label="Question Tags"
+            value={tags && tags.trim() ? tags.split(/[\s,]+/).filter(Boolean).map(t => '#' + t.replace(/^#/, '')).join(' ') : '+ Add #Tags'}
             onClick={handleOpenMetadataModal}
             isClickable
           />
@@ -729,8 +747,10 @@ export function ExtractionReview({
                     >
                       <option value="Structured">Structured</option>
                       <option value="Multiple Choice">Multiple Choice</option>
+                      <option value="Multiple Select">Multiple Select</option>
                       <option value="Calculation">Calculation</option>
                       <option value="Short Answer">Short Answer</option>
+                      <option value="Fill in the Blank">Fill in the Blank</option>
                     </select>
                   ) : (
                     <span className="review-badge badge--style">{q.question_style}</span>
@@ -1463,6 +1483,16 @@ export function ExtractionReview({
                       value={targetMarksDraft}
                       onChange={(e) => setTargetMarksDraft(e.target.value)}
                       placeholder="e.g. 25, 50, 100 (auto if empty)"
+                    />
+                  </div>
+
+                  <div className="review-meta-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>🏷️ Question Tags (Comma or space separated)</label>
+                    <input
+                      type="text"
+                      value={tagsDraft}
+                      onChange={(e) => setTagsDraft(e.target.value)}
+                      placeholder="e.g. mock2026, tka, chem, #hard"
                     />
                   </div>
                 </div>

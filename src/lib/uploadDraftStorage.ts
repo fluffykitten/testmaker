@@ -30,6 +30,7 @@ export interface RawUploadDraft {
   qpName?: string | null;
   insertBlob?: Blob | null;
   insertName?: string | null;
+  tags?: string | null;
 }
 
 export interface ReconstitutedDraft {
@@ -40,6 +41,7 @@ export interface ReconstitutedDraft {
   previewUrls: Map<string, string>;
   qpFile: File | null;
   insertFile: File | null;
+  tags?: string;
 }
 
 function getIndexedDB(): IDBFactory | null {
@@ -78,7 +80,8 @@ export async function saveUploadDraft(
   result: ExtractionResult,
   diagramData: Map<string, DiagramCropItem>,
   qpFile?: File | null,
-  insertFile?: File | null
+  insertFile?: File | null,
+  tags?: string
 ): Promise<void> {
   try {
     const db = await openDatabase();
@@ -105,6 +108,7 @@ export async function saveUploadDraft(
       qpName: qpFile?.name || null,
       insertBlob: insertFile || null,
       insertName: insertFile?.name || null,
+      tags: tags || null,
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -218,6 +222,7 @@ export async function loadUploadDraft(): Promise<ReconstitutedDraft | null> {
       previewUrls,
       qpFile,
       insertFile,
+      tags: raw.tags || '',
     };
   } catch (err) {
     console.warn('[DraftRecovery] Error restoring upload draft:', err);

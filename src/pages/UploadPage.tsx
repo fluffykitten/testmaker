@@ -40,7 +40,11 @@ function formatRelativeTime(timestamp: number): string {
  * 3. Extraction review with save/discard (zero cloud storage uploads)
  * 4. Success confirmation
  */
-export function UploadPage() {
+export interface UploadPageProps {
+  onBuildTest?: (questionIds: string[]) => void;
+}
+
+export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
   const [pipelineState, setPipelineState] = useState<PipelineState>({
     stage: 'idle',
     message: '',
@@ -56,6 +60,8 @@ export function UploadPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [uploadedQpFile, setUploadedQpFile] = useState<File | null>(null);
   const [uploadedInsertFile, setUploadedInsertFile] = useState<File | null>(null);
+  const [pendingTags, setPendingTags] = useState<string>('');
+  const [extractedIds, setExtractedIds] = useState<string[]>([]);
 
   // Draft recovery state
   const [draftInfo, setDraftInfo] = useState<{
@@ -99,6 +105,7 @@ export function UploadPage() {
         setPreviewUrls(draft.previewUrls);
         setUploadedQpFile(draft.qpFile);
         setUploadedInsertFile(draft.insertFile);
+        setPendingTags(draft.tags || '');
         selectedFilesRef.current = {
           qpFile: draft.qpFile,
           msFile: null,
@@ -132,13 +139,15 @@ export function UploadPage() {
       qpFile: File,
       msFile: File | null,
       insertFile: File | null,
-      options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean } = {
+      options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; tags?: string } = {
         includeGuidance: true,
         domain: 'stem',
         isIgcse: true,
       }
     ) => {
       setSavedCount(null);
+      setExtractedIds([]);
+      setPendingTags(options.tags || '');
       setExtractionResult(null);
       setUploadedQpFile(qpFile);
       setUploadedInsertFile(insertFile);
@@ -157,7 +166,7 @@ export function UploadPage() {
         setPreviewUrls(urls);
 
         // Auto-save draft to IndexedDB to protect teacher against accidental refresh
-        await saveUploadDraft(qpFile.name, result, data, qpFile, insertFile);
+        await saveUploadDraft(qpFile.name, result, data, qpFile, insertFile, options.tags || '');
       } catch {
         // Error state is already set by the pipeline
       }
@@ -167,7 +176,7 @@ export function UploadPage() {
 
   // ─── Handle Save to Database (Uploads storage files on confirm) ──────────
 
-  const handleConfirmSave = useCallback(async (customResult?: ExtractionResult) => {
+  const handleConfirmSave = useCallback(async (customResult?: ExtractionResult, tagsOverride?: string) => {
     const resultToSave = customResult || extractionResult;
     if (!resultToSave) return;
 
@@ -179,15 +188,20 @@ export function UploadPage() {
       progress: 95,
     }));
 
+    const tagsToApply = tagsOverride !== undefined ? tagsOverride : pendingTags;
+
     try {
-      const count = await saveExtractedQuestions(
+      const { count, insertedIds } = await saveExtractedQuestions(
         resultToSave,
         diagramData,
         selectedFilesRef.current.qpFile,
         selectedFilesRef.current.msFile,
-        selectedFilesRef.current.insertFile
+        selectedFilesRef.current.insertFile,
+        (msg) => setPipelineState((prev) => ({ ...prev, message: msg })),
+        tagsToApply
       );
       setSavedCount(count);
+      setExtractedIds(insertedIds);
       window.dispatchEvent(new Event('questions_updated'));
       // Once successfully saved, purge the draft
       await deleteUploadDraft();
@@ -212,7 +226,7 @@ export function UploadPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [extractionResult, diagramData]);
+  }, [extractionResult, diagramData, pendingTags]);
 
   // ─── Handle Discard (Leaves Supabase Storage 100% Clean) ─────────────────
 
@@ -337,7 +351,8 @@ export function UploadPage() {
                     extractionResult,
                     next,
                     uploadedQpFile,
-                    uploadedInsertFile
+                    uploadedInsertFile,
+                    pendingTags
                   );
                 }
                 return next;
@@ -351,6 +366,8 @@ export function UploadPage() {
             onConfirmSave={handleConfirmSave}
             onCancel={handleCancel}
             isSaving={isSaving}
+            initialTags={pendingTags}
+            onUpdateTags={(newTags) => setPendingTags(newTags)}
           />
         )}
 
@@ -373,8 +390,17 @@ export function UploadPage() {
               to use in the Test Builder.
             </p>
             <div className="upload-success-actions">
+              {onBuildTest && extractedIds.length > 0 && (
+                <button
+                  className="upload-success-btn upload-success-btn--primary"
+                  onClick={() => onBuildTest(extractedIds)}
+                  id="build-test-btn"
+                >
+                  Build Test with these Questions
+                </button>
+              )}
               <button
-                className="upload-success-btn upload-success-btn--primary"
+                className={`upload-success-btn ${(!onBuildTest || extractedIds.length === 0) ? 'upload-success-btn--primary' : ''}`}
                 onClick={handleCancel}
                 id="upload-another-btn"
               >

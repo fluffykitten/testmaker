@@ -11,6 +11,7 @@ import { TestQuestionItem } from '../components/TestQuestionItem';
 import { TestStatsSidebar } from '../components/TestStatsSidebar';
 import { TestPaperPreview } from '../components/TestPaperPreview';
 import { ExportModal } from '../components/ExportModal';
+import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuestionEditorModal } from '../components/QuestionEditorModal';
 import { QuestionVariantModal } from '../components/QuestionVariantModal';
 import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
@@ -335,6 +336,44 @@ export function TestBuilderPage({
       onUpdateQuestions?.(updated);
       return updated;
     });
+    
+    // Clean up stale overrides
+    setHeaderConfig((prev) => {
+      if (prev.questionOverrides && prev.questionOverrides[qid]) {
+        const newOverrides = { ...prev.questionOverrides };
+        delete newOverrides[qid];
+        return { ...prev, questionOverrides: newOverrides };
+      }
+      return prev;
+    });
+  };
+
+  const handleRevert = async (qid: string) => {
+    // 1. Remove from overrides
+    setHeaderConfig((prev) => {
+      if (prev.questionOverrides && prev.questionOverrides[qid]) {
+        const newOverrides = { ...prev.questionOverrides };
+        delete newOverrides[qid];
+        return { ...prev, questionOverrides: newOverrides };
+      }
+      return prev;
+    });
+
+    // 2. Fetch original from DB
+    try {
+      const fetched = await fetchQuestionsByIds([qid]);
+      if (fetched && fetched.length > 0) {
+        setQuestions((prev) => {
+          const updated = prev.map((q) => (q.id === qid ? fetched[0] : q));
+          onUpdateQuestions?.(updated);
+          return updated;
+        });
+        setSavedSuccessMsg(`Reverted question to original Question Bank version.`);
+        setTimeout(() => setSavedSuccessMsg(null), 3000);
+      }
+    } catch (err) {
+      console.error('Failed to revert question', err);
+    }
   };
 
   // Save or Update Custom Test
@@ -526,9 +565,11 @@ export function TestBuilderPage({
                         question={q}
                         index={idx}
                         totalQuestions={questions.length}
+                        isCustomized={!!headerConfig.questionOverrides?.[q.id]}
                         onMoveUp={handleMoveUp}
                         onMoveDown={handleMoveDown}
                         onRemove={handleRemove}
+                        onRevert={handleRevert}
                         onEdit={(target) => setEditingQuestion(target)}
                         onGenerateVariant={(target) => setVariantQuestion(target)}
                       />
@@ -608,6 +649,7 @@ export function TestBuilderPage({
       <QuestionEditorModal
         isOpen={!!editingQuestion}
         question={editingQuestion}
+        targetContext="test"
         onClose={() => setEditingQuestion(null)}
         onSave={(savedQuestion) => {
           setQuestions((prev) => {
@@ -618,6 +660,15 @@ export function TestBuilderPage({
             onUpdateQuestions?.(updated);
             return updated;
           });
+          
+          setHeaderConfig((prev) => ({
+            ...prev,
+            questionOverrides: {
+              ...(prev.questionOverrides || {}),
+              [savedQuestion.id]: savedQuestion
+            }
+          }));
+
           setSavedSuccessMsg(`Question ${savedQuestion.question_number} updated in custom exam.`);
           setTimeout(() => setSavedSuccessMsg(null), 3000);
         }}
