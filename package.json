@@ -27,6 +27,7 @@
     "@capacitor/keyboard": "^8.0.5",
     "@capacitor/share": "^8.0.1",
     "@capacitor/status-bar": "^8.0.3",
+    "@cf-wasm/photon": "^0.4.0",
     "@supabase/supabase-js": "^2.112.3",
     "@types/jszip": "^3.4.0",
     "docx": "^9.7.1",

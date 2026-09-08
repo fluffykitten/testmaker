@@ -20,6 +20,9 @@ export interface AppSettings {
   autoBackupFrequency?: 'on_paper_upload' | 'daily' | 'weekly';
   lastBackupTimestamp?: number;
   lastBackupFileName?: string;
+  storageProvider?: 'cloudflare_r2' | 'supabase';
+  r2MediaEndpoint?: string;
+  r2UploadSecret?: string;
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -48,6 +51,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   classes: DEFAULT_CLASSES,
   autoBackupEnabled: false,
   autoBackupFrequency: 'on_paper_upload',
+  storageProvider: 'cloudflare_r2',
+  r2MediaEndpoint: 'https://testmaker-media.icmadani.workers.dev',
+  r2UploadSecret: 'tm_r2_uploader_secret_2026',
 };
 
 // Accent palette color mappings for --color-primary tokens

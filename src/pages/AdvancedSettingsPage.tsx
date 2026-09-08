@@ -10,6 +10,7 @@ import {
   loadAndSyncGoogleDriveClientId,
   syncGoogleDriveClientIdToCloud,
 } from '../lib/settings';
+import { testR2Connection } from '../services/storageService';
 import {
   type RosterStudent,
   getSchoolRoster,
@@ -93,6 +94,16 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     () => getSavedSettings().googleDriveClientId || ''
   );
   const [isSavingClientId, setIsSavingClientId] = useState(false);
+
+  // Cloudflare R2 Media Proxy State
+  const [r2EndpointInput, setR2EndpointInput] = useState(
+    () => getSavedSettings().r2MediaEndpoint || 'https://testmaker-media.icmadani.workers.dev'
+  );
+  const [r2SecretInput, setR2SecretInput] = useState(
+    () => getSavedSettings().r2UploadSecret || 'tm_r2_uploader_secret_2026'
+  );
+  const [isTestingR2, setIsTestingR2] = useState(false);
+  const [r2TestResult, setR2TestResult] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
 
   // Focus first pin digit on load if locked
   useEffect(() => {
@@ -385,6 +396,29 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       showNotice('✓ Google OAuth Client ID saved & synced to cloud');
     } else {
       showNotice('✓ Saved locally (Cloud sync check app_config)');
+    }
+  };
+
+  // ─── Cloudflare R2 Media Proxy Handlers ───────────────────────────────────────
+  const handleSaveR2Config = () => {
+    updateSetting('r2MediaEndpoint', r2EndpointInput.trim());
+    updateSetting('r2UploadSecret', r2SecretInput.trim());
+    showNotice('✓ Cloudflare R2 media endpoint & secret saved');
+  };
+
+  const handleTestR2Connection = async () => {
+    setIsTestingR2(true);
+    setR2TestResult(null);
+    try {
+      const res = await testR2Connection();
+      setR2TestResult(res);
+      if (res.ok) {
+        showNotice(`✓ Cloudflare R2 connection active! Latency: ${res.latencyMs}ms`);
+      } else {
+        showNotice(`⚠️ Cloudflare R2 test notice: ${res.error}`);
+      }
+    } finally {
+      setIsTestingR2(false);
     }
   };
 
@@ -959,6 +993,84 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   >
                     {isSavingClientId ? 'Saving...' : 'Save & Sync Client ID'}
                   </button>
+                </div>
+              </div>
+
+              {/* Cloudflare R2 Media Storage Configuration */}
+              <div className="adv-setting-card adv-setting-card--vertical">
+                <div className="adv-setting-info">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <strong className="adv-setting-title">⚡ Cloudflare R2 Media Storage (Zero Egress Fees)</strong>
+                    <span style={{ 
+                      fontSize: '11px', 
+                      fontWeight: 600, 
+                      padding: '2px 8px', 
+                      borderRadius: '12px', 
+                      background: 'rgba(16, 185, 129, 0.15)', 
+                      color: '#10b981',
+                      border: '1px solid rgba(16, 185, 129, 0.3)'
+                    }}>
+                      Worker Active
+                    </span>
+                  </div>
+                  <p className="adv-setting-desc">
+                    Diagrams and listening exam audio are streamed directly from Cloudflare R2 with $0 bandwidth fees and zero Indonesian ISP blocks.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '8px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>
+                      Media Worker Endpoint URL
+                    </label>
+                    <input
+                      type="text"
+                      className="adv-input adv-input-mono"
+                      placeholder="https://testmaker-media.icmadani.workers.dev"
+                      value={r2EndpointInput}
+                      onChange={(e) => setR2EndpointInput(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>
+                      Upload Authorization Secret
+                    </label>
+                    <input
+                      type="password"
+                      className="adv-input adv-input-mono"
+                      placeholder="Upload secret token"
+                      value={r2SecretInput}
+                      onChange={(e) => setR2SecretInput(e.target.value)}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' }}>
+                    <button
+                      type="button"
+                      className="adv-btn-primary"
+                      onClick={handleSaveR2Config}
+                    >
+                      Save R2 Configuration
+                    </button>
+                    <button
+                      type="button"
+                      className="adv-btn-secondary"
+                      onClick={handleTestR2Connection}
+                      disabled={isTestingR2}
+                    >
+                      {isTestingR2 ? 'Testing...' : '⚡ Test Connection'}
+                    </button>
+                    {r2TestResult && (
+                      <span style={{ 
+                        fontSize: '12px', 
+                        color: r2TestResult.ok ? '#10b981' : '#ef4444', 
+                        fontWeight: 600 
+                      }}>
+                        {r2TestResult.ok ? `✓ Latency: ${r2TestResult.latencyMs}ms` : `❌ ${r2TestResult.error}`}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 

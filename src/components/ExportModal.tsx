@@ -27,6 +27,7 @@ import {
 } from '../types/exportTemplates';
 import { exportOfflineGradingTemplateExcel } from '../services/offlineGradingService';
 import { exportOfflineInteractiveHtmlQuiz } from '../services/htmlQuizExportService';
+import { GoogleFormsExportModal } from './GoogleFormsExportModal';
 import { DEFAULT_SCHOOL_LOGO } from '../assets/logoConstants';
 import './ExportModal.css';
 
@@ -80,6 +81,7 @@ export function ExportModal({
 
   const [isExporting, setIsExporting] = useState(false);
   const [activeTask, setActiveTask] = useState<string | null>(null);
+  const [showGoogleFormsModal, setShowGoogleFormsModal] = useState(false);
   const backdropDismiss = useBackdropDismiss(onClose);
 
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
@@ -933,6 +935,37 @@ export function ExportModal({
                 </button>
               </div>
 
+              {/* Card 8: Google Forms Quiz Export */}
+              <div
+                className="export-card"
+                onClick={() => setShowGoogleFormsModal(true)}
+              >
+                <div
+                  className="export-card-icon-wrap"
+                  style={{ background: '#f3e8ff', color: '#673ab7', border: '1px solid #d8b4fe' }}
+                >
+                  📝
+                </div>
+                <div className="export-card-content">
+                  <div className="export-card-header-row">
+                    <h3 className="export-card-name">Google Forms Quiz</h3>
+                    <span className="export-badge" style={{ background: '#ede9fe', color: '#6d28d9' }}>
+                      Auto-Graded
+                    </span>
+                  </div>
+                  <p className="export-card-desc">
+                    Create an auto-graded Google Forms quiz directly in your Google Drive, or generate a ready-to-run Apps Script.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="export-card-action-btn"
+                  style={{ background: '#673ab7' }}
+                >
+                  Export Google Forms
+                </button>
+              </div>
+
               {/* Chemistry Only: Periodic Table Card */}
               {isChemistry && (
                 <div className="export-card" onClick={() => openPeriodicTablePrintWindow(headerConfig)}>
@@ -1001,6 +1034,16 @@ export function ExportModal({
             <div className="export-spinner" />
             <span>{activeTask || 'Generating document…'}</span>
           </div>
+        )}
+
+        {/* Google Forms Export Modal */}
+        {showGoogleFormsModal && (
+          <GoogleFormsExportModal
+            isOpen={true}
+            onClose={() => setShowGoogleFormsModal(false)}
+            headerConfig={headerConfig}
+            questions={questions}
+          />
         )}
       </div>
     </div>,

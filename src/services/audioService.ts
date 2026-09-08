@@ -3,6 +3,7 @@
 // Storage upload, microphone voice recording, and Web Speech API TTS.
 
 import { supabase } from '../lib/supabase';
+import { uploadAudioTrack } from './storageService';
 
 export interface CompressionResult {
   blob: Blob;
@@ -178,59 +179,14 @@ export function getAudioDuration(blob: Blob): Promise<number> {
 }
 
 /**
- * Uploads an audio blob directly to Supabase Storage.
- * Attempts bucket 'exam-audio', falls back to 'exam-diagrams' if bucket doesn't exist yet.
+ * Uploads an audio blob to cloud storage.
+ * Automatically routes to Cloudflare R2 (with Supabase Storage fallback).
  */
 export async function uploadAudioToCloud(
   blob: Blob,
   fileNamePrefix: string = 'audio'
 ): Promise<string | null> {
-  try {
-    const timestamp = Date.now();
-    const rand = Math.random().toString(36).substring(2, 7);
-    let ext = 'webm';
-    if (blob.type.includes('wav')) ext = 'wav';
-    else if (blob.type.includes('mp3') || blob.type.includes('mpeg')) ext = 'mp3';
-    else if (blob.type.includes('mp4') || blob.type.includes('m4a')) ext = 'm4a';
-    else if (blob.type.includes('ogg')) ext = 'ogg';
-
-    const path = `audio/${fileNamePrefix}_${timestamp}_${rand}.${ext}`;
-
-    // Try 'exam-audio' bucket first
-    let bucketName = 'exam-audio';
-    let { error } = await supabase.storage
-      .from(bucketName)
-      .upload(path, blob, {
-        contentType: blob.type || 'audio/webm',
-        upsert: true,
-      });
-
-    // Fallback to 'exam-diagrams' bucket if 'exam-audio' is not found
-    if (error && (error.message.includes('not found') || error.message.includes('Bucket') || error.message.includes('does not exist'))) {
-      bucketName = 'exam-diagrams';
-      const fallbackUpload = await supabase.storage
-        .from(bucketName)
-        .upload(path, blob, {
-          contentType: blob.type || 'audio/webm',
-          upsert: true,
-        });
-      error = fallbackUpload.error;
-    }
-
-    if (error) {
-      console.warn(`Supabase Storage audio upload notice (${path}):`, error.message);
-      return null;
-    }
-
-    const { data } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(path);
-
-    return data?.publicUrl || null;
-  } catch (err: any) {
-    console.warn('Audio storage upload error:', err?.message);
-    return null;
-  }
+  return uploadAudioTrack(blob, fileNamePrefix);
 }
 
 // ─── Microphone Voice Recorder ────────────────────────────────────────────────

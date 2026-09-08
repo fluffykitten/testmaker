@@ -4,7 +4,7 @@
 
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-import { supabase } from './supabase';
+import { uploadDiagramImage } from '../services/storageService';
 
 // Configure pdf.js worker using Vite's ?url loader for 100% reliable bundling
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -504,37 +504,12 @@ function cropFromCanvas(
 }
 
 /**
- * Uploads a diagram image blob (WebP / PNG) to Supabase Storage `exam-diagrams` bucket.
+ * Uploads a diagram image blob (WebP / PNG) to cloud storage.
+ * Automatically routes to Cloudflare R2 (with Supabase Storage fallback).
  * Returns the public URL, or null if storage is unconfigured / fails.
  */
 async function uploadToStorage(blob: Blob, fileName: string): Promise<string | null> {
-  try {
-    const isWebP = blob.type === 'image/webp';
-    const ext = isWebP ? 'webp' : 'png';
-    const contentType = isWebP ? 'image/webp' : 'image/png';
-    const path = `diagrams/${fileName}.${ext}`;
-
-    const { error } = await supabase.storage
-      .from('exam-diagrams')
-      .upload(path, blob, {
-        contentType,
-        upsert: true,
-      });
-
-    if (error) {
-      console.warn(`Supabase Storage upload note (${path}):`, error.message);
-      return null;
-    }
-
-    const { data } = supabase.storage
-      .from('exam-diagrams')
-      .getPublicUrl(path);
-
-    return data?.publicUrl || null;
-  } catch (err: any) {
-    console.warn('Storage upload error:', err?.message);
-    return null;
-  }
+  return uploadDiagramImage(blob, fileName);
 }
 
 // ─── Public Interface ──────────────────────────────────────────────────────────

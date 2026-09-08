@@ -10,6 +10,7 @@ import {
 import { ExportModal } from '../components/ExportModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+import { GoogleFormsExportModal } from '../components/GoogleFormsExportModal';
 import type { Question, CustomTest } from '../types/database';
 import './SavedTestsPage.css';
 
@@ -53,6 +54,14 @@ export function SavedTestsPage({
   const [isGroupedByTopic, setIsGroupedByTopic] = useState<boolean>(true);
   const [activeTopicFilter, setActiveTopicFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const toggleGroupCollapse = useCallback((groupName: string) => {
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [groupName]: !prev[groupName],
+    }));
+  }, []);
 
   const [exportData, setExportData] = useState<{
     headerConfig: ExamHeaderConfig;
@@ -60,6 +69,11 @@ export function SavedTestsPage({
   } | null>(null);
 
   const [offlineGradingData, setOfflineGradingData] = useState<{
+    headerConfig: ExamHeaderConfig;
+    questions: Question[];
+  } | null>(null);
+
+  const [googleFormsData, setGoogleFormsData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
   } | null>(null);
@@ -171,6 +185,33 @@ export function SavedTestsPage({
     }
   };
 
+  const handleGoogleFormsExport = async (test: CustomTestWithDetails) => {
+    setLoadingTestId(test.id);
+    try {
+      const resolved = await fetchCustomTestWithQuestions(test.id);
+      if (resolved && resolved.questions.length > 0) {
+        setGoogleFormsData({
+          headerConfig: {
+            title: test.header_config?.title || test.title || 'Custom Exam Assessment',
+            schoolName: test.header_config?.schoolName || '',
+            subject: test.header_config?.subject || test.primarySubject || 'General',
+            subjectCode: test.header_config?.subjectCode || '',
+            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
+            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers clearly.',
+            additionalMaterials: test.header_config?.additionalMaterials || '',
+          },
+          questions: resolved.questions,
+        });
+      } else {
+        alert('This saved test has no questions to export.');
+      }
+    } catch (err: any) {
+      alert(`Failed to prepare Google Forms export: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setLoadingTestId(null);
+    }
+  };
+
   const handleDeleteTest = (testId: string, title: string) => {
     setDeleteModalState({ isOpen: true, testId, title });
   };
@@ -257,11 +298,30 @@ export function SavedTestsPage({
     return map;
   }, [finalFilteredList, isGroupedByTopic]);
 
-  const groupKeys = Object.keys(groupedTopicSections).sort((a, b) => {
-    if (a === 'Multi-Topic') return 1;
-    if (b === 'Multi-Topic') return -1;
-    return a.localeCompare(b);
-  });
+  const groupKeys = useMemo(() => {
+    return Object.keys(groupedTopicSections).sort((a, b) => {
+      if (a === 'Multi-Topic') return 1;
+      if (b === 'Multi-Topic') return -1;
+      return a.localeCompare(b);
+    });
+  }, [groupedTopicSections]);
+
+  const areAllCollapsed = useMemo(() => {
+    if (groupKeys.length === 0) return false;
+    return groupKeys.every((k) => !!collapsedGroups[k]);
+  }, [groupKeys, collapsedGroups]);
+
+  const toggleAllGroups = useCallback(() => {
+    if (areAllCollapsed) {
+      setCollapsedGroups({});
+    } else {
+      const allCollapsed: Record<string, boolean> = {};
+      groupKeys.forEach((k) => {
+        allCollapsed[k] = true;
+      });
+      setCollapsedGroups(allCollapsed);
+    }
+  }, [areAllCollapsed, groupKeys]);
 
   return (
     <div className="saved-page">
@@ -284,68 +344,121 @@ export function SavedTestsPage({
           </button>
         </div>
 
-        {/* ─── 1st Level: Subject Selection Bar ────────────────────────────── */}
+        {/* ─── Unified SaaS Toolbar (Subject & Controls) ────────────────────── */}
         {!isLoading && !error && tests.length > 0 && (
-          <div className="saved-subject-bar animate-fade-in">
-            <span className="saved-subject-label">Select Subject:</span>
-            <div className="saved-subject-tabs">
-              <button
-                type="button"
-                className={`saved-subject-tab ${selectedSubject === 'all' ? 'saved-subject-tab--active' : ''}`}
-                onClick={() => {
-                  setSelectedSubject('all');
-                  setActiveTopicFilter('all');
-                }}
-              >
-                🌐 All Subjects ({tests.length})
-              </button>
+          <div className="saved-unified-toolbar animate-fade-in">
+            {/* Row 1: Subject Selection */}
+            <div className="saved-subject-row">
+              <span className="saved-toolbar-label">Subject:</span>
+              <div className="saved-subject-tabs">
+                <button
+                  type="button"
+                  className={`saved-subject-tab ${selectedSubject === 'all' ? 'saved-subject-tab--active' : ''}`}
+                  onClick={() => {
+                    setSelectedSubject('all');
+                    setActiveTopicFilter('all');
+                  }}
+                >
+                  🌐 All Subjects ({tests.length})
+                </button>
 
-              {availableSubjects.map((subj) => {
-                const count = tests.filter(
-                  (t) => t.subjects.includes(subj) || t.primarySubject === subj
-                ).length;
+                {availableSubjects.map((subj) => {
+                  const count = tests.filter(
+                    (t) => t.subjects.includes(subj) || t.primarySubject === subj
+                  ).length;
 
-                return (
-                  <button
-                    key={subj}
-                    type="button"
-                    className={`saved-subject-tab ${selectedSubject === subj ? 'saved-subject-tab--active' : ''}`}
-                    onClick={() => {
-                      setSelectedSubject(subj);
-                      setActiveTopicFilter('all');
-                    }}
-                  >
-                    📚 {subj} ({count})
-                  </button>
-                );
-              })}
+                  return (
+                    <button
+                      key={subj}
+                      type="button"
+                      className={`saved-subject-tab ${selectedSubject === subj ? 'saved-subject-tab--active' : ''}`}
+                      onClick={() => {
+                        setSelectedSubject(subj);
+                        setActiveTopicFilter('all');
+                      }}
+                    >
+                      📚 {subj} ({count})
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* ─── 2nd Level: Topic Controls (Scoped strictly to Selected Subject) ── */}
-        {!isLoading && !error && subjectFilteredTests.length > 0 && (
-          <div className="saved-controls-card animate-fade-in">
-            <div className="saved-controls-top">
-              {/* Grouping Toggle */}
-              <div className="saved-group-toggle">
-                <span className="saved-group-label">View Mode:</span>
-                <button
-                  type="button"
-                  className={`saved-group-btn ${isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
-                  onClick={() => setIsGroupedByTopic(true)}
-                  title="Group tests by topic sections"
-                >
-                  🏷️ Group by Topic
-                </button>
-                <button
-                  type="button"
-                  className={`saved-group-btn ${!isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
-                  onClick={() => setIsGroupedByTopic(false)}
-                  title="Show all tests in a flat list"
-                >
-                  📋 Flat Grid
-                </button>
+            {/* Row 2: View Mode, Expand/Collapse All, Topic Selector & Search */}
+            <div className="saved-controls-row">
+              <div className="saved-controls-left">
+                {/* View Mode Toggle */}
+                <div className="saved-group-toggle">
+                  <span className="saved-group-label">View:</span>
+                  <button
+                    type="button"
+                    className={`saved-group-btn ${isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
+                    onClick={() => setIsGroupedByTopic(true)}
+                    title="Group tests by topic sections"
+                  >
+                    🏷️ Grouped
+                  </button>
+                  <button
+                    type="button"
+                    className={`saved-group-btn ${!isGroupedByTopic ? 'saved-group-btn--active' : ''}`}
+                    onClick={() => setIsGroupedByTopic(false)}
+                    title="Show all tests in a flat list"
+                  >
+                    📋 Flat
+                  </button>
+                </div>
+
+                {/* Global Accordion Toggle in Grouped Mode */}
+                {isGroupedByTopic && groupKeys.length > 1 && (
+                  <button
+                    type="button"
+                    className="saved-collapse-all-btn"
+                    onClick={toggleAllGroups}
+                    title={areAllCollapsed ? 'Expand all topic sections' : 'Collapse all topic sections'}
+                  >
+                    {areAllCollapsed ? '📂 Expand All' : '📁 Collapse All'}
+                  </button>
+                )}
+
+                {/* Compact Topic Dropdown Selector */}
+                {availableTopicsForSubject.length > 1 && (
+                  <div className="saved-topic-select-wrap">
+                    <span className="saved-topic-label">Topic:</span>
+                    <div className="saved-topic-select-box">
+                      <select
+                        id="saved-topic-filter"
+                        aria-label="Filter by Topic"
+                        className={`saved-topic-select ${activeTopicFilter !== 'all' ? 'saved-topic-select--filtered' : ''}`}
+                        value={activeTopicFilter}
+                        onChange={(e) => setActiveTopicFilter(e.target.value)}
+                      >
+                        <option value="all">
+                          All Topics ({subjectFilteredTests.length})
+                        </option>
+                        {availableTopicsForSubject.map((top) => {
+                          const count = subjectFilteredTests.filter(
+                            (t) => t.topics.includes(top) || t.primaryTopic === top
+                          ).length;
+                          return (
+                            <option key={top} value={top}>
+                              {top} ({count})
+                            </option>
+                          );
+                        })}
+                      </select>
+                      {activeTopicFilter !== 'all' && (
+                        <button
+                          type="button"
+                          className="saved-topic-clear"
+                          onClick={() => setActiveTopicFilter('all')}
+                          title="Clear topic filter"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Search Bar */}
@@ -363,42 +476,13 @@ export function SavedTestsPage({
                     type="button"
                     className="saved-search-clear"
                     onClick={() => setSearchQuery('')}
+                    title="Clear search"
                   >
                     ✕
                   </button>
                 )}
               </div>
             </div>
-
-            {/* Subject-Scoped Topic Filter Pills */}
-            {availableTopicsForSubject.length > 1 && (
-              <div className="saved-filter-pills">
-                <span className="saved-pills-label">Topics in {selectedSubject === 'all' ? 'All Subjects' : selectedSubject}:</span>
-                <button
-                  type="button"
-                  className={`saved-filter-pill ${activeTopicFilter === 'all' ? 'saved-filter-pill--active' : ''}`}
-                  onClick={() => setActiveTopicFilter('all')}
-                >
-                  All Topics ({subjectFilteredTests.length})
-                </button>
-                {availableTopicsForSubject.map((top) => {
-                  const count = subjectFilteredTests.filter(
-                    (t) => t.topics.includes(top) || t.primaryTopic === top
-                  ).length;
-
-                  return (
-                    <button
-                      key={top}
-                      type="button"
-                      className={`saved-filter-pill ${activeTopicFilter === top ? 'saved-filter-pill--active' : ''}`}
-                      onClick={() => setActiveTopicFilter(top)}
-                    >
-                      🏷️ {top} ({count})
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
 
@@ -475,11 +559,33 @@ export function SavedTestsPage({
 
               const isMultiTopic = groupName === 'Multi-Topic';
               const isAll = groupName === 'All Assessments';
+              const isCollapsed = isGroupedByTopic && !!collapsedGroups[groupName];
 
               return (
                 <section key={groupName} className="saved-group-section animate-fade-in">
-                  <div className="saved-group-header">
+                  <div
+                    className={`saved-group-header ${isGroupedByTopic ? 'saved-group-header--clickable' : ''}`}
+                    onClick={isGroupedByTopic ? () => toggleGroupCollapse(groupName) : undefined}
+                    role={isGroupedByTopic ? 'button' : undefined}
+                    tabIndex={isGroupedByTopic ? 0 : undefined}
+                    onKeyDown={
+                      isGroupedByTopic
+                        ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleGroupCollapse(groupName);
+                            }
+                          }
+                        : undefined
+                    }
+                    title={isGroupedByTopic ? (isCollapsed ? 'Click to expand topic' : 'Click to collapse topic') : undefined}
+                  >
                     <div className="saved-group-title-row">
+                      {isGroupedByTopic && (
+                        <span className={`saved-group-chevron ${isCollapsed ? 'saved-group-chevron--collapsed' : ''}`}>
+                          ▾
+                        </span>
+                      )}
                       <span className="saved-group-icon">
                         {isAll ? '📋' : isMultiTopic ? '🎯' : '🧪'}
                       </span>
@@ -488,9 +594,16 @@ export function SavedTestsPage({
                         {groupTests.length} exam{groupTests.length !== 1 ? 's' : ''}
                       </span>
                     </div>
+
+                    {isGroupedByTopic && (
+                      <span className="saved-group-toggle-hint">
+                        {isCollapsed ? 'Show exams ▾' : 'Hide exams ▴'}
+                      </span>
+                    )}
                   </div>
 
-                  <div className="saved-grid">
+                  {!isCollapsed && (
+                    <div className="saved-grid">
                     {groupTests.map((test) => {
                       const qCount = test.question_ids?.length || 0;
                       const dateFormatted = new Date(test.created_at).toLocaleDateString('en-US', {
@@ -511,7 +624,19 @@ export function SavedTestsPage({
                               </span>
                             </div>
 
-                            <span className="saved-card-date">{dateFormatted}</span>
+                            <div className="saved-card-header-actions">
+                              <span className="saved-card-date">{dateFormatted}</span>
+                              <button
+                                type="button"
+                                className="saved-card-delete-btn"
+                                onClick={() => handleDeleteTest(test.id, test.title || 'Untitled Assessment')}
+                                disabled={deletingId === test.id}
+                                title="Delete saved test"
+                                aria-label="Delete saved test"
+                              >
+                                {deletingId === test.id ? '…' : '🗑️'}
+                              </button>
+                            </div>
                           </div>
 
                           <h3 className="saved-card-title">{test.title || 'Untitled Assessment'}</h3>
@@ -536,6 +661,7 @@ export function SavedTestsPage({
                           </div>
 
                           <div className="saved-card-footer">
+                            {/* Primary Action */}
                             <button
                               type="button"
                               className="saved-card-btn saved-card-btn--open"
@@ -545,41 +671,45 @@ export function SavedTestsPage({
                               {loadingTestId === test.id ? 'Loading…' : '✏️ Open in Builder'}
                             </button>
 
-                            <button
-                              type="button"
-                              className="saved-card-btn saved-card-btn--export"
-                              onClick={() => handleExportTest(test)}
-                              disabled={loadingTestId === test.id}
-                              title="Export Word / PDF"
-                            >
-                              ⚡ Export
-                            </button>
+                            {/* Secondary Action Grid */}
+                            <div className="saved-card-actions-grid">
+                              <button
+                                type="button"
+                                className="saved-card-btn saved-card-btn--export"
+                                onClick={() => handleExportTest(test)}
+                                disabled={loadingTestId === test.id}
+                                title="Export Word / PDF"
+                              >
+                                ⚡ Export
+                              </button>
 
-                            <button
-                              type="button"
-                              className="saved-card-btn saved-card-btn--grade"
-                              onClick={() => handleGradeOffline(test)}
-                              disabled={loadingTestId === test.id}
-                              title="Grade offline paper exam via Excel or Rapid Grid"
-                            >
-                              📊 Grade Offline
-                            </button>
+                              <button
+                                type="button"
+                                className="saved-card-btn saved-card-btn--forms"
+                                onClick={() => handleGoogleFormsExport(test)}
+                                disabled={loadingTestId === test.id}
+                                title="Export directly to Google Forms Quiz"
+                              >
+                                📝 Forms
+                              </button>
 
-                            <button
-                              type="button"
-                              className="saved-card-btn saved-card-btn--delete"
-                              onClick={() => handleDeleteTest(test.id, test.title || 'Untitled Assessment')}
-                              disabled={deletingId === test.id}
-                              title="Delete saved test"
-                            >
-                              {deletingId === test.id ? '…' : '🗑️'}
-                            </button>
+                              <button
+                                type="button"
+                                className="saved-card-btn saved-card-btn--grade"
+                                onClick={() => handleGradeOffline(test)}
+                                disabled={loadingTestId === test.id}
+                                title="Grade offline paper exam via Excel or Rapid Grid"
+                              >
+                                📊 Grade
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                </section>
+                )}
+              </section>
               );
             })}
           </div>
@@ -619,6 +749,16 @@ export function SavedTestsPage({
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteModalState({ isOpen: false, testId: '', title: '' })}
       />
+
+      {/* Google Forms Export Modal */}
+      {googleFormsData && (
+        <GoogleFormsExportModal
+          isOpen={true}
+          onClose={() => setGoogleFormsData(null)}
+          headerConfig={googleFormsData.headerConfig}
+          questions={googleFormsData.questions}
+        />
+      )}
     </div>
   );
 }

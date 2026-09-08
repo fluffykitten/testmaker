@@ -7,9 +7,9 @@ import { generateQuizCode } from '../services/quizCodeService';
 import { exportOfflineInteractiveHtmlQuiz } from '../services/htmlQuizExportService';
 import {
   exportCanvasMoodleQtiXml,
-  exportGoogleFormsQuiz,
   exportKahootQuizizzCsv,
 } from '../services/lmsExportService';
+import { GoogleFormsExportModal } from './GoogleFormsExportModal';
 import './StudentShareModal.css';
 
 interface StudentShareModalProps {
@@ -33,6 +33,7 @@ export function StudentShareModal({
 }: StudentShareModalProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [showGoogleFormsModal, setShowGoogleFormsModal] = useState(false);
   const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
@@ -193,17 +194,17 @@ export function StudentShareModal({
                 <button type="button" className="lms-export-badge">Export QTI XML</button>
               </div>
 
-              {/* Google Forms Import */}
+              {/* Google Forms Import / Native Quiz */}
               <div
                 className="share-lms-card"
-                onClick={() => exportGoogleFormsQuiz(headerConfig, questions)}
+                onClick={() => setShowGoogleFormsModal(true)}
               >
                 <div className="lms-icon">📝</div>
                 <div className="lms-info">
                   <strong>Google Forms Quiz</strong>
-                  <span>Form Builder payload with auto-grading</span>
+                  <span>Auto-graded Quiz API & Apps Script generator</span>
                 </div>
-                <button type="button" className="lms-export-badge">Export Forms CSV</button>
+                <button type="button" className="lms-export-badge">Export Forms Quiz</button>
               </div>
 
               {/* Kahoot / Quizizz Game */}
@@ -222,6 +223,16 @@ export function StudentShareModal({
           </div>
         </div>
       </div>
+
+      {/* Google Forms Export Modal */}
+      {showGoogleFormsModal && (
+        <GoogleFormsExportModal
+          isOpen={true}
+          onClose={() => setShowGoogleFormsModal(false)}
+          headerConfig={headerConfig}
+          questions={questions}
+        />
+      )}
     </div>,
     document.body
   );
