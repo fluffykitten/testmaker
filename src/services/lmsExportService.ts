@@ -104,8 +104,11 @@ export function exportCanvasMoodleQtiXml(
   exportFileUniversal(blob, `${safeTitle}_QTI_Canvas_Moodle.xml`, 'application/xml');
 }
 
+import { flattenQuestionsForForms } from './googleFormsExportService';
+
 /**
- * 2. Export as Google Forms Quiz Payload & Self-Grading CSV format
+ * 2. Export as Google Forms Quiz Payload & Self-Grading CSV format (Fixes Issue #4)
+ * Supports Cambridge sub-questions, Unicode math/chemistry symbols, dynamic options, and answer keys.
  */
 export function exportGoogleFormsQuiz(
   headerConfig: ExamHeaderConfig,
@@ -113,31 +116,71 @@ export function exportGoogleFormsQuiz(
 ): void {
   const safeTitle = (headerConfig.title || 'Google_Forms_Quiz').replace(/[^a-zA-Z0-9_-]/g, '_');
 
-  // Generate CSV formatted for Google Forms add-ons (like Form Builder or Form Director)
-  const rows: string[] = [
-    'Question,Type,Option 1,Option 2,Option 3,Option 4,Points,Feedback/MarkScheme',
-  ];
+  const items = flattenQuestionsForForms(questions);
 
-  questions.forEach((q, idx) => {
-    const qNum = idx + 1;
-    const qText = `"${cleanTextForLms(q.question_text || `Question ${qNum}`).replace(/"/g, '""')}"`;
-    const isMcq = q.options && q.options.length > 0;
-    const type = isMcq ? 'MULTIPLE_CHOICE' : 'PARAGRAPH';
-    const opt1 = isMcq && q.options![0] ? `"${cleanTextForLms(q.options![0]).replace(/"/g, '""')}"` : '""';
-    const opt2 = isMcq && q.options![1] ? `"${cleanTextForLms(q.options![1]).replace(/"/g, '""')}"` : '""';
-    const opt3 = isMcq && q.options![2] ? `"${cleanTextForLms(q.options![2]).replace(/"/g, '""')}"` : '""';
-    const opt4 = isMcq && q.options![3] ? `"${cleanTextForLms(q.options![3]).replace(/"/g, '""')}"` : '""';
-    const points = q.marks || 1;
+  // Find max options count across all items
+  let maxOptions = 4;
+  for (const item of items) {
+    if (item.options && item.options.length > maxOptions) {
+      maxOptions = item.options.length;
+    }
+  }
 
-    const ms = q.mark_scheme;
-    const feedback = ms?.marking_points
-      ? `"${ms.marking_points.map(cleanTextForLms).join('; ').replace(/"/g, '""')}"`
-      : '""';
+  const optionHeaders: string[] = [];
+  for (let i = 1; i <= maxOptions; i++) {
+    optionHeaders.push(`Option ${i}`);
+  }
 
-    rows.push(`${qText},${type},${opt1},${opt2},${opt3},${opt4},${points},${feedback}`);
+  const headerRow = [
+    'Question',
+    'Description',
+    'Type',
+    'Points',
+    'Correct Answer',
+    'Feedback/MarkScheme',
+    'Image URL',
+    ...optionHeaders,
+  ].join(',');
+
+  const rows: string[] = [headerRow];
+
+  const escapeCsv = (val: any): string => {
+    if (val === undefined || val === null) return '""';
+    const str = String(val);
+    return `"${str.replace(/"/g, '""')}"`;
+  };
+
+  items.forEach((item) => {
+    let typeLabel = 'PARAGRAPH';
+    if (item.type === 'RADIO') typeLabel = 'MULTIPLE_CHOICE';
+    else if (item.type === 'CHECKBOX') typeLabel = 'CHECKBOX';
+    else if (item.type === 'SHORT_ANSWER') typeLabel = 'SHORT_ANSWER';
+
+    const qTitle = escapeCsv(item.title);
+    const qDesc = escapeCsv(item.description || '');
+    const points = item.pointValue;
+    const correctAns = escapeCsv((item.correctAnswers || []).join('; '));
+    const feedback = escapeCsv(item.feedbackWrong || '');
+    const imgUrl = escapeCsv(item.imageUrl || '');
+
+    const optionCols: string[] = [];
+    for (let i = 0; i < maxOptions; i++) {
+      optionCols.push(escapeCsv(item.options?.[i] || ''));
+    }
+
+    rows.push([
+      qTitle,
+      qDesc,
+      typeLabel,
+      points,
+      correctAns,
+      feedback,
+      imgUrl,
+      ...optionCols,
+    ].join(','));
   });
 
-  const csvContent = rows.join('\n');
+  const csvContent = '\uFEFF' + rows.join('\r\n'); // UTF-8 BOM for Excel/Sheets compatibility
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   exportFileUniversal(blob, `${safeTitle}_Google_Forms_Import.csv`, 'text/csv');
 }

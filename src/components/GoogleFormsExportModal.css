@@ -624,3 +624,485 @@
   background: #f1f5f9;
   color: #0f172a;
 }
+
+/* ─── Offline Banner (Fix #25) ──────────────────────────────────────────────── */
+.gf-offline-banner {
+  background: #fffbeb;
+  color: #92400e;
+  border-bottom: 1px solid #fef3c7;
+  padding: 0.65rem 1.5rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ─── Duration Pill in Summary (Fix #20) ───────────────────────────────────── */
+.gf-summary-item--duration {
+  background: #fef3c7 !important;
+  color: #92400e !important;
+  border: 1px solid #fde68a !important;
+}
+
+/* ─── Options Panel & Anti-Cheat Toggles (Fix #17, #18, #19) ────────────────── */
+.gf-options-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 0.85rem 1.15rem;
+  margin-bottom: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.gf-options-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.gf-options-row--secondary {
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 0.5rem;
+  gap: 1rem;
+}
+
+.gf-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gf-option-label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #673ab7;
+  cursor: pointer;
+}
+
+.gf-select-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.gf-select-label {
+  font-weight: 600;
+}
+
+.gf-select-input {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.82rem;
+  color: #1e293b;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.gf-select-input:focus {
+  border-color: #673ab7;
+  box-shadow: 0 0 0 2px rgba(103, 58, 183, 0.15);
+}
+
+/* ─── Action Row & Cancellation (Fix #11) ──────────────────────────────────── */
+.gf-action-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.gf-cancel-btn {
+  padding: 0.85rem 1.25rem;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.gf-cancel-btn:hover {
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+/* ─── Google Classroom Button (Fix #24) ────────────────────────────────────── */
+.gf-btn-classroom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #0f9d58, #0b8043);
+  color: #ffffff;
+  padding: 0.85rem 1.4rem;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 0.92rem;
+  text-decoration: none;
+  box-shadow: 0 4px 12px rgba(15, 157, 88, 0.28);
+  transition: all 0.18s ease;
+}
+
+.gf-btn-classroom:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(15, 157, 88, 0.36);
+  background: linear-gradient(135deg, #0b8043, #086b36);
+  color: #ffffff;
+}
+
+.gf-classroom-icon {
+  font-size: 1.15rem;
+}
+
+/* ─── Security Badge & Revocation (Fix #14 & #15) ───────────────────────────── */
+.gf-security-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.65rem 0.95rem;
+  margin-top: 1.25rem;
+  font-size: 0.78rem;
+  color: #64748b;
+  gap: 0.75rem;
+}
+
+.gf-security-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  line-height: 1.4;
+}
+
+.gf-security-icon {
+  font-size: 0.95rem;
+  color: #059669;
+}
+
+.gf-revoke-link {
+  background: transparent;
+  border: none;
+  color: #dc2626;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0.2rem 0.4rem;
+  white-space: nowrap;
+}
+
+.gf-revoke-link:hover {
+  color: #b91c1c;
+}
+
+.gf-error-tip {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px dashed rgba(239, 68, 68, 0.25);
+  font-size: 0.82rem;
+  color: #7f1d1d;
+  line-height: 1.45;
+}
+
+/* ─── Apps Script Download Button (Fix #16) ─────────────────────────────────── */
+.gf-script-btn--download {
+  background: #0f172a !important;
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+}
+
+.gf-script-btn--download:hover {
+  background: #1e293b !important;
+}
+
+/* ─── Pre-Export Preview Drawer (Fix #21) ──────────────────────────────────── */
+.gf-preview-wrapper {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  margin-bottom: 1.15rem;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.gf-preview-toggle-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.1rem;
+  background: #f1f5f9;
+  border: none;
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #1e293b;
+  transition: background 0.15s ease;
+}
+
+.gf-preview-toggle-btn:hover {
+  background: #e2e8f0;
+}
+
+.gf-preview-toggle-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.gf-preview-icon {
+  font-size: 1rem;
+}
+
+.gf-preview-badge {
+  background: #673ab7;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  margin-left: 0.35rem;
+}
+
+.gf-preview-toggle-arrow {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.gf-preview-content {
+  padding: 0.85rem;
+  max-height: 280px;
+  overflow-y: auto;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.gf-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  gap: 0.75rem;
+}
+
+.gf-preview-search-input {
+  flex: 1;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  background: #ffffff;
+  outline: none;
+}
+
+.gf-preview-search-input:focus {
+  border-color: #673ab7;
+}
+
+.gf-preview-count-label {
+  font-size: 0.75rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.gf-preview-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.gf-preview-item-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.gf-preview-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+}
+
+.gf-preview-item-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.gf-type-pill {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.gf-badge-mcq {
+  background: #eef2ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
+
+.gf-badge-select {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.gf-badge-short {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.gf-badge-paragraph {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.gf-marks-pill {
+  background: #fef3c7;
+  color: #b45309;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid #fde68a;
+}
+
+.gf-diagram-pill {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid #bae6fd;
+}
+
+.gf-preview-item-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.4;
+  margin-bottom: 0.35rem;
+}
+
+.gf-preview-item-desc {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-bottom: 0.5rem;
+  white-space: pre-wrap;
+  background: #f8fafc;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  border-left: 2px solid #cbd5e1;
+}
+
+.gf-preview-options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+
+.gf-preview-option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  color: #334155;
+  background: #fafafa;
+}
+
+.gf-preview-option-row.is-correct {
+  background: #f0fdf4;
+  color: #166534;
+  font-weight: 600;
+  border: 1px solid #bbf7d0;
+}
+
+.gf-option-indicator {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.gf-preview-option-row.is-correct .gf-option-indicator {
+  color: #16a34a;
+  font-weight: 800;
+}
+
+.gf-option-text {
+  flex: 1;
+}
+
+.gf-correct-tag {
+  font-size: 0.65rem;
+  background: #22c55e;
+  color: #ffffff;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+.gf-preview-short-answers {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 4px;
+  font-size: 0.76rem;
+}
+
+.gf-answer-key-label {
+  font-weight: 700;
+  color: #166534;
+  margin-right: 0.4rem;
+}
+
+.gf-answer-key-values {
+  color: #15803d;
+  font-family: monospace;
+}
+
+.gf-preview-markscheme-box {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  border-radius: 4px;
+  font-size: 0.74rem;
+  color: #78350f;
+  line-height: 1.35;
+}
+
+.gf-markscheme-label {
+  font-weight: 700;
+  color: #92400e;
+}
+
