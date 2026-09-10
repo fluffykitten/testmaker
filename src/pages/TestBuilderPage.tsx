@@ -572,6 +572,22 @@ export function TestBuilderPage({
                         onRevert={handleRevert}
                         onEdit={(target) => setEditingQuestion(target)}
                         onGenerateVariant={(target) => setVariantQuestion(target)}
+                        onUpdateQuestion={(updated) => {
+                          setQuestions((prev) => {
+                            const next = prev.map((item) => (item.id === updated.id ? updated : item));
+                            onUpdateQuestions?.(next);
+                            return next;
+                          });
+                          setHeaderConfig((prev) => ({
+                            ...prev,
+                            questionOverrides: {
+                              ...(prev.questionOverrides || {}),
+                              [updated.id]: updated,
+                            },
+                          }));
+                          setSavedSuccessMsg(`Diagram updated for Question ${updated.question_number}`);
+                          setTimeout(() => setSavedSuccessMsg(null), 3000);
+                        }}
                       />
                     ))}
                   </div>

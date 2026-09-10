@@ -9,6 +9,8 @@ import {
 } from '../services/quizSubmissionService';
 import { StudentResultModal } from '../components/StudentResultModal';
 import { prefetchAccessPin } from '../components/PinGate';
+import { TurnstileWidget } from '../components/TurnstileWidget';
+import { verifyTurnstileToken } from '../services/turnstileService';
 import './PortalLandingPage.css';
 
 interface PortalLandingPageProps {
@@ -93,6 +95,7 @@ export function PortalLandingPage({
   // Take Quiz Form State
   const [quizCodeInput, setQuizCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   // Check Results Form State
   const [resultCodeInput, setResultCodeInput] = useState('');
@@ -181,13 +184,20 @@ export function PortalLandingPage({
     };
   }, [handleFlushPendingOutbox, refreshPendingOutbox]);
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = quizCodeInput.trim().toUpperCase();
     if (!clean) {
       setCodeError('Please enter a Quiz Code or Test ID.');
       return;
     }
+
+    const check = await verifyTurnstileToken(turnstileToken, 'portal_join');
+    if (!check.success) {
+      setCodeError('Security challenge failed. Please refresh the page and try again.');
+      return;
+    }
+
     setCodeError('');
     onJoinQuiz(clean);
   };
@@ -373,6 +383,7 @@ export function PortalLandingPage({
             {studentTab === 'take_quiz' ? (
               /* Tab 1: Take Quiz Form */
               <form onSubmit={handleJoin} className="portal-quiz-form animate-fade-in">
+                <TurnstileWidget action="portal_join" onVerify={setTurnstileToken} />
                 <div className="portal-input-group">
                   <label className="portal-input-label">Enter Quiz Code / Token:</label>
                   <div className="portal-input-inner">

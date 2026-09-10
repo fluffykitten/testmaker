@@ -456,15 +456,39 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
     const accAnswers = q.mark_scheme?.acceptable_answers || [];
     const hasMultiLetters = accAnswers.some((a) => (String(a).match(/[A-Za-z]/g) || []).length > 1);
 
-    // Safeguard for Benar/Salah (True/False) matrix tables: ensure options are null and style is Structured
-    const isTrueFalseTable =
-      /\|\s*Pernyataan\s*\|\s*Benar\s*\|\s*Salah\s*\||\|\s*Benar\s*\|\s*Salah\s*\||tabel\s+benar\s*\/\s*salah/i.test(
+    // Safeguard for Classification / Matching / True-False matrix tables: ensure options are null and style is Structured
+    const isMatrixOrMatchingTable =
+      /\|\s*(?:Pernyataan|Statement|Aspek|Kategori|Nomor|No\.?|Item)\s*\|.*\|\s*(?:Benar|Salah|True|False|Sesuai|Tidak\s*Sesuai|Setuju|Tidak\s*Setuju|Ya|Tidak|Yes|No|B|S|T|F)\s*\|/i.test(
         text
-      );
-    if (isTrueFalseTable) {
+      ) ||
+      /\|\s*(?:Benar\s*\|\s*Salah|True\s*\|\s*False|Sesuai\s*\|\s*Tidak\s*Sesuai|Setuju\s*\|\s*Tidak\s*Setuju|Ya\s*\|\s*Tidak|Yes\s*\|\s*No)\s*\|/i.test(
+        text
+      ) ||
+      /tabel\s+(?:benar\s*[\/\-]?\s*salah|sesuai\s*[\/\-]?\s*tidak\s*sesuai|jawaban|menjodohkan)/i.test(
+        text
+      ) ||
+      /(?:\[matching|\[menjodohkan|menjodohkan|tabel\s+benar\s*\/\s*salah)/i.test(text);
+
+    // Also check if options are merely binary column names (e.g. ['Benar', 'Salah'], ['True', 'False'], ['Sesuai', 'Tidak Sesuai'], etc.)
+    const optionsAreBinaryHeaders = Boolean(
+      q.options &&
+      q.options.length >= 2 &&
+      q.options.length <= 4 &&
+      q.options.every((opt) =>
+        /^(?:benar|salah|true|false|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|ya|tidak|yes|no|b|s|t|f)$/i.test(
+          opt.trim().replace(/^[A-E][.:\)\s]+/i, '').trim()
+        )
+      )
+    );
+
+    if (isMatrixOrMatchingTable || (text.includes('|') && optionsAreBinaryHeaders)) {
       return {
         ...q,
         options: null,
+        sub_questions:
+          q.sub_questions && q.sub_questions.length > 0 && text.includes('|') && /\|[-:\s|]{3,}\|/.test(text)
+            ? []
+            : q.sub_questions,
         question_style: 'Structured',
       };
     }

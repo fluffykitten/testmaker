@@ -21,7 +21,19 @@ import {
   type AudioLibraryItem,
 } from '../services/audioService';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
+import { ExamVisualRender } from './ExamVisualRender';
 import { InlineGapText, hasInlineGaps } from './InlineGapText';
+import {
+  generateExamDiagram,
+  suggestDiagramPrompt,
+  resolveStylePreset,
+  getDailyNeuronUsage,
+  type StylePreset,
+} from '../services/imageGenerationService';
+import {
+  generateParametricSvg,
+  extractSvgFromDiagramUrl,
+} from '../lib/gemini';
 import './QuestionEditorModal.css';
 
 interface QuestionEditorModalProps {
@@ -93,6 +105,7 @@ export function QuestionEditorModal({
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>('Medium');
   const [totalMarks, setTotalMarks] = useState(4);
   const [diagramUrl, setDiagramUrl] = useState('');
+  const [svgContent, setSvgContent] = useState<string | null>(question?.svg_content || null);
   const [questionText, setQuestionText] = useState('');
 
   // MCQ Options
@@ -111,6 +124,31 @@ export function QuestionEditorModal({
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
   const [cropSourceFile, setCropSourceFile] = useState<File | null>(null);
   const [cropSourceImage, setCropSourceImage] = useState<string | null>(null);
+
+  // AI Diagram Studio state
+  const [isAiDiagramStudioOpen, setIsAiDiagramStudioOpen] = useState(false);
+  const [aiDiagramPrompt, setAiDiagramPrompt] = useState(question?.ai_diagram_prompt || '');
+  const [aiStylePreset, setAiStylePreset] = useState<StylePreset>('stem');
+  const [isGeneratingAiDiagram, setIsGeneratingAiDiagram] = useState(false);
+  const [isSuggestingStemPrompt, setIsSuggestingStemPrompt] = useState(false);
+  const [aiStudioSuccessMsg, setAiStudioSuccessMsg] = useState<string | null>(null);
+  const [aiStudioError, setAiStudioError] = useState<string | null>(null);
+
+  // Parametric SVG Studio state (Gemini)
+  const [isSvgStudioOpen, setIsSvgStudioOpen] = useState(false);
+  const [svgCustomPrompt, setSvgCustomPrompt] = useState('');
+  const [isGeneratingSvg, setIsGeneratingSvg] = useState(false);
+  const [isEditingSvgCode, setIsEditingSvgCode] = useState(false);
+  const [svgSuccessMsg, setSvgSuccessMsg] = useState<string | null>(null);
+  const [svgErrorMsg, setSvgErrorMsg] = useState<string | null>(null);
+
+  // Sub-Question AI Diagram state
+  const [activeSubDiagramStudioIdx, setActiveSubDiagramStudioIdx] = useState<number | null>(null);
+  const [subAiPrompt, setSubAiPrompt] = useState<string>('');
+  const [subAiPreset, setSubAiPreset] = useState<StylePreset>('stem');
+  const [isGeneratingSubAiDiagram, setIsGeneratingSubAiDiagram] = useState<boolean>(false);
+  const [isSuggestingSubPrompt, setIsSuggestingSubPrompt] = useState<boolean>(false);
+  const [subAiStudioError, setSubAiStudioError] = useState<string | null>(null);
 
   // Audio State & In-Browser Compression
   const [audioUrl, setAudioUrl] = useState('');
@@ -191,6 +229,16 @@ export function QuestionEditorModal({
       setDifficulty(question.difficulty || 'Medium');
       setTotalMarks(Number(question.marks) || 1);
       setDiagramUrl(question.diagram_url || '');
+      setSvgContent(question.svg_content || extractSvgFromDiagramUrl(question.diagram_url) || null);
+      setAiDiagramPrompt(question.ai_diagram_prompt || '');
+      setAiStylePreset(resolveStylePreset(question.topic));
+      setIsAiDiagramStudioOpen(false);
+      setIsSvgStudioOpen(false);
+      setAiStudioSuccessMsg(null);
+      setAiStudioError(null);
+      setSvgSuccessMsg(null);
+      setSvgErrorMsg(null);
+      setIsEditingSvgCode(false);
       setQuestionText(typeof question.question_text === 'string' ? question.question_text : (question.question_text ? JSON.stringify(question.question_text) : ''));
 
       // Safe MCQ options parsing
@@ -317,6 +365,11 @@ export function QuestionEditorModal({
       setDifficulty('Medium');
       setTotalMarks(1);
       setDiagramUrl('');
+      setAiDiagramPrompt('');
+      setAiStylePreset('stem');
+      setIsAiDiagramStudioOpen(false);
+      setAiStudioSuccessMsg(null);
+      setAiStudioError(null);
       setQuestionText('');
       setOptions(['', '', '', '']);
       setAudioUrl('');
@@ -571,6 +624,120 @@ export function QuestionEditorModal({
     }
   };
 
+  // AI Diagram Studio Handlers
+  const handleGenerateAiDiagramInEditor = async () => {
+    if (!aiDiagramPrompt.trim()) return;
+    setIsGeneratingAiDiagram(true);
+    setAiStudioError(null);
+    setAiStudioSuccessMsg(null);
+
+    try {
+      const res = await generateExamDiagram(aiDiagramPrompt, {
+        stylePreset: aiStylePreset,
+        topic: topic,
+      });
+
+      if (res.success && res.url) {
+        setDiagramUrl(res.url);
+        setAiStudioSuccessMsg('✓ Technical line art diagram generated & saved to Cloudflare R2!');
+        setTimeout(() => setAiStudioSuccessMsg(null), 4000);
+      } else {
+        throw new Error(res.error || 'Failed to generate diagram');
+      }
+    } catch (err: any) {
+      setAiStudioError(err?.message || 'Workers AI generation error');
+    } finally {
+      setIsGeneratingAiDiagram(false);
+    }
+  };
+
+  const handleGenerateSvgInEditor = async () => {
+    setIsGeneratingSvg(true);
+    setSvgSuccessMsg(null);
+    setSvgErrorMsg(null);
+    try {
+      const generated = await generateParametricSvg({
+        topic,
+        sub_topic: subTopic,
+        question_text: questionText,
+        sub_questions: subQuestions,
+        diagram_url: diagramUrl || undefined,
+      }, svgCustomPrompt.trim() || undefined, diagramUrl || undefined);
+      setSvgContent(generated);
+      setDiagramUrl(`data:image/svg+xml;utf8,${encodeURIComponent(generated)}`);
+      setSvgSuccessMsg('✓ Clean Cambridge-standard Parametric SVG generated with Gemini!');
+      setTimeout(() => setSvgSuccessMsg(null), 4000);
+    } catch (err: any) {
+      setSvgErrorMsg(err?.message || 'Failed to generate Parametric SVG with Gemini');
+    } finally {
+      setIsGeneratingSvg(false);
+    }
+  };
+
+  const handleSuggestStemPrompt = async () => {
+    setIsSuggestingStemPrompt(true);
+    try {
+      const prompt = await suggestDiagramPrompt({
+        topic,
+        sub_topic: subTopic,
+        question_text: questionText,
+        sub_questions: subQuestions,
+      });
+      setAiDiagramPrompt(prompt);
+    } catch (err: any) {
+      console.warn('Failed to suggest prompt:', err);
+    } finally {
+      setIsSuggestingStemPrompt(false);
+    }
+  };
+
+  const handleGenerateSubAiDiagram = async (si: number) => {
+    if (!subAiPrompt.trim()) return;
+    setIsGeneratingSubAiDiagram(true);
+    setSubAiStudioError(null);
+
+    try {
+      const res = await generateExamDiagram(subAiPrompt, {
+        stylePreset: subAiPreset,
+        topic: topic,
+      });
+
+      if (res.success && res.url) {
+        handleUpdateSubQuestion(si, {
+          diagram_url: res.url,
+          svg_content: null,
+          diagram_type: 'apparatus',
+          has_diagram: true,
+          ai_diagram_prompt: subAiPrompt.trim(),
+        });
+        setActiveSubDiagramStudioIdx(null);
+      } else {
+        throw new Error(res.error || 'Failed to generate sub-question diagram');
+      }
+    } catch (err: any) {
+      setSubAiStudioError(err?.message || 'Workers AI generation error');
+    } finally {
+      setIsGeneratingSubAiDiagram(false);
+    }
+  };
+
+  const handleSuggestSubPrompt = async (_si: number, sub: SubQuestion) => {
+    setIsSuggestingSubPrompt(true);
+    try {
+      const prompt = await suggestDiagramPrompt({
+        topic,
+        sub_topic: subTopic,
+        question_text: sub.question_text || questionText,
+        sub_questions: [sub],
+      });
+      setSubAiPrompt(prompt);
+    } catch (err: any) {
+      console.warn('Failed to suggest sub prompt:', err);
+    } finally {
+      setIsSuggestingSubPrompt(false);
+    }
+  };
+
   // Save handler
   const handleSave = async () => {
     if (!questionText.trim()) {
@@ -639,6 +806,8 @@ export function QuestionEditorModal({
       difficulty: difficulty,
       marks: finalMarks,
       diagram_url: diagramUrl.trim() || null,
+      svg_content: svgContent || (diagramUrl.startsWith('data:image/svg') ? extractSvgFromDiagramUrl(diagramUrl) : (question?.svg_content || null)),
+      ai_diagram_prompt: aiDiagramPrompt.trim() || null,
       audio_url: audioUrl.trim() || null,
       audio_metadata: audioMetadataPayload,
       options: cleanOptions.length > 0 ? cleanOptions : null,
@@ -883,6 +1052,30 @@ export function QuestionEditorModal({
                     📁 Upload & Crop
                   </button>
 
+                  <button
+                    type="button"
+                    className={`q-editor-btn-secondary ${isAiDiagramStudioOpen ? 'q-editor-btn-secondary--active' : ''}`}
+                    onClick={() => {
+                      setIsAiDiagramStudioOpen(!isAiDiagramStudioOpen);
+                      if (isSvgStudioOpen) setIsSvgStudioOpen(false);
+                    }}
+                    title="Generate textbook line art diagram with Cloudflare Workers AI"
+                  >
+                    ✨ Generate with AI
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`q-editor-btn-secondary ${isSvgStudioOpen ? 'q-editor-btn-secondary--active' : ''}`}
+                    onClick={() => {
+                      setIsSvgStudioOpen(!isSvgStudioOpen);
+                      if (isAiDiagramStudioOpen) setIsAiDiagramStudioOpen(false);
+                    }}
+                    title="Generate clean vector CAD SVG with exact Cambridge dimension arrows & typography using Gemini"
+                  >
+                    📐 Parametric SVG (Gemini)
+                  </button>
+
                   {diagramUrl && (
                     <button
                       type="button"
@@ -898,20 +1091,279 @@ export function QuestionEditorModal({
                     </button>
                   )}
 
-                  {diagramUrl && (
+                  {(diagramUrl || svgContent) && (
                     <button
                       type="button"
                       className="q-editor-btn-secondary"
-                      onClick={() => setDiagramUrl('')}
+                      onClick={() => {
+                        setDiagramUrl('');
+                        setSvgContent(null);
+                      }}
                     >
                       Clear
                     </button>
                   )}
                 </div>
 
-                {diagramUrl && (
-                  <div className="q-editor-diagram-preview">
-                    <img src={diagramUrl} alt="Diagram preview" className="q-editor-diagram-thumb" />
+                {/* Inline Parametric SVG Studio (Gemini) */}
+                {isSvgStudioOpen && (
+                  <div className="q-editor-ai-diagram-studio animate-fade-in" style={{
+                    marginTop: '10px',
+                    padding: '12px',
+                    background: '#f0fdf4',
+                    border: '1px solid #86efac',
+                    borderRadius: '8px',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.825rem', fontWeight: 700, color: '#166534' }}>
+                          📐 Parametric Vector SVG Studio (Gemini 3.6 Flash)
+                        </span>
+                        <span style={{ fontSize: '0.725rem', color: '#15803d', background: 'rgba(34, 197, 94, 0.15)', padding: '2px 8px', borderRadius: '9999px', fontWeight: 600 }}>
+                          ⚡ 100% Vector CAD Typography & Arrows
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div style={{ flex: '1 1 260px', position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          className="q-editor-input"
+                          style={{ paddingRight: '85px' }}
+                          placeholder="e.g. Incline ramp with 30° angle, box of mass m, normal force arrow..."
+                          value={svgCustomPrompt}
+                          onChange={(e) => setSvgCustomPrompt(e.target.value)}
+                          disabled={isGeneratingSvg}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (aiDiagramPrompt) {
+                              setSvgCustomPrompt(aiDiagramPrompt);
+                            } else {
+                              setSvgCustomPrompt(`Technical line diagram for ${topic || 'physics'}: ${questionText.slice(0, 100).replace(/["\n]/g, ' ')}`);
+                            }
+                          }}
+                          disabled={isGeneratingSvg}
+                          style={{
+                            position: 'absolute',
+                            right: '4px',
+                            padding: '3px 7px',
+                            fontSize: '0.725rem',
+                            fontWeight: 600,
+                            background: '#dcfce7',
+                            color: '#166534',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                          }}
+                          title="Auto-fill prompt from question context"
+                        >
+                          💡 Auto-Prompt
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleGenerateSvgInEditor}
+                        disabled={isGeneratingSvg}
+                        style={{
+                          padding: '7px 14px',
+                          borderRadius: '6px',
+                          border: 'none',
+                          background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
+                          color: '#ffffff',
+                          fontWeight: 700,
+                          fontSize: '0.8125rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          whiteSpace: 'nowrap',
+                          boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
+                        }}
+                      >
+                        {isGeneratingSvg ? (
+                          <>
+                            <span className="q-editor-spinner-sm"></span> Drawing SVG...
+                          </>
+                        ) : svgContent ? (
+                          '🔄 Regenerate SVG'
+                        ) : (
+                          '⚡ Generate Vector SVG'
+                        )}
+                      </button>
+
+                      {svgContent && (
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingSvgCode(!isEditingSvgCode)}
+                          style={{
+                            padding: '6px 11px',
+                            borderRadius: '6px',
+                            fontSize: '0.775rem',
+                            fontWeight: 600,
+                            border: '1px solid #86efac',
+                            background: isEditingSvgCode ? '#dcfce7' : '#ffffff',
+                            color: '#166534',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {isEditingSvgCode ? '👁️ Preview' : '📝 Edit SVG XML'}
+                        </button>
+                      )}
+                    </div>
+
+                    {isEditingSvgCode && svgContent && (
+                      <div style={{ marginTop: '10px' }}>
+                        <div style={{ fontSize: '0.725rem', fontWeight: 600, color: '#166534', marginBottom: '4px' }}>
+                          Direct SVG XML Source (Live preview updates immediately)
+                        </div>
+                        <textarea
+                          style={{
+                            width: '100%',
+                            fontFamily: 'Consolas, Courier New, monospace',
+                            fontSize: '0.775rem',
+                            lineHeight: 1.4,
+                            padding: '8px 10px',
+                            background: '#0f172a',
+                            color: '#4ade80',
+                            border: '1px solid #166534',
+                            borderRadius: '6px',
+                            resize: 'vertical',
+                            outline: 'none',
+                            boxSizing: 'border-box',
+                          }}
+                          rows={6}
+                          value={svgContent}
+                          onChange={(e) => {
+                            const newCode = e.target.value;
+                            setSvgContent(newCode);
+                            setDiagramUrl(`data:image/svg+xml;utf8,${encodeURIComponent(newCode)}`);
+                          }}
+                          spellCheck={false}
+                        />
+                      </div>
+                    )}
+
+                    {svgSuccessMsg && (
+                      <div style={{ marginTop: '6px', fontSize: '0.775rem', fontWeight: 600, color: '#16a34a' }}>
+                        {svgSuccessMsg}
+                      </div>
+                    )}
+                    {svgErrorMsg && (
+                      <div style={{ marginTop: '6px', fontSize: '0.775rem', fontWeight: 600, color: '#dc2626' }}>
+                        {svgErrorMsg}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Inline AI Diagram Studio */}
+                {isAiDiagramStudioOpen && (
+                  <div className="q-editor-ai-diagram-studio animate-fade-in" style={{
+                    marginTop: '10px',
+                    padding: '12px',
+                    background: '#f8fafc',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '8px',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.825rem', fontWeight: 700, color: '#4338ca' }}>
+                        ✨ Workers AI Diagram Studio (Flux-1-Schnell)
+                      </span>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#059669', background: 'rgba(16, 185, 129, 0.1)', padding: '2px 8px', borderRadius: '9999px' }}>
+                        ⚡ Quota: {getDailyNeuronUsage().used} / {getDailyNeuronUsage().maxDaily} today
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div style={{ flex: '1 1 260px', position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          className="q-editor-input"
+                          style={{ paddingRight: '85px' }}
+                          placeholder="Describe apparatus, landform, or cartoon..."
+                          value={aiDiagramPrompt}
+                          onChange={(e) => setAiDiagramPrompt(e.target.value)}
+                          disabled={isGeneratingAiDiagram}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSuggestStemPrompt}
+                          disabled={isSuggestingStemPrompt || isGeneratingAiDiagram}
+                          style={{
+                            position: 'absolute',
+                            right: '4px',
+                            padding: '3px 7px',
+                            fontSize: '0.725rem',
+                            fontWeight: 600,
+                            background: '#e0e7ff',
+                            color: '#4338ca',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                          }}
+                          title="Auto-formulate prompt from question stem"
+                        >
+                          {isSuggestingStemPrompt ? '⏳' : '💡 Auto-Prompt'}
+                        </button>
+                      </div>
+
+                      <select
+                        className="q-editor-input"
+                        style={{ width: 'auto', minWidth: '160px' }}
+                        value={aiStylePreset}
+                        onChange={(e) => setAiStylePreset(e.target.value as StylePreset)}
+                        disabled={isGeneratingAiDiagram}
+                      >
+                        <option value="stem">🔬 STEM (Textbook Line Art)</option>
+                        <option value="geography">🌍 Geography (Map / Sketch)</option>
+                        <option value="history">📜 History (Cross-Hatch)</option>
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={handleGenerateAiDiagramInEditor}
+                        disabled={isGeneratingAiDiagram || !aiDiagramPrompt.trim()}
+                        style={{
+                          padding: '7px 14px',
+                          borderRadius: '6px',
+                          border: 'none',
+                          background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+                          color: '#ffffff',
+                          fontWeight: 700,
+                          fontSize: '0.8125rem',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {isGeneratingAiDiagram ? '⏳ Generating...' : '🎨 Generate'}
+                      </button>
+                    </div>
+
+                    {aiStudioError && (
+                      <div style={{ marginTop: '8px', fontSize: '0.75rem', color: '#dc2626', background: '#fee2e2', padding: '5px 10px', borderRadius: '4px' }}>
+                        {aiStudioError}
+                      </div>
+                    )}
+                    {aiStudioSuccessMsg && (
+                      <div style={{ marginTop: '8px', fontSize: '0.75rem', color: '#059669', background: '#ecfdf5', padding: '5px 10px', borderRadius: '4px' }}>
+                        {aiStudioSuccessMsg}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {(diagramUrl || svgContent) && (
+                  <div className="q-editor-diagram-preview" style={{ margin: '10px 0', border: '1px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
+                    <ExamVisualRender
+                      svgContent={svgContent}
+                      diagramUrl={diagramUrl}
+                      alt="Question diagram"
+                      interactiveZoom={true}
+                    />
                   </div>
                 )}
               </div>
@@ -1086,6 +1538,131 @@ export function QuestionEditorModal({
                                     />
                                   </div>
                                 </div>
+
+                                {/* Sub-Question Visual / Diagram Controls */}
+                                <div className="q-editor-sub-visual-section" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                    <label className="q-editor-sub-label" style={{ margin: 0 }}>Visual / Figure (Optional):</label>
+                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                      <button
+                                        type="button"
+                                        className="q-editor-btn-secondary"
+                                        style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                        onClick={() => {
+                                          if (activeSubDiagramStudioIdx === si) {
+                                            setActiveSubDiagramStudioIdx(null);
+                                          } else {
+                                            setActiveSubDiagramStudioIdx(si);
+                                            setSubAiPrompt(sub.ai_diagram_prompt || '');
+                                            setSubAiPreset(resolveStylePreset(topic));
+                                            setSubAiStudioError(null);
+                                          }
+                                        }}
+                                      >
+                                        {activeSubDiagramStudioIdx === si ? '✕ Close Studio' : '✨ AI Visual'}
+                                      </button>
+                                      {(sub.diagram_url || sub.svg_content) && (
+                                        <button
+                                          type="button"
+                                          className="q-editor-btn-secondary"
+                                          style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                          onClick={() => handleUpdateSubQuestion(si, { diagram_url: null, svg_content: null, has_diagram: false })}
+                                        >
+                                          Clear
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <input
+                                    type="text"
+                                    className="q-editor-input q-editor-input--sm"
+                                    value={sub.diagram_url || ''}
+                                    onChange={(e) => handleUpdateSubQuestion(si, { diagram_url: e.target.value.trim() || null, has_diagram: Boolean(e.target.value.trim()) })}
+                                    placeholder="Diagram image URL (e.g. https://...)"
+                                  />
+
+                                  {/* Inline AI Visual Studio for this sub-part */}
+                                  {activeSubDiagramStudioIdx === si && (
+                                    <div className="q-editor-sub-ai-studio animate-fade-in" style={{
+                                      marginTop: '6px',
+                                      padding: '8px 10px',
+                                      background: '#f8fafc',
+                                      border: '1px solid #cbd5e1',
+                                      borderRadius: '6px',
+                                    }}>
+                                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                                        <div style={{ flex: '1 1 180px', position: 'relative', display: 'flex', alignItems: 'center' }}>
+                                          <input
+                                            type="text"
+                                            className="q-editor-input q-editor-input--sm"
+                                            style={{ paddingRight: '65px', fontSize: '0.75rem' }}
+                                            placeholder={`Visual for ${sub.sub_id || `part ${si + 1}`}...`}
+                                            value={subAiPrompt}
+                                            onChange={(e) => setSubAiPrompt(e.target.value)}
+                                            disabled={isGeneratingSubAiDiagram}
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSuggestSubPrompt(si, sub)}
+                                            disabled={isSuggestingSubPrompt || isGeneratingSubAiDiagram}
+                                            style={{
+                                              position: 'absolute',
+                                              right: '3px',
+                                              padding: '2px 6px',
+                                              fontSize: '0.7rem',
+                                              fontWeight: 600,
+                                              background: '#e0e7ff',
+                                              color: '#4338ca',
+                                              border: 'none',
+                                              borderRadius: '4px',
+                                              cursor: 'pointer',
+                                            }}
+                                            title="Auto-formulate prompt for this sub-part"
+                                          >
+                                            {isSuggestingSubPrompt ? '⏳' : '💡 Auto'}
+                                          </button>
+                                        </div>
+
+                                        <select
+                                          className="q-editor-input q-editor-input--sm"
+                                          style={{ width: 'auto', fontSize: '0.75rem' }}
+                                          value={subAiPreset}
+                                          onChange={(e) => setSubAiPreset(e.target.value as StylePreset)}
+                                          disabled={isGeneratingSubAiDiagram}
+                                        >
+                                          <option value="stem">🔬 STEM</option>
+                                          <option value="geography">🌍 Geography</option>
+                                          <option value="history">📜 History</option>
+                                        </select>
+
+                                        <button
+                                          type="button"
+                                          onClick={() => handleGenerateSubAiDiagram(si)}
+                                          disabled={isGeneratingSubAiDiagram || !subAiPrompt.trim()}
+                                          style={{
+                                            padding: '5px 10px',
+                                            borderRadius: '4px',
+                                            border: 'none',
+                                            background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+                                            color: '#ffffff',
+                                            fontWeight: 700,
+                                            fontSize: '0.75rem',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          {isGeneratingSubAiDiagram ? '⏳...' : '🎨 Draw'}
+                                        </button>
+                                      </div>
+
+                                      {subAiStudioError && (
+                                        <div style={{ marginTop: '4px', fontSize: '0.7rem', color: '#dc2626' }}>
+                                          {subAiStudioError}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
 
                               {/* Right Live KaTeX Preview Column */}
@@ -1109,6 +1686,21 @@ export function QuestionEditorModal({
                                       <span className="q-editor-preview-placeholder">Live sub-part KaTeX preview will render here...</span>
                                     )}
                                   </div>
+
+                                  {/* Sub-question Visual Preview */}
+                                  {(sub.diagram_url || sub.svg_content) && (
+                                    <div style={{ margin: '8px 0', border: '1px solid #e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
+                                      <ExamVisualRender
+                                        svgContent={sub.svg_content}
+                                        diagramUrl={sub.diagram_url}
+                                        resourceRef={sub.resource_ref}
+                                        alt={`Visual for ${sub.sub_id}`}
+                                        diagramType={sub.diagram_type}
+                                        hasEmbeddedValues={sub.has_embedded_values}
+                                        interactiveZoom={true}
+                                      />
+                                    </div>
+                                  )}
 
                                   {sub.mark_scheme && sub.mark_scheme.trim() && (
                                     <div className="q-editor-sub-preview-ans">

@@ -2,6 +2,13 @@ name = "testmaker-media"
 main = "index.js"
 compatibility_date = "2024-09-01"
 
+[ai]
+binding = "AI"
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "testmaker-diagrams"
+
+[vars]
+UPLOAD_SECRET = "tm_r2_uploader_secret_2026"
+

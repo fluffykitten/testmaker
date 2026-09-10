@@ -69,6 +69,7 @@ export interface SubQuestion {
   has_diagram?: boolean;    // Sub-question has diagram/figure
   diagram_url?: string | null; // Optional sub-question diagram image URL
   svg_content?: string | null; // AI-generated parametric SVG vector graphic
+  ai_diagram_prompt?: string | null; // Prompt for AI diagram generation
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null; // Classification of diagram
   has_embedded_values?: boolean; // True if visual displays numbers/labels that depend on problem variables
   depends_on_sub_ids?: string[]; // IDs of preceding sub-questions this part relies upon (e.g. ["(a)", "(b)(i)"])
@@ -112,6 +113,7 @@ export interface Question {
   marks: number;
   diagram_url: string | null;       // Supabase Storage public URL
   svg_content?: string | null;      // AI-generated parametric SVG vector graphic
+  ai_diagram_prompt?: string | null;// Prompt for AI diagram generation (Workers AI)
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
   has_embedded_values?: boolean;
   diagram_source?: 'qp' | 'insert' | null; // Source document for diagram

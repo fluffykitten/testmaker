@@ -102,6 +102,12 @@ export const ExamVisualRender: React.FC<ExamVisualRenderProps> = ({
   className = '',
 }) => {
   const [isZoomOpen, setIsZoomOpen] = useState(false);
+  const [hasImgError, setHasImgError] = useState(false);
+
+  // Reset error state when diagramUrl changes
+  React.useEffect(() => {
+    setHasImgError(false);
+  }, [diagramUrl]);
 
   const sanitizedSvg = cleanSvgContent(svgContent);
 
@@ -111,6 +117,7 @@ export const ExamVisualRender: React.FC<ExamVisualRenderProps> = ({
   }
 
   const handleOpenZoom = () => {
+    if (hasImgError) return;
     if (onExternalZoom) {
       onExternalZoom();
     } else if (interactiveZoom) {
@@ -129,6 +136,12 @@ export const ExamVisualRender: React.FC<ExamVisualRenderProps> = ({
           title="Vector diagram • Click to zoom"
           dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
         />
+      ) : hasImgError ? (
+        <div className="exam-visual-fallback-box" title="Visual diagram could not be loaded">
+          <span className="exam-visual-fallback-icon">⚠️</span>
+          <span className="exam-visual-fallback-text">Visual diagram could not be loaded</span>
+          {resourceRef && <span className="exam-visual-fallback-ref">({resourceRef})</span>}
+        </div>
       ) : (
         <div className="exam-visual-img-wrap" onClick={handleOpenZoom} title="Click to zoom image">
           <img
@@ -137,6 +150,7 @@ export const ExamVisualRender: React.FC<ExamVisualRenderProps> = ({
             className="exam-visual-img"
             loading="lazy"
             decoding="async"
+            onError={() => setHasImgError(true)}
           />
         </div>
       )}

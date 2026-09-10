@@ -216,15 +216,24 @@ export function detectGridDetails(
   const lowerStem = (stemText || '').toLowerCase();
   const lowerHeaders = potentialColumns.map((c) => c.toLowerCase());
 
-  const hasBinaryHeaders = lowerHeaders.some((h) =>
-    ['benar', 'salah', 'true', 'false', 'ya', 'tidak', 'yes', 'no', 'agree', 'disagree', 'sesuai', 'tidak sesuai'].includes(h)
-  );
+  const hasBinaryHeaders = lowerHeaders.some((h) => {
+    const clean = h.replace(/[\(\)\[\]]/g, ' ').trim();
+    return (
+      [
+        'benar', 'salah', 'true', 'false', 'ya', 'tidak', 'yes', 'no',
+        'agree', 'disagree', 'sesuai', 'tidak sesuai', 'setuju', 'tidak setuju',
+        'tepat', 'tidak tepat', 'fakta', 'opini', 'b', 's', 't', 'f'
+      ].includes(clean) ||
+      /\b(?:benar|salah|true|false|sesuai|setuju|agree|disagree)\b/i.test(clean)
+    );
+  });
 
   const hasMatchingKeywords =
     /\[matching/i.test(lowerStem) ||
     /menjodohkan/i.test(lowerStem) ||
     /benar[\s/]*salah/i.test(lowerStem) ||
     /true[\s/]*false/i.test(lowerStem) ||
+    /sesuai[\s/]*tidak\s*sesuai/i.test(lowerStem) ||
     /tabel\s*(?:benar|jawaban|menjodohkan)/i.test(lowerStem) ||
     /click\s+[a-z\s]+\s+for\s+each/i.test(lowerStem) ||
     /centang\s*(?:kolom|pada)/i.test(lowerStem) ||

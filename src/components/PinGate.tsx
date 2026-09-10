@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, type ReactNode, type KeyboardEvent, type ClipboardEvent } from 'react';
 import { supabase } from '../lib/supabase';
 import { verifyPinAgainstHashOrPlain } from '../utils/cryptoUtils';
+import { TurnstileWidget } from './TurnstileWidget';
+import { verifyTurnstileToken } from '../services/turnstileService';
 import './PinGate.css';
 
 const PIN_LENGTH = 6;
@@ -135,6 +137,7 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const [shaking, setShaking] = useState(false);
   const [success, setSuccess] = useState(false);
   const [showPin, setShowPin] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string>('');
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Lockout countdown timer
@@ -249,10 +252,21 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const validatePin = async (pin: string) => {
     if (lockoutRemaining > 0) return;
 
+    setVerifying(true);
+
+    // Validate anti-bot challenge (prevents automated dictionary and brute-force attacks)
+    const botCheck = await verifyTurnstileToken(turnstileToken, 'pin_gate');
+    if (!botCheck.success) {
+      setVerifying(false);
+      setError('Security verification failed. Please try again.');
+      setShaking(true);
+      setTimeout(() => setShaking(false), 500);
+      return;
+    }
+
     let targetPin = correctPin;
 
     if (!targetPin) {
-      setVerifying(true);
       targetPin = await prefetchAccessPin();
       setVerifying(false);
     }
@@ -343,6 +357,9 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
                 </div>
               </div>
             )}
+
+            {/* Invisible Anti-Bot Security Widget */}
+            <TurnstileWidget action="pin_gate" onVerify={setTurnstileToken} />
 
             {/* Digit inputs */}
             <div className="pin-digits-row">

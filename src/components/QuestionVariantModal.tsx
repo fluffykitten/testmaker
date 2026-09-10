@@ -10,9 +10,18 @@ import {
   stripDuplicateSubQuestionsFromStem,
   stripDuplicateOptionsFromStem,
   extractSvgFromDiagramUrl,
+  generateParametricSvg,
   type VariantMode,
 } from '../lib/gemini';
+import {
+  generateExamDiagram,
+  suggestDiagramPrompt,
+  resolveStylePreset,
+  getDailyNeuronUsage,
+  type StylePreset,
+} from '../services/imageGenerationService';
 import { createQuestion } from '../services/questionBankService';
+import { getSavedSettings } from '../lib/settings';
 import './QuestionVariantModal.css';
 
 interface QuestionVariantModalProps {
@@ -85,6 +94,23 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
   const [isAddedToTest, setIsAddedToTest] = useState(false);
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
+  // Cloudflare Workers AI Diagram States
+  const [visualMode, setVisualMode] = useState<'original' | 'svg' | 'ai'>('original');
+  const [aiDiagramPrompt, setAiDiagramPrompt] = useState<string>('');
+  const [aiStylePreset, setAiStylePreset] = useState<StylePreset>('stem');
+  const [isGeneratingDiagram, setIsGeneratingDiagram] = useState(false);
+  const [isSuggestingPrompt, setIsSuggestingPrompt] = useState(false);
+  const [diagramSuccessMsg, setDiagramSuccessMsg] = useState<string | null>(null);
+  const [cachedOriginalDiagram, setCachedOriginalDiagram] = useState<{ url: string | null; svg: string | null }>({ url: null, svg: null });
+
+  // Parametric SVG Studio States
+  const [svgCustomPrompt, setSvgCustomPrompt] = useState<string>('');
+  const [isGeneratingSvg, setIsGeneratingSvg] = useState<boolean>(false);
+  const [isEditingSvgCode, setIsEditingSvgCode] = useState<boolean>(false);
+  const [svgSuccessMsg, setSvgSuccessMsg] = useState<string | null>(null);
+  const [cachedSvgContent, setCachedSvgContent] = useState<string | null>(null);
+  const [cachedAiDiagramUrl, setCachedAiDiagramUrl] = useState<string | null>(null);
+
   const handleGenerate = useCallback(
     async (mode?: VariantMode, overrideInstruction?: string) => {
       if (!question) return;
@@ -97,9 +123,12 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
       const trimmedInstruction = instruction.trim();
 
       try {
+        const isImageGenEnabled = Boolean(getSavedSettings().enableVariantImageGeneration);
+
         const generated = await generateQuestionVariant(question, {
           mode: targetMode,
           customInstruction: trimmedInstruction || undefined,
+          enableImageGeneration: isImageGenEnabled,
         });
 
         const finalSubs = targetMode === 'mcq' ? [] : (generated.sub_questions || []);
@@ -108,15 +137,17 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           finalSubs
         );
 
-        const resolvedSvg =
-          generated.svg_content ||
-          extractSvgFromDiagramUrl(generated.diagram_url) ||
-          extractSvgFromDiagramUrl(question.diagram_url) ||
-          null;
+        const resolvedSvg = isImageGenEnabled
+          ? (generated.svg_content ||
+             extractSvgFromDiagramUrl(generated.diagram_url) ||
+             extractSvgFromDiagramUrl(question.diagram_url) ||
+             null)
+          : (question.svg_content || extractSvgFromDiagramUrl(question.diagram_url) || null);
 
-        const resolvedDiagramUrl =
-          generated.diagram_url ||
-          (resolvedSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(resolvedSvg)}` : (question.diagram_url || null));
+        const resolvedDiagramUrl = isImageGenEnabled
+          ? (generated.diagram_url ||
+             (resolvedSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(resolvedSvg)}` : (question.diagram_url || null)))
+          : (question.diagram_url || (resolvedSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(resolvedSvg)}` : null));
 
         const fullVariant: Question = {
           id: `variant-temp-${Date.now()}`,
@@ -135,9 +166,10 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           marks: generated.marks || (targetMode === 'mcq' ? 1 : question.marks),
           svg_content: resolvedSvg,
           diagram_url: resolvedDiagramUrl,
-          diagram_type: generated.diagram_type !== undefined ? generated.diagram_type : (question.diagram_type || null),
+          ai_diagram_prompt: isImageGenEnabled ? (generated.ai_diagram_prompt || question.ai_diagram_prompt || null) : null,
+          diagram_type: isImageGenEnabled ? (generated.diagram_type !== undefined ? generated.diagram_type : (question.diagram_type || null)) : (question.diagram_type || null),
           has_embedded_values: generated.has_embedded_values !== undefined ? generated.has_embedded_values : (question.has_embedded_values || false),
-          diagram_source: generated.diagram_source !== undefined ? generated.diagram_source : (question.diagram_source || null),
+          diagram_source: question.diagram_source || null,
           resource_ref: generated.resource_ref !== undefined ? generated.resource_ref : (question.resource_ref || null),
           insert_page_number: generated.insert_page_number !== undefined ? generated.insert_page_number : (question.insert_page_number || null),
           audio_url: generated.audio_url !== undefined ? generated.audio_url : (question.audio_url || null),
@@ -152,6 +184,30 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
         setIsSavedToBank(false);
         setIsAddedToTest(false);
         setActionSuccessMsg(null);
+
+        // Visual strategy configuration - prioritize Workers AI for apparatus/illustrations
+        const origSvg = extractSvgFromDiagramUrl(question.diagram_url) || question.svg_content || null;
+        setCachedOriginalDiagram({
+          url: question.diagram_url || null,
+          svg: origSvg,
+        });
+
+        if (generated.ai_diagram_prompt) {
+          setAiDiagramPrompt(generated.ai_diagram_prompt);
+          setSvgCustomPrompt(generated.ai_diagram_prompt);
+          setVisualMode('ai');
+        } else if (question.diagram_url && !resolvedSvg) {
+          setVisualMode('original');
+        } else if (resolvedSvg) {
+          setCachedSvgContent(resolvedSvg);
+          setVisualMode('svg');
+        } else if (question.diagram_url) {
+          setVisualMode('original');
+        } else {
+          setVisualMode('ai');
+        }
+
+        setAiStylePreset(resolveStylePreset(generated.topic || question.topic));
       } catch (err: any) {
         console.error('Failed to generate variant:', err);
         setErrorMessage(err?.message || 'Failed to generate question variant. Please try again.');
@@ -161,6 +217,87 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     },
     [question, selectedMode, customInstruction]
   );
+
+  const handleGenerateAiDiagram = async () => {
+    if (!variant || !aiDiagramPrompt.trim()) return;
+    setIsGeneratingDiagram(true);
+    setErrorMessage(null);
+    setDiagramSuccessMsg(null);
+
+    try {
+      const res = await generateExamDiagram(aiDiagramPrompt, {
+        stylePreset: aiStylePreset,
+        topic: variant.topic,
+      });
+
+      if (res.success && res.url) {
+        setCachedAiDiagramUrl(res.url);
+        setVariant((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            diagram_url: res.url!,
+            svg_content: null,
+            diagram_type: 'apparatus',
+            ai_diagram_prompt: aiDiagramPrompt,
+          };
+        });
+        setVisualMode('ai');
+        setDiagramSuccessMsg('✓ Technical diagram generated & saved to Cloudflare R2!');
+        setTimeout(() => setDiagramSuccessMsg(null), 4000);
+      } else {
+        throw new Error(res.error || 'Failed to generate diagram with Workers AI');
+      }
+    } catch (err: any) {
+      console.error('[QuestionVariantModal] Diagram generation failed:', err);
+      setErrorMessage(err?.message || 'Workers AI generation failed');
+    } finally {
+      setIsGeneratingDiagram(false);
+    }
+  };
+
+  const handleGenerateSvg = async () => {
+    if (!variant) return;
+    setIsGeneratingSvg(true);
+    setErrorMessage(null);
+    setSvgSuccessMsg(null);
+
+    try {
+      const refUrl = cachedOriginalDiagram.url || question?.diagram_url || undefined;
+      const generatedSvg = await generateParametricSvg(variant, svgCustomPrompt.trim() || undefined, refUrl);
+      setCachedSvgContent(generatedSvg);
+      setVariant((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          svg_content: generatedSvg,
+          diagram_url: `data:image/svg+xml;utf8,${encodeURIComponent(generatedSvg)}`,
+          diagram_type: 'apparatus',
+        };
+      });
+      setVisualMode('svg');
+      setSvgSuccessMsg(refUrl ? '✓ Clean parametric vector SVG reconstructed from original diagram with exact Cambridge typography!' : '✓ Clean parametric vector SVG generated with exact Cambridge-style typography!');
+      setTimeout(() => setSvgSuccessMsg(null), 4000);
+    } catch (err: any) {
+      console.error('[QuestionVariantModal] SVG generation failed:', err);
+      setErrorMessage(err?.message || 'Parametric SVG generation failed');
+    } finally {
+      setIsGeneratingSvg(false);
+    }
+  };
+
+  const handleSuggestPrompt = async () => {
+    if (!variant) return;
+    setIsSuggestingPrompt(true);
+    try {
+      const suggested = await suggestDiagramPrompt(variant);
+      setAiDiagramPrompt(suggested);
+    } catch (err) {
+      console.warn('Failed to suggest prompt:', err);
+    } finally {
+      setIsSuggestingPrompt(false);
+    }
+  };
 
   // Reset state on open or question change
   useEffect(() => {
@@ -173,6 +310,17 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
     setIsSavedToBank(false);
     setIsAddedToTest(false);
     setActionSuccessMsg(null);
+    setVisualMode('original');
+    setAiDiagramPrompt('');
+    setDiagramSuccessMsg(null);
+    setIsGeneratingDiagram(false);
+    setIsSuggestingPrompt(false);
+    setSvgCustomPrompt('');
+    setIsGeneratingSvg(false);
+    setIsEditingSvgCode(false);
+    setSvgSuccessMsg(null);
+    setCachedSvgContent(null);
+    setCachedAiDiagramUrl(null);
   }, [isOpen, question]);
 
   const handleSaveToQuestionBank = async () => {
@@ -521,6 +669,246 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                     diagramType={variant.diagram_type}
                     hasEmbeddedValues={variant.has_embedded_values}
                   />
+
+                  {/* Visual Strategy & Diagram Studio */}
+                  {!getSavedSettings().enableVariantImageGeneration ? (
+                    <div className="variant-original-diagram-banner">
+                      <span className="variant-original-diagram-badge">🖼️ Set A Visual Retained</span>
+                      <span className="variant-original-diagram-sub">
+                        Diagram image generation is disabled in settings. Variant questions and calculations are formulated around this authentic original figure.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="variant-visual-studio">
+                    <div className="variant-visual-toolbar">
+                      <div className="variant-visual-modes">
+                        {Boolean(cachedOriginalDiagram.url || question.diagram_url) && (
+                          <button
+                            type="button"
+                            className={`variant-visual-mode-btn ${visualMode === 'original' ? 'active' : ''}`}
+                            onClick={() => {
+                              setVisualMode('original');
+                              setVariant(prev => prev ? ({
+                                ...prev,
+                                diagram_url: cachedOriginalDiagram.url || question.diagram_url,
+                                svg_content: null,
+                              }) : prev);
+                            }}
+                          >
+                            🖼️ Retain Original
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className={`variant-visual-mode-btn ${visualMode === 'ai' ? 'active' : ''}`}
+                          onClick={() => {
+                            setVisualMode('ai');
+                            if (cachedAiDiagramUrl) {
+                              setVariant(prev => prev ? ({
+                                ...prev,
+                                diagram_url: cachedAiDiagramUrl,
+                                svg_content: null,
+                              }) : prev);
+                            }
+                          }}
+                        >
+                          ✨ Workers AI Diagram
+                        </button>
+                        <button
+                          type="button"
+                          className={`variant-visual-mode-btn ${visualMode === 'svg' ? 'active' : ''}`}
+                          onClick={() => {
+                            setVisualMode('svg');
+                            const svgToRestore = variant.svg_content || cachedSvgContent || cachedOriginalDiagram.svg;
+                            if (svgToRestore) {
+                              setVariant(prev => prev ? ({
+                                ...prev,
+                                svg_content: svgToRestore,
+                                diagram_url: `data:image/svg+xml;utf8,${encodeURIComponent(svgToRestore)}`,
+                              }) : prev);
+                            }
+                          }}
+                        >
+                          📐 Parametric SVG
+                        </button>
+                      </div>
+
+                      <div className="variant-visual-quota-badge">
+                        {visualMode === 'svg' ? (
+                          <span>⚡ 100% Vector CAD Typography</span>
+                        ) : (
+                          <span>⚡ Free Edge AI: {getDailyNeuronUsage().used} / {getDailyNeuronUsage().maxDaily} today</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Parametric SVG Studio Panel */}
+                    {visualMode === 'svg' && (
+                      <div className="variant-svg-panel animate-fade-in">
+                        <div className="variant-svg-header">
+                          <div className="variant-svg-info">
+                            <span className="variant-svg-badge">
+                              {variant.svg_content ? '✓ Vector CAD SVG Active' : '📐 Parametric Vector SVG Studio'}
+                            </span>
+                            <span className="variant-svg-desc">
+                              Zero-hallucination vector line art with true font rendering (<code className="variant-svg-code-inline">&lt;text&gt;</code>) and CAD dimension arrows (<code className="variant-svg-code-inline">&lt;marker&gt;</code>). Ideal for heights, distances, mechanics, and circuits.
+                            </span>
+                            {Boolean(cachedOriginalDiagram.url || question?.diagram_url) && (
+                              <div style={{ marginTop: '6px' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.725rem', color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', padding: '2px 8px', borderRadius: '6px', fontWeight: 600 }}>
+                                  👁️ Gemini Vision: Inspects Set A diagram layout to replicate apparatus with new values
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="variant-svg-row">
+                          <div className="variant-svg-prompt-wrap">
+                            <input
+                              type="text"
+                              className="variant-svg-prompt-input"
+                              placeholder="e.g. Student dropping steel sphere from 1.4 m with vertical dimension arrow..."
+                              value={svgCustomPrompt}
+                              onChange={(e) => setSvgCustomPrompt(e.target.value)}
+                              disabled={isGeneratingSvg}
+                            />
+                            <button
+                              type="button"
+                              className="variant-svg-suggest-btn"
+                              onClick={() => {
+                                if (variant.ai_diagram_prompt) {
+                                  setSvgCustomPrompt(variant.ai_diagram_prompt);
+                                } else {
+                                  setSvgCustomPrompt(`Technical line diagram for ${variant.topic || 'physics'}: ${variant.question_text.slice(0, 100).replace(/["\n]/g, ' ')}`);
+                                }
+                              }}
+                              title="Auto-fill prompt from question stem or AI prompt"
+                            >
+                              💡 Auto-Fill
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="variant-svg-generate-btn"
+                            onClick={handleGenerateSvg}
+                            disabled={isGeneratingSvg}
+                          >
+                            {isGeneratingSvg ? (
+                              <>
+                                <span className="variant-spinner-sm"></span> Drawing Vector SVG...
+                              </>
+                            ) : variant.svg_content ? (
+                              '🔄 Regenerate SVG'
+                            ) : (
+                              '⚡ Generate Parametric SVG'
+                            )}
+                          </button>
+
+                          {variant.svg_content && (
+                            <button
+                              type="button"
+                              className={`variant-svg-code-toggle-btn ${isEditingSvgCode ? 'active' : ''}`}
+                              onClick={() => setIsEditingSvgCode(!isEditingSvgCode)}
+                              title="Inspect or tweak raw SVG XML code"
+                            >
+                              {isEditingSvgCode ? '👁️ Preview' : '📝 Edit SVG XML'}
+                            </button>
+                          )}
+                        </div>
+
+                        {isEditingSvgCode && variant.svg_content && (
+                          <div className="variant-svg-code-container animate-fade-in">
+                            <div className="variant-svg-code-header">
+                              <span>Direct SVG Source (Live Preview Updates Instantly)</span>
+                            </div>
+                            <textarea
+                              className="variant-svg-textarea"
+                              value={variant.svg_content}
+                              onChange={(e) => {
+                                const newSvg = e.target.value;
+                                setCachedSvgContent(newSvg);
+                                setVariant(prev => prev ? ({
+                                  ...prev,
+                                  svg_content: newSvg,
+                                  diagram_url: `data:image/svg+xml;utf8,${encodeURIComponent(newSvg)}`,
+                                }) : prev);
+                              }}
+                              rows={7}
+                              spellCheck={false}
+                            />
+                          </div>
+                        )}
+
+                        {svgSuccessMsg && (
+                          <div className="variant-diagram-success-msg">
+                            {svgSuccessMsg}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* AI Diagram Input & Prompt Controls */}
+                    {visualMode === 'ai' && (
+                      <div className="variant-ai-panel animate-fade-in">
+                        <div className="variant-ai-row">
+                          <div className="variant-ai-prompt-wrap">
+                            <input
+                              type="text"
+                              className="variant-ai-prompt-input"
+                              placeholder="Describe diagram apparatus, landform, or cartoon..."
+                              value={aiDiagramPrompt}
+                              onChange={(e) => setAiDiagramPrompt(e.target.value)}
+                              disabled={isGeneratingDiagram}
+                            />
+                            <button
+                              type="button"
+                              className="variant-ai-suggest-btn"
+                              onClick={handleSuggestPrompt}
+                              disabled={isSuggestingPrompt || isGeneratingDiagram}
+                              title="Auto-formulate prompt from question stem"
+                            >
+                              {isSuggestingPrompt ? '⏳' : '💡 Auto-Prompt'}
+                            </button>
+                          </div>
+
+                          <select
+                            className="variant-ai-style-select"
+                            value={aiStylePreset}
+                            onChange={(e) => setAiStylePreset(e.target.value as StylePreset)}
+                            disabled={isGeneratingDiagram}
+                          >
+                            <option value="stem">🔬 STEM (Technical Line Art)</option>
+                            <option value="geography">🌍 Geography (Topography / Map)</option>
+                            <option value="history">📜 History (Cross-Hatch Cartoon)</option>
+                          </select>
+
+                          <button
+                            type="button"
+                            className="variant-ai-generate-btn"
+                            onClick={handleGenerateAiDiagram}
+                            disabled={isGeneratingDiagram || !aiDiagramPrompt.trim()}
+                          >
+                            {isGeneratingDiagram ? (
+                              <>
+                                <span className="variant-spinner-sm"></span> Generating...
+                              </>
+                            ) : (
+                              '🎨 Generate Diagram'
+                            )}
+                          </button>
+                        </div>
+
+                        {diagramSuccessMsg && (
+                          <div className="variant-diagram-success-msg">
+                            {diagramSuccessMsg}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  )}
 
                   {/* Variant Structured Data Tables if present */}
                   {variant.data_tables && variant.data_tables.length > 0 && (

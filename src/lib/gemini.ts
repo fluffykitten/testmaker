@@ -5,6 +5,7 @@
 import type { ExtractionResult, ExtractedQuestion, Question, SubQuestion, QuestionStyle } from '../types/database';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
+import { getSavedSettings } from './settings';
 
 /**
  * Collects and deduplicates all available Gemini API keys from environment variables.
@@ -1833,11 +1834,18 @@ export function parseRobustJson<T = any>(rawText: string): T {
   );
 }
 
-let cachedDiscoveredModels: string[] | null = null;
+const VERIFIED_FAST_MODELS = [
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+];
+
+let cachedDiscoveredModels: string[] | null = [...VERIFIED_FAST_MODELS];
 
 /**
  * Dynamically queries Google AI Studio API for all available models that support generateContent.
- * Caches results in memory to avoid 1.5-2.5s network latency on every upload.
+ * Pre-seeded with verified fast models to avoid 1.5-2.5s network latency on startup.
  */
 async function discoverAvailableModels(targetApiKey?: string): Promise<string[]> {
   if (cachedDiscoveredModels && cachedDiscoveredModels.length > 0) {
@@ -1863,14 +1871,16 @@ async function discoverAvailableModels(targetApiKey?: string): Promise<string[]>
             (name: string) =>
               name.toLowerCase().includes('gemini') &&
               !name.includes('flash-latest') && // Exclude legacy aliases that hang on v1beta
-              !name.includes('flash-lite-latest')
+              !name.includes('flash-lite-latest') &&
+              !name.startsWith('gemini-2.5') // Exclude deprecated 2.5 aliases that return 404
           );
 
-        // Prioritize active, ultra-fast vision Flash models (Gemini 3.5 Flash Lite -> Gemini 3.1 Flash Lite -> Gemini 3.6 Flash -> Gemini 3.5 Flash)
+        // Prioritize active, ultra-fast streaming Flash models (Gemini 3.1 Flash Lite [5s fast streaming, 0 thinking lag] -> Gemini 3.5 Flash Lite -> Gemini 3.6 Flash -> Gemini 3.5 Flash)
         models.sort((a: string, b: string) => {
           const score = (m: string) => {
+            if (m === 'gemini-3.1-flash-lite') return 25; // Ultra-fast ~5s token streaming, no forced thoughts latency
             if (m === 'gemini-3.5-flash-lite') return 20;
-            if (m === 'gemini-3.1-flash-lite') return 18;
+            if (m === 'gemini-3.1-flash-lite-preview') return 18;
             if (m === 'gemini-3.6-flash') return 16;
             if (m === 'gemini-3.7-flash') return 14;
             if (m === 'gemini-3.5-flash') return 10;
@@ -1893,8 +1903,8 @@ async function discoverAvailableModels(targetApiKey?: string): Promise<string[]>
 
   // Static fallback list with verified ultra-fast models
   const staticFallbacks = [
-    'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
   ];
@@ -2385,6 +2395,116 @@ export type VariantMode = 'parallel' | 'scaffold' | 'extension' | 'mcq' | 'struc
 export interface GenerateVariantOptions {
   mode: VariantMode;
   customInstruction?: string;
+  apiKey?: string;
+  enableImageGeneration?: boolean;
+}
+
+/**
+ * Resolves an image URL (data URI or remote HTTP/R2 URL) into base64 inlineData for Gemini Vision.
+ */
+export async function urlToInlineData(url: string): Promise<{ mimeType: string; data: string } | null> {
+  if (!url || typeof url !== 'string') return null;
+
+  // 1. Base64 Data URL (e.g. data:image/png;base64,...)
+  if (url.startsWith('data:')) {
+    const match = url.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      return { mimeType: match[1], data: match[2] };
+    }
+    // If it's data:image/svg+xml;utf8,...
+    const utf8Match = url.match(/^data:image\/svg\+xml(?:;utf8)?,([\s\S]+)$/);
+    if (utf8Match) {
+      try {
+        const decoded = decodeURIComponent(utf8Match[1]);
+        const base64 = btoa(unescape(encodeURIComponent(decoded)));
+        return { mimeType: 'image/svg+xml', data: base64 };
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  // 2. HTTP / Remote URL (e.g. Cloudflare R2 / Supabase)
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const mimeType = blob.type || (url.endsWith('.png') ? 'image/png' : url.endsWith('.webp') ? 'image/webp' : 'image/jpeg');
+    const arrayBuffer = await blob.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(arrayBuffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    return { mimeType, data: base64 };
+  } catch (err) {
+    console.warn('[urlToInlineData] Failed to fetch diagram URL for vision model:', err);
+    return null;
+  }
+}
+
+/**
+ * Executes a Gemini generation request, prioritizing the secure Cloudflare Proxy Worker
+ * (which hides the API key, rotates models on 404/429/503, and handles edge caching).
+ * Automatically falls back to direct browser Gemini API calls if the proxy is unreachable.
+ */
+export async function callGeminiWithProxyFallback(params: {
+  prompt?: string;
+  parts?: any[];
+  imageBuffer?: { mimeType: string; data: string };
+  generationConfig?: any;
+  activeKey?: string;
+}): Promise<string> {
+  // Direct browser API call with dynamic model fallback
+  const key = params.activeKey || getApiKeyForChunk(0);
+  if (!key) {
+    throw new Error('Missing Gemini API key in environment.');
+  }
+
+  const parts: any[] = params.parts
+    ? params.parts
+    : [
+        ...(params.prompt ? [{ text: params.prompt }] : []),
+        ...(params.imageBuffer ? [{ inlineData: params.imageBuffer }] : []),
+      ];
+
+  const availableModels = await discoverAvailableModels(key);
+  let response: Response | null = null;
+  let lastError = '';
+
+  for (const modelName of availableModels) {
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`;
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: params.generationConfig || {
+            responseMimeType: 'application/json',
+            temperature: 0.35,
+            maxOutputTokens: 8192,
+          },
+        }),
+      });
+
+      if (response.ok) break;
+      lastError = await response.text();
+    } catch (e: any) {
+      lastError = e?.message || 'Network error';
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Failed to generate via Gemini: ${lastError}`);
+  }
+
+  const rawData = await response.json();
+  const text = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('AI returned empty response.');
+  return text;
 }
 
 /**
@@ -2394,7 +2514,7 @@ export async function generateQuestionVariant(
   original: Question,
   options: GenerateVariantOptions
 ): Promise<Partial<Question>> {
-  const activeKey = getApiKeyForChunk(0);
+  const activeKey = options.apiKey || getApiKeyForChunk(0);
   if (!activeKey) {
     throw new Error(
       'Missing VITE_GEMINI_API_KEY in .env.local. ' +
@@ -2452,6 +2572,37 @@ YOU MUST STRICTLY ADHERE TO THIS INSTRUCTION:
     original.sub_questions
   );
 
+  const isImageGenEnabled = options.enableImageGeneration ?? getSavedSettings().enableVariantImageGeneration ?? false;
+  const hasVisual = Boolean(original.diagram_url || original.svg_content || original.ai_diagram_prompt);
+
+  const visualDirective = !hasVisual
+    ? ''
+    : !isImageGenEnabled
+    ? `VISUAL RESOURCE:
+Reference the visual figure (${original.resource_ref || 'the visual figure'}). The authentic original visual is already provided and retained unchanged. Formulate an alternative question, scenario, or calculation that asks about this visual.`
+    : `PARAMETRIC SVG GENERATION (DIAGRAM-VALUE COHERENCE):
+Does this question require or reference a quantitative/schematic visual?
+- WHITELIST (ONLY GENERATE SVG FOR THESE):
+  * Cartesian coordinate graphs (axes with ticks & units, speed-time, extension-load, cooling curve, reaction profile).
+  * Electrical circuit schematics (standard symbols: cell/battery, switch, lamp, resistors, ammeter, voltmeter).
+  * Ray optics & lens schematics (straight rays, focal points, principal axis).
+  * Mechanics schematics (slanted ramp with angle \\theta, hanging pulley with masses, lever balance, spring).
+  SVG TECHNICAL REQUIREMENTS:
+  - <svg viewBox="0 0 500 300" xmlns="http://www.w3.org/2000/svg" class="exam-svg-graphic">
+  - Charcoal line art aesthetic: strokes "#1e293b" (stroke-width 2 or 1.5), fill "none" or "#f8fafc", standard hatching for ground/surfaces.
+  - Text labels: <text> elements in the SVG MUST display the EXACT values derived in your scratchpad (e.g. "2.4 m", "0.35 kg", "12 V").
+  - Native Hotspots: If labels need to be identified by the student, use <text class="hotspot-label" data-hotspot="A" x="..." y="...">[ A ]</text>.
+  - Fluid Responsive: Do NOT specify fixed pixel width or height on the outer <svg> tag.
+- BLACKLIST (DO NOT GENERATE SVG):
+  * If it is a real photograph, biological anatomical specimen/tissue, or complex laboratory glassware setup (or diagram_type is 'photo'):
+    - Set "svg_content": null.
+    - VISUAL ASSET REUSE: Maintain the visual reference (${original.resource_ref || 'the photograph/figure'}). Generate a fresh, alternative question and mark scheme testing a different structure, calculation (e.g. magnification/actual size), observation, or scientific concept based on this same visual resource!
+
+AI DIAGRAM GENERATION (FOR APPARATUS, EXPERIMENTS, SPECIMENS, GEOGRAPHY, OR HISTORY):
+If this question requires an apparatus diagram, experimental glassware, biological structure, geography map/landform, or historical illustration (and SVG is ill-suited):
+- Provide a concise, clear description in "ai_diagram_prompt" (under 40 words) describing the physical objects, connections, and arrangement to be drawn as a black-and-white exam figure.
+- ANTI-HALLUCINATION RULE: Focus on the physical geometry, layout, and scientific objects. NEVER request specific numerical text labels in the prompt; state all exact numbers in the question text instead, or use simple letter labels like [A] and [B] for unknown components.`;
+
   const prompt = `You are an expert exam author for Cambridge IGCSE, GCSE, and A-Level assessments.
 Create a new syllabus-aligned variant of the following exam question.
 
@@ -2471,42 +2622,22 @@ GENERATION GOAL:
 ${modeInstruction}
 ${customInstructionDirective}
 
-CRITICAL STEM ANTI-HALLUCINATION & 4-PHASE SCIENTIFIC SCRATCHPAD (MANDATORY):
-Before writing question text or mark schemes, you MUST execute a rigorous derivation in a "scratchpad" object:
-1. "bounds_and_constraints": Define physical/mathematical domain boundaries:
-   - Physics: masses $m > 0$, time $t > 0$, speed $v < c$, non-negative radicands ($u^2 + 2as \ge 0$), efficiency $\le 100\%$.
-   - Chemistry: feasible reactions (reactivity series compliant, valid valencies/oxidation states, e.g. Group 1: +1, Group 2: +2).
-   - Math: non-negative quadratic discriminants ($b^2 - 4ac \ge 0$), clean rational or terminating decimal roots.
-2. "independent_variables": Choose realistic, well-behaved numbers with standard SI units and 2–3 Significant Figures precision (e.g. mass $m = 0.35\text{ kg}$, height $h = 2.4\text{ m}$, acceleration $g = 9.8\text{ m/s}^2$ or $10\text{ m/s}^2$, voltage $V = 12\text{ V}$, resistance $R = 4\,\Omega$).
-3. "derivations_and_laws": Calculate all dependent values step-by-step with explicit formulas and standard units:
-   - Physics/Math: e.g. $\Delta E_p = mgh = 0.35 \times 9.8 \times 2.4 = 8.232\text{ J} \approx 8.2\text{ J}$ (2 s.f.); $v = \sqrt{2gh} = \sqrt{2 \times 9.8 \times 2.4} = 6.86\text{ m/s} \approx 6.9\text{ m/s}$.
-   - Chemistry: Atom count on both sides AND total net ionic charge on both sides (charge balance).
-4. "synchronization_checklist":
-   - "SHOW THAT [VALUE]" SYNCHRONIZATION: Whenever a sub-part includes "Show that [value]..." or references a previous part's calculated value, you MUST update that target value to match the newly derived scratchpad value exactly!
-   - ALL numbers in "question_text", "sub_questions", "mark_scheme", and "svg_content" MUST match these derived scratchpad values with ZERO discrepancy.
-   - For multi-part dependent questions, explicitly include "allow ecf (error carried forward)" in the sub-question mark schemes.
+STEM ANTI-HALLUCINATION & DERIVATION SCRATCHPAD:
+If this question involves quantitative calculations, physical laws, or chemical reactions:
+- Execute derivations in the "scratchpad" object:
+  1. "bounds_and_constraints": Domain boundaries ($m > 0$, $v < c$, $b^2 - 4ac \\ge 0$, realistic valencies).
+  2. "independent_variables": Choose realistic numbers with standard SI units and 2–3 Significant Figures.
+  3. "derivations_and_laws": Calculate all dependent values step-by-step with explicit formulas and standard units.
+  4. "synchronization_checklist": Verify all numbers in "question_text", "sub_questions", and "mark_scheme" match derived values with ZERO discrepancy.
+If this question is qualitative, conceptual, or definitional (no numerical calculations):
+- Provide a brief concise 1-sentence note in "scratchpad".
 
-PARAMETRIC SVG GENERATION (DIAGRAM-VALUE COHERENCE):
-Does this question require or reference a quantitative/schematic visual?
-- WHITELIST (ONLY GENERATE SVG FOR THESE):
-  * Cartesian coordinate graphs (axes with ticks & units, speed-time, extension-load, cooling curve, reaction profile).
-  * Electrical circuit schematics (standard symbols: cell/battery, switch, lamp, resistors, ammeter, voltmeter).
-  * Ray optics & lens schematics (straight rays, focal points, principal axis).
-  * Mechanics schematics (slanted ramp with angle $\theta$, hanging pulley with masses, lever balance, spring).
-  SVG TECHNICAL REQUIREMENTS:
-  - <svg viewBox="0 0 500 300" xmlns="http://www.w3.org/2000/svg" class="exam-svg-graphic">
-  - Charcoal line art aesthetic: strokes "#1e293b" (stroke-width 2 or 1.5), fill "none" or "#f8fafc", standard hatching for ground/surfaces.
-  - Text labels: <text> elements in the SVG MUST display the EXACT values derived in your scratchpad (e.g. "2.4 m", "0.35 kg", "12 V").
-  - Native Hotspots: If labels need to be identified by the student, use <text class="hotspot-label" data-hotspot="A" x="..." y="...">[ A ]</text>.
-  - Fluid Responsive: Do NOT specify fixed pixel width or height on the outer <svg> tag.
-- BLACKLIST (DO NOT GENERATE SVG):
-  * If it is a real photograph, biological anatomical specimen/tissue, or complex laboratory glassware setup:
-    Set "svg_content": null and preserve the visual reference so the original image crop is retained!
+${visualDirective}
 
 DIAGNOSTIC DISTRACTOR ENGINEERING (FOR MULTIPLE CHOICE):
 If generating an MCQ, provide a "distractor_analysis" object mapping each option (A, B, C, D) to its specific diagnostic rationale:
 - Identify the 1 CORRECT answer and show its exact calculation.
-- For each WRONG option, identify the specific student misconception trap (e.g. "Inverted formula: divides instead of multiplying", "Omitted unit conversion: used cm instead of m", "Forgot to square the velocity").
+- For each WRONG option, identify the specific student misconception trap.
 
 TABULAR DATA (DUAL-REPRESENTATION):
 If the question contains a table of data, observations, or fill-in completion cells:
@@ -2522,20 +2653,21 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
 
 {
   "scratchpad": {
-    "bounds_and_constraints": "Mass m > 0, height h > 0, real velocity v = sqrt(2gh).",
-    "independent_variables": "m = 0.35 kg, h = 2.4 m, g = 9.8 m/s^2",
-    "derivations_and_laws": "Ep = mgh = 0.35 * 9.8 * 2.4 = 8.232 J ≈ 8.2 J; v = sqrt(2gh) = 6.86 m/s ≈ 6.9 m/s. Energy conserved.",
-    "synchronization_checklist": "Verified: Ep is 8.2 J, v is 6.9 m/s in all parts, mark scheme, and SVG labels."
+    "bounds_and_constraints": "Domain boundaries",
+    "independent_variables": "Given / chosen values with units",
+    "derivations_and_laws": "Calculated results step-by-step",
+    "synchronization_checklist": "Verified values match throughout"
   },
   "question_text": "CRITICAL: Output ONLY the opening scenario, introductory context, or apparatus setup. DO NOT duplicate sub-questions (a), (b), (c) inside question_text! Sub-questions MUST ONLY be in the 'sub_questions' array.",
   "question_style": "${options.mode === 'mcq' ? 'Multiple Choice' : options.mode === 'structured' ? 'Structured' : original.question_style || 'Structured'}",
   "marks": ${options.mode === 'mcq' ? 1 : original.marks || 4},
   "difficulty": "${options.mode === 'scaffold' ? 'Easy' : options.mode === 'extension' ? 'Hard' : original.difficulty || 'Medium'}",
   "topic": "${original.topic}",
-  "sub_topic": "${original.sub_topic || ''}",
+  "sub_topic": "${original.sub_topic || ''}",${hasVisual && isImageGenEnabled ? `
   "svg_content": "<svg viewBox=\\"0 0 500 300\\" xmlns=\\"http://www.w3.org/2000/svg\\">...</svg>",
+  "ai_diagram_prompt": "Concise description of apparatus/specimen if visual needed and SVG is null",
   "diagram_type": "${original.diagram_type || 'graph'}",
-  "has_embedded_values": true,
+  "has_embedded_values": ${original.has_embedded_values ? 'true' : 'false'},` : ''}
   "options": ${options.mode === 'mcq' ? '["A. ...", "B. ...", "C. ...", "D. ..."]' : 'null'},
   "sub_questions": ${options.mode === 'mcq' ? '[]' : '[{"sub_id": "(a)", "question_text": "...", "marks": 2, "mark_scheme": "Mark point [2]", "depends_on_sub_ids": []}]'},
   "data_tables": null,
@@ -2555,54 +2687,33 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
 
   console.log(`[generateQuestionVariant] Generating (${options.mode}) with customInstruction:`, trimmedCustomInstruction || '(none)');
 
-  const availableModels = await discoverAvailableModels(activeKey);
-  let response: Response | null = null;
-  let lastError = '';
-
-  for (const modelName of availableModels) {
-    try {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.35,
-            maxOutputTokens: 8192,
-          },
-        }),
-      });
-
-      if (response.ok) break;
-      lastError = await response.text();
-    } catch (e: any) {
-      lastError = e?.message || 'Network error';
-    }
-  }
-
-  if (!response || !response.ok) {
-    throw new Error(`Failed to generate question variant: ${lastError}`);
-  }
-
-  const rawData = await response.json();
-  const text = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('AI returned empty response for question variant.');
+  const text = await callGeminiWithProxyFallback({
+    prompt,
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.35,
+      maxOutputTokens: isImageGenEnabled ? 8192 : 4096,
+    },
+    activeKey,
+  });
 
   const parsed = parseRobustJson<any>(text);
 
-  // Extract clean SVG content if generated by AI
-  const cleanTopSvg = cleanSvgContent(parsed.svg_content);
+  // Extract clean SVG content if generated by AI and image generation is enabled
+  const cleanTopSvg = isImageGenEnabled ? cleanSvgContent(parsed.svg_content) : null;
   const topSvgDataUrl = cleanTopSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(cleanTopSvg)}` : null;
 
   // Sanitize sub-questions while preserving diagram, data_tables, and metadata from original where applicable
   let sanitizedSubs: SubQuestion[] = Array.isArray(parsed.sub_questions)
     ? parsed.sub_questions.map((sub: any, idx: number) => {
         const origSub = original.sub_questions?.find((os) => os.sub_id === sub.sub_id) || original.sub_questions?.[idx];
-        const subSvg = cleanSvgContent(sub.svg_content);
+        const subSvg = isImageGenEnabled
+          ? cleanSvgContent(sub.svg_content)
+          : (origSub?.svg_content || (origSub?.diagram_url ? extractSvgFromDiagramUrl(origSub.diagram_url) : null));
         const subSvgDataUrl = subSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(subSvg)}` : null;
-        const subDiagramUrl = subSvgDataUrl || sub.diagram_url || origSub?.diagram_url || null;
+        const subDiagramUrl = isImageGenEnabled
+          ? (subSvgDataUrl || sub.diagram_url || origSub?.diagram_url || null)
+          : (origSub?.diagram_url || subSvgDataUrl || null);
         const subOptions = normalizeOptions(sub.options) || (origSub?.options ? normalizeOptions(origSub.options) : null);
         return {
           sub_id: String(sub.sub_id || ''),
@@ -2611,10 +2722,13 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
           has_diagram: Boolean(subSvg || subDiagramUrl || sub.has_diagram || origSub?.has_diagram),
           diagram_url: subDiagramUrl,
           svg_content: subSvg || (subDiagramUrl ? extractSvgFromDiagramUrl(subDiagramUrl) : (origSub?.svg_content || null)),
-          diagram_type: sub.diagram_type || origSub?.diagram_type || null,
+          ai_diagram_prompt: isImageGenEnabled && typeof sub.ai_diagram_prompt === 'string' && sub.ai_diagram_prompt.trim()
+            ? sub.ai_diagram_prompt.trim()
+            : (isImageGenEnabled ? (origSub?.ai_diagram_prompt || null) : null),
+          diagram_type: isImageGenEnabled ? (sub.diagram_type || origSub?.diagram_type || null) : (origSub?.diagram_type || null),
           has_embedded_values: sub.has_embedded_values !== undefined ? Boolean(sub.has_embedded_values) : origSub?.has_embedded_values,
           depends_on_sub_ids: Array.isArray(sub.depends_on_sub_ids) ? sub.depends_on_sub_ids.map(String) : (origSub?.depends_on_sub_ids || []),
-          diagram_source: sub.diagram_source || origSub?.diagram_source || null,
+          diagram_source: origSub?.diagram_source || null,
           resource_ref: sub.resource_ref || origSub?.resource_ref || null,
           page_number: sub.page_number || origSub?.page_number || null,
           insert_page_number: sub.insert_page_number || origSub?.insert_page_number || null,
@@ -2734,10 +2848,20 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
     mark_scheme: sanitizedMarkScheme,
     data_tables: Array.isArray(parsed.data_tables) ? parsed.data_tables : (original.data_tables || undefined),
     scratchpad: parsed.scratchpad || undefined,
-    // If a brand new parametric SVG was generated, serialize it as an SVG data URL in diagram_url so it persists in Supabase & prints universally!
-    svg_content: cleanTopSvg || (original.diagram_url ? extractSvgFromDiagramUrl(original.diagram_url) : (original.svg_content || null)),
-    diagram_url: topSvgDataUrl || original.diagram_url || null,
-    diagram_type: parsed.diagram_type || original.diagram_type || (cleanTopSvg ? 'circuit' : null),
+    // When image generation is enabled, allow newly synthesized SVG / diagram URL.
+    // When image generation is disabled (default), preserve authentic original visual crop and SVG!
+    svg_content: isImageGenEnabled
+      ? (cleanTopSvg || (original.diagram_url ? extractSvgFromDiagramUrl(original.diagram_url) : (original.svg_content || null)))
+      : (original.svg_content || (original.diagram_url ? extractSvgFromDiagramUrl(original.diagram_url) : null)),
+    diagram_url: isImageGenEnabled
+      ? (topSvgDataUrl || original.diagram_url || null)
+      : (original.diagram_url || (original.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(original.svg_content)}` : null)),
+    ai_diagram_prompt: isImageGenEnabled && typeof parsed.ai_diagram_prompt === 'string' && parsed.ai_diagram_prompt.trim()
+      ? parsed.ai_diagram_prompt.trim()
+      : (isImageGenEnabled ? (original.ai_diagram_prompt || null) : null),
+    diagram_type: isImageGenEnabled
+      ? (parsed.diagram_type || original.diagram_type || (cleanTopSvg ? 'circuit' : null))
+      : (original.diagram_type || null),
     has_embedded_values: parsed.has_embedded_values !== undefined ? Boolean(parsed.has_embedded_values) : original.has_embedded_values,
     diagram_source: original.diagram_source || null,
     resource_ref: original.resource_ref || null,
@@ -2746,3 +2870,77 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
     audio_metadata: original.audio_metadata || null,
   };
 }
+
+/**
+ * Synthesizes a clean, Cambridge/IB-standard Parametric SVG diagram for an exam question on demand.
+ * If referenceDiagramUrl is provided (or question.diagram_url exists), Gemini Vision inspects the
+ * visual apparatus layout, contours, and dimension positions to produce an exact matching vector SVG.
+ */
+export async function generateParametricSvg(
+  question: Partial<Question>,
+  customInstruction?: string,
+  referenceDiagramUrl?: string
+): Promise<string> {
+  const targetImageUrl = referenceDiagramUrl || question.diagram_url || null;
+  let inlineImage: { mimeType: string; data: string } | null = null;
+
+  if (targetImageUrl && !targetImageUrl.startsWith('data:image/svg+xml')) {
+    inlineImage = await urlToInlineData(targetImageUrl);
+  }
+
+  const prompt = `You are an expert Cambridge and IB exam technical visual illustrator.
+Generate a clean, professional, publication-ready black-and-white vector SVG diagram for the following exam question.
+
+${inlineImage ? `ORIGINAL DIAGRAM VISUAL REFERENCE (ATTACHED IMAGE):
+- Closely inspect the attached image of the original question's apparatus / diagram.
+- Replicate the exact visual apparatus layout, contours, hatching, and spatial proportions.
+- Update all dimension arrows, numbers, and component labels to match the new question context and values below.` : ''}
+
+QUESTION CONTEXT:
+- Topic: ${question.topic || 'Physics / Mechanics'}
+- Sub-topic: ${question.sub_topic || ''}
+- Question Text: ${question.question_text || ''}
+${question.sub_questions && question.sub_questions.length > 0 ? `- Sub-questions: ${question.sub_questions.map((s) => `${s.sub_id}: ${s.question_text}`).join('; ')}` : ''}
+
+${customInstruction ? `TEACHER CUSTOM DIRECTIVE (MANDATORY): ${customInstruction}` : ''}
+
+CRITICAL TECHNICAL SVG REQUIREMENTS:
+1. Output format: Return ONLY valid, complete <svg ... </svg> code. Do NOT wrap in markdown code fences (\`\`\`xml or \`\`\`svg), do NOT add introductory or conversational text.
+2. Root attributes: <svg viewBox="0 0 500 320" xmlns="http://www.w3.org/2000/svg" class="exam-svg-graphic">
+3. Styling & Aesthetic:
+   - Authentic Cambridge/Edexcel exam line-art style.
+   - All strokes in dark charcoal/black: stroke="#1e293b" or "#000000" (stroke-width="1.8" or "2").
+   - Fills: "none" or "#ffffff". Ground/surfaces should have standard hatching (<line> slashes or dashed pattern).
+4. Typography & Dimension Arrows (CRITICAL):
+   - Use <text> elements with font-family="Arial, Helvetica, sans-serif" and crisp font-size (12px to 14px).
+   - All dimension arrows must be explicit, double-ended, and precisely connected between measured points (e.g. from the ball to the floor line).
+   - Label arrows with exact values from the question.
+   - Label key components with neat leader lines if applicable.
+   - Define arrowhead marker in <defs>:
+     <defs>
+       <marker id="dimension-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+         <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#1e293b"/>
+       </marker>
+     </defs>
+5. Fluid Responsiveness:
+   - Do NOT specify fixed pixel width or height on outer <svg>.
+
+SVG Code:`;
+
+  const text = await callGeminiWithProxyFallback({
+    prompt,
+    imageBuffer: inlineImage || undefined,
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 3072,
+    },
+  });
+
+  const cleaned = cleanSvgContent(text);
+  if (!cleaned) {
+    throw new Error('AI was unable to produce a valid SVG structure. Please try again.');
+  }
+
+  return cleaned;
+}
+

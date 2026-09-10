@@ -871,17 +871,20 @@ export function normalizeQuestionRecord(q: any): Question {
   const resourceRef = q.resource_ref || q.mark_scheme?._resource_ref || null;
   const insertPageNumber = q.insert_page_number || q.mark_scheme?._insert_page_number || null;
   const svgContent = q.svg_content || extractSvgFromDiagramUrl(q.diagram_url) || null;
+  const aiDiagramPrompt = q.ai_diagram_prompt || q.mark_scheme?._ai_diagram_prompt || null;
 
   const normalizedSubs = Array.isArray(q.sub_questions)
     ? q.sub_questions.map((sub: any) => ({
         ...sub,
         svg_content: sub.svg_content || extractSvgFromDiagramUrl(sub.diagram_url) || null,
+        ai_diagram_prompt: sub.ai_diagram_prompt || sub.mark_scheme?._ai_diagram_prompt || null,
       }))
     : q.sub_questions;
 
   return {
     ...q,
     svg_content: svgContent,
+    ai_diagram_prompt: aiDiagramPrompt,
     sub_questions: normalizedSubs,
     audio_url: audioUrl,
     audio_metadata: audioMetadata,
@@ -916,6 +919,7 @@ export async function updateQuestion(
       error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
       error.message.includes('paper_number') ||
+      error.message.includes('ai_diagram_prompt') ||
       error.message.includes('invalid input syntax for type integer') ||
       error.message.includes('insert_page_number'))
   ) {
@@ -930,9 +934,11 @@ export async function updateQuestion(
     if (fallbackPayload.diagram_source) markScheme._diagram_source = fallbackPayload.diagram_source;
     if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
     if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
+    if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
 
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
+    delete fallbackPayload.ai_diagram_prompt;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
       fallbackPayload.paper_number = 1;
@@ -1014,6 +1020,7 @@ export async function createQuestion(
       (questionData.svg_content
         ? `data:image/svg+xml;utf8,${encodeURIComponent(questionData.svg_content)}`
         : null),
+    ai_diagram_prompt: (questionData as any).ai_diagram_prompt || null,
     diagram_source: (questionData as any).diagram_source || null,
     resource_ref: (questionData as any).resource_ref || null,
     insert_page_number: (questionData as any).insert_page_number || null,
@@ -1026,6 +1033,7 @@ export async function createQuestion(
           diagram_url:
             sub.diagram_url ||
             (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
+          ai_diagram_prompt: (sub as any).ai_diagram_prompt || null,
         }))
       : [],
     mark_scheme: questionData.mark_scheme || null,
@@ -1052,6 +1060,7 @@ export async function createQuestion(
       error.message.includes('options') ||
       error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
+      error.message.includes('ai_diagram_prompt') ||
       error.message.includes('insert_page_number'))
   ) {
     console.warn('Dedicated columns not found in database schema, falling back to embedded mark_scheme:', error.message);
@@ -1065,9 +1074,11 @@ export async function createQuestion(
     if (fallbackPayload.diagram_source) markScheme._diagram_source = fallbackPayload.diagram_source;
     if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
     if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
+    if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
 
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
+    delete fallbackPayload.ai_diagram_prompt;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
       fallbackPayload.paper_number = 1;

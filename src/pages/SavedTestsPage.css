@@ -597,8 +597,14 @@
 
 .saved-card-actions-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+@media (max-width: 480px) {
+  .saved-card-actions-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .saved-card-btn {
@@ -666,6 +672,18 @@
 .saved-card-btn--forms:hover:not(:disabled) {
   background: #7c3aed;
   border-color: #7c3aed;
+  color: white;
+}
+
+.saved-card-btn--variant {
+  background: rgba(217, 70, 239, 0.08);
+  border-color: rgba(217, 70, 239, 0.25);
+  color: #c026d3;
+}
+
+.saved-card-btn--variant:hover:not(:disabled) {
+  background: #c026d3;
+  border-color: #c026d3;
   color: white;
 }
 

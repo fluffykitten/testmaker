@@ -6,6 +6,12 @@ import { ExamDataTable } from './ExamDataTable';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { formatPaperBadge } from '../utils/paperUtils';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../lib/gemini';
+import {
+  generateExamDiagram,
+  suggestDiagramPrompt,
+  resolveStylePreset,
+  type StylePreset,
+} from '../services/imageGenerationService';
 import './TestQuestionItem.css';
 
 interface TestQuestionItemProps {
@@ -17,6 +23,7 @@ interface TestQuestionItemProps {
   onRemove: (questionId: string) => void;
   onEdit?: (question: Question) => void;
   onGenerateVariant?: (question: Question) => void;
+  onUpdateQuestion?: (updated: Question) => void;
   isCustomized?: boolean;
   onRevert?: (questionId: string) => void;
 }
@@ -30,10 +37,62 @@ function TestQuestionItemComponent({
   onRemove,
   onEdit,
   onGenerateVariant,
+  onUpdateQuestion,
   isCustomized,
   onRevert,
 }: TestQuestionItemProps) {
   const [showMarkScheme, setShowMarkScheme] = useState(false);
+  const [isAiStudioOpen, setIsAiStudioOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState(question.ai_diagram_prompt || '');
+  const [aiStyle, setAiStyle] = useState<StylePreset>(resolveStylePreset(question.topic));
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+  const [isSuggestingPrompt, setIsSuggestingPrompt] = useState(false);
+  const [aiSuccessMsg, setAiSuccessMsg] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const handleGenerateDiagram = async () => {
+    if (!aiPrompt.trim()) return;
+    setIsGeneratingAi(true);
+    setAiError(null);
+    setAiSuccessMsg(null);
+
+    try {
+      const res = await generateExamDiagram(aiPrompt, {
+        stylePreset: aiStyle,
+        topic: question.topic,
+      });
+
+      if (res.success && res.url) {
+        onUpdateQuestion?.({
+          ...question,
+          diagram_url: res.url,
+          svg_content: null,
+          diagram_type: 'apparatus',
+          ai_diagram_prompt: aiPrompt,
+        });
+        setAiSuccessMsg('✓ Diagram updated with Workers AI');
+        setTimeout(() => setAiSuccessMsg(null), 3000);
+      } else {
+        throw new Error(res.error || 'Diagram generation failed');
+      }
+    } catch (err: any) {
+      setAiError(err?.message || 'Workers AI error');
+    } finally {
+      setIsGeneratingAi(false);
+    }
+  };
+
+  const handleSuggestPrompt = async () => {
+    setIsSuggestingPrompt(true);
+    try {
+      const suggestion = await suggestDiagramPrompt(question);
+      setAiPrompt(suggestion);
+    } catch (err: any) {
+      console.warn('Failed to suggest prompt:', err);
+    } finally {
+      setIsSuggestingPrompt(false);
+    }
+  };
 
   const isFirst = index === 0;
   const isLast = index === totalQuestions - 1;
@@ -145,6 +204,23 @@ function TestQuestionItemComponent({
             </button>
           )}
 
+          {/* AI Diagram button */}
+          {onUpdateQuestion && (
+            <button
+              type="button"
+              className={`test-q-ai-btn ${isAiStudioOpen ? 'active' : ''}`}
+              onClick={() => {
+                setIsAiStudioOpen(!isAiStudioOpen);
+                if (!aiPrompt) {
+                  setAiPrompt(question.ai_diagram_prompt || '');
+                }
+              }}
+              title="Regenerate or attach fresh AI line-art diagram"
+            >
+              🎨 AI Diagram
+            </button>
+          )}
+
           {/* Remove button */}
           <button
             type="button"
@@ -172,6 +248,66 @@ function TestQuestionItemComponent({
           diagramType={question.diagram_type}
           hasEmbeddedValues={question.has_embedded_values}
         />
+
+        {/* Inline AI Diagram Studio */}
+        {isAiStudioOpen && onUpdateQuestion && (
+          <div className="test-q-ai-studio animate-fade-in">
+            <div className="test-q-ai-header">
+              <span className="test-q-ai-title">✨ Cloudflare Workers AI Diagram Studio</span>
+              <button
+                type="button"
+                className="test-q-ai-close"
+                onClick={() => setIsAiStudioOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="test-q-ai-controls">
+              <div className="test-q-ai-input-wrap">
+                <input
+                  type="text"
+                  className="test-q-ai-input"
+                  placeholder="Describe apparatus, landform, or cartoon..."
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  disabled={isGeneratingAi}
+                />
+                <button
+                  type="button"
+                  className="test-q-ai-suggest-btn"
+                  onClick={handleSuggestPrompt}
+                  disabled={isSuggestingPrompt || isGeneratingAi}
+                  title="Auto-formulate prompt from question stem"
+                >
+                  {isSuggestingPrompt ? '⏳' : '💡 Auto-Prompt'}
+                </button>
+              </div>
+
+              <select
+                className="test-q-ai-select"
+                value={aiStyle}
+                onChange={(e) => setAiStyle(e.target.value as StylePreset)}
+                disabled={isGeneratingAi}
+              >
+                <option value="stem">🔬 STEM (Line Art)</option>
+                <option value="geography">🌍 Geography (Map/Topography)</option>
+                <option value="history">📜 History (Cross-Hatch)</option>
+              </select>
+
+              <button
+                type="button"
+                className="test-q-ai-gen-btn"
+                onClick={handleGenerateDiagram}
+                disabled={isGeneratingAi || !aiPrompt.trim()}
+              >
+                {isGeneratingAi ? '⏳ Generating...' : '🎨 Generate'}
+              </button>
+            </div>
+
+            {aiError && <div className="test-q-ai-error">{aiError}</div>}
+            {aiSuccessMsg && <div className="test-q-ai-success">{aiSuccessMsg}</div>}
+          </div>
+        )}
 
         {/* Structured Data Tables if present */}
         {question.data_tables && question.data_tables.length > 0 && (

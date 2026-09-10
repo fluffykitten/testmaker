@@ -23,6 +23,7 @@ export interface AppSettings {
   storageProvider?: 'cloudflare_r2' | 'supabase';
   r2MediaEndpoint?: string;
   r2UploadSecret?: string;
+  enableVariantImageGeneration?: boolean; // AI diagram & SVG generation for question variants (default: false)
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -54,6 +55,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storageProvider: 'cloudflare_r2',
   r2MediaEndpoint: 'https://testmaker-media.icmadani.workers.dev',
   r2UploadSecret: 'tm_r2_uploader_secret_2026',
+  enableVariantImageGeneration: false,
 };
 
 // Accent palette color mappings for --color-primary tokens

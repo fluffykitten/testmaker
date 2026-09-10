@@ -552,8 +552,8 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
             className={`adv-tab-btn ${activeSection === 'security' ? 'adv-tab-btn--active' : ''}`}
             onClick={() => setActiveSection('security')}
           >
-            🛡️ Exam Security Defaults
-            <span className="adv-tab-counter">Watermarking · Multi-Monitor · Auto-Lock</span>
+            🛡️ Exam Security & AI Defaults
+            <span className="adv-tab-counter">Watermarking · AI Visuals · Auto-Lock</span>
           </button>
 
           <button
@@ -934,6 +934,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   <option value={30}>30 Minutes</option>
                   <option value={0}>Never (Disabled)</option>
                 </select>
+              </div>
+
+              {/* AI Diagram & Image Generation for Variants */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">🎨 AI Diagram & Image Generation (Variants)</strong>
+                  <p className="adv-setting-desc">
+                    When disabled (recommended), question variants will retain and reference the authentic original diagram or photo, focusing AI variations purely on question stems, calculations, and mark schemes. When enabled, Workers AI diffusion and Parametric SVG synthesis can generate new visuals.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.enableVariantImageGeneration ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => updateSetting('enableVariantImageGeneration', !settings.enableVariantImageGeneration)}
+                >
+                  {settings.enableVariantImageGeneration ? 'Enabled' : 'Disabled (Original Retained)'}
+                </button>
               </div>
             </div>
           </div>

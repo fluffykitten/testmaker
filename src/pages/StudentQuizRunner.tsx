@@ -2041,13 +2041,38 @@ export function StudentQuizRunner({
   }, [currentIndex]);
 
   // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
-  // ─── Interactive Table / Matching Matrix Parser ─────────────────────────
   const currentTable = useMemo(() => {
-    if (!currentQuestion || (currentQuestion.options && currentQuestion.options.length > 0) || (currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0)) {
+    if (!currentQuestion) return null;
+
+    // Normalize newlines and unescape stringified newlines
+    const qText = (currentQuestion.question_text || '')
+      .replace(/\\n/g, '\n')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+
+    if (!qText.includes('|')) return null;
+
+    // Check if options are mere binary/grid header choices (e.g. ['Benar', 'Salah'] or ['True', 'False'])
+    const hasBinaryOptions = Boolean(
+      currentQuestion.options &&
+      currentQuestion.options.length >= 2 &&
+      currentQuestion.options.length <= 4 &&
+      currentQuestion.options.every((opt) =>
+        /^(?:benar|salah|true|false|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|ya|tidak|yes|no|b|s|t|f)$/i.test(
+          opt.trim().replace(/^[A-E][.:\)\s]+/i, '').trim()
+        )
+      )
+    );
+
+    // If regular MCQ with distinct choices and question_style is explicitly Multiple Choice/Select, don't hijack as table
+    if (
+      !hasBinaryOptions &&
+      currentQuestion.options &&
+      currentQuestion.options.length > 0 &&
+      (currentQuestion.question_style === 'Multiple Choice' || currentQuestion.question_style === 'Multiple Select')
+    ) {
       return null;
     }
-    const qText = currentQuestion.question_text || '';
-    if (!qText.includes('|')) return null;
 
     const lines = qText.split('\n');
 
@@ -2072,6 +2097,70 @@ export function StudentQuizRunner({
       isInteractive: boolean;
     }
 
+    const parseTableBlock = (rawLines: string[], startIdx: number, endIdx: number): TableCandidate | null => {
+      const rawRows = rawLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
+      if (rawRows.length < 2) return null;
+
+      let headerCells = parseRow(rawRows[0]);
+      if (headerCells.length < 2) return null;
+
+      let rows = rawRows.slice(1).map((r) => {
+        const cells = parseRow(r);
+        return { label: cells[0] || '', cells: cells.slice(1) };
+      });
+
+      // If 4 columns: [No., Pernyataan, Benar, Salah] or [#, Statement, True, False]
+      // where col 0 is index / number, merge col 0 into col 1
+      if (
+        headerCells.length >= 4 &&
+        /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
+        /^(?:pernyataan|statement|aspek|kategori|pernyataan\/masalah)$/i.test(headerCells[1])
+      ) {
+        headerCells = [headerCells[1], ...headerCells.slice(2)];
+        rows = rawRows.slice(1).map((r) => {
+          const cells = parseRow(r);
+          const num = cells[0] ? `${cells[0]}. ` : '';
+          return {
+            label: `${num}${cells[1] || ''}`.trim(),
+            cells: cells.slice(2),
+          };
+        });
+      }
+
+      const colChoices = headerCells.slice(1).map((h) => h.toLowerCase().trim());
+      const hasInteractiveHeaders = colChoices.some((h) => {
+        const clean = h.replace(/[\(\)\[\]]/g, ' ').trim();
+        return (
+          /^(?:benar|salah|true|false|ya|tidak|yes|no|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|agree|disagree|tepat|tidak\s*tepat|fakta|opini|b|s|t|f)$/i.test(clean) ||
+          /\b(?:benar|salah|true|false|sesuai|setuju|agree|disagree)\b/i.test(clean)
+        );
+      });
+
+      const hasInteractiveCells = rows.some((row) =>
+        row.cells.some((cell) => /\[\s*[✓xX]?\s*\]|☐|☑/i.test(cell) || cell.trim() === '' || cell.trim() === '-')
+      );
+
+      const hasStemKeywords =
+        /\[matching/i.test(qText) ||
+        /menjodohkan/i.test(qText) ||
+        /benar[\s/]*salah/i.test(qText) ||
+        /true[\s/]*false/i.test(qText) ||
+        /sesuai[\s/]*tidak\s*sesuai/i.test(qText) ||
+        /centang\s*(?:kolom|pada)/i.test(qText) ||
+        /pilihlah\s*(?:salah\s*satu|kolom)/i.test(qText) ||
+        /click\s+[a-z\s]+\s+for\s+each/i.test(qText);
+
+      const isInteractive = hasInteractiveHeaders || (hasStemKeywords && (hasInteractiveCells || colChoices.length >= 2));
+
+      return {
+        startLineIdx: startIdx,
+        endLineIdx: endIdx,
+        headerCells,
+        rows: rows.filter((r) => r.label.trim().length > 0),
+        isInteractive,
+      };
+    };
+
     const tableBlocks: TableCandidate[] = [];
     let curTableLines: string[] = [];
     let curStartIdx = -1;
@@ -2084,48 +2173,8 @@ export function StudentQuizRunner({
         curTableLines.push(lines[i]);
       } else {
         if (curTableLines.length >= 2) {
-          const rawRows = curTableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
-          if (rawRows.length >= 2) {
-            let headerCells = parseRow(rawRows[0]);
-            let rows = rawRows.slice(1).map((r) => {
-              const cells = parseRow(r);
-              return { label: cells[0] || '', cells: cells.slice(1) };
-            });
-
-            // If 4 columns: [No., Pernyataan, Benar, Salah] or [#, Statement, True, False]
-            // where col 0 is index / number, merge col 0 into col 1
-            if (
-              headerCells.length >= 4 &&
-              /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
-              /^(?:pernyataan|statement|aspek|kategori)$/i.test(headerCells[1])
-            ) {
-              headerCells = [headerCells[1], ...headerCells.slice(2)];
-              rows = rawRows.slice(1).map((r) => {
-                const cells = parseRow(r);
-                const num = cells[0] ? `${cells[0]}. ` : '';
-                return {
-                  label: `${num}${cells[1] || ''}`.trim(),
-                  cells: cells.slice(2),
-                };
-              });
-            }
-
-            const colChoices = headerCells.slice(1).map((h) => h.toLowerCase());
-            const hasInteractiveHeaders = colChoices.some((h) =>
-              /^(?:benar|salah|true|false|ya|tidak|yes|no)$/i.test(h)
-            );
-            const hasInteractiveCells = rows.some((row) =>
-              row.cells.some((cell) => /\[\s*[✓xX]?\s*\]|☐|☑/i.test(cell))
-            );
-
-            tableBlocks.push({
-              startLineIdx: curStartIdx,
-              endLineIdx: i,
-              headerCells,
-              rows: rows.filter((r) => r.label.trim().length > 0),
-              isInteractive: hasInteractiveHeaders || hasInteractiveCells,
-            });
-          }
+          const candidate = parseTableBlock(curTableLines, curStartIdx, i);
+          if (candidate) tableBlocks.push(candidate);
         }
         curTableLines = [];
         curStartIdx = -1;
@@ -2133,53 +2182,15 @@ export function StudentQuizRunner({
     }
 
     if (curTableLines.length >= 2) {
-      const rawRows = curTableLines.filter((l) => l.trim().length > 0 && !isSeparatorRow(l));
-      if (rawRows.length >= 2) {
-        let headerCells = parseRow(rawRows[0]);
-        let rows = rawRows.slice(1).map((r) => {
-          const cells = parseRow(r);
-          return { label: cells[0] || '', cells: cells.slice(1) };
-        });
-
-        if (
-          headerCells.length >= 4 &&
-          /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
-          /^(?:pernyataan|statement|aspek|kategori)$/i.test(headerCells[1])
-        ) {
-          headerCells = [headerCells[1], ...headerCells.slice(2)];
-          rows = rawRows.slice(1).map((r) => {
-            const cells = parseRow(r);
-            const num = cells[0] ? `${cells[0]}. ` : '';
-            return {
-              label: `${num}${cells[1] || ''}`.trim(),
-              cells: cells.slice(2),
-            };
-          });
-        }
-
-        const colChoices = headerCells.slice(1).map((h) => h.toLowerCase());
-        const hasInteractiveHeaders = colChoices.some((h) =>
-          /^(?:benar|salah|true|false|ya|tidak|yes|no)$/i.test(h)
-        );
-        const hasInteractiveCells = rows.some((row) =>
-          row.cells.some((cell) => /\[\s*[✓xX]?\s*\]|☐|☑/i.test(cell))
-        );
-
-        tableBlocks.push({
-          startLineIdx: curStartIdx,
-          endLineIdx: lines.length,
-          headerCells,
-          rows: rows.filter((r) => r.label.trim().length > 0),
-          isInteractive: hasInteractiveHeaders || hasInteractiveCells,
-        });
-      }
+      const candidate = parseTableBlock(curTableLines, curStartIdx, lines.length);
+      if (candidate) tableBlocks.push(candidate);
     }
 
     if (tableBlocks.length === 0) return null;
 
-    // Pick the interactive table candidate if available, else pick the last table block
-    const chosen = tableBlocks.find((tb) => tb.isInteractive) || tableBlocks[tableBlocks.length - 1];
-    if (!chosen || chosen.rows.length === 0) return null;
+    // Pick the interactive table candidate (searching from bottom up since response tables follow stimulus tables)
+    const chosen = tableBlocks.slice().reverse().find((tb) => tb.isInteractive);
+    if (!chosen || !chosen.isInteractive || chosen.rows.length === 0) return null;
 
     // All lines before chosen.startLineIdx belong to preTableText (which keeps stimulus data tables!)
     const preText = lines.slice(0, chosen.startLineIdx).join('\n').trim();
@@ -2188,6 +2199,7 @@ export function StudentQuizRunner({
       headerCells: chosen.headerCells,
       rows: chosen.rows,
       preTableText: preText,
+      isInteractive: true,
     };
   }, [currentQuestion]);
 
@@ -4216,7 +4228,7 @@ export function StudentQuizRunner({
                   );
                 })}
               </div>
-            ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
+            ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && !currentTable && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
               /* 2. Multi-Part Sub-Questions Stream if structured */
               <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
                 {currentQuestion.sub_questions.map((sub, sIdx) => {
@@ -4436,9 +4448,9 @@ export function StudentQuizRunner({
                   <table className="sq-interactive-table">
                     <thead>
                       <tr>
-                        <th>{currentTable.headerCells[0] || 'Item / Prompt'}</th>
+                        <th><ExamMathText content={currentTable.headerCells[0] || 'Item / Prompt'} /></th>
                         {currentTable.headerCells.slice(1).map((h, hi) => (
-                          <th key={hi}>{h}</th>
+                          <th key={hi}><ExamMathText content={h} /></th>
                         ))}
                       </tr>
                     </thead>
@@ -4446,7 +4458,7 @@ export function StudentQuizRunner({
                       {currentTable.rows.map((row, ri) => (
                         <tr key={ri}>
                           <td>
-                            <span className="sq-table-row-label">{row.label}</span>
+                            <span className="sq-table-row-label"><ExamMathText content={row.label} /></span>
                           </td>
                           {currentTable.headerCells.slice(1).map((colName, ci) => {
                             const isSelected = currentTableSelections[row.label] === colName;

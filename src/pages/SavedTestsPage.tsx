@@ -11,6 +11,7 @@ import { ExportModal } from '../components/ExportModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { GoogleFormsExportModal } from '../components/GoogleFormsExportModal';
+import { ExamVariantModal } from '../components/ExamVariantModal';
 import type { Question, CustomTest } from '../types/database';
 import './SavedTestsPage.css';
 
@@ -74,6 +75,11 @@ export function SavedTestsPage({
   } | null>(null);
 
   const [googleFormsData, setGoogleFormsData] = useState<{
+    headerConfig: ExamHeaderConfig;
+    questions: Question[];
+  } | null>(null);
+
+  const [variantData, setVariantData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
   } | null>(null);
@@ -207,6 +213,34 @@ export function SavedTestsPage({
       }
     } catch (err: any) {
       alert(`Failed to prepare Google Forms export: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setLoadingTestId(null);
+    }
+  };
+
+  const handleGenerateVariant = async (test: CustomTestWithDetails) => {
+    setLoadingTestId(test.id);
+    try {
+      const resolved = await fetchCustomTestWithQuestions(test.id);
+      if (resolved && resolved.questions.length > 0) {
+        setVariantData({
+          headerConfig: {
+            title: test.header_config?.title || test.title || 'Exam Assessment',
+            schoolName: test.header_config?.schoolName || '',
+            subject: test.header_config?.subject || test.primarySubject || 'General',
+            subjectCode: test.header_config?.subjectCode || '',
+            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
+            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers clearly.',
+            additionalMaterials: test.header_config?.additionalMaterials || '',
+            layoutTemplate: test.header_config?.layoutTemplate,
+          },
+          questions: resolved.questions,
+        });
+      } else {
+        alert('This saved test has no questions to generate variants from.');
+      }
+    } catch (err: any) {
+      alert(`Failed to prepare variant generation: ${err?.message || 'Unknown error'}`);
     } finally {
       setLoadingTestId(null);
     }
@@ -685,6 +719,16 @@ export function SavedTestsPage({
 
                               <button
                                 type="button"
+                                className="saved-card-btn saved-card-btn--variant"
+                                onClick={() => handleGenerateVariant(test)}
+                                disabled={loadingTestId === test.id}
+                                title="Generate Parallel Twin Exam (Set B)"
+                              >
+                                🔀 Variant
+                              </button>
+
+                              <button
+                                type="button"
                                 className="saved-card-btn saved-card-btn--forms"
                                 onClick={() => handleGoogleFormsExport(test)}
                                 disabled={loadingTestId === test.id}
@@ -757,6 +801,22 @@ export function SavedTestsPage({
           onClose={() => setGoogleFormsData(null)}
           headerConfig={googleFormsData.headerConfig}
           questions={googleFormsData.questions}
+        />
+      )}
+
+      {/* Exam Variant Modal (Set B) */}
+      {variantData && (
+        <ExamVariantModal
+          isOpen={true}
+          onClose={() => setVariantData(null)}
+          originalHeaderConfig={variantData.headerConfig}
+          originalQuestions={variantData.questions}
+          onSaveComplete={() => {
+            loadTests();
+          }}
+          onOpenInBuilder={(qs, hc) => {
+            onLoadTestIntoBuilder(qs, hc);
+          }}
         />
       )}
     </div>
