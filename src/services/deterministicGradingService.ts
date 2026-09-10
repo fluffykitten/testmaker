@@ -271,25 +271,157 @@ interface MarkSchemeTargetPoint {
   originalClause: string;
   label?: string;
   synonyms: string[];
+  indexNum?: number;
+  normLabel?: string;
+  words?: Set<string>;
+}
+
+export const AFFIRMATIVE_SYNONYMS = new Set([
+  'benar', 'true', 'b', 't', 'ya', 'yes', 'sesuai', 'setuju', 'agree', 'fakta', 'tepat', 'betul'
+]);
+
+export const NEGATIVE_SYNONYMS = new Set([
+  'salah', 'false', 's', 'f', 'tidak', 'no', 'tidak sesuai', 'tidak setuju', 'disagree', 'opini', 'tidak tepat'
+]);
+
+/**
+ * Extracts a leading index number from a string, e.g. "1.", "(2)", "[3]", "IV.", "b."
+ */
+export function extractLeadingIndex(str?: string): number | undefined {
+  if (!str) return undefined;
+  const clean = str.trim();
+  const numMatch = clean.match(/^\[?\s*(\d+)[\].:\)\s-]/);
+  if (numMatch) return parseInt(numMatch[1], 10);
+
+  const romanMatch = clean.match(/^\[?\s*(i|ii|iii|iv|v|vi|vii|viii|ix|x)[\].:\)\s-]/i);
+  if (romanMatch) {
+    const r = romanMatch[1].toLowerCase();
+    const map: Record<string, number> = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+    return map[r];
+  }
+
+  const letterMatch = clean.match(/^\[?\s*([a-e])[\].:\)\s-]/i);
+  if (letterMatch) {
+    return letterMatch[1].toLowerCase().charCodeAt(0) - 96;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts core words from a statement label, ignoring LaTeX formulas and symbols
+ */
+export function extractLabelWords(str?: string): Set<string> {
+  if (!str) return new Set();
+  const cleaned = str
+    .toLowerCase()
+    .replace(/\$[^$]*\$/g, ' ') // strip inline latex formulas e.g. $OH^-$
+    .replace(/\\(?:text|mathrm|ce)\{[^}]*\}/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ');
+  const words = cleaned.split(/\s+/).filter((w) => w.length >= 2);
+  return new Set(words);
+}
+
+/**
+ * Splits a key-value pair string (e.g. "Row: Value" or "Row = Value" or "Row -> Value") safely.
+ * Avoids splitting on hyphens inside LaTeX formulas ($OH^-$) or hyphenated words.
+ */
+export function splitPair(pair: string): { rawLabel: string; rawVal: string } | null {
+  const trimmed = pair.trim();
+  if (!trimmed) return null;
+
+  const colonIdx = trimmed.lastIndexOf(':');
+  const equalsIdx = trimmed.lastIndexOf('=');
+  const arrowIdx = Math.max(trimmed.lastIndexOf('->'), trimmed.lastIndexOf('→'));
+  const spacedDashIdx = trimmed.lastIndexOf(' - ');
+
+  let splitIdx = -1;
+  let sepLen = 1;
+
+  if (colonIdx !== -1) {
+    splitIdx = colonIdx;
+    sepLen = 1;
+  } else if (equalsIdx !== -1) {
+    splitIdx = equalsIdx;
+    sepLen = 1;
+  } else if (arrowIdx !== -1) {
+    splitIdx = arrowIdx;
+    sepLen = trimmed.startsWith('->', arrowIdx) ? 2 : 1;
+  } else if (spacedDashIdx !== -1) {
+    splitIdx = spacedDashIdx;
+    sepLen = 3;
+  }
+
+  if (splitIdx !== -1) {
+    const rawLabel = trimmed.substring(0, splitIdx).trim().replace(/\.+$/, '');
+    const rawVal = trimmed.substring(splitIdx + sepLen).trim().replace(/\.+$/, '');
+    if (rawLabel && rawVal) {
+      return { rawLabel, rawVal };
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks if two values are equivalent, supporting binary True/False/Benar/Salah equivalents,
+ * chemical formulas, numbers, and keyword matches.
+ */
+export function areValuesEquivalent(studentVal: string, expectedVal: string): boolean {
+  const s = studentVal.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const e = expectedVal.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!s || !e) return false;
+  if (s === e) return true;
+  if (AFFIRMATIVE_SYNONYMS.has(s) && AFFIRMATIVE_SYNONYMS.has(e)) return true;
+  if (NEGATIVE_SYNONYMS.has(s) && NEGATIVE_SYNONYMS.has(e)) return true;
+  if (s.includes(e) || e.includes(s)) return true;
+  if (isChemicalEquivalent(studentVal, expectedVal)) return true;
+  const numRes = isNumericEquivalent(studentVal, expectedVal);
+  if (numRes.isMatch) return true;
+  return false;
+}
+
+/**
+ * Extracts table data row labels from a question text markdown table if available
+ */
+export function extractQuestionTableLabels(questionText?: string): string[] {
+  if (!questionText || !questionText.includes('|')) return [];
+  const lines = questionText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const tableRows: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('|') || (line.match(/\|/g) || []).length >= 2) {
+      const clean = line.replace(/^\|/, '').replace(/\|$/, '');
+      const cells = clean.split('|').map((c) => c.trim());
+      const isSep = cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c) || /^[-:\s]+$/.test(c));
+      if (!isSep) {
+        tableRows.push(clean);
+      }
+    }
+  }
+  if (tableRows.length >= 2) {
+    const dataRows = tableRows.slice(1).map((r) => {
+      const cells = r.split('|').map((c) => c.trim());
+      if (cells.length >= 4 && /^\d+$/.test(cells[0])) {
+        return `${cells[0]}. ${cells[1]}`;
+      }
+      return cells[0] || '';
+    }).filter(Boolean);
+    return dataRows;
+  }
+  return [];
 }
 
 /**
  * Strips mark allocations (e.g. [1], [M1], (1 mark)) and extracts the target value after any label
  */
 export function cleanMarkSchemeClause(clause: string): { label?: string; target: string } {
-  let str = clause
+  const str = clause
     .replace(/\[[A-Za-z0-9\s]+\]/g, '')
     .replace(/\([0-9]+\s*(?:marks?)?\)/gi, '')
     .trim();
 
-  // If there's a label with a colon (e.g. "state at t1: liquid" or "T1: liquid")
-  const colonIdx = str.lastIndexOf(':');
-  if (colonIdx !== -1) {
-    const label = str.substring(0, colonIdx).trim();
-    const target = str.substring(colonIdx + 1).trim();
-    if (target.length > 0) {
-      return { label, target };
-    }
+  const pair = splitPair(str);
+  if (pair && pair.rawLabel && pair.rawVal) {
+    return { label: pair.rawLabel, target: pair.rawVal };
   }
 
   return { target: str };
@@ -309,7 +441,8 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
 
   const points: MarkSchemeTargetPoint[] = [];
 
-  for (const clause of rawClauses) {
+  for (let cIdx = 0; cIdx < rawClauses.length; cIdx++) {
+    const clause = rawClauses[cIdx];
     const { label, target } = cleanMarkSchemeClause(clause);
     if (!target) continue;
 
@@ -319,6 +452,19 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
 
     for (const syn of rawSyns) {
       synonyms.push(syn);
+
+      // Auto-expand affirmative or negative binary equivalents
+      const cleanLower = syn.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (AFFIRMATIVE_SYNONYMS.has(cleanLower)) {
+        ['Benar', 'True', 'B', 'T', 'Ya', 'Sesuai', 'Setuju'].forEach((v) => {
+          if (!synonyms.includes(v)) synonyms.push(v);
+        });
+      } else if (NEGATIVE_SYNONYMS.has(cleanLower)) {
+        ['Salah', 'False', 'S', 'F', 'Tidak', 'Tidak Sesuai', 'Tidak Setuju'].forEach((v) => {
+          if (!synonyms.includes(v)) synonyms.push(v);
+        });
+      }
+
       // Also expand chemical formulas if applicable
       const exp = expandFormulaSearch(syn);
       for (const t of exp.expandedTokens) {
@@ -327,10 +473,17 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
     }
 
     if (synonyms.length > 0) {
+      const idx = extractLeadingIndex(label) ?? (cIdx + 1);
+      const normLabel = label ? label.toLowerCase().replace(/[^a-z0-9]/g, '') : undefined;
+      const words = label ? extractLabelWords(label) : undefined;
+
       points.push({
         originalClause: clause,
         label,
         synonyms,
+        indexNum: idx,
+        normLabel,
+        words,
       });
     }
   }
@@ -343,62 +496,147 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
  */
 export function evaluateMultiPointAnswer(
   studentAnswer: string,
-  targetPoints: MarkSchemeTargetPoint[]
+  targetPoints: MarkSchemeTargetPoint[],
+  question?: Question,
+  subIndex?: number
 ): { matchedCount: number; totalPoints: number; isAllMatched: boolean; matchedPoints: string[]; feedbackSummary: string } {
   if (!studentAnswer || targetPoints.length === 0) {
     return { matchedCount: 0, totalPoints: targetPoints.length, isAllMatched: false, matchedPoints: [], feedbackSummary: '' };
   }
 
-  // 1. If target points have labels (e.g. table/matching questions: "KNP Waters: Conservation"),
+  // 1. If target points have labels (e.g. table/matching questions: "1. Statement: Benar; 2. Statement: Salah"),
   // parse the student's answer as key-value pairs
   const hasLabels = targetPoints.some((p) => p.label && p.label.trim().length > 0);
 
   if (hasLabels) {
-    // Parse student's key-value pairs from "Row: Value; Row: Value" or "Row = Value" or lines
-    const studentPairs: Record<string, string> = {};
+    // Parse student's key-value pairs
+    interface ParsedStudentPair {
+      rawLabel: string;
+      normLabel: string;
+      val: string;
+      indexNum?: number;
+      words: Set<string>;
+    }
+
+    const studentPairs: ParsedStudentPair[] = [];
     const rawPairs = studentAnswer.split(/[;\n]/).map((s) => s.trim()).filter(Boolean);
 
-    for (const pair of rawPairs) {
-      const splitIdx = pair.search(/[:=→\-]/);
-      if (splitIdx !== -1) {
-        const k = pair.substring(0, splitIdx).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-        const v = pair.substring(splitIdx + 1).trim().toLowerCase();
-        if (k && v) {
-          studentPairs[k] = v;
-        }
+    for (let pIdx = 0; pIdx < rawPairs.length; pIdx++) {
+      const p = rawPairs[pIdx];
+      const parsed = splitPair(p);
+      if (parsed) {
+        const indexNum = extractLeadingIndex(parsed.rawLabel) ?? (pIdx + 1);
+        const normLabel = parsed.rawLabel.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const words = extractLabelWords(parsed.rawLabel);
+        studentPairs.push({
+          rawLabel: parsed.rawLabel,
+          normLabel,
+          val: parsed.rawVal,
+          indexNum,
+          words,
+        });
+      } else {
+        // Line without separator (e.g. "Benar" in a sequence of answers)
+        studentPairs.push({
+          rawLabel: p,
+          normLabel: p.toLowerCase().replace(/[^a-z0-9]/g, ''),
+          val: p,
+          indexNum: pIdx + 1,
+          words: extractLabelWords(p),
+        });
       }
     }
 
+    // Extract table rows from question if present for ground-truth row alignment
+    const qText = (subIndex !== undefined && question?.sub_questions?.[subIndex]?.question_text)
+      ? question.sub_questions[subIndex].question_text
+      : (typeof question?.question_text === 'string' ? question.question_text : '');
+    const tableLabels = extractQuestionTableLabels(qText);
+
     let matchedCount = 0;
     const matchedPoints: string[] = [];
+    const usedStudentPairIndices = new Set<number>();
 
-    for (const point of targetPoints) {
-      const normLabel = (point.label || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      let pointMatched = false;
+    for (let ptIdx = 0; ptIdx < targetPoints.length; ptIdx++) {
+      const point = targetPoints[ptIdx];
+      let matchedPairIdx = -1;
 
-      // Check if student provided an explicit pair for this row label
-      let studentVal = studentPairs[normLabel];
-      if (!studentVal) {
-        // Fallback: check if any student key contains or is contained by normLabel
-        for (const [k, v] of Object.entries(studentPairs)) {
-          if ((normLabel.length >= 4 && k.includes(normLabel)) || (k.length >= 4 && normLabel.includes(k))) {
-            studentVal = v;
-            break;
+      // Strategy A: Match by explicit leading index number (e.g. Row 3 to Point 3)
+      if (point.indexNum !== undefined) {
+        matchedPairIdx = studentPairs.findIndex(
+          (sp, idx) => !usedStudentPairIndices.has(idx) && sp.indexNum === point.indexNum
+        );
+      }
+
+      // Strategy B: Exact normalized label match
+      if (matchedPairIdx === -1 && point.normLabel) {
+        matchedPairIdx = studentPairs.findIndex(
+          (sp, idx) => !usedStudentPairIndices.has(idx) && sp.normLabel === point.normLabel
+        );
+      }
+
+      // Strategy C: Table row alignment if question markdown table exists
+      if (matchedPairIdx === -1 && tableLabels.length > 0 && ptIdx < tableLabels.length) {
+        const expectedTableLabel = tableLabels[ptIdx].toLowerCase().replace(/[^a-z0-9]/g, '');
+        matchedPairIdx = studentPairs.findIndex(
+          (sp, idx) => !usedStudentPairIndices.has(idx) && (
+            sp.normLabel === expectedTableLabel ||
+            (expectedTableLabel.length >= 4 && sp.normLabel.includes(expectedTableLabel))
+          )
+        );
+      }
+
+      // Strategy D: Substring inclusion match (if length >= 4)
+      if (matchedPairIdx === -1 && point.normLabel && point.normLabel.length >= 4) {
+        matchedPairIdx = studentPairs.findIndex(
+          (sp, idx) => !usedStudentPairIndices.has(idx) && (
+            sp.normLabel.includes(point.normLabel!) ||
+            point.normLabel!.includes(sp.normLabel)
+          )
+        );
+      }
+
+      // Strategy E: Keyword word overlap (Jaccard / intersection)
+      if (matchedPairIdx === -1 && point.words && point.words.size > 0) {
+        let bestScore = 0;
+        let bestCandidateIdx = -1;
+        for (let spIdx = 0; spIdx < studentPairs.length; spIdx++) {
+          if (usedStudentPairIndices.has(spIdx)) continue;
+          const sp = studentPairs[spIdx];
+          let intersection = 0;
+          for (const w of point.words) {
+            if (sp.words.has(w)) intersection++;
           }
+          if (intersection > bestScore && intersection >= 2) {
+            bestScore = intersection;
+            bestCandidateIdx = spIdx;
+          }
+        }
+        if (bestCandidateIdx !== -1) {
+          matchedPairIdx = bestCandidateIdx;
         }
       }
 
-      if (studentVal) {
-        // Compare student's value against point synonyms
+      // Strategy F: Positional alignment fallback if target and student counts match
+      if (matchedPairIdx === -1 && ptIdx < studentPairs.length && !usedStudentPairIndices.has(ptIdx)) {
+        if (studentPairs.length === targetPoints.length) {
+          matchedPairIdx = ptIdx;
+        }
+      }
+
+      let pointMatched = false;
+      if (matchedPairIdx !== -1) {
+        const studentPair = studentPairs[matchedPairIdx];
+        usedStudentPairIndices.add(matchedPairIdx);
+
         for (const syn of point.synonyms) {
-          const cleanSyn = syn.toLowerCase().trim();
-          if (studentVal.includes(cleanSyn) || cleanSyn.includes(studentVal) || isChemicalEquivalent(studentVal, syn)) {
+          if (areValuesEquivalent(studentPair.val, syn)) {
             pointMatched = true;
             break;
           }
         }
       } else {
-        // Fallback: if student didn't use key-value format, check if both label and synonym appear in proximity
+        // Fallback: Proximity search in unparsed student answer text
         const cleanStudent = studentAnswer.toLowerCase();
         for (const syn of point.synonyms) {
           const cleanSyn = syn.toLowerCase().trim();
@@ -511,17 +749,28 @@ export function extractAcceptableAnswers(question: Question, subIndex?: number):
   // Check sub-question mark scheme first
   if (subIndex !== undefined && question.sub_questions && question.sub_questions[subIndex]) {
     const sq = question.sub_questions[subIndex];
-    if (sq.mark_scheme) result.push(sq.mark_scheme);
+    if (sq.mark_scheme) {
+      if (typeof sq.mark_scheme === 'string') result.push(sq.mark_scheme);
+      else if (typeof (sq as any).mark_scheme === 'object') {
+        const obj: any = sq.mark_scheme;
+        if (Array.isArray(obj.acceptable_answers)) result.push(...obj.acceptable_answers);
+        if (Array.isArray(obj.marking_points)) result.push(...obj.marking_points);
+      }
+    }
     if (sq.options && sq.options.length > 0) result.push(sq.options[0]);
   }
 
   // Check parent question mark_scheme
   if (question.mark_scheme) {
-    if (question.mark_scheme.acceptable_answers) {
-      result.push(...question.mark_scheme.acceptable_answers);
-    }
-    if (question.mark_scheme.marking_points) {
-      result.push(...question.mark_scheme.marking_points);
+    if (typeof question.mark_scheme === 'string') {
+      result.push(question.mark_scheme);
+    } else {
+      if (question.mark_scheme.acceptable_answers) {
+        result.push(...question.mark_scheme.acceptable_answers);
+      }
+      if (question.mark_scheme.marking_points) {
+        result.push(...question.mark_scheme.marking_points);
+      }
     }
   }
 
@@ -1102,11 +1351,24 @@ export function gradeDeterministicAnswer(
     }
   }
 
-  // C. Multi-Point / Multi-Clause Matching (e.g. "state at t1: liquid [1]; state at T2: solid [1]")
-  for (const targetStr of acceptableList) {
+  // C. Multi-Point / Multi-Clause Matching (e.g. "state at t1: liquid [1]; state at T2: solid [1]" or table matching)
+  const candidateTargets: string[] = [...acceptableList];
+  if (Array.isArray(question.mark_scheme?.marking_points) && question.mark_scheme.marking_points.length >= 2) {
+    candidateTargets.push(question.mark_scheme.marking_points.join('; '));
+  }
+  if (Array.isArray(question.mark_scheme?.acceptable_answers) && question.mark_scheme.acceptable_answers.length >= 2) {
+    candidateTargets.push(question.mark_scheme.acceptable_answers.join('; '));
+  }
+
+  let bestMultiRes: {
+    res: ReturnType<typeof evaluateMultiPointAnswer>;
+    targetPoints: MarkSchemeTargetPoint[];
+  } | null = null;
+
+  for (const targetStr of candidateTargets) {
     const targetPoints = parseMarkSchemeTargetPoints(targetStr);
     if (targetPoints.length >= 2) {
-      const multiRes = evaluateMultiPointAnswer(rawAnswerStr, targetPoints);
+      const multiRes = evaluateMultiPointAnswer(rawAnswerStr, targetPoints, question, subIndex);
       if (multiRes.isAllMatched) {
         return {
           isHandled: true,
@@ -1118,19 +1380,25 @@ export function gradeDeterministicAnswer(
           matchedCriteria: multiRes.matchedPoints,
           acceptedAnswers: [multiRes.feedbackSummary],
         };
-      } else if (multiRes.matchedCount > 0 || targetPoints.some((p) => p.label)) {
-        return {
-          isHandled: true,
-          earnedMarks: 0,
-          maxMarks,
-          isCorrect: false,
-          matchType: 'keyword',
-          feedback: `✗ Incomplete match (${multiRes.matchedCount}/${multiRes.totalPoints} correct). All selections must be correct to earn marks (0/${maxMarks}). Expected: ${multiRes.feedbackSummary}`,
-          matchedCriteria: multiRes.matchedPoints,
-          acceptedAnswers: [multiRes.feedbackSummary],
-        };
+      }
+
+      if (!bestMultiRes || multiRes.matchedCount > bestMultiRes.res.matchedCount) {
+        bestMultiRes = { res: multiRes, targetPoints };
       }
     }
+  }
+
+  if (bestMultiRes && (bestMultiRes.res.matchedCount > 0 || bestMultiRes.targetPoints.some((p) => p.label))) {
+    return {
+      isHandled: true,
+      earnedMarks: 0,
+      maxMarks,
+      isCorrect: false,
+      matchType: 'keyword',
+      feedback: `✗ Incomplete match (${bestMultiRes.res.matchedCount}/${bestMultiRes.res.totalPoints} correct). All selections must be correct to earn marks (0/${maxMarks}). Expected: ${bestMultiRes.res.feedbackSummary}`,
+      matchedCriteria: bestMultiRes.res.matchedPoints,
+      acceptedAnswers: [bestMultiRes.res.feedbackSummary],
+    };
   }
 
   // D. Check Short Keyword / Term Match

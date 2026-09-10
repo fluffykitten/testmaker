@@ -1337,14 +1337,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                                 sub.status === 'published'
                                   ? 'rgba(34, 197, 94, 0.2)'
                                   : sub.status === 'graded'
-                                  ? 'rgba(59, 130, 246, 0.2)'
-                                  : 'rgba(234, 179, 8, 0.2)',
+                                    ? 'rgba(59, 130, 246, 0.2)'
+                                    : 'rgba(234, 179, 8, 0.2)',
                               color:
                                 sub.status === 'published'
                                   ? '#4ade80'
                                   : sub.status === 'graded'
-                                  ? '#60a5fa'
-                                  : '#facc15',
+                                    ? '#60a5fa'
+                                    : '#facc15',
                             }}
                           >
                             {sub.status === 'published' ? '📢 Released' : sub.status === 'graded' ? '📝 Graded' : '⏳ Awaiting AI'}
@@ -1546,35 +1546,35 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
                 {/* 🔒 Anti-Cheating & Proctoring Audit Box (Only for Online exams) */}
                 {selectedSubmission.durationSeconds > 0 && !selectedSubmission.quizCode?.startsWith('OFFLINE') && (
-                <div className={`qrm-proctor-card ${selectedSubmission.violationsCount > 0 ? 'alert' : 'clean'}`}>
-                  <div className="proctor-header">
-                    <span className="proctor-icon">
-                      {selectedSubmission.violationsCount === 0 ? '🛡️' : '🚨'}
-                    </span>
-                    <div>
-                      <strong>Exam Browser & Proctoring Audit Trail</strong>
-                      <p>
-                        {selectedSubmission.violationsCount === 0
-                          ? 'Zero suspicious events detected. Candidate remained in fullscreen and stayed focused.'
-                          : `${selectedSubmission.violationsCount} security violation strike(s) recorded during the session.`}
-                      </p>
+                  <div className={`qrm-proctor-card ${selectedSubmission.violationsCount > 0 ? 'alert' : 'clean'}`}>
+                    <div className="proctor-header">
+                      <span className="proctor-icon">
+                        {selectedSubmission.violationsCount === 0 ? '🛡️' : '🚨'}
+                      </span>
+                      <div>
+                        <strong>Exam Browser & Proctoring Audit Trail</strong>
+                        <p>
+                          {selectedSubmission.violationsCount === 0
+                            ? 'Zero suspicious events detected. Candidate remained in fullscreen and stayed focused.'
+                            : `${selectedSubmission.violationsCount} security violation strike(s) recorded during the session.`}
+                        </p>
+                      </div>
                     </div>
-                  </div>
 
-                  {selectedSubmission.proctoringLogs && selectedSubmission.proctoringLogs.length > 0 && (
-                    <div className="proctor-timeline">
-                      {selectedSubmission.proctoringLogs.map((log, idx) => (
-                        <div key={idx} className="proctor-log-item">
-                          <span className="log-strike-tag">Strike {log.strike}</span>
-                          <span className="log-time">
-                            {formatProctorTimestamp(log.timestamp)}
-                          </span>
-                          <span className="log-event">{log.event}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                    {selectedSubmission.proctoringLogs && selectedSubmission.proctoringLogs.length > 0 && (
+                      <div className="proctor-timeline">
+                        {selectedSubmission.proctoringLogs.map((log, idx) => (
+                          <div key={idx} className="proctor-log-item">
+                            <span className="log-strike-tag">Strike {log.strike}</span>
+                            <span className="log-time">
+                              {formatProctorTimestamp(log.timestamp)}
+                            </span>
+                            <span className="log-event">{log.event}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Topic Breakdown Progress */}

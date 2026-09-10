@@ -124,15 +124,15 @@ export function StudentResultModal({
                 {pinMismatch
                   ? 'Incorrect Personal Access PIN'
                   : hasUnreleased
-                  ? 'Evaluation In Progress'
-                  : 'No Published Submissions Found'}
+                    ? 'Evaluation In Progress'
+                    : 'No Published Submissions Found'}
               </h3>
               <p className="srm-empty-desc">
                 {pinMismatch
                   ? 'The 3-digit PIN entered does not match this candidate\'s examination receipt. Please verify the 3-digit PIN displayed on your exam confirmation screen and try again.'
                   : hasUnreleased
-                  ? 'Your examination responses have been safely received! The examiner is currently reviewing and grading the class. Please check back soon once results are officially released.'
-                  : `We could not find any published exam attempts for "${candidateIdentifier}" under code "${quizCode}". Please double check your Quiz Code or Candidate Name / Number.`}
+                    ? 'Your examination responses have been safely received! The examiner is currently reviewing and grading the class. Please check back soon once results are officially released.'
+                    : `We could not find any published exam attempts for "${candidateIdentifier}" under code "${quizCode}". Please double check your Quiz Code or Candidate Name / Number.`}
               </p>
             </div>
           ) : selectedSubmission ? (

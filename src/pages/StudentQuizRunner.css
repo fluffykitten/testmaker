@@ -564,9 +564,19 @@
   border-radius: 2px;
 }
 
-.legend-box.answered { background: var(--color-primary-600); }
-.legend-box.flagged { background: #f59e0b; border: 1px solid #d97706; }
-.legend-box.unanswered { background: var(--color-surface-elevated); border: 1px solid var(--color-border); }
+.legend-box.answered {
+  background: var(--color-primary-600);
+}
+
+.legend-box.flagged {
+  background: #f59e0b;
+  border: 1px solid #d97706;
+}
+
+.legend-box.unanswered {
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+}
 
 /* ─── Pinned Question Context Card (Under Navigator in Sidebar) ─────────────── */
 .sq-sidebar-context-card {
@@ -1065,8 +1075,13 @@
   color: var(--color-text-secondary);
 }
 
-.text-danger { color: #ef4444; }
-.text-success { color: #10b981; }
+.text-danger {
+  color: #ef4444;
+}
+
+.text-success {
+  color: #10b981;
+}
 
 .results-section-heading {
   font-size: 1rem;
@@ -1606,6 +1621,7 @@
     opacity: 0;
     transform: translateY(-8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1812,5 +1828,3 @@
   line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-
-
