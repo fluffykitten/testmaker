@@ -4,7 +4,7 @@
 
 import type { ExamDataTable } from '../../types/database';
 import type { ExamHeaderConfig } from '../testBuilderService';
-import { extractMarkdownTable, formatTableToCleanText } from '../../lib/tableImageRenderer';
+import { extractAllMarkdownTables, formatTableToCleanText } from '../../lib/tableImageRenderer';
 
 // ─── Unicode Superscript & Subscript Maps ────────────────────────────────────
 
@@ -59,6 +59,9 @@ export function cleanTextForGoogleForms(text: string, options?: { preserveNewlin
   if (!text) return '';
 
   let cleaned = text
+    // Replace LaTeX decimal comma artifact {,} with standard comma
+    .replace(/\\?\{,\}/g, ',')
+
     // Chemistry arrows & reactions
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
     .replace(/\\rightleftharpoons/g, ' ⇌ ')
@@ -186,7 +189,7 @@ export function cleanTextForGoogleForms(text: string, options?: { preserveNewlin
   let prevFont = '';
   while (cleaned !== prevFont) {
     prevFont = cleaned;
-    cleaned = cleaned.replace(/\\(text|mathrm|mathbf|mathit|ce|boldsymbol|textnormal)\{([^{}]+)\}/g, '$2');
+    cleaned = cleaned.replace(/\\(text|mathrm|mathbf|mathit|ce|pu|unit|boldsymbol|textnormal)\{([^{}]+)\}/g, '$2');
   }
 
   // Fractions: resolve nested fractions if any
@@ -200,8 +203,8 @@ export function cleanTextForGoogleForms(text: string, options?: { preserveNewlin
   cleaned = cleaned
     // 1. Braced superscripts: ^{...}
     .replace(/\^{([^{}]*)}/g, (_m, p1) => toUnicodeSuperscript(p1))
-    // 2. Unbraced charge superscripts: Fe^2+, SO_4^2-, Ba^2+, Cl^-, Na^+
-    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]-]|$)/g, (_m, base, exp) => `${base}${toUnicodeSuperscript(exp)}`)
+    // 2. Unbraced charge superscripts: Fe^2+, SO_4^2-, Ba^2+, Cl^-, Na^+, 2F^-(aq)
+    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]\(\-]|$)/g, (_m, base, exp) => `${base}${toUnicodeSuperscript(exp)}`)
     // 3. Unbraced digit/variable superscripts: x^2, 10^5, x^n
     .replace(/([a-zA-Z0-9)\]])\^([0-9nix])(?![a-zA-Z0-9])/g, (_m, base, exp) => `${base}${toUnicodeSuperscript(exp)}`);
 
@@ -336,28 +339,31 @@ export function formatMarkdownTablesForPlaintext(
     return renderDataTablesToUnicode(dataTables);
   }
 
-  let text = rawText.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-  if (/\|[-:\s|]{3,}\|/.test(text)) {
-    const extracted = extractMarkdownTable(text);
-    if (extracted.table) {
+  const tableBlocks = extractAllMarkdownTables(rawText);
+  if (tableBlocks.length > 0) {
+    let result = rawText.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    for (let i = tableBlocks.length - 1; i >= 0; i--) {
+      const block = tableBlocks[i];
       if (options?.hasImageTable) {
-        // Table is visually rendered as an image figure! Strip the raw markdown table from question stem
-        const parts = [extracted.preText, extracted.postText].filter(Boolean);
-        text = parts.join('\n\n');
+        result = result.substring(0, block.startIndex) + '\n' + result.substring(block.endIndex);
       } else {
-        // Clean text fallback: structured card bullets without jagged box lines
-        const rendered = formatTableToCleanText(extracted.table);
-        const parts = [extracted.preText, rendered, extracted.postText].filter(Boolean);
-        text = parts.join('\n\n');
+        const rendered = formatTableToCleanText(block.table);
+        result = result.substring(0, block.startIndex) + '\n' + rendered + '\n' + result.substring(block.endIndex);
       }
     }
-  } else if (dataTables && dataTables.length > 0 && !options?.hasImageTable) {
+    return result
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  if (dataTables && dataTables.length > 0 && !options?.hasImageTable) {
     const rendered = renderDataTablesToUnicode(dataTables);
     if (rendered) {
-      text = text ? `${text}\n\n${rendered}` : rendered;
+      return rawText ? `${rawText}\n\n${rendered}` : rendered;
     }
   }
 
-  return text;
+  return rawText;
 }

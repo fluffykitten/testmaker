@@ -11,7 +11,7 @@ import {
 import { resolveMcqCorrectOptionIndex } from '../deterministicGradingService';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../../lib/gemini';
 import { compareQuestionNumbers } from '../questionBankService';
-import { extractMarkdownTable, extractStructuredTable, renderTableToPngDataUrl, type ParsedTableData } from '../../lib/tableImageRenderer';
+import { extractAllMarkdownTables, extractMarkdownTable, extractStructuredTable, renderTableToPngDataUrl, type ParsedTableData } from '../../lib/tableImageRenderer';
 
 /**
  * Naturally sorts questions if question numbers are out of order (Fixes Issue #2).
@@ -126,14 +126,30 @@ export function resolveAllMcqCorrectIndices(question: Question, subIndex?: numbe
 /**
  * Determines appropriate form item type (Fixes Issue #23).
  * Detects Short Answer and Fill in the Blank instead of dumping everything into PARAGRAPH.
+ * Safeguards combination MCQs (e.g. "A. 1 dan 2") as single-select RADIO even if tagged Multiple Select.
  */
 function resolveItemType(
   hasOptions: boolean,
   questionStyle?: string | null,
-  marks?: number
+  marks?: number,
+  options?: string[] | null
 ): FormItemType {
   if (hasOptions) {
-    return questionStyle === 'Multiple Select' ? 'CHECKBOX' : 'RADIO';
+    if (questionStyle === 'Multiple Select') {
+      // Check if choices are combination MCQ bundles (e.g. "A. 1 dan 2", "B. 1, 2, dan 3")
+      const isCombinationMcq = Array.isArray(options) && options.length >= 2 && options.every((opt) => {
+        const clean = cleanTextForGoogleForms(opt, { preserveNewlines: false }).replace(/^[A-Ea-e][.:\)\-]\s*/, '').trim();
+        return (
+          /^(?:\(?\d+\)?|[IVX]+)\s*(?:dan|and|,|&)\s*(?:\(?\d+\)?|[IVX]+)/i.test(clean) ||
+          /^(?:hanya|only)\s*(?:\(?\d+\)?|[IVX]+)/i.test(clean) ||
+          /^(?:\(?\d+\)?|[IVX]+)\s*(?:saja|only)$/i.test(clean)
+        );
+      });
+      if (!isCombinationMcq) {
+        return 'CHECKBOX';
+      }
+    }
+    return 'RADIO';
   }
 
   if (
@@ -195,9 +211,25 @@ export function detectGridDetails(
     return { isGrid: false };
   }
 
-  const { headers, rows } = extractedTable;
+  let { headers, rows } = extractedTable;
   if (!rows || rows.length < 2) {
     return { isGrid: false };
+  }
+
+  // 4-Column Normalization for Statement Matrix:
+  // Detects tables with a numbering column: [No., Pernyataan, Benar, Salah] or [# / Nomor, Statement, True, False]
+  if (
+    headers.length >= 4 &&
+    /^(?:no\.?|#|nomor|number|item)$/i.test(headers[0].trim()) &&
+    /^(?:pernyataan|statement|aspek|kategori|pernyataan\/masalah|deskripsi|kalimat|klaim)$/i.test(headers[1].trim())
+  ) {
+    // Columns become categories e.g. ["Benar", "Salah"]
+    headers = [headers[1], ...headers.slice(2)];
+    // Rows become statement with number prefix e.g. ["1. Larutan P bersifat asam.", ...]
+    rows = rows.map((r) => {
+      const num = r[0] ? `${cleanTextForGoogleForms(r[0], { preserveNewlines: false })}. ` : '';
+      return [`${num}${cleanTextForGoogleForms(r[1] || '', { preserveNewlines: false })}`.trim(), ...r.slice(2)];
+    });
   }
 
   // 1. Candidate Columns (Options):
@@ -307,9 +339,17 @@ export function detectGridDetails(
         const rawV = cleanClause.substring(splitIdx + 1).trim();
 
         const normK = rawK.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const matchedRow = gridRows.find((r) => {
+        const matchedRow = gridRows.find((r, rIdx) => {
           const normR = r.toLowerCase().replace(/[^a-z0-9]/g, '');
-          return normR === normK || (normR.length >= 4 && normK.includes(normR)) || (normK.length >= 4 && normR.includes(normK));
+          if (normR === normK || (normR.length >= 4 && normK.includes(normR)) || (normK.length >= 4 && normR.includes(normK))) {
+            return true;
+          }
+          if (/^\d+$/.test(rawK)) {
+            const num = parseInt(rawK, 10);
+            if (num === rIdx + 1) return true;
+            if (r.startsWith(`${rawK}.`) || r.startsWith(`(${rawK})`)) return true;
+          }
+          return false;
         });
 
         const normV = rawV.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -377,21 +417,45 @@ export function flattenQuestionsForForms(
         const fullSubQNum = `${fullQNum}${subIdStr}`;
         const qSubKey = getSubQuestionKey(q, qIndex, subIdx);
 
-        // Detect if this sub-question is a matching/classification grid
-        const subExtractedTable = extractMarkdownTable(sq.question_text || '').table || extractStructuredTable((sq as any).data_tables);
-        const gridInfo = detectGridDetails(subExtractedTable, sq.question_text || '', q, subIdx);
-        const isGrid = gridInfo.isGrid && Boolean(gridInfo.gridRows && gridInfo.gridColumns);
+        // Detect if this sub-question is a matching/classification grid or has stimulus data table
+        const allSubExtractedTables = extractAllMarkdownTables(sq.question_text || '');
+        let gridInfo = { isGrid: false } as ReturnType<typeof detectGridDetails>;
+        let gridTableIdx = -1;
+
+        for (let i = 0; i < allSubExtractedTables.length; i++) {
+          const candidateGrid = detectGridDetails(allSubExtractedTables[i].table, sq.question_text || '', q, subIdx);
+          if (candidateGrid.isGrid && candidateGrid.gridRows && candidateGrid.gridColumns) {
+            gridInfo = candidateGrid;
+            gridTableIdx = i;
+            break;
+          }
+        }
+
+        const isGrid = Boolean(gridInfo.isGrid && gridInfo.gridRows && gridInfo.gridColumns);
+
+        let stimulusTable: ParsedTableData | null = null;
+        if (allSubExtractedTables.length > 0) {
+          if (isGrid) {
+            const nonGridTable = allSubExtractedTables.find((_, idx) => idx !== gridTableIdx);
+            if (nonGridTable) stimulusTable = nonGridTable.table;
+          } else {
+            stimulusTable = allSubExtractedTables[0].table;
+          }
+        }
+        if (!stimulusTable && (sq as any).data_tables && (sq as any).data_tables.length > 0) {
+          stimulusTable = extractStructuredTable((sq as any).data_tables);
+        }
 
         let subFallbackTablePng: string | null = null;
-        if (subExtractedTable && !isGrid && !imageUrlMap?.[qSubKey] && !imageBase64Map?.[qSubKey]) {
+        if (stimulusTable && !imageUrlMap?.[qSubKey] && !imageBase64Map?.[qSubKey]) {
           try {
-            subFallbackTablePng = renderTableToPngDataUrl(subExtractedTable);
+            subFallbackTablePng = renderTableToPngDataUrl(stimulusTable);
           } catch {}
         }
 
         const subHasImage = Boolean(
           isGrid ||
-          subExtractedTable ||
+          stimulusTable ||
           imageUrlMap?.[qSubKey] ||
           imageBase64Map?.[qSubKey] ||
           subFallbackTablePng ||
@@ -407,7 +471,7 @@ export function flattenQuestionsForForms(
         const pointValue = Math.max(1, Math.round(Number(sq.marks) || 1));
         const hasOptions = Array.isArray(sq.options) && sq.options.length > 0;
         const subStyle = (sq as any).question_style || q.question_style;
-        const itemType: FormItemType = isGrid ? 'GRID' : resolveItemType(hasOptions, subStyle, pointValue);
+        const itemType: FormItemType = isGrid ? 'GRID' : resolveItemType(hasOptions, subStyle, pointValue, sq.options);
 
         let cleanedOptions: string[] | undefined;
         let correctOptionIndices: number[] | undefined;
@@ -441,7 +505,9 @@ export function flattenQuestionsForForms(
           ? (imageBase64Map[qSubKey] || (subIdx === 0 ? imageBase64Map[parentQKey] : null) || (rawDiagram ? imageBase64Map[rawDiagram] : null))
           : null;
         const isDirectBase64 = typeof rawDiagram === 'string' && rawDiagram.startsWith('data:image/');
-        const imageBase64 = base64FromMap || (!isGrid ? subFallbackTablePng : null) || (isDirectBase64 ? rawDiagram : null);
+        const imageBase64 = (isGrid && !stimulusTable)
+          ? (isDirectBase64 ? rawDiagram : null)
+          : (base64FromMap || subFallbackTablePng || (isDirectBase64 ? rawDiagram : null));
 
         const urlFromMap = imageUrlMap
           ? (imageUrlMap[qSubKey] || (subIdx === 0 ? imageUrlMap[parentQKey] : null) || (rawDiagram ? imageUrlMap[rawDiagram] : null))
@@ -479,18 +545,43 @@ export function flattenQuestionsForForms(
       const qKey = getQuestionKey(q, qIndex);
       const rawDiagram = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
 
-      const extractedTable = extractMarkdownTable(q.question_text || '').table || extractStructuredTable(q.data_tables);
-      const gridInfo = detectGridDetails(extractedTable, q.question_text || '', q);
-      const isGrid = gridInfo.isGrid && Boolean(gridInfo.gridRows && gridInfo.gridColumns);
+      // Detect multiple tables: stimulus data table vs interactive response matrix
+      const allExtractedTables = extractAllMarkdownTables(q.question_text || '');
+      let gridInfo = { isGrid: false } as ReturnType<typeof detectGridDetails>;
+      let gridTableIdx = -1;
+
+      for (let i = 0; i < allExtractedTables.length; i++) {
+        const candidateGrid = detectGridDetails(allExtractedTables[i].table, q.question_text || '', q);
+        if (candidateGrid.isGrid && candidateGrid.gridRows && candidateGrid.gridColumns) {
+          gridInfo = candidateGrid;
+          gridTableIdx = i;
+          break;
+        }
+      }
+
+      const isGrid = Boolean(gridInfo.isGrid && gridInfo.gridRows && gridInfo.gridColumns);
+
+      let stimulusTable: ParsedTableData | null = null;
+      if (allExtractedTables.length > 0) {
+        if (isGrid) {
+          const nonGridTable = allExtractedTables.find((_, idx) => idx !== gridTableIdx);
+          if (nonGridTable) stimulusTable = nonGridTable.table;
+        } else {
+          stimulusTable = allExtractedTables[0].table;
+        }
+      }
+      if (!stimulusTable && q.data_tables && q.data_tables.length > 0) {
+        stimulusTable = extractStructuredTable(q.data_tables);
+      }
 
       let fallbackTablePng: string | null = null;
-      if (extractedTable && !isGrid && !imageUrlMap?.[qKey] && !imageBase64Map?.[qKey]) {
+      if (stimulusTable && !imageUrlMap?.[qKey] && !imageBase64Map?.[qKey]) {
         try {
-          fallbackTablePng = renderTableToPngDataUrl(extractedTable);
+          fallbackTablePng = renderTableToPngDataUrl(stimulusTable);
         } catch {}
       }
 
-      const hasTable = Boolean(extractedTable);
+      const hasTable = Boolean(stimulusTable);
       const hasImageTable = Boolean(
         isGrid ||
         hasTable ||
@@ -509,7 +600,7 @@ export function flattenQuestionsForForms(
 
       const pointValue = Math.max(1, Math.round(Number(q.marks) || 1));
       const hasOptions = Array.isArray(q.options) && q.options.length > 0;
-      const itemType: FormItemType = isGrid ? 'GRID' : resolveItemType(hasOptions, q.question_style, pointValue);
+      const itemType: FormItemType = isGrid ? 'GRID' : resolveItemType(hasOptions, q.question_style, pointValue, q.options);
 
       let cleanedOptions: string[] | undefined;
       let correctOptionIndices: number[] | undefined;
@@ -538,7 +629,9 @@ export function flattenQuestionsForForms(
 
       const base64FromMap = imageBase64Map ? (imageBase64Map[qKey] || (rawDiagram ? imageBase64Map[rawDiagram] : null)) : null;
       const isDirectBase64 = typeof rawDiagram === 'string' && rawDiagram.startsWith('data:image/');
-      const imageBase64 = base64FromMap || (!isGrid ? fallbackTablePng : null) || (isDirectBase64 ? rawDiagram : null);
+      const imageBase64 = (isGrid && !stimulusTable)
+        ? (isDirectBase64 ? rawDiagram : null)
+        : (base64FromMap || fallbackTablePng || (isDirectBase64 ? rawDiagram : null));
 
       const urlFromMap = imageUrlMap ? (imageUrlMap[qKey] || (rawDiagram ? imageUrlMap[rawDiagram] : null)) : null;
       const imageUrl = urlFromMap || ((!isDirectBase64 && typeof rawDiagram === 'string' && rawDiagram.startsWith('http')) ? rawDiagram : null);

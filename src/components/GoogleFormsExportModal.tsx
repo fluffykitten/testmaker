@@ -13,6 +13,7 @@ import {
   getOrderedQuestions,
   getQuestionKey,
   getSubQuestionKey,
+  detectGridDetails,
   FORMS_API_CONSOLE_URL,
   revokeGoogleFormsToken,
   type GoogleFormResult,
@@ -24,7 +25,7 @@ import { exportGoogleFormsQuiz } from '../services/lmsExportService';
 import { loadGsiScript } from '../services/googleDriveService';
 import { getSavedSettings } from '../lib/settings';
 import {
-  extractMarkdownTable,
+  extractAllMarkdownTables,
   extractStructuredTable,
   renderTableToPngDataUrl,
   compositeTableAndDiagram,
@@ -105,12 +106,23 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
         initialUrlMap[qKey] = existingDiagram;
       }
 
-      const extractedMd = extractMarkdownTable(q.question_text || '');
-      const extractedStruct = extractStructuredTable(q.data_tables);
-      const tableData = extractedMd.table || extractedStruct;
-      if (tableData) {
+      const allMd = extractAllMarkdownTables(q.question_text || '');
+      let tableToRender = null;
+      if (allMd.length > 0) {
+        const gridCandidate = allMd.find((t) => detectGridDetails(t.table, q.question_text || '', q).isGrid);
+        if (gridCandidate) {
+          const stimulus = allMd.find((t) => t !== gridCandidate);
+          if (stimulus) tableToRender = stimulus.table;
+        } else {
+          tableToRender = allMd[0].table;
+        }
+      }
+      if (!tableToRender) {
+        tableToRender = extractStructuredTable(q.data_tables);
+      }
+      if (tableToRender) {
         try {
-          const png = renderTableToPngDataUrl(tableData);
+          const png = renderTableToPngDataUrl(tableToRender);
           if (png) initialB64Map[qKey] = png;
         } catch {}
       }
@@ -123,12 +135,23 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
             initialUrlMap[sqKey] = sqDiagram;
           }
 
-          const sqMd = extractMarkdownTable(sq.question_text || '');
-          const sqStruct = extractStructuredTable((sq as any).data_tables);
-          const sqTable = sqMd.table || sqStruct;
-          if (sqTable) {
+          const sqAllMd = extractAllMarkdownTables(sq.question_text || '');
+          let sqTableToRender = null;
+          if (sqAllMd.length > 0) {
+            const sqGridCandidate = sqAllMd.find((t) => detectGridDetails(t.table, sq.question_text || '', q, sIdx).isGrid);
+            if (sqGridCandidate) {
+              const sqStimulus = sqAllMd.find((t) => t !== sqGridCandidate);
+              if (sqStimulus) sqTableToRender = sqStimulus.table;
+            } else {
+              sqTableToRender = sqAllMd[0].table;
+            }
+          }
+          if (!sqTableToRender) {
+            sqTableToRender = extractStructuredTable((sq as any).data_tables);
+          }
+          if (sqTableToRender) {
             try {
-              const sqPng = renderTableToPngDataUrl(sqTable);
+              const sqPng = renderTableToPngDataUrl(sqTableToRender);
               if (sqPng) initialB64Map[sqKey] = sqPng;
             } catch {}
           }

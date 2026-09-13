@@ -332,7 +332,9 @@ export function normalizeLatexString(raw: string): string {
 
 function renderTextWithSubSuper(text: string): React.ReactNode {
   if (!text) return null;
-  const clean = restoreCurrencySymbols(text).replace(/\\%/g, '%');
+  const clean = restoreCurrencySymbols(text)
+    .replace(/\\?\{,\}/g, ',')
+    .replace(/\\%/g, '%');
 
   // Check for subscript/superscript patterns like Fe_3O_4, H_2SO_4, Fe^2+, or 10^5
   if (!/([a-zA-Z0-9)\]])(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d*[+-]|\^[+-]\d*|\^\d+|\^[a-zA-Z])/.test(clean)) {

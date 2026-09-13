@@ -1828,3 +1828,75 @@
   line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+
+/* ─── Examiner / Invigilator Emergency Action Card & PIN Modal ────────────── */
+
+.sq-teacher-action-card {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.sq-teacher-action-card:hover {
+  border-color: var(--color-primary, #3b82f6);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.sq-teacher-action-btn {
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.sq-teacher-action-btn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.sq-teacher-action-btn:active {
+  transform: translateY(0);
+}
+
+.sq-teacher-modal-overlay {
+  animation: sqFadeIn 0.2s ease-out forwards;
+}
+
+.sq-teacher-modal {
+  animation: sqScaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes sqFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sqScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sq-sync-pulse {
+  display: inline-block;
+  animation: sqPulse 1.5s infinite ease-in-out;
+}
+
+@keyframes sqPulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

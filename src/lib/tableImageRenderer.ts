@@ -18,6 +18,13 @@ export interface ExtractedTableResult {
   rawTableText: string;
 }
 
+export interface ExtractedTableBlock {
+  table: ParsedTableData;
+  rawTableText: string;
+  startIndex: number;
+  endIndex: number;
+}
+
 // ─── Unicode Superscript & Subscript Maps ────────────────────────────────────
 
 export const TABLE_SUPERSCRIPT_MAP: Record<string, string> = {
@@ -73,6 +80,8 @@ export function cleanTableCellText(text: string): string {
   if (!text || typeof text !== 'string') return '';
 
   let cleaned = text
+    // Replace LaTeX decimal comma artifact {,} with standard comma
+    .replace(/\\?\{,\}/g, ',')
     // Replace HTML break tags with newline
     .replace(/<br\s*\/?>/gi, '\n')
     // LLM corrupted control characters (e.g. \text eaten into \t)
@@ -190,7 +199,7 @@ export function cleanTableCellText(text: string): string {
   // Superscripts (e.g. ^{2+}, ^{3-}, ^2, ^+, ^-)
   cleaned = cleaned
     .replace(/\^{([^{}]*)}/g, (_m, p1) => toTableUnicodeSuperscript(p1))
-    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]-]|$)/g, (_m, base, exp) => `${base}${toTableUnicodeSuperscript(exp)}`)
+    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]\(\-]|$)/g, (_m, base, exp) => `${base}${toTableUnicodeSuperscript(exp)}`)
     .replace(/([a-zA-Z0-9)\]])\^([0-9nix])(?![a-zA-Z0-9])/g, (_m, base, exp) => `${base}${toTableUnicodeSuperscript(exp)}`);
 
   // Subscripts (e.g. _{2}, _{3}, _2, _3, M_r)
@@ -221,6 +230,85 @@ export function cleanTableCellText(text: string): string {
   return cleaned;
 }
 
+function isTableSeparatorRow(l: string): boolean {
+  const clean = l.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells = clean.split('|').map((c) => c.trim());
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c) || /^[-:\s]+$/.test(c));
+}
+
+/**
+ * Extracts all distinct markdown table blocks from text.
+ * Prevents collapsing multiple tables (e.g. stimulus data table + interactive response matrix)
+ * into a single broken table, and preserves intermediate prompt text.
+ */
+export function extractAllMarkdownTables(text: string): ExtractedTableBlock[] {
+  if (!text || !text.includes('|')) return [];
+  const normalized = text
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/([^\s|])[^\S\r\n]*\|[^\S\r\n]*\|/g, '$1 |\n|');
+
+  const lines = normalized.split('\n');
+  const blocks: { lines: string[]; startLine: number; endLine: number }[] = [];
+  let curLines: string[] = [];
+  let curStart = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const isPipe = trimmed.startsWith('|') || (trimmed.match(/\|/g) || []).length >= 2;
+    if (isPipe) {
+      if (curLines.length === 0) curStart = i;
+      curLines.push(lines[i]);
+    } else {
+      if (curLines.length >= 2 && curLines.some(isTableSeparatorRow)) {
+        blocks.push({ lines: curLines, startLine: curStart, endLine: i });
+      }
+      curLines = [];
+      curStart = -1;
+    }
+  }
+  if (curLines.length >= 2 && curLines.some(isTableSeparatorRow)) {
+    blocks.push({ lines: curLines, startLine: curStart, endLine: lines.length });
+  }
+
+  // Pre-calculate line start offsets in normalized string
+  const lineStartOffsets: number[] = [];
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    lineStartOffsets.push(offset);
+    offset += lines[i].length + 1; // +1 for '\n'
+  }
+
+  const results: ExtractedTableBlock[] = [];
+  for (const b of blocks) {
+    const validLines = b.lines.filter((l) => l.trim().length > 0 && !isTableSeparatorRow(l));
+    if (validLines.length >= 2) {
+      const parseRow = (r: string) => {
+        let c = r.trim();
+        if (c.startsWith('|')) c = c.slice(1);
+        if (c.endsWith('|')) c = c.slice(0, -1);
+        return c.split('|').map((x) => cleanTableCellText(x));
+      };
+      const headers = parseRow(validLines[0]);
+      const rows = validLines.slice(1).map(parseRow);
+      const startIndex = lineStartOffsets[b.startLine];
+      const lastLineIdx = b.endLine - 1;
+      const endIndex = lineStartOffsets[lastLineIdx] + lines[lastLineIdx].length;
+      results.push({
+        table: {
+          headers,
+          rows: rows.length > 0 ? rows : [headers],
+        },
+        rawTableText: normalized.substring(startIndex, endIndex),
+        startIndex,
+        endIndex,
+      });
+    }
+  }
+  return results;
+}
+
 /**
  * Parses markdown table syntax from question text.
  * Handles both multiline and single-line/collapsed pipe formatting.
@@ -230,72 +318,18 @@ export function extractMarkdownTable(text: string): ExtractedTableResult {
     return { preText: '', table: null, postText: '', rawTableText: '' };
   }
 
+  const all = extractAllMarkdownTables(text);
+  if (all.length === 0) {
+    return { preText: text, table: null, postText: '', rawTableText: '' };
+  }
+
+  const first = all[0];
   const normalized = text.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-  // Check for presence of markdown table divider (e.g. |---|---| or |:---:|)
-  const divMatch = normalized.match(/\|[-:\s|]{3,}\|/);
-  if (!divMatch || divMatch.index === undefined) {
-    return { preText: text, table: null, postText: '', rawTableText: '' };
-  }
-
-  const divIdx = divMatch.index;
-
-  // Find start of table: scan back to previous newline or start of string
-  let startLineIdx = normalized.lastIndexOf('\n', divIdx);
-  if (startLineIdx === -1) startLineIdx = 0;
-  let firstPipe = normalized.indexOf('|', startLineIdx);
-  if (firstPipe === -1 || firstPipe > divIdx) {
-    firstPipe = normalized.indexOf('|');
-  }
-
-  // Find end of table: scan forward to the last contiguous pipe
-  const endPipe = normalized.lastIndexOf('|');
-  if (endPipe <= firstPipe) {
-    return { preText: text, table: null, postText: '', rawTableText: '' };
-  }
-
-  const preText = normalized.substring(0, firstPipe).trim();
-  const rawTablePart = normalized.substring(firstPipe, endPipe + 1).trim();
-  const postText = normalized.substring(endPipe + 1).trim();
-
-  // Normalize single-line collapsed tables (e.g. "... | | col | ...")
-  const multiline = rawTablePart.replace(/([^\s|])\s*\|\s*\|/g, '$1 |\n|');
-  const lines = multiline
-    .split('\n')
-    .map((r) => r.trim())
-    .filter((r) => r.length > 0);
-
-  const parsedRows: string[][] = [];
-
-  for (const line of lines) {
-    if (/^\|[-:\s|]+\|$/.test(line)) {
-      continue;
-    }
-    const cells = line
-      .replace(/^\|/, '')
-      .replace(/\|$/, '')
-      .split('|')
-      .map((c) => cleanTableCellText(c));
-    if (cells.length > 0 && cells.some((c) => c.length > 0)) {
-      parsedRows.push(cells);
-    }
-  }
-
-  if (parsedRows.length === 0) {
-    return { preText: text, table: null, postText: '', rawTableText: '' };
-  }
-
-  const headers = parsedRows[0];
-  const rows = parsedRows.slice(1);
-
   return {
-    preText,
-    table: {
-      headers,
-      rows: rows.length > 0 ? rows : [headers],
-    },
-    postText,
-    rawTableText: rawTablePart,
+    preText: normalized.substring(0, first.startIndex).trim(),
+    table: first.table,
+    postText: normalized.substring(first.endIndex).trim(),
+    rawTableText: first.rawTableText,
   };
 }
 

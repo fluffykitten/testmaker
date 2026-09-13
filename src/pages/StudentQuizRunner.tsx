@@ -394,6 +394,15 @@ export function StudentQuizRunner({
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => { });
 
+  // 🔐 Examiner / Teacher Emergency Recovery Action State
+  const [showTeacherActionModal, setShowTeacherActionModal] = useState<boolean>(false);
+  const [teacherActionType, setTeacherActionType] = useState<'resubmit' | 'unlock' | null>(null);
+  const [teacherActionPin, setTeacherActionPin] = useState<string>('');
+  const [teacherActionError, setTeacherActionError] = useState<string | null>(null);
+  const [isTeacherActionRunning, setIsTeacherActionRunning] = useState<boolean>(false);
+  const [teacherActionSuccess, setTeacherActionSuccess] = useState<string | null>(null);
+  const [teacherActionProgressText, setTeacherActionProgressText] = useState<string>('');
+
   // Fullscreen tracking & enforcement for formal exam mode
   const [isFullscreenActive, setIsFullscreenActive] = useState<boolean>(() => {
     if (typeof document !== 'undefined') {
@@ -442,6 +451,13 @@ export function StudentQuizRunner({
   const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
   const zoomModalDismiss = useBackdropDismiss(() => setZoomedImage(null));
   const mobileNavDismiss = useBackdropDismiss(() => setShowMobileNav(false));
+  const teacherActionModalDismiss = useBackdropDismiss(() => {
+    if (!isTeacherActionRunning) {
+      setShowTeacherActionModal(false);
+      setTeacherActionPin('');
+      setTeacherActionError(null);
+    }
+  });
 
   // Accurate Sub-Questions and Answered Items Counting
   const quizStats = useMemo(() => {
@@ -1467,6 +1483,115 @@ export function StudentQuizRunner({
       setIsRetryingSync(false);
     }
   }, [completedSubmission, isRetryingSync, sessionKey, resolvedQuizCode, studentPinInput, candidateName]);
+
+  const handleOpenTeacherActionModal = useCallback((type: 'resubmit' | 'unlock') => {
+    setTeacherActionType(type);
+    setTeacherActionPin('');
+    setTeacherActionError(null);
+    setTeacherActionSuccess(null);
+    setTeacherActionProgressText('');
+    setShowTeacherActionModal(true);
+  }, []);
+
+  const handleTeacherAuthorizeAction = useCallback(async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isTeacherActionRunning) return;
+
+    const entered = teacherActionPin.trim();
+    const expected = (teacherPin || '1234').trim();
+
+    if (!entered) {
+      setTeacherActionError('Please enter the Teacher / Proctor PIN.');
+      return;
+    }
+
+    if (entered.toUpperCase() !== expected.toUpperCase()) {
+      setTeacherActionError('❌ Incorrect Teacher PIN. Please check with the exam invigilator.');
+      return;
+    }
+
+    setTeacherActionError(null);
+
+    if (teacherActionType === 'resubmit') {
+      if (!completedSubmission) {
+        setTeacherActionError('No completed submission found to re-upload.');
+        return;
+      }
+      setIsTeacherActionRunning(true);
+      setTeacherActionProgressText('Initiating verified examiner re-upload...');
+      try {
+        const syncResult = await saveQuizSubmissionWithVerification(
+          completedSubmission,
+          5,
+          (attempt, total) => setTeacherActionProgressText(`Connecting to server... (Attempt ${attempt} of ${total})`)
+        );
+
+        if (syncResult.success) {
+          setSyncStatus('synced');
+          setSyncErrorMessage(null);
+          try {
+            localStorage.removeItem(sessionKey);
+            sessionStorage.removeItem(sessionKey);
+            clearExamDraft(completedSubmission.quizCode, completedSubmission.quizId, studentPinInput || candidateName).catch(() => { });
+          } catch { }
+          setTeacherActionSuccess(`✅ Delivery confirmed by examiner database at ${new Date().toLocaleTimeString()}!`);
+        } else {
+          setSyncStatus('offline_failed');
+          setSyncErrorMessage(syncResult.error || 'Server did not acknowledge re-upload.');
+          setTeacherActionError(syncResult.error || 'Server did not acknowledge upload after 5 attempts.');
+        }
+      } catch (err: any) {
+        setTeacherActionError(err?.message || 'Re-upload failed due to network error.');
+      } finally {
+        setIsTeacherActionRunning(false);
+      }
+    } else if (teacherActionType === 'unlock') {
+      // Teacher authorizes unlocking the exam session to resume answering
+      setIsTeacherActionRunning(true);
+      try {
+        setIsSubmitted(false);
+        setCompletedSubmission(null);
+        setShowTeacherActionModal(false);
+        setSecurityAlert('🔓 Exam unlocked by invigilator. Resuming examination session.');
+        setTimeout(() => setSecurityAlert(null), 5000);
+
+        // Resume fullscreen if in exam mode
+        try {
+          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+          }
+        } catch (err) {
+          console.warn('Fullscreen resume notice:', err);
+        }
+      } catch (err: any) {
+        setTeacherActionError(err?.message || 'Failed to resume exam session.');
+      } finally {
+        setIsTeacherActionRunning(false);
+      }
+    }
+  }, [
+    teacherActionPin,
+    teacherPin,
+    teacherActionType,
+    completedSubmission,
+    sessionKey,
+    studentPinInput,
+    candidateName,
+    isTeacherActionRunning,
+  ]);
+
+  // Reactive auto-retry when student machine reconnects to internet
+  useEffect(() => {
+    if (!isSubmitted || syncStatus !== 'offline_failed') return;
+    const handleOnline = () => {
+      console.log('Network connectivity restored; triggering automatic submission retry...');
+      handleRetryCloudSync();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [isSubmitted, syncStatus, handleRetryCloudSync]);
 
   // Auto-persist exam state to localStorage (and sessionStorage fallback) across tab & browser reloads
   useEffect(() => {
@@ -2978,27 +3103,91 @@ export function StudentQuizRunner({
       return (
         <div className="student-results-wrap animate-fade-in">
           <div className="student-results-card" style={{ maxWidth: '680px', margin: '0 auto', textAlign: 'center' }}>
-            <div
-              style={{
-                width: '72px',
-                height: '72px',
-                borderRadius: '50%',
-                background: 'rgba(34, 197, 94, 0.15)',
-                border: '2px solid rgba(34, 197, 94, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '2.5rem',
-                margin: '0 auto 16px',
-              }}
-            >
-              🛡️
-            </div>
-            <div className="results-badge" style={{ background: '#16a34a', color: '#fff' }}>EXAMINATION CONFIRMED</div>
-            <h1 className="results-title" style={{ marginTop: '8px' }}>Exam Submitted Successfully 🎉</h1>
-            <p className="results-sub" style={{ color: 'var(--color-text-secondary)' }}>
-              {title} • Official Candidate Receipt
-            </p>
+            {syncStatus === 'offline_failed' ? (
+              <>
+                <div
+                  style={{
+                    width: '72px',
+                    height: '72px',
+                    borderRadius: '50%',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '2px solid rgba(239, 68, 68, 0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '2.5rem',
+                    margin: '0 auto 16px',
+                  }}
+                >
+                  ⚠️
+                </div>
+                <div className="results-badge" style={{ background: '#dc2626', color: '#fff', letterSpacing: '0.05em' }}>
+                  ⚠️ RESPONSES SAVED ON DEVICE — CLOUD SYNC PENDING
+                </div>
+                <h1 className="results-title" style={{ marginTop: '8px', color: '#ef4444' }}>
+                  Responses Stored Locally — Pending Cloud Upload ⚠️
+                </h1>
+                <p className="results-sub" style={{ color: '#ef4444', fontWeight: 600 }}>
+                  ⚠️ <strong>Do NOT close this window or laptop</strong> until cloud upload is confirmed by your invigilator!
+                </p>
+              </>
+            ) : syncStatus === 'syncing' ? (
+              <>
+                <div
+                  style={{
+                    width: '72px',
+                    height: '72px',
+                    borderRadius: '50%',
+                    background: 'rgba(59, 130, 246, 0.15)',
+                    border: '2px solid rgba(59, 130, 246, 0.4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '2.5rem',
+                    margin: '0 auto 16px',
+                  }}
+                >
+                  ⏳
+                </div>
+                <div className="results-badge" style={{ background: '#2563eb', color: '#fff' }}>
+                  SYNCING WITH SERVER...
+                </div>
+                <h1 className="results-title" style={{ marginTop: '8px' }}>
+                  Uploading Exam Responses... ⏳
+                </h1>
+                <p className="results-sub" style={{ color: 'var(--color-text-secondary)' }}>
+                  {title} • Contacting Examiner Server
+                </p>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    width: '72px',
+                    height: '72px',
+                    borderRadius: '50%',
+                    background: 'rgba(34, 197, 94, 0.15)',
+                    border: '2px solid rgba(34, 197, 94, 0.4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '2.5rem',
+                    margin: '0 auto 16px',
+                  }}
+                >
+                  🛡️
+                </div>
+                <div className="results-badge" style={{ background: '#16a34a', color: '#fff' }}>
+                  EXAMINATION CONFIRMED
+                </div>
+                <h1 className="results-title" style={{ marginTop: '8px' }}>
+                  Exam Submitted Successfully 🎉
+                </h1>
+                <p className="results-sub" style={{ color: 'var(--color-text-secondary)' }}>
+                  {title} • Official Candidate Receipt
+                </p>
+              </>
+            )}
 
             <div
               style={{
@@ -3282,6 +3471,340 @@ export function StudentQuizRunner({
                       When results are published, enter Exam Code <strong>({resolvedQuizCode || testIdOrCode || 'EXAM'})</strong> on the portal to view your marked paper and download your official PDF report.
                     </span>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* 🔐 Examiner / Invigilator Security Options Card */}
+            <div
+              className="sq-teacher-action-card"
+              style={{
+                background: 'var(--color-surface-sunken, #f8fafc)',
+                border: '1.5px dashed var(--color-border, #cbd5e1)',
+                borderRadius: '14px',
+                padding: '16px 20px',
+                margin: '20px 0',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '1.25rem' }}>🔐</span>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-primary, #0f172a)' }}>
+                      Invigilator & Examiner Options
+                    </h4>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #64748b)' }}>
+                      Teacher PIN authorization required for exam overrides
+                    </span>
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    padding: '3px 8px',
+                    borderRadius: '6px',
+                    background: syncStatus === 'synced' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: syncStatus === 'synced' ? '#16a34a' : '#ef4444',
+                    border: `1px solid ${syncStatus === 'synced' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                  }}
+                >
+                  Cloud Status: {syncStatus.toUpperCase()}
+                </span>
+              </div>
+
+              <p style={{ margin: '0 0 12px', fontSize: '0.8125rem', color: 'var(--color-text-secondary, #475569)', lineHeight: 1.4 }}>
+                If this submission is missing on the teacher dashboard, or if the student submitted accidentally with remaining time, the invigilator can authorize an emergency action below:
+              </p>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => handleOpenTeacherActionModal('resubmit')}
+                  className="sq-btn sq-teacher-action-btn"
+                  style={{
+                    background: '#2563eb',
+                    color: '#ffffff',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    fontSize: '0.8125rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: 'none',
+                    boxShadow: '0 2px 6px rgba(37, 99, 235, 0.25)',
+                  }}
+                >
+                  <span>🔄</span> Force Re-Submit to Server (PIN)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenTeacherActionModal('unlock')}
+                  className="sq-btn sq-teacher-action-btn"
+                  style={{
+                    background: 'transparent',
+                    color: '#d97706',
+                    border: '1.5px solid #d97706',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    fontSize: '0.8125rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <span>🔓</span> Unlock Exam & Resume Session (PIN)
+                </button>
+              </div>
+            </div>
+
+            {/* 🔐 Teacher Emergency Action PIN Modal */}
+            {showTeacherActionModal && (
+              <div
+                className="sq-teacher-modal-overlay"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 99999,
+                  background: 'rgba(15, 23, 42, 0.85)',
+                  backdropFilter: 'blur(8px)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '16px',
+                }}
+                {...teacherActionModalDismiss}
+              >
+                <div
+                  className="sq-teacher-modal animate-scale-in"
+                  style={{
+                    background: 'var(--color-surface, #1e293b)',
+                    border: '1.5px solid var(--color-border, rgba(255, 255, 255, 0.15))',
+                    borderRadius: '20px',
+                    maxWidth: '480px',
+                    width: '100%',
+                    padding: '24px',
+                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+                    textAlign: 'center',
+                    color: 'var(--color-text-primary, #ffffff)',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>
+                    {teacherActionType === 'resubmit' ? '🔄' : '🔓'}
+                  </div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: '0 0 6px' }}>
+                    {teacherActionType === 'resubmit'
+                      ? 'Force Re-Submit to Server'
+                      : 'Unlock Exam & Resume Session'}
+                  </h3>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary, #94a3b8)', margin: '0 0 16px', lineHeight: 1.5 }}>
+                    {teacherActionType === 'resubmit'
+                      ? 'This will immediately force a 5-attempt upload to the examiner database with real-time handshake verification. Enter the Teacher / Invigilator PIN to authorize.'
+                      : '⚠️ Warning: This will re-open the examination for the candidate with all saved answers preserved, allowing them to continue answering. Enter the Teacher / Invigilator PIN to authorize.'}
+                  </p>
+
+                  {teacherActionSuccess ? (
+                    <div
+                      style={{
+                        background: 'rgba(34, 197, 94, 0.12)',
+                        border: '1.5px solid #16a34a',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        margin: '16px 0',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <div style={{ fontSize: '1.5rem', marginBottom: '4px' }}>🎉</div>
+                      <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '0.95rem' }}>
+                        {teacherActionSuccess}
+                      </div>
+                      <button
+                        type="button"
+                        className="sq-btn sq-btn-primary"
+                        style={{ marginTop: '14px', padding: '8px 20px', fontSize: '0.85rem' }}
+                        onClick={() => setShowTeacherActionModal(false)}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleTeacherAuthorizeAction}>
+                      <div style={{ marginBottom: '16px' }}>
+                        <label
+                          style={{
+                            display: 'block',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            textTransform: 'uppercase',
+                            color: 'var(--color-text-secondary, #94a3b8)',
+                            marginBottom: '8px',
+                            letterSpacing: '0.05em',
+                          }}
+                        >
+                          Enter Invigilator / Teacher PIN
+                        </label>
+                        <input
+                          type="password"
+                          autoFocus
+                          disabled={isTeacherActionRunning}
+                          value={teacherActionPin}
+                          onChange={(e) => {
+                            setTeacherActionPin(e.target.value);
+                            if (teacherActionError) setTeacherActionError(null);
+                          }}
+                          placeholder="••••"
+                          style={{
+                            width: '100%',
+                            maxWidth: '200px',
+                            padding: '10px 14px',
+                            borderRadius: '10px',
+                            border: '1.5px solid var(--color-border, rgba(255, 255, 255, 0.2))',
+                            background: 'rgba(0, 0, 0, 0.25)',
+                            color: '#ffffff',
+                            fontSize: '1.5rem',
+                            fontWeight: 800,
+                            letterSpacing: '0.3em',
+                            textAlign: 'center',
+                            outline: 'none',
+                          }}
+                        />
+                      </div>
+
+                      {teacherActionProgressText && (
+                        <div
+                          style={{
+                            color: '#60a5fa',
+                            fontSize: '0.8125rem',
+                            fontWeight: 700,
+                            margin: '8px 0',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                          }}
+                        >
+                          <span className="sq-sync-pulse">⏳</span>
+                          <span>{teacherActionProgressText}</span>
+                        </div>
+                      )}
+
+                      {teacherActionError && (
+                        <div
+                          style={{
+                            color: '#ef4444',
+                            background: 'rgba(239, 68, 68, 0.1)',
+                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            borderRadius: '8px',
+                            padding: '8px 12px',
+                            fontSize: '0.8125rem',
+                            fontWeight: 700,
+                            margin: '10px 0',
+                            textAlign: 'left',
+                          }}
+                        >
+                          {teacherActionError}
+                        </div>
+                      )}
+
+                      {/* Fallback download actions if upload persistent failure occurs */}
+                      {teacherActionType === 'resubmit' && teacherActionError && completedSubmission && (
+                        <div
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            borderRadius: '10px',
+                            padding: '12px',
+                            margin: '12px 0',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '8px', fontWeight: 600 }}>
+                            Emergency Manual Backups (Hand to Teacher):
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              onClick={() => exportSubmissionToFile(completedSubmission)}
+                              style={{
+                                background: '#10b981',
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: '6px',
+                                padding: '6px 12px',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              📥 Download .exam
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const token = exportSubmissionToken(completedSubmission);
+                                navigator.clipboard?.writeText(token);
+                                setHasCopiedToken(true);
+                                setTimeout(() => setHasCopiedToken(false), 2000);
+                              }}
+                              style={{
+                                background: 'rgba(255, 255, 255, 0.1)',
+                                color: '#fff',
+                                border: '1px solid rgba(255, 255, 255, 0.2)',
+                                borderRadius: '6px',
+                                padding: '6px 12px',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {hasCopiedToken ? '✅ Token Copied!' : '📋 Copy Token'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', marginTop: '16px' }}>
+                        <button
+                          type="button"
+                          disabled={isTeacherActionRunning}
+                          onClick={() => {
+                            setShowTeacherActionModal(false);
+                            setTeacherActionPin('');
+                            setTeacherActionError(null);
+                          }}
+                          className="sq-btn sq-btn-secondary"
+                          style={{ padding: '8px 18px', fontSize: '0.85rem' }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isTeacherActionRunning || !teacherActionPin.trim()}
+                          className="sq-btn sq-btn-primary"
+                          style={{
+                            padding: '8px 20px',
+                            fontSize: '0.85rem',
+                            fontWeight: 800,
+                            background: teacherActionType === 'unlock' ? '#d97706' : '#2563eb',
+                          }}
+                        >
+                          {isTeacherActionRunning
+                            ? '⏳ Verifying...'
+                            : teacherActionType === 'resubmit'
+                            ? '🚀 Authorize Re-Submit'
+                            : '🔓 Authorize Exam Unlock'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
               </div>
             )}
