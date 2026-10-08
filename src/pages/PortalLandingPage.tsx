@@ -12,6 +12,7 @@ import { prefetchAccessPin } from '../components/PinGate';
 import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
+import { SchoolDoodlesBackground } from '../components/SchoolDoodlesBackground';
 import './PortalLandingPage.css';
 
 interface PortalLandingPageProps {
@@ -167,9 +168,10 @@ export function PortalLandingPage({
 
   return (
     <div className="portal-root">
-      {/* Subtle Green Ambient Auras */}
+      {/* Subtle Green Ambient Auras & School Theme Doodles */}
       <div className="portal-glow portal-glow--1" />
       <div className="portal-glow portal-glow--2" />
+      <SchoolDoodlesBackground />
 
       {/* Main Container */}
       <div className="portal-content">

@@ -40,6 +40,66 @@
   background: radial-gradient(circle, rgba(5, 150, 105, 0.03) 0%, rgba(5, 150, 105, 0) 70%);
 }
 
+/* ─── School Academic Doodles Layer ─── */
+.portal-doodles-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.portal-doodle {
+  position: absolute;
+  color: #059669;
+  opacity: 0.16;
+  user-select: none;
+  will-change: transform;
+}
+
+@keyframes doodle-float-slow {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(1.5deg);
+  }
+}
+
+@keyframes doodle-float-reverse {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(7px) rotate(-1.5deg);
+  }
+}
+
+.portal-doodle--float-1 {
+  animation: doodle-float-slow 11s ease-in-out infinite;
+}
+
+.portal-doodle--float-2 {
+  animation: doodle-float-reverse 13s ease-in-out infinite;
+}
+
+@media (max-width: 1024px) {
+  .portal-doodle {
+    opacity: 0.10;
+    transform: scale(0.85);
+  }
+}
+
+@media (max-width: 640px) {
+  .portal-doodle {
+    opacity: 0.08;
+    transform: scale(0.7);
+  }
+}
+
 .portal-content {
   width: 100%;
   max-width: 980px;
