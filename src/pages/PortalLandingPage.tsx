@@ -26,9 +26,6 @@ export function PortalLandingPage({
   // Student Portal Tabs: 'take_quiz' | 'check_results'
   const [studentTab, setStudentTab] = useState<'take_quiz' | 'check_results'>('take_quiz');
 
-  // View Filter: 'all' | 'students' | 'teachers'
-  const [portalViewFilter, setPortalViewFilter] = useState<'all' | 'students' | 'teachers'>('all');
-
   // Take Quiz Form State
   const [quizCodeInput, setQuizCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
@@ -176,7 +173,7 @@ export function PortalLandingPage({
 
       {/* Main Container */}
       <div className="portal-content">
-        {/* Minimalist Institutional Header */}
+        {/* Minimalist Header */}
         <header className="portal-brand-header">
           <div className="portal-brand-logos">
             <div className="portal-logo-card" title="Insan Cendekia Madani">
@@ -188,17 +185,9 @@ export function PortalLandingPage({
             </div>
           </div>
 
-          <div className="portal-meta-badge">
-            <span className="portal-live-dot" />
-            <span>Cambridge International School ID395 • Insan Cendekia Madani</span>
-          </div>
-
           <h1 className="portal-title">
             ICM <span className="portal-title-accent">Exam Platform</span>
           </h1>
-          <p className="portal-subtitle">
-            Secure digital examination and Cambridge assessment management system.
-          </p>
         </header>
 
         {/* Pending Offline Exam Submissions Banner (Shown only when pending local items exist) */}
@@ -240,274 +229,195 @@ export function PortalLandingPage({
           </div>
         )}
 
-        {/* Split View Switcher */}
-        <div className="portal-split-toggle" role="tablist" aria-label="Portal Navigation View">
-          <button
-            type="button"
-            className={`portal-split-toggle-btn ${portalViewFilter === 'all' ? 'portal-split-toggle-btn--active' : ''}`}
-            onClick={() => setPortalViewFilter('all')}
-          >
-            Split View
-          </button>
-          <button
-            type="button"
-            className={`portal-split-toggle-btn ${portalViewFilter === 'students' ? 'portal-split-toggle-btn--active' : ''}`}
-            onClick={() => setPortalViewFilter('students')}
-          >
-            Students
-          </button>
-          <button
-            type="button"
-            className={`portal-split-toggle-btn ${portalViewFilter === 'teachers' ? 'portal-split-toggle-btn--active' : ''}`}
-            onClick={() => setPortalViewFilter('teachers')}
-          >
-            Teachers
-          </button>
-        </div>
-
-        {/* Dual Split Cards: Students vs Teachers */}
-        <div className={`portal-cards-grid ${portalViewFilter === 'students' ? 'portal-cards-grid--students-only' : ''} ${portalViewFilter === 'teachers' ? 'portal-cards-grid--teachers-only' : ''}`}>
+        {/* Split Cards: Students vs Teachers */}
+        <div className="portal-cards-grid">
           
           {/* Card 1: Student Section */}
-          {(portalViewFilter === 'all' || portalViewFilter === 'students') && (
-            <div className="portal-card portal-card--student">
-              <div className="portal-card-header">
-                <span className="portal-card-tag portal-card-tag--student">STUDENT PORTAL</span>
-                <span className="portal-card-status">Active Session</span>
-              </div>
+          <div className="portal-card portal-card--student">
+            <div className="portal-card-header">
+              <span className="portal-card-tag portal-card-tag--student">STUDENT PORTAL</span>
+            </div>
 
-              <h2 className="portal-card-title">Take Exam or View Results</h2>
-              <p className="portal-card-description">
-                Enter your test token to start your scheduled assessment, or check previously submitted scripts.
-              </p>
+            <h2 className="portal-card-title">Take Exam or View Results</h2>
 
-              {/* Sub-Tabs: Take Exam / Check Results */}
-              <div className="portal-mode-tabs" role="tablist">
-                <button
-                  type="button"
-                  className={`portal-mode-tab ${studentTab === 'take_quiz' ? 'portal-mode-tab--active' : ''}`}
-                  onClick={() => {
-                    setStudentTab('take_quiz');
-                    setCodeError('');
-                  }}
-                >
-                  Enter Exam
-                </button>
-                <button
-                  type="button"
-                  className={`portal-mode-tab ${studentTab === 'check_results' ? 'portal-mode-tab--active' : ''}`}
-                  onClick={() => {
-                    setStudentTab('check_results');
-                    setResultError('');
-                  }}
-                >
-                  Check Results
-                </button>
-              </div>
+            {/* Sub-Tabs: Enter Exam / Check Results */}
+            <div className="portal-mode-tabs" role="tablist">
+              <button
+                type="button"
+                className={`portal-mode-tab ${studentTab === 'take_quiz' ? 'portal-mode-tab--active' : ''}`}
+                onClick={() => {
+                  setStudentTab('take_quiz');
+                  setCodeError('');
+                }}
+              >
+                Enter Exam
+              </button>
+              <button
+                type="button"
+                className={`portal-mode-tab ${studentTab === 'check_results' ? 'portal-mode-tab--active' : ''}`}
+                onClick={() => {
+                  setStudentTab('check_results');
+                  setResultError('');
+                }}
+              >
+                Check Results
+              </button>
+            </div>
 
-              {/* Tab 1: Enter Exam */}
-              {studentTab === 'take_quiz' ? (
-                <form onSubmit={handleJoin} className="portal-form">
-                  <div className="portal-field">
-                    <label htmlFor="portal-exam-code" className="portal-label">
-                      Exam Access Code
-                    </label>
-                    <div className="portal-input-container">
-                      <input
-                        id="portal-exam-code"
-                        type="text"
-                        className="portal-input portal-input--code"
-                        placeholder="e.g. CHEM-2026-T1"
-                        value={quizCodeInput}
-                        onChange={(e) => {
-                          setQuizCodeInput(e.target.value.toUpperCase());
-                          if (codeError) setCodeError('');
-                        }}
-                        autoCapitalize="characters"
-                        autoCorrect="off"
-                        spellCheck="false"
-                        autoFocus
-                      />
-                    </div>
-                    {codeError && <span className="portal-error-msg">{codeError}</span>}
-                  </div>
-
-                  {/* Invisible Security Challenge */}
-                  <TurnstileWidget
-                    action="portal_join"
-                    onVerify={(token) => setTurnstileToken(token)}
-                  />
-
-                  <button type="submit" className="portal-action-btn portal-action-btn--student">
-                    Start Examination →
-                  </button>
-
-                  {/* Device Receipts (if student completed an exam on this browser) */}
-                  {recentReceipts.length > 0 && (
-                    <div className="portal-receipts-section">
-                      <span className="portal-receipts-title">Recent Device Submissions:</span>
-                      <div className="portal-receipts-list">
-                        {recentReceipts.slice(0, 2).map((r, i) => (
-                          <button
-                            key={i}
-                            type="button"
-                            className="portal-receipt-item"
-                            onClick={() => handleOpenReceiptResult(r)}
-                          >
-                            <span className="portal-receipt-code">{r.quizCode}</span>
-                            <span className="portal-receipt-name">{r.studentName || 'Candidate'}</span>
-                            <span className="portal-receipt-date">
-                              {new Date(r.submittedAt).toLocaleDateString()}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </form>
-              ) : (
-                /* Tab 2: Check Results */
-                <form onSubmit={handleLookupResults} className="portal-form">
-                  <div className="portal-field">
-                    <label className="portal-label">Exam Code</label>
+            {/* Tab 1: Enter Exam */}
+            {studentTab === 'take_quiz' ? (
+              <form onSubmit={handleJoin} className="portal-form">
+                <div className="portal-field">
+                  <label htmlFor="portal-exam-code" className="portal-label">
+                    Exam Access Code
+                  </label>
+                  <div className="portal-input-container">
                     <input
+                      id="portal-exam-code"
                       type="text"
                       className="portal-input portal-input--code"
                       placeholder="e.g. CHEM-2026-T1"
-                      value={resultCodeInput}
+                      value={quizCodeInput}
                       onChange={(e) => {
-                        setResultCodeInput(e.target.value.toUpperCase());
-                        if (resultError) setResultError('');
+                        setQuizCodeInput(e.target.value.toUpperCase());
+                        if (codeError) setCodeError('');
                       }}
                       autoCapitalize="characters"
+                      autoCorrect="off"
+                      spellCheck="false"
+                      autoFocus
                     />
                   </div>
+                  {codeError && <span className="portal-error-msg">{codeError}</span>}
+                </div>
 
-                  <div className="portal-field">
-                    <label className="portal-label">Candidate Name or Seat #</label>
-                    <input
-                      type="text"
-                      className="portal-input"
-                      placeholder="Candidate Name"
-                      value={resultCandidateInput}
-                      onChange={(e) => {
-                        setResultCandidateInput(e.target.value);
-                        if (resultError) setResultError('');
-                      }}
-                    />
+                {/* Invisible Security Challenge */}
+                <TurnstileWidget
+                  action="portal_join"
+                  onVerify={(token) => setTurnstileToken(token)}
+                />
+
+                <button type="submit" className="portal-action-btn portal-action-btn--student">
+                  Start Examination →
+                </button>
+
+                {/* Device Receipts (if student completed an exam on this browser) */}
+                {recentReceipts.length > 0 && (
+                  <div className="portal-receipts-section">
+                    <span className="portal-receipts-title">Recent Device Submissions:</span>
+                    <div className="portal-receipts-list">
+                      {recentReceipts.slice(0, 2).map((r, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          className="portal-receipt-item"
+                          onClick={() => handleOpenReceiptResult(r)}
+                        >
+                          <span className="portal-receipt-code">{r.quizCode}</span>
+                          <span className="portal-receipt-name">{r.studentName || 'Candidate'}</span>
+                          <span className="portal-receipt-date">
+                            {new Date(r.submittedAt).toLocaleDateString()}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
+                )}
+              </form>
+            ) : (
+              /* Tab 2: Check Results */
+              <form onSubmit={handleLookupResults} className="portal-form">
+                <div className="portal-field">
+                  <label className="portal-label">Exam Code</label>
+                  <input
+                    type="text"
+                    className="portal-input portal-input--code"
+                    placeholder="e.g. CHEM-2026-T1"
+                    value={resultCodeInput}
+                    onChange={(e) => {
+                      setResultCodeInput(e.target.value.toUpperCase());
+                      if (resultError) setResultError('');
+                    }}
+                    autoCapitalize="characters"
+                  />
+                </div>
 
-                  <div className="portal-field">
-                    <label className="portal-label">Access PIN (3-digit)</label>
-                    <input
-                      type="text"
-                      className="portal-input portal-input--pin"
-                      placeholder="PIN"
-                      value={resultPinInput}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/\D/g, '').slice(0, 3);
-                        setResultPinInput(v);
-                        if (resultError) setResultError('');
-                      }}
-                      maxLength={3}
-                      inputMode="numeric"
-                    />
-                    <span className="portal-field-hint">
-                      Found on your examination submission receipt.
-                    </span>
-                    {resultError && <span className="portal-error-msg">{resultError}</span>}
-                  </div>
+                <div className="portal-field">
+                  <label className="portal-label">Candidate Name or Seat #</label>
+                  <input
+                    type="text"
+                    className="portal-input"
+                    placeholder="Candidate Name"
+                    value={resultCandidateInput}
+                    onChange={(e) => {
+                      setResultCandidateInput(e.target.value);
+                      if (resultError) setResultError('');
+                    }}
+                  />
+                </div>
 
-                  <button type="submit" className="portal-action-btn portal-action-btn--student">
-                    Retrieve Marked Paper →
-                  </button>
-                </form>
-              )}
+                <div className="portal-field">
+                  <label className="portal-label">Access PIN (3-digit)</label>
+                  <input
+                    type="text"
+                    className="portal-input portal-input--pin"
+                    placeholder="PIN"
+                    value={resultPinInput}
+                    onChange={(e) => {
+                      const v = e.target.value.replace(/\D/g, '').slice(0, 3);
+                      setResultPinInput(v);
+                      if (resultError) setResultError('');
+                    }}
+                    maxLength={3}
+                    inputMode="numeric"
+                  />
+                  <span className="portal-field-hint">
+                    Found on your examination submission receipt.
+                  </span>
+                  {resultError && <span className="portal-error-msg">{resultError}</span>}
+                </div>
 
-              {/* Minimalist Exam Highlights */}
-              <div className="portal-card-footer-chips">
-                <span className="portal-chip">Fullscreen Lockdown</span>
-                <span className="portal-chip">Scientific Formula Rendering</span>
-                <span className="portal-chip">Offline Autosave</span>
-              </div>
-            </div>
-          )}
+                <button type="submit" className="portal-action-btn portal-action-btn--student">
+                  Retrieve Marked Paper →
+                </button>
+              </form>
+            )}
+          </div>
 
           {/* Card 2: Teacher Section */}
-          {(portalViewFilter === 'all' || portalViewFilter === 'teachers') && (
-            <div
-              className="portal-card portal-card--teacher"
-              onClick={onEnterTeacherSuite}
-              onMouseEnter={() => prefetchAccessPin()}
-              onFocus={() => prefetchAccessPin()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onEnterTeacherSuite();
-                }
-              }}
-            >
-              <div className="portal-card-header">
-                <span className="portal-card-tag portal-card-tag--teacher">TEACHER SUITE</span>
-                <span className="portal-card-status">PIN Protected</span>
-              </div>
-
-              <h2 className="portal-card-title">Assessment Studio</h2>
-              <p className="portal-card-description">
-                Comprehensive authoring tools to construct Cambridge test papers, manage question repositories, and monitor active sessions.
-              </p>
-
-              {/* Minimalist Module List (Zero AI mentions) */}
-              <div className="portal-teacher-items">
-                <div className="portal-teacher-item">
-                  <span className="portal-item-bullet">•</span>
-                  <div className="portal-item-content">
-                    <strong>Question Bank & Formulas</strong>
-                    <span>Curate syllabus-aligned items with KaTeX chemical and mathematical formatting</span>
-                  </div>
-                </div>
-
-                <div className="portal-teacher-item">
-                  <span className="portal-item-bullet">•</span>
-                  <div className="portal-item-content">
-                    <strong>Standardized Test Builder</strong>
-                    <span>Assemble balanced papers with AO1/AO2/AO3 marks and authentic Cambridge cover sheets</span>
-                  </div>
-                </div>
-
-                <div className="portal-teacher-item">
-                  <span className="portal-item-bullet">•</span>
-                  <div className="portal-item-content">
-                    <strong>Live Invigilation & Integrity</strong>
-                    <span>Real-time proctoring with full-screen enforcement, blur strike logs, and time alerts</span>
-                  </div>
-                </div>
-
-                <div className="portal-teacher-item">
-                  <span className="portal-item-bullet">•</span>
-                  <div className="portal-item-content">
-                    <strong>Word, PDF & Gradebook Exports</strong>
-                    <span>Download camera-ready printable test papers, mark schemes, and class gradebooks</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="portal-teacher-btn-wrapper">
-                <button type="button" className="portal-action-btn portal-action-btn--teacher">
-                  Enter Teacher Suite →
-                </button>
-              </div>
-
-              <div className="portal-teacher-footer-note">
-                Secured by invigilator PIN • Automatic inactivity lock
-              </div>
+          <div
+            className="portal-card portal-card--teacher"
+            onClick={onEnterTeacherSuite}
+            onMouseEnter={() => prefetchAccessPin()}
+            onFocus={() => prefetchAccessPin()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onEnterTeacherSuite();
+              }
+            }}
+          >
+            <div className="portal-card-header">
+              <span className="portal-card-tag portal-card-tag--teacher">TEACHER SUITE</span>
             </div>
-          )}
+
+            <h2 className="portal-card-title">Teacher Portal</h2>
+            <p className="portal-card-description">
+              Access examination authoring, test assembly, live invigilation, and gradebooks.
+            </p>
+
+            <div className="portal-teacher-btn-wrapper">
+              <button type="button" className="portal-action-btn portal-action-btn--teacher">
+                Enter Teacher Suite →
+              </button>
+            </div>
+          </div>
+
         </div>
 
-        {/* Minimalist Institutional Footer */}
+        {/* Minimalist Footer */}
         <footer className="portal-minimal-footer">
           <div className="portal-footer-copy">
             <span>ICM Exam Platform</span>
@@ -515,9 +425,6 @@ export function PortalLandingPage({
             <span>Insan Cendekia Madani</span>
             <span className="portal-footer-sep">•</span>
             <span>Cambridge International School ID395</span>
-          </div>
-          <div className="portal-footer-meta">
-            Academic Year 2026/2027 • All Systems Operational
           </div>
         </footer>
       </div>
