@@ -62,7 +62,7 @@ const STEPS: TutorialStep[] = [
     position: 'bottom',
   },
   {
-    targetSelector: '#hero-bank-btn',
+    targetSelector: '#dash-launch-bank',
     title: '🎯 Quick Launch Actions',
     description:
       'Jump straight into any workflow with one click. Let’s start by exploring the Question Bank!',
@@ -82,14 +82,8 @@ export function OnboardingTutorial({ restartSignal }: OnboardingTutorialProps) {
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
 
-  // Check if tutorial should start
-  useEffect(() => {
-    if (!localStorage.getItem(STORAGE_KEY)) {
-      // Small delay to let the DOM settle after PIN gate
-      const timer = setTimeout(() => setActive(true), 600);
-      return () => clearTimeout(timer);
-    }
-  }, []);
+  // Note: Automatic tour popup for new users has been disabled per user requirement.
+  // The tour only activates on-demand when explicitly triggered (e.g. from Settings).
 
   // Handle restart signal
   useEffect(() => {

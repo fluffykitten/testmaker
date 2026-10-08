@@ -24,6 +24,7 @@ export interface AppSettings {
   r2MediaEndpoint?: string;
   r2UploadSecret?: string;
   enableVariantImageGeneration?: boolean; // AI diagram & SVG generation for question variants (default: false)
+  enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -56,6 +57,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   r2MediaEndpoint: 'https://testmaker-media.icmadani.workers.dev',
   r2UploadSecret: 'tm_r2_uploader_secret_2026',
   enableVariantImageGeneration: false,
+  enableQuizizzMode: false,
 };
 
 // Accent palette color mappings for --color-primary tokens

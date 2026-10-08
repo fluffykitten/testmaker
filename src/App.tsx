@@ -449,7 +449,6 @@ function App() {
               <HomePage
                 onNavigate={setCurrentPage}
                 selectedCount={selectedCount}
-                onRestartTutorial={() => setTutorialRestartSignal((s) => s + 1)}
               />
             )}
             {currentPage === 'bank' && (
@@ -481,12 +480,12 @@ function App() {
                   setTestRunInitialMode('exam');
                   setAppMode('student_quiz');
                 }}
-                onLaunchGameRun={(questions, headerConfig) => {
+                onLaunchGameRun={getSavedSettings().enableQuizizzMode ? (questions, headerConfig) => {
                   setTestRunQuestions(questions);
                   setTestRunHeaderConfig(headerConfig);
                   setTestRunInitialMode('game');
                   setAppMode('student_quiz');
-                }}
+                } : undefined}
               />
             )}
             {currentPage === 'saved' && (
@@ -504,11 +503,11 @@ function App() {
                   setTestRunHeaderConfig(headerConfig);
                   setAppMode('student_quiz');
                 }}
-                onLaunchGameHost={(quiz, questions) => {
+                onLaunchGameHost={getSavedSettings().enableQuizizzMode ? (quiz, questions) => {
                   setActiveGameHostQuiz(quiz);
                   setActiveGameHostQuestions(questions);
                   setAppMode('game_host');
-                }}
+                } : undefined}
                 onNavigateToBuilder={() => setCurrentPage('builder')}
                 onNavigateToSaved={() => setCurrentPage('saved')}
               />
@@ -578,10 +577,9 @@ function getGreeting(): string {
 interface HomePageProps {
   onNavigate: (page: Page) => void;
   selectedCount: number;
-  onRestartTutorial: () => void;
 }
 
-function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProps) {
+function HomePage({ onNavigate, selectedCount }: HomePageProps) {
   const [stats, setStats] = useState({
     totalQuestions: 0,
     savedTests: 0,
@@ -813,18 +811,6 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
               <span className="dash-launch-arrow">→</span>
             </button>
           </div>
-
-          {/* Minimal Tutorial Helper */}
-          <div className="dash-tutorial-box">
-            <span className="dash-tutorial-text">Need a walkthrough of the platform?</span>
-            <button
-              type="button"
-              className="dash-tutorial-btn"
-              onClick={onRestartTutorial}
-            >
-              Restart Tutorial ↺
-            </button>
-          </div>
         </div>
 
         {/* Right Column: Recent Test Papers */}
@@ -942,10 +928,11 @@ function StudentQuizDispatcher({
     }
 
     let isMounted = true;
+    const isQuizizzActive = Boolean(getSavedSettings().enableQuizizzMode);
     resolveStudentQuiz(codeOrId)
       .then((data) => {
         if (!isMounted) return;
-        if (data?.quizMode === 'game') {
+        if (data?.quizMode === 'game' && isQuizizzActive) {
           setGameConfig(data);
           setResolvedMode('game');
         } else {
@@ -992,7 +979,9 @@ function StudentQuizDispatcher({
     );
   }
 
-  if (resolvedMode === 'game') {
+  const isQuizizzActive = Boolean(getSavedSettings().enableQuizizzMode);
+
+  if (resolvedMode === 'game' && isQuizizzActive) {
     return (
       <Suspense fallback={<PageLoadingFallback />}>
         <GameQuizRunner
@@ -1013,7 +1002,7 @@ function StudentQuizDispatcher({
         initialQuestions={initialQuestions}
         initialHeaderConfig={initialHeaderConfig}
         onExit={onExit}
-        onSwitchToGameMode={!codeOrId ? () => setResolvedMode('game') : undefined}
+        onSwitchToGameMode={!codeOrId && isQuizizzActive ? () => setResolvedMode('game') : undefined}
       />
     </Suspense>
   );

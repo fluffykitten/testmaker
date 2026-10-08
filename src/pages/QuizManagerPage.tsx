@@ -73,6 +73,7 @@ export function QuizManagerPage({
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
   const [securityDefaults, setSecurityDefaults] = useState(() => getSavedSettings());
+  const isQuizizzAllowed = Boolean(securityDefaults.enableQuizizzMode);
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
   const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
@@ -212,11 +213,12 @@ export function QuizManagerPage({
     const currentSettings = getSavedSettings();
     setSecurityDefaults(currentSettings);
 
+    const effectiveMode = (initialMode === 'game' && currentSettings.enableQuizizzMode) ? 'game' : 'exam';
     const firstTest = savedTests[0];
     setSelectedTestId(firstTest.id);
     const draft = createDraftFromTest(firstTest);
-    draft.quizMode = initialMode;
-    draft.isExamMode = initialMode === 'exam';
+    draft.quizMode = effectiveMode;
+    draft.isExamMode = effectiveMode === 'exam';
     if (!currentSettings.defaultEnableWatermark) {
       draft.enableWatermark = false;
     }
@@ -514,25 +516,27 @@ export function QuizManagerPage({
         </div>
 
         {/* 1-Click Format Switcher Bar on Card */}
-        <div className="qm-card-format-toggle-bar">
-          <span className="qm-format-lbl">MODE:</span>
-          <button
-            type="button"
-            className={`qm-format-chip ${!isGame ? 'qm-format-chip--active-exam' : ''}`}
-            onClick={() => handleQuickSetMode(quiz.id, 'exam')}
-            title="Switch this quiz to Formal Exam mode"
-          >
-            📝 Formal Exam
-          </button>
-          <button
-            type="button"
-            className={`qm-format-chip ${isGame ? 'qm-format-chip--active-game' : ''}`}
-            onClick={() => handleQuickSetMode(quiz.id, 'game')}
-            title="Switch this quiz to Quizizz Game mode"
-          >
-            🎮 Quizizz Game
-          </button>
-        </div>
+        {isQuizizzAllowed && (
+          <div className="qm-card-format-toggle-bar">
+            <span className="qm-format-lbl">MODE:</span>
+            <button
+              type="button"
+              className={`qm-format-chip ${!isGame ? 'qm-format-chip--active-exam' : ''}`}
+              onClick={() => handleQuickSetMode(quiz.id, 'exam')}
+              title="Switch this quiz to Formal Exam mode"
+            >
+              📝 Formal Exam
+            </button>
+            <button
+              type="button"
+              className={`qm-format-chip ${isGame ? 'qm-format-chip--active-game' : ''}`}
+              onClick={() => handleQuickSetMode(quiz.id, 'game')}
+              title="Switch this quiz to Quizizz Game mode"
+            >
+              🎮 Quizizz Game
+            </button>
+          </div>
+        )}
 
         {/* Access Token Banner */}
         <div className="qm-code-banner">
@@ -709,7 +713,7 @@ export function QuizManagerPage({
             <div className="qm-title-badge">STUDENT ASSESSMENT HUB</div>
             <h1 className="qm-page-title">Interactive Quizzes & Live Assessments</h1>
             <p className="qm-page-subtitle">
-              Convert saved tests into live interactive student quizzes or competitive Quizizz game arenas with custom codes, timer countdowns, and live leaderboards.
+              Convert saved tests into live interactive student quizzes with custom access codes, timer countdowns, and secure anti-cheat controls.
             </p>
           </div>
 
@@ -723,17 +727,19 @@ export function QuizManagerPage({
             >
               📊 Grade Offline Exam
             </button>
+            {isQuizizzAllowed && (
+              <button
+                type="button"
+                className="qm-btn qm-btn-primary qm-btn-header qm-btn-quizizz-top"
+                onClick={() => handleOpenCreateModal('game')}
+                title="Create a new fast-paced gamified quiz (Quizizz style)"
+              >
+                🎮 Create Quizizz Game
+              </button>
+            )}
             <button
               type="button"
-              className="qm-btn qm-btn-primary qm-btn-header qm-btn-quizizz-top"
-              onClick={() => handleOpenCreateModal('game')}
-              title="Create a new fast-paced gamified quiz (Quizizz style)"
-            >
-              🎮 Create Quizizz Game
-            </button>
-            <button
-              type="button"
-              className="qm-btn qm-btn-secondary qm-btn-header"
+              className={`qm-btn ${isQuizizzAllowed ? 'qm-btn-secondary' : 'qm-btn-primary'} qm-btn-header`}
               onClick={() => handleOpenCreateModal('exam')}
               title="Publish as formal timed exam paper"
             >
@@ -842,16 +848,18 @@ export function QuizManagerPage({
               Click the button below to pick a saved test and set up student access codes and security rules.
             </p>
             <div className="qm-empty-actions">
+              {isQuizizzAllowed && (
+                <button
+                  type="button"
+                  className="qm-btn qm-btn-primary qm-btn-quizizz-top"
+                  onClick={() => handleOpenCreateModal('game')}
+                >
+                  🎮 Create First Quizizz Game
+                </button>
+              )}
               <button
                 type="button"
-                className="qm-btn qm-btn-primary qm-btn-quizizz-top"
-                onClick={() => handleOpenCreateModal('game')}
-              >
-                🎮 Create First Quizizz Game
-              </button>
-              <button
-                type="button"
-                className="qm-btn qm-btn-secondary"
+                className={`qm-btn ${isQuizizzAllowed ? 'qm-btn-secondary' : 'qm-btn-primary'}`}
                 onClick={() => handleOpenCreateModal('exam')}
               >
                 📝 Publish Formal Exam
@@ -1048,45 +1056,47 @@ export function QuizManagerPage({
               </div>
 
               {/* Step 4: Assessment Format (Formal Exam vs Quizizz Game) */}
-              <div className="qm-form-group">
-                <label className="qm-form-label">Quiz Assessment Format:</label>
-                <div className="qm-mode-selector-grid">
-                  <div
-                    className={`qm-mode-card ${activeQuizDraft.quizMode !== 'game' ? 'qm-mode-card--selected' : ''}`}
-                    onClick={() =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        quizMode: 'exam',
-                      })
-                    }
-                  >
-                    <span className="qm-mode-icon">📝</span>
-                    <div className="qm-mode-info">
-                      <strong>Formal Exam Mode</strong>
-                      <p>Timed assessment with fullscreen lockdown, tab-switch tracking, and proctoring audit log.</p>
+              {isQuizizzAllowed && (
+                <div className="qm-form-group">
+                  <label className="qm-form-label">Quiz Assessment Format:</label>
+                  <div className="qm-mode-selector-grid">
+                    <div
+                      className={`qm-mode-card ${activeQuizDraft.quizMode !== 'game' ? 'qm-mode-card--selected' : ''}`}
+                      onClick={() =>
+                        setActiveQuizDraft({
+                          ...activeQuizDraft,
+                          quizMode: 'exam',
+                        })
+                      }
+                    >
+                      <span className="qm-mode-icon">📝</span>
+                      <div className="qm-mode-info">
+                        <strong>Formal Exam Mode</strong>
+                        <p>Timed assessment with fullscreen lockdown, tab-switch tracking, and proctoring audit log.</p>
+                      </div>
                     </div>
-                  </div>
 
-                  <div
-                    className={`qm-mode-card ${activeQuizDraft.quizMode === 'game' ? 'qm-mode-card--selected qm-mode-card--game-sel' : ''}`}
-                    onClick={() =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        quizMode: 'game',
-                      })
-                    }
-                  >
-                    <span className="qm-mode-icon">🎮</span>
-                    <div className="qm-mode-info">
-                      <strong>Quizizz Game Mode (MCQ)</strong>
-                      <p>Fast-paced game-show with power-ups (50/50, time freeze), answer streaks, fun sounds, and live leaderboard.</p>
+                    <div
+                      className={`qm-mode-card ${activeQuizDraft.quizMode === 'game' ? 'qm-mode-card--selected qm-mode-card--game-sel' : ''}`}
+                      onClick={() =>
+                        setActiveQuizDraft({
+                          ...activeQuizDraft,
+                          quizMode: 'game',
+                        })
+                      }
+                    >
+                      <span className="qm-mode-icon">🎮</span>
+                      <div className="qm-mode-info">
+                        <strong>Quizizz Game Mode (MCQ)</strong>
+                        <p>Fast-paced game-show with power-ups (50/50, time freeze), answer streaks, fun sounds, and live leaderboard.</p>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* Conditional Settings based on quizMode */}
-              {activeQuizDraft.quizMode === 'game' ? (
+              {isQuizizzAllowed && activeQuizDraft.quizMode === 'game' ? (
                 /* ─── Game Mode Settings ────────────────────────────────────────── */
                 <div className="qm-game-settings-panel animate-fade-in">
                   <div className="qm-form-row">

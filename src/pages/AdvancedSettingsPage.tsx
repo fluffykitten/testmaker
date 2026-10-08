@@ -952,6 +952,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   {settings.enableVariantImageGeneration ? 'Enabled' : 'Disabled (Original Retained)'}
                 </button>
               </div>
+
+              {/* Gamified Quiz Mode (Quizizz Style) Feature Toggle */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">🎮 Gamified Quiz Mode (Quizizz Style)</strong>
+                  <p className="adv-setting-desc">
+                    Enables interactive Quizizz-style arcade challenges with colored cards, audio effects, powerups, streaks, and live multiplayer leaderboards. When disabled (default), only Formal Examination Mode is available.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.enableQuizizzMode ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => updateSetting('enableQuizizzMode', !settings.enableQuizizzMode)}
+                >
+                  {settings.enableQuizizzMode ? 'Enabled' : 'Disabled (Formal Exam Only)'}
+                </button>
+              </div>
             </div>
           </div>
         )}

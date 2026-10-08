@@ -700,10 +700,10 @@ export function TestBuilderPage({
           setIsShareModalOpen(false);
           if (onLaunchTestRun) onLaunchTestRun(questions, headerConfig);
         }}
-        onLaunchGameRun={() => {
+        onLaunchGameRun={onLaunchGameRun ? () => {
           setIsShareModalOpen(false);
-          if (onLaunchGameRun) onLaunchGameRun(questions, headerConfig);
-        }}
+          onLaunchGameRun(questions, headerConfig);
+        } : undefined}
       />
 
       {/* Export Modal */}
