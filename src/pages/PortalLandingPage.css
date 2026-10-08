@@ -1,5 +1,22 @@
 /* ─── ICM Exam Platform: Minimalist Landing Page Styles ─────────────────── */
 
+:root {
+  /* Official Insan Cendekia Madani (ICM) Brand Colors */
+  --icm-green: #8abf44;
+  --icm-green-hover: #659228;
+  --icm-green-text: #537a1f;
+  --icm-green-bg: #f5f9ed;
+  --icm-green-border: #dbeaba;
+  --icm-green-border-hover: #c3dc9c;
+
+  --icm-blue: #24448c;
+  --icm-blue-hover: #1b3570;
+  --icm-blue-text: #1b3570;
+  --icm-blue-bg: #f1f5fa;
+  --icm-blue-border: #ccd7ec;
+  --icm-blue-border-hover: #b0c3e4;
+}
+
 .portal-root {
   min-height: 100vh;
   width: 100%;
@@ -14,7 +31,7 @@
   overflow-x: hidden;
 }
 
-/* ─── Ambient Subtle Touch of Green ─── */
+/* ─── Ambient Subtle Touch of ICM Green & Blue ─── */
 .portal-glow {
   position: fixed;
   pointer-events: none;
@@ -29,15 +46,15 @@
   top: -220px;
   left: 50%;
   transform: translateX(-50%);
-  background: radial-gradient(circle, rgba(16, 185, 129, 0.04) 0%, rgba(16, 185, 129, 0) 70%);
+  background: radial-gradient(circle, rgba(138, 191, 68, 0.05) 0%, rgba(138, 191, 68, 0) 70%);
 }
 
 .portal-glow--2 {
-  width: 480px;
-  height: 480px;
+  width: 500px;
+  height: 500px;
   bottom: -180px;
   right: -80px;
-  background: radial-gradient(circle, rgba(5, 150, 105, 0.03) 0%, rgba(5, 150, 105, 0) 70%);
+  background: radial-gradient(circle, rgba(36, 68, 140, 0.04) 0%, rgba(36, 68, 140, 0) 70%);
 }
 
 /* ─── School Academic Doodles Layer ─── */
@@ -54,8 +71,8 @@
 
 .portal-doodle {
   position: absolute;
-  color: #059669;
-  opacity: 0.16;
+  color: var(--icm-green-text);
+  opacity: 0.18;
   user-select: none;
   will-change: transform;
 }
@@ -88,14 +105,14 @@
 
 @media (max-width: 1024px) {
   .portal-doodle {
-    opacity: 0.10;
+    opacity: 0.12;
     transform: scale(0.85);
   }
 }
 
 @media (max-width: 640px) {
   .portal-doodle {
-    opacity: 0.08;
+    opacity: 0.09;
     transform: scale(0.7);
   }
 }
@@ -134,8 +151,8 @@
 }
 
 .portal-brand-logos:hover {
-  border-color: #a7f3d0;
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.08);
+  border-color: var(--icm-green-border-hover);
+  box-shadow: 0 6px 20px rgba(138, 191, 68, 0.12);
 }
 
 .portal-logo-card {
@@ -168,7 +185,7 @@
 }
 
 .portal-title-accent {
-  color: #059669;
+  color: var(--icm-green-text);
 }
 
 /* ─── Pending Outbox Sync Banner ─── */
@@ -210,7 +227,7 @@
 
 .portal-outbox-msg {
   font-size: 0.8125rem;
-  color: #059669;
+  color: var(--icm-green-text);
   font-weight: 600;
   margin-top: 3px;
 }
@@ -221,7 +238,7 @@
 }
 
 .portal-btn-sync {
-  background: #059669;
+  background: var(--icm-green-hover);
   color: #ffffff;
   border: none;
   padding: 7px 14px;
@@ -233,7 +250,7 @@
 }
 
 .portal-btn-sync:hover {
-  background: #047857;
+  background: #50751e;
 }
 
 .portal-btn-backup {
@@ -275,27 +292,28 @@
 }
 
 .portal-card:hover {
-  border-color: #cbd5e1;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.03);
 }
 
+/* ─── Student Card: ICM Green ─── */
 .portal-card--student {
-  border-top: 3px solid #10b981;
+  border-top: 4px solid var(--icm-green);
 }
 
 .portal-card--student:hover {
-  border-color: #a7f3d0;
-  border-top-color: #10b981;
+  border-color: var(--icm-green-border-hover);
+  border-top-color: var(--icm-green);
 }
 
+/* ─── Teacher Card: ICM Blue ─── */
 .portal-card--teacher {
-  border-top: 3px solid #0f172a;
+  border-top: 4px solid var(--icm-blue);
   cursor: pointer;
 }
 
 .portal-card--teacher:hover {
-  border-color: #a7f3d0;
-  border-top-color: #059669;
+  border-color: var(--icm-blue-border-hover);
+  border-top-color: var(--icm-blue);
   transform: translateY(-2px);
 }
 
@@ -314,16 +332,18 @@
   border-radius: 4px;
 }
 
+/* Student Tag: ICM Green */
 .portal-card-tag--student {
-  background: #f0fdf4;
-  color: #047857;
-  border: 1px solid #d1fae5;
+  background: var(--icm-green-bg);
+  color: var(--icm-green-text);
+  border: 1px solid var(--icm-green-border);
 }
 
+/* Teacher Tag: ICM Blue */
 .portal-card-tag--teacher {
-  background: #f8fafc;
-  color: #334155;
-  border: 1px solid #e2e8f0;
+  background: var(--icm-blue-bg);
+  color: var(--icm-blue-text);
+  border: 1px solid var(--icm-blue-border);
 }
 
 .portal-card-title {
@@ -370,9 +390,9 @@
 
 .portal-mode-tab--active {
   background: #ffffff;
-  color: #047857;
+  color: var(--icm-green-text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  border: 1px solid #d1fae5;
+  border: 1px solid var(--icm-green-border);
 }
 
 /* ─── Form Inputs ─── */
@@ -411,8 +431,8 @@
 }
 
 .portal-input:focus {
-  border-color: #10b981;
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12);
+  border-color: var(--icm-green);
+  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.18);
 }
 
 .portal-input--code {
@@ -455,24 +475,27 @@
   gap: 6px;
 }
 
+/* Student Action: ICM Green */
 .portal-action-btn--student {
-  background: #059669;
+  background: var(--icm-green-hover);
   color: #ffffff;
 }
 
 .portal-action-btn--student:hover {
-  background: #047857;
-  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.25);
+  background: #50751e;
+  box-shadow: 0 2px 10px rgba(101, 146, 40, 0.28);
 }
 
+/* Teacher Action: ICM Blue */
 .portal-action-btn--teacher {
-  background: #0f172a;
+  background: var(--icm-blue);
   color: #ffffff;
 }
 
-.portal-card--teacher:hover .portal-action-btn--teacher {
-  background: #047857;
-  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.25);
+.portal-card--teacher:hover .portal-action-btn--teacher,
+.portal-action-btn--teacher:hover {
+  background: var(--icm-blue-hover);
+  box-shadow: 0 2px 10px rgba(36, 68, 140, 0.28);
 }
 
 /* ─── Receipts List ─── */
@@ -510,14 +533,14 @@
 }
 
 .portal-receipt-item:hover {
-  background: #f0fdf4;
-  border-color: #a7f3d0;
+  background: var(--icm-green-bg);
+  border-color: var(--icm-green-border-hover);
 }
 
 .portal-receipt-code {
   font-family: monospace;
   font-weight: 700;
-  color: #047857;
+  color: var(--icm-green-text);
 }
 
 .portal-receipt-name {
@@ -554,13 +577,13 @@
 }
 
 .portal-footer-link {
-  color: #059669;
+  color: var(--icm-green-text);
   text-decoration: none;
   font-weight: 600;
   transition: color 0.15s ease;
 }
 
 .portal-footer-link:hover {
-  color: #047857;
+  color: var(--icm-green-hover);
   text-decoration: underline;
 }
