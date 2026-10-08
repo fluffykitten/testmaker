@@ -420,11 +420,7 @@ export function PortalLandingPage({
         {/* Minimalist Footer */}
         <footer className="portal-minimal-footer">
           <div className="portal-footer-copy">
-            <span>ICM Exam Platform</span>
-            <span className="portal-footer-sep">•</span>
-            <span>Insan Cendekia Madani</span>
-            <span className="portal-footer-sep">•</span>
-            <span>Cambridge International School ID395</span>
+            <span>contact dev <a href="mailto:fluffykitten.dev@gmail.com" className="portal-footer-link">fluffykitten.dev@gmail.com</a></span>
           </div>
         </footer>
       </div>
