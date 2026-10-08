@@ -1,19 +1,20 @@
-/* ─── Dual Portal Landing Page Styles ────────────────────────────────────── */
+/* ─── Minimalist ICM Exam Platform Landing Page Styles ─────────────────── */
 
 .portal-root {
   min-height: 100vh;
   width: 100%;
-  background: var(--color-bg);
+  background: #ffffff;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding: 24px 20px 60px;
+  padding: 36px 20px 64px;
   position: relative;
-  /* Document window handles scrolling natively with full OS momentum */
+  color: #0f172a;
+  overflow-x: hidden;
 }
 
-/* Ambient glow balls — fixed in background without heavy blur filter repaints */
+/* ─── Ambient Subtle Touch of Green Glows ─── */
 .portal-glow {
   position: fixed;
   pointer-events: none;
@@ -23,32 +24,32 @@
 }
 
 .portal-glow--1 {
-  width: 600px;
-  height: 600px;
-  top: -160px;
-  left: -80px;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, rgba(99, 102, 241, 0) 70%);
+  width: 700px;
+  height: 700px;
+  top: -220px;
+  left: -120px;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.055) 0%, rgba(16, 185, 129, 0) 70%);
 }
 
 .portal-glow--2 {
-  width: 600px;
-  height: 600px;
-  top: 35%;
-  right: -100px;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.14) 0%, rgba(139, 92, 246, 0) 70%);
+  width: 650px;
+  height: 650px;
+  top: 30%;
+  right: -140px;
+  background: radial-gradient(circle, rgba(5, 150, 105, 0.045) 0%, rgba(5, 150, 105, 0) 70%);
 }
 
 .portal-glow--3 {
   width: 600px;
   height: 600px;
   bottom: -150px;
-  left: 15%;
-  background: radial-gradient(circle, rgba(6, 182, 212, 0.12) 0%, rgba(6, 182, 212, 0) 70%);
+  left: 20%;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.035) 0%, rgba(16, 185, 129, 0) 70%);
 }
 
 .portal-content {
   width: 100%;
-  max-width: 1100px;
+  max-width: 1160px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -56,10 +57,10 @@
   z-index: 10;
 }
 
-/* Compact Brand Header */
+/* ─── Header & Institutional Branding ─── */
 .portal-brand-header {
   text-align: center;
-  margin-bottom: 20px;
+  margin-bottom: 28px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -69,157 +70,282 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 16px;
+  margin-bottom: 16px;
+  background: #ffffff;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.03);
   flex-wrap: wrap;
+  transition: all 0.25s ease;
+}
+
+.portal-brand-logos:hover {
+  border-color: #a7f3d0;
+  box-shadow: 0 6px 24px rgba(16, 185, 129, 0.08);
+  transform: translateY(-1px);
 }
 
 .portal-logo-card {
-  background: #ffffff;
-  padding: 6px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.25s ease;
-}
-
-.portal-logo-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+  background: transparent;
 }
 
 .portal-logo-img {
-  height: 36px;
+  height: 38px;
   width: auto;
-  max-width: 140px;
+  max-width: 160px;
   object-fit: contain;
   display: block;
 }
 
+.portal-logo-divider {
+  width: 1px;
+  height: 28px;
+  background: #e2e8f0;
+}
+
+.portal-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #047857;
+  margin-bottom: 14px;
+  letter-spacing: 0.01em;
+}
+
+.portal-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+  display: inline-block;
+}
+
 .portal-title {
-  font-size: 1.85rem;
+  font-size: clamp(2.1rem, 4.5vw, 2.85rem);
   font-weight: 900;
-  color: var(--color-text-primary);
-  letter-spacing: -0.025em;
-  margin: 0 0 4px;
-  line-height: 1.2;
+  color: #0f172a;
+  letter-spacing: -0.035em;
+  margin: 0 0 8px;
+  line-height: 1.15;
+}
+
+.portal-title-accent {
+  color: #059669;
 }
 
 .portal-subtitle {
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
-  max-width: 520px;
+  font-size: 0.95rem;
+  color: #64748b;
+  max-width: 640px;
   margin: 0 auto;
-  line-height: 1.45;
+  line-height: 1.55;
+  font-weight: 500;
 }
 
-/* ─── Cards Grid (Positioned at Top) ──────────────────────────────────────── */
+/* ─── Split View Switcher Control ─── */
+.portal-split-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 4px;
+  border-radius: 999px;
+  margin-bottom: 28px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+}
 
+.portal-split-toggle-btn {
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.portal-split-toggle-btn:hover {
+  color: #0f172a;
+}
+
+.portal-split-toggle-btn--active {
+  background: #ffffff;
+  color: #047857;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  border: 1px solid #d1fae5;
+}
+
+/* ─── Dual Portal Split Cards Grid ─── */
 .portal-cards-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 24px;
+  gap: 28px;
   width: 100%;
   margin-top: 4px;
+  align-items: stretch;
 }
 
-@media (max-width: 840px) {
+.portal-cards-grid--students-only {
+  grid-template-columns: 1fr;
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.portal-cards-grid--teachers-only {
+  grid-template-columns: 1fr;
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+@media (max-width: 880px) {
   .portal-cards-grid {
     grid-template-columns: 1fr;
+    gap: 20px;
   }
 }
 
 .portal-card {
-  background: var(--color-surface);
-  border: 1.5px solid var(--color-border);
-  border-radius: var(--radius-2xl);
-  padding: 28px 24px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  padding: 32px 28px 28px;
   display: flex;
   flex-direction: column;
   position: relative;
-  box-shadow: var(--shadow-xl);
-  transition: all var(--transition-base);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.04), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .portal-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px -8px rgba(0, 0, 0, 0.06), 0 4px 14px rgba(16, 185, 129, 0.06);
+}
+
+.portal-card--student {
+  border-top: 4px solid #10b981;
 }
 
 .portal-card--student:hover {
-  border-color: var(--color-primary-500);
+  border-color: #a7f3d0;
+  border-top-color: #10b981;
 }
 
 .portal-card--teacher {
+  border-top: 4px solid #1e40af;
   cursor: pointer;
 }
 
 .portal-card--teacher:hover {
-  border-color: #8b5cf6;
+  border-color: #bfdbfe;
+  border-top-color: #1e40af;
+}
+
+.portal-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .portal-card-badge {
-  position: absolute;
-  top: 20px;
-  right: 22px;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.06em;
-  padding: 4px 10px;
+  padding: 4px 12px;
   border-radius: 999px;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .portal-card-badge--student {
-  background: rgba(99, 102, 241, 0.12);
-  color: var(--color-primary-500);
-  border: 1px solid rgba(99, 102, 241, 0.25);
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
 }
 
 .portal-card-badge--teacher {
-  background: rgba(139, 92, 246, 0.12);
-  color: #8b5cf6;
-  border: 1px solid rgba(139, 92, 246, 0.25);
-}
-
-.portal-card-icon-wrap {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-xl);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.6rem;
-  margin-bottom: 14px;
-}
-
-.portal-card-icon--student {
-  background: rgba(99, 102, 241, 0.1);
-}
-
-.portal-card-icon--teacher {
-  background: rgba(139, 92, 246, 0.1);
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
 }
 
 .portal-card-heading {
-  font-size: 1.25rem;
+  font-size: 1.35rem;
   font-weight: 800;
-  color: var(--color-text-primary);
+  color: #0f172a;
   margin: 0 0 6px;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .portal-card-desc {
-  font-size: 0.8125rem;
-  color: var(--color-text-secondary);
+  font-size: 0.84375rem;
+  color: #64748b;
   line-height: 1.5;
-  margin: 0 0 16px;
+  margin: 0 0 18px;
 }
 
-/* ─── Quiz Form (Student) ─────────────────────────────────────────────────── */
+/* ─── Student Mode Tabs ─── */
+.portal-tabs-nav {
+  display: flex;
+  gap: 4px;
+  background: #f8fafc;
+  padding: 4px;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  border: 1px solid #e2e8f0;
+}
 
+.portal-tab-btn {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: transparent;
+  color: #64748b;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.portal-tab-btn:hover {
+  color: #0f172a;
+}
+
+.portal-tab-btn--active {
+  background: #ffffff;
+  color: #047857;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  border: 1px solid #d1fae5;
+}
+
+/* ─── Student Quiz Form ─── */
 .portal-quiz-form {
   display: flex;
   flex-direction: column;
@@ -236,7 +362,7 @@
 .portal-input-label {
   font-size: 0.75rem;
   font-weight: 700;
-  color: var(--color-text-secondary);
+  color: #475569;
 }
 
 .portal-input-inner {
@@ -253,23 +379,22 @@
 
 .portal-code-input {
   width: 100%;
-  padding: 11px 14px 11px 38px;
-  border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border);
-  background: var(--color-surface-sunken);
-  color: var(--color-text-primary);
-  font-family: var(--font-mono, monospace);
-  font-size: 0.9375rem;
+  padding: 12px 14px 12px 38px;
+  border-radius: 12px;
+  border: 1.5px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-family: monospace;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   outline: none;
-  transition: all var(--transition-fast);
+  transition: all 0.2s ease;
 }
 
 .portal-code-input:focus {
-  border-color: var(--color-primary-500);
-  background: var(--color-surface);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
 }
 
 .portal-error-text {
@@ -278,108 +403,80 @@
   font-weight: 600;
 }
 
-/* ─── Teacher Action Button Wrap ─────────────────────────────────────────── */
-
-.portal-teacher-action-wrap {
-  margin-top: auto;
-  padding-top: 14px;
-  width: 100%;
-}
-
-/* ─── Buttons ────────────────────────────────────────────────────────────── */
-
+/* ─── Buttons ─── */
 .portal-btn {
   width: 100%;
-  padding: 12px 20px;
-  border-radius: var(--radius-lg);
-  font-family: var(--font-sans);
+  padding: 13px 20px;
+  border-radius: 12px;
+  font-family: inherit;
   font-size: 0.875rem;
   font-weight: 800;
   cursor: pointer;
   border: none;
-  transition: all var(--transition-fast);
+  transition: all 0.2s ease;
   text-align: center;
   letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .portal-btn--student {
-  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-700));
-  color: white;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, #059669, #10b981);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
 }
 
 .portal-btn--student:hover {
-  background: linear-gradient(135deg, var(--color-primary-500), var(--color-primary-600));
+  background: linear-gradient(135deg, #047857, #059669);
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35);
 }
 
 .portal-btn--teacher {
-  background: linear-gradient(135deg, #7c3aed, #6d28d9);
-  color: white;
-  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3);
+  background: #0f172a;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.2);
+  border: 1px solid #1e293b;
 }
 
 .portal-btn--teacher:hover {
-  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  background: #1e293b;
+  border-color: #10b981;
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.15);
 }
 
-.portal-card-footer-note {
-  margin-top: 12px;
+/* ─── Student Reassurance Badges ─── */
+.portal-student-reassurance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.portal-reassurance-chip {
   font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  line-height: 1.4;
-}
-
-/* Student Action Tabs */
-.portal-tabs-nav {
-  display: flex;
-  gap: 6px;
-  background: var(--color-surface-sunken);
-  padding: 4px;
-  border-radius: var(--radius-md);
-  margin-bottom: 14px;
-  border: 1px solid var(--color-border);
-}
-
-.portal-tab-btn {
-  flex: 1;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: none;
-  font-size: 0.8125rem;
   font-weight: 700;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: all 0.2s ease;
-  display: flex;
+  color: #047857;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  gap: 4px;
 }
 
-.portal-tab-btn:hover {
-  color: var(--color-text-primary);
-}
-
-.portal-tab-btn--active {
-  background: var(--color-primary-600);
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
-}
-
-/* Device Receipt Banner */
+/* ─── Device Receipt Banner ─── */
 .portal-receipt-banner {
-  background: rgba(139, 92, 246, 0.12);
-  border: 1px solid rgba(139, 92, 246, 0.3);
-  border-radius: var(--radius-md);
-  padding: 10px 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 11px 14px;
   margin-bottom: 14px;
   display: flex;
   align-items: center;
@@ -391,8 +488,8 @@
 }
 
 .portal-receipt-banner:hover {
-  background: rgba(139, 92, 246, 0.22);
-  border-color: rgba(139, 92, 246, 0.5);
+  background: #dcfce7;
+  border-color: #86efac;
   transform: translateY(-1px);
 }
 
@@ -405,14 +502,14 @@
   font-size: 0.6875rem;
   font-weight: 800;
   text-transform: uppercase;
-  color: #c4b5fd;
+  color: #059669;
   display: block;
 }
 
 .portal-receipt-title {
   font-size: 0.8125rem;
   font-weight: 700;
-  color: #f8fafc;
+  color: #0f172a;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -421,51 +518,118 @@
 .portal-receipt-action {
   font-size: 0.75rem;
   font-weight: 800;
-  color: #a78bfa;
+  color: #047857;
   white-space: nowrap;
 }
 
-/* ─── Platform Capabilities Section ─────────────────────────────────────── */
+/* ─── Teacher Modules Checklist ─── */
+.portal-teacher-modules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 20px;
+}
 
+.portal-teacher-module-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  font-size: 0.8125rem;
+  color: #334155;
+  transition: all 0.15s ease;
+}
+
+.portal-teacher-module-item:hover {
+  background: #f0fdf4;
+  border-color: #d1fae5;
+  color: #047857;
+}
+
+.portal-teacher-module-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.portal-teacher-module-text {
+  font-weight: 600;
+}
+
+.portal-teacher-action-wrap {
+  margin-top: auto;
+  padding-top: 10px;
+  width: 100%;
+}
+
+.portal-card-footer-note {
+  margin-top: 14px;
+  font-size: 0.6875rem;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+/* ─── Pending Offline Exam Outbox Banner ─── */
+.portal-outbox-banner {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  padding: 14px 18px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.08);
+  width: 100%;
+}
+
+/* ─── Platform Capabilities Section (Minimalist Grid) ─── */
 .portal-features-section {
   width: 100%;
-  margin-top: 48px;
-  padding-top: 40px;
-  border-top: 1px solid var(--color-border);
+  margin-top: 56px;
+  padding-top: 44px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .portal-section-header {
   text-align: center;
-  margin-bottom: 30px;
+  margin-bottom: 32px;
 }
 
 .portal-section-badge {
   font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.08em;
-  padding: 4px 12px;
+  padding: 4px 14px;
   border-radius: 999px;
-  background: rgba(99, 102, 241, 0.1);
-  color: var(--color-primary-400, #818cf8);
-  border: 1px solid rgba(99, 102, 241, 0.25);
+  background: #f0fdf4;
+  color: #047857;
+  border: 1px solid #bbf7d0;
   display: inline-block;
   margin-bottom: 10px;
 }
 
 .portal-section-title {
-  font-size: 1.6rem;
+  font-size: 1.65rem;
   font-weight: 900;
-  color: var(--color-text-primary);
-  letter-spacing: -0.02em;
+  color: #0f172a;
+  letter-spacing: -0.025em;
   margin: 0 0 8px;
 }
 
 .portal-section-desc {
   font-size: 0.875rem;
-  color: var(--color-text-secondary);
-  max-width: 620px;
+  color: #64748b;
+  max-width: 640px;
   margin: 0 auto;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .portal-features-grid {
@@ -474,7 +638,7 @@
   gap: 18px;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1060px) {
   .portal-features-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -487,43 +651,42 @@
 }
 
 .portal-feature-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
   padding: 22px 18px;
   display: flex;
   flex-direction: column;
-  transition: all var(--transition-base);
+  transition: all 0.2s ease;
   position: relative;
-  overflow: hidden;
 }
 
 .portal-feature-card:hover {
-  transform: translateY(-3px);
-  border-color: var(--color-border-hover);
-  box-shadow: 0 16px 32px -10px rgba(0, 0, 0, 0.2);
+  transform: translateY(-2px);
+  border-color: #a7f3d0;
+  box-shadow: 0 12px 28px -8px rgba(16, 185, 129, 0.08);
 }
 
 .feature-card-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .feature-card-icon-wrap {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-border);
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .feature-card-icon {
-  font-size: 1.3rem;
+  font-size: 1.25rem;
 }
 
 .feature-card-badge {
@@ -536,56 +699,64 @@
 }
 
 .badge--indigo {
-  background: rgba(99, 102, 241, 0.12);
-  color: #6366f1;
+  background: #f0fdf4;
+  color: #047857;
+  border: 1px solid #bbf7d0;
 }
 
 .badge--amber {
-  background: rgba(245, 158, 11, 0.12);
-  color: #f59e0b;
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
 }
 
 .badge--purple {
-  background: rgba(168, 85, 247, 0.12);
-  color: #a855f7;
+  background: #faf5ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
 }
 
 .badge--rose {
-  background: rgba(244, 63, 94, 0.12);
-  color: #f43f5e;
+  background: #fff1f2;
+  color: #be123c;
+  border: 1px solid #fecdd3;
 }
 
 .badge--emerald {
-  background: rgba(16, 185, 129, 0.12);
-  color: #10b981;
+  background: #f0fdf4;
+  color: #047857;
+  border: 1px solid #bbf7d0;
 }
 
 .badge--blue {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 
 .badge--cyan {
-  background: rgba(6, 182, 212, 0.12);
-  color: #06b6d4;
+  background: #ecfeff;
+  color: #0e7490;
+  border: 1px solid #a5f3fc;
 }
 
 .badge--teal {
-  background: rgba(20, 184, 166, 0.12);
-  color: #14b8a6;
+  background: #f0fdfa;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
 }
 
 .feature-card-title {
-  font-size: 0.95rem;
+  font-size: 0.9375rem;
   font-weight: 800;
-  color: var(--color-text-primary);
+  color: #0f172a;
   margin: 0 0 6px;
   line-height: 1.35;
 }
 
 .feature-card-desc {
-  font-size: 0.7813rem;
-  color: var(--color-text-secondary);
+  font-size: 0.78125rem;
+  color: #64748b;
   line-height: 1.5;
   margin: 0 0 14px;
   flex: 1;
@@ -596,12 +767,12 @@
   flex-direction: column;
   gap: 5px;
   padding-top: 10px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid #f1f5f9;
 }
 
 .feature-highlight-tag {
   font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
+  color: #64748b;
   font-weight: 500;
   display: flex;
   align-items: center;
@@ -609,32 +780,41 @@
 }
 
 .highlight-bullet {
-  color: var(--color-primary-400);
+  color: #10b981;
   font-size: 0.875rem;
   line-height: 1;
 }
 
-/* ─── Footer ─────────────────────────────────────────────────────────────── */
-
+/* ─── Minimalist Institutional Footer ─── */
 .portal-footer {
-  margin-top: 40px;
-  padding-top: 20px;
-  border-top: 1px solid var(--color-border);
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px solid #e2e8f0;
   width: 100%;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .portal-footer-line {
-  font-size: 0.7813rem;
-  color: var(--color-text-secondary);
-  font-weight: 600;
+  font-size: 0.8125rem;
+  color: #334155;
+  font-weight: 700;
 }
 
 .portal-footer-sub {
+  font-size: 0.71875rem;
+  color: #94a3b8;
+}
+
+.portal-footer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
+  color: #059669;
+  font-weight: 700;
+  margin-top: 4px;
 }

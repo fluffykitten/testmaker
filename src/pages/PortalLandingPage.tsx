@@ -93,6 +93,9 @@ export function PortalLandingPage({
   // Student Portal Tabs: 'take_quiz' | 'check_results'
   const [studentTab, setStudentTab] = useState<'take_quiz' | 'check_results'>('take_quiz');
 
+  // Split View Filter: 'all' | 'students' | 'teachers'
+  const [portalViewFilter, setPortalViewFilter] = useState<'all' | 'students' | 'teachers'>('all');
+
   // Take Quiz Form State
   const [quizCodeInput, setQuizCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
@@ -244,51 +247,45 @@ export function PortalLandingPage({
 
       {/* Main Container */}
       <div className="portal-content">
-        {/* Compact Brand Header */}
+        {/* Minimalist Institutional Header */}
         <header className="portal-brand-header">
           <div className="portal-brand-logos">
             <div className="portal-logo-card" title="Insan Cendekia Madani">
               <img src={ICM_LOGO_PATH} alt="ICM" className="portal-logo-img" />
             </div>
+            <div className="portal-logo-divider" />
             <div className="portal-logo-card" title="Cambridge Assessment International Education">
               <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment" className="portal-logo-img" />
             </div>
           </div>
 
-          <h1 className="portal-title">ICM Exam Platform</h1>
+          <div className="portal-meta-badge">
+            <span className="portal-live-dot" />
+            <span>Academic Year 2026/2027 • Accredited Cambridge International School</span>
+          </div>
+
+          <h1 className="portal-title">
+            ICM <span className="portal-title-accent">Exam Platform</span>
+          </h1>
           <p className="portal-subtitle">
-            Interactive Student Assessment Portal & Teacher Examination Suite • Insan Cendekia Madani
+            The unified Cambridge assessment studio and secure examination portal for Insan Cendekia Madani. Select your pathway below to begin.
           </p>
         </header>
 
         {/* ─── Pending Offline Exam Outbox Banner ─── */}
         {pendingOutbox.length > 0 && (
-          <div
-            style={{
-              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.1))',
-              border: '1.5px solid #f59e0b',
-              borderRadius: '14px',
-              padding: '16px 20px',
-              marginBottom: '24px',
-              display: 'flex',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '14px',
-              boxShadow: '0 4px 15px rgba(245, 158, 11, 0.12)',
-            }}
-          >
+          <div className="portal-outbox-banner">
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', textAlign: 'left' }}>
               <span style={{ fontSize: '1.6rem' }}>⚠️</span>
               <div>
-                <strong style={{ color: '#fbbf24', fontSize: '0.95rem', display: 'block' }}>
+                <strong style={{ color: '#b45309', fontSize: '0.95rem', display: 'block' }}>
                   {pendingOutbox.length} Pending Exam Submission{pendingOutbox.length > 1 ? 's' : ''} Stored Locally
                 </strong>
-                <span style={{ fontSize: '0.8125rem', color: '#cbd5e1' }}>
+                <span style={{ fontSize: '0.8125rem', color: '#64748b' }}>
                   {pendingOutbox.map((i) => `${i.submission.quizCode} (${i.submission.studentName})`).join(' • ')}
                 </span>
                 {outboxSyncMsg && (
-                  <div style={{ fontSize: '0.8125rem', color: '#6ee7b7', marginTop: '4px', fontWeight: 600 }}>
+                  <div style={{ fontSize: '0.8125rem', color: '#059669', marginTop: '4px', fontWeight: 600 }}>
                     {outboxSyncMsg}
                   </div>
                 )}
@@ -301,10 +298,10 @@ export function PortalLandingPage({
                 onClick={handleFlushPendingOutbox}
                 disabled={isFlushingOutbox}
                 style={{
-                  background: '#f59e0b',
-                  color: '#0f172a',
+                  background: '#059669',
+                  color: '#ffffff',
                   border: 'none',
-                  padding: '8px 14px',
+                  padding: '8px 16px',
                   borderRadius: '8px',
                   fontSize: '0.8125rem',
                   fontWeight: 800,
@@ -312,6 +309,7 @@ export function PortalLandingPage({
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '6px',
+                  boxShadow: '0 2px 8px rgba(5, 150, 105, 0.2)',
                 }}
               >
                 {isFlushingOutbox ? '⏳ Syncing...' : '🔄 Sync Now'}
@@ -321,9 +319,9 @@ export function PortalLandingPage({
                 type="button"
                 onClick={() => exportSubmissionToFile(pendingOutbox[0].submission)}
                 style={{
-                  background: 'rgba(255, 255, 255, 0.1)',
-                  color: '#ffffff',
-                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  background: '#ffffff',
+                  color: '#334155',
+                  border: '1px solid #cbd5e1',
                   padding: '8px 14px',
                   borderRadius: '8px',
                   fontSize: '0.8125rem',
@@ -337,190 +335,259 @@ export function PortalLandingPage({
           </div>
         )}
 
-        {/* Dual Portal Cards Grid - Positioned at Top */}
-        <div className="portal-cards-grid">
-          {/* Card 1: Student Quiz Portal */}
-          <div className="portal-card portal-card--student">
-            <div className="portal-card-badge portal-card-badge--student">FOR STUDENTS</div>
-            <div className="portal-card-icon-wrap portal-card-icon--student">
-              🎓
-            </div>
-            <h2 className="portal-card-heading">Interactive Student Portal</h2>
-            <p className="portal-card-desc">
-              Join your teacher's timed assessment, compete in a gamified sprint arena, or retrieve your marked papers.
-            </p>
+        {/* ─── Segmented Split View Filter ─── */}
+        <div className="portal-split-toggle" role="tablist" aria-label="Portal View Selection">
+          <button
+            type="button"
+            className={`portal-split-toggle-btn ${portalViewFilter === 'all' ? 'portal-split-toggle-btn--active' : ''}`}
+            onClick={() => setPortalViewFilter('all')}
+          >
+            <span>👥</span> Dual Split View
+          </button>
+          <button
+            type="button"
+            className={`portal-split-toggle-btn ${portalViewFilter === 'students' ? 'portal-split-toggle-btn--active' : ''}`}
+            onClick={() => setPortalViewFilter('students')}
+          >
+            <span>🎓</span> For Students
+          </button>
+          <button
+            type="button"
+            className={`portal-split-toggle-btn ${portalViewFilter === 'teachers' ? 'portal-split-toggle-btn--active' : ''}`}
+            onClick={() => setPortalViewFilter('teachers')}
+          >
+            <span>🧑‍🏫</span> For Teachers
+          </button>
+        </div>
 
-            {/* Quick-Access Device Receipt Banner */}
-            {recentReceipts.length > 0 && (
-              <div
-                className="portal-receipt-banner animate-fade-in"
-                onClick={() => handleOpenReceiptResult(recentReceipts[0])}
-                title="Click to retrieve your marked examination script"
-              >
-                <div className="portal-receipt-info">
-                  <span className="portal-receipt-tag">🎉 Recent Exam on this Device</span>
-                  <div className="portal-receipt-title">
-                    {recentReceipts[0].quizCode}: {recentReceipts[0].quizTitle || 'Examination'} ({recentReceipts[0].studentName})
-                  </div>
+        {/* ─── Dual Split Cards Grid (Students vs Teachers) ─── */}
+        <div className={`portal-cards-grid ${portalViewFilter === 'students' ? 'portal-cards-grid--students-only' : ''} ${portalViewFilter === 'teachers' ? 'portal-cards-grid--teachers-only' : ''}`}>
+          {/* Card 1: Students Portal */}
+          {(portalViewFilter === 'all' || portalViewFilter === 'students') && (
+            <div className="portal-card portal-card--student">
+              <div className="portal-card-header">
+                <div className="portal-card-icon-wrap portal-card-icon--student">
+                  🎓
                 </div>
-                <span className="portal-receipt-action">Check Result →</span>
+                <div className="portal-card-badge portal-card-badge--student">
+                  <span>●</span> STUDENT PORTAL
+                </div>
               </div>
-            )}
+              <h2 className="portal-card-heading">Join Exam or Check Results</h2>
+              <p className="portal-card-desc">
+                Enter your test token to launch your timed Cambridge exam, compete in a sprint arena, or retrieve marked scripts.
+              </p>
 
-            {/* Action Mode Tabs */}
-            <div className="portal-tabs-nav">
-              <button
-                type="button"
-                className={`portal-tab-btn ${studentTab === 'take_quiz' ? 'portal-tab-btn--active' : ''}`}
-                onClick={() => setStudentTab('take_quiz')}
-              >
-                🚀 Take Assessment
-              </button>
-              <button
-                type="button"
-                className={`portal-tab-btn ${studentTab === 'check_results' ? 'portal-tab-btn--active' : ''}`}
-                onClick={() => setStudentTab('check_results')}
-              >
-                📊 Check Exam Results
-              </button>
-            </div>
-
-            {studentTab === 'take_quiz' ? (
-              /* Tab 1: Take Quiz Form */
-              <form onSubmit={handleJoin} className="portal-quiz-form animate-fade-in">
-                <TurnstileWidget action="portal_join" onVerify={setTurnstileToken} />
-                <div className="portal-input-group">
-                  <label className="portal-input-label">Enter Quiz Code / Token:</label>
-                  <div className="portal-input-inner">
-                    <span className="portal-input-icon">🔑</span>
-                    <input
-                      type="text"
-                      className="portal-code-input"
-                      placeholder="e.g. CHEM-101 or TEST-839"
-                      value={quizCodeInput}
-                      onChange={(e) => {
-                        setQuizCodeInput(e.target.value.toUpperCase());
-                        if (codeError) setCodeError('');
-                      }}
-                      maxLength={36}
-                    />
+              {/* Quick-Access Device Receipt Banner */}
+              {recentReceipts.length > 0 && (
+                <div
+                  className="portal-receipt-banner animate-fade-in"
+                  onClick={() => handleOpenReceiptResult(recentReceipts[0])}
+                  title="Click to retrieve your marked examination script"
+                >
+                  <div className="portal-receipt-info">
+                    <span className="portal-receipt-tag">🎉 Recent Exam on this Device</span>
+                    <div className="portal-receipt-title">
+                      {recentReceipts[0].quizCode}: {recentReceipts[0].quizTitle || 'Examination'} ({recentReceipts[0].studentName})
+                    </div>
                   </div>
-                  {codeError && <span className="portal-error-text">{codeError}</span>}
+                  <span className="portal-receipt-action">Check Result →</span>
                 </div>
+              )}
 
-                <button type="submit" className="portal-btn portal-btn--student">
-                  🚀 Start Interactive Assessment
+              {/* Action Mode Tabs */}
+              <div className="portal-tabs-nav">
+                <button
+                  type="button"
+                  className={`portal-tab-btn ${studentTab === 'take_quiz' ? 'portal-tab-btn--active' : ''}`}
+                  onClick={() => setStudentTab('take_quiz')}
+                >
+                  🚀 Take Assessment
                 </button>
-              </form>
-            ) : (
-              /* Tab 2: Check Exam Results Form */
-              <form onSubmit={handleLookupResults} className="portal-quiz-form animate-fade-in">
-                <div className="portal-input-group">
-                  <label className="portal-input-label">Exam Code:</label>
-                  <div className="portal-input-inner">
-                    <span className="portal-input-icon">🔑</span>
-                    <input
-                      type="text"
-                      className="portal-code-input"
-                      placeholder="e.g. CHEM-101"
-                      value={resultCodeInput}
-                      onChange={(e) => {
-                        setResultCodeInput(e.target.value.toUpperCase());
-                        if (resultError) setResultError('');
-                      }}
-                      maxLength={36}
-                    />
-                  </div>
-                </div>
-
-                <div className="portal-input-group" style={{ marginTop: '10px' }}>
-                  <label className="portal-input-label">Candidate Name or Seat #:</label>
-                  <div className="portal-input-inner">
-                    <span className="portal-input-icon">👤</span>
-                    <input
-                      type="text"
-                      className="portal-code-input"
-                      placeholder="e.g. Alex Chen or Seat 12"
-                      value={resultCandidateInput}
-                      onChange={(e) => {
-                        setResultCandidateInput(e.target.value);
-                        if (resultError) setResultError('');
-                      }}
-                      maxLength={50}
-                    />
-                  </div>
-                  {resultError && <span className="portal-error-text">{resultError}</span>}
-                </div>
-
-                <div className="portal-input-group" style={{ marginTop: '10px' }}>
-                  <label className="portal-input-label">Personal Access PIN:</label>
-                  <div className="portal-input-inner">
-                    <span className="portal-input-icon">🔐</span>
-                    <input
-                      type="text"
-                      className="portal-code-input"
-                      placeholder="e.g. 847"
-                      value={resultPinInput}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/\D/g, '').slice(0, 3);
-                        setResultPinInput(v);
-                        if (resultError) setResultError('');
-                      }}
-                      maxLength={3}
-                      inputMode="numeric"
-                      style={{ fontFamily: 'monospace', letterSpacing: '0.2em', fontSize: '1.1rem', fontWeight: 800 }}
-                    />
-                  </div>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--color-text-tertiary, #94a3b8)', marginTop: '4px', display: 'block' }}>
-                    💡 You received this 3-digit PIN on your exam confirmation receipt.
-                  </span>
-                </div>
-
-                <button type="submit" className="portal-btn portal-btn--student" style={{ marginTop: '8px' }}>
-                  🔍 Retrieve My Marked Paper
+                <button
+                  type="button"
+                  className={`portal-tab-btn ${studentTab === 'check_results' ? 'portal-tab-btn--active' : ''}`}
+                  onClick={() => setStudentTab('check_results')}
+                >
+                  📊 Check Exam Results
                 </button>
-              </form>
-            )}
+              </div>
 
-            <div className="portal-card-footer-note">
-              <span>💡</span> Enter the quiz code or exam code given by your teacher to get started.
+              {studentTab === 'take_quiz' ? (
+                /* Tab 1: Take Quiz Form */
+                <form onSubmit={handleJoin} className="portal-quiz-form animate-fade-in">
+                  <TurnstileWidget action="portal_join" onVerify={setTurnstileToken} />
+                  <div className="portal-input-group">
+                    <label className="portal-input-label">Enter Quiz Code / Token:</label>
+                    <div className="portal-input-inner">
+                      <span className="portal-input-icon">🔑</span>
+                      <input
+                        type="text"
+                        className="portal-code-input"
+                        placeholder="e.g. CHEM-101 or TEST-839"
+                        value={quizCodeInput}
+                        onChange={(e) => {
+                          setQuizCodeInput(e.target.value.toUpperCase());
+                          if (codeError) setCodeError('');
+                        }}
+                        maxLength={36}
+                      />
+                    </div>
+                    {codeError && <span className="portal-error-text">{codeError}</span>}
+                  </div>
+
+                  <button type="submit" className="portal-btn portal-btn--student">
+                    🚀 Start Interactive Assessment
+                  </button>
+                </form>
+              ) : (
+                /* Tab 2: Check Exam Results Form */
+                <form onSubmit={handleLookupResults} className="portal-quiz-form animate-fade-in">
+                  <div className="portal-input-group">
+                    <label className="portal-input-label">Exam Code:</label>
+                    <div className="portal-input-inner">
+                      <span className="portal-input-icon">🔑</span>
+                      <input
+                        type="text"
+                        className="portal-code-input"
+                        placeholder="e.g. CHEM-101"
+                        value={resultCodeInput}
+                        onChange={(e) => {
+                          setResultCodeInput(e.target.value.toUpperCase());
+                          if (resultError) setResultError('');
+                        }}
+                        maxLength={36}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="portal-input-group" style={{ marginTop: '10px' }}>
+                    <label className="portal-input-label">Candidate Name or Seat #:</label>
+                    <div className="portal-input-inner">
+                      <span className="portal-input-icon">👤</span>
+                      <input
+                        type="text"
+                        className="portal-code-input"
+                        placeholder="e.g. Alex Chen or Seat 12"
+                        value={resultCandidateInput}
+                        onChange={(e) => {
+                          setResultCandidateInput(e.target.value);
+                          if (resultError) setResultError('');
+                        }}
+                        maxLength={50}
+                      />
+                    </div>
+                    {resultError && <span className="portal-error-text">{resultError}</span>}
+                  </div>
+
+                  <div className="portal-input-group" style={{ marginTop: '10px' }}>
+                    <label className="portal-input-label">Personal Access PIN:</label>
+                    <div className="portal-input-inner">
+                      <span className="portal-input-icon">🔐</span>
+                      <input
+                        type="text"
+                        className="portal-code-input"
+                        placeholder="e.g. 847"
+                        value={resultPinInput}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, 3);
+                          setResultPinInput(v);
+                          if (resultError) setResultError('');
+                        }}
+                        maxLength={3}
+                        inputMode="numeric"
+                        style={{ fontFamily: 'monospace', letterSpacing: '0.2em', fontSize: '1.1rem', fontWeight: 800 }}
+                      />
+                    </div>
+                    <span style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                      💡 You received this 3-digit PIN on your exam confirmation receipt.
+                    </span>
+                  </div>
+
+                  <button type="submit" className="portal-btn portal-btn--student" style={{ marginTop: '8px' }}>
+                    🔍 Retrieve My Marked Paper
+                  </button>
+                </form>
+              )}
+
+              {/* Student Reassurance Badges */}
+              <div className="portal-student-reassurance">
+                <span className="portal-reassurance-chip">✓ Fullscreen Lockdown</span>
+                <span className="portal-reassurance-chip">✓ KaTeX Live Formulas</span>
+                <span className="portal-reassurance-chip">✓ Offline Auto-Sync</span>
+                <span className="portal-reassurance-chip">✓ Instant Score</span>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Card 2: Teacher Suite */}
-          <div
-            className="portal-card portal-card--teacher"
-            onClick={onEnterTeacherSuite}
-            onMouseEnter={() => prefetchAccessPin()}
-            onFocus={() => prefetchAccessPin()}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onEnterTeacherSuite();
-              }
-            }}
-          >
-            <div className="portal-card-badge portal-card-badge--teacher">FOR TEACHERS</div>
-            <div className="portal-card-icon-wrap portal-card-icon--teacher">
-              🧑‍🏫
-            </div>
-            <h2 className="portal-card-heading">Teacher Test Maker</h2>
-            <p className="portal-card-desc">
-              Extract questions from past papers with AI, assemble custom Cambridge tests, host live multiplayer arenas, and generate diagnostic PDF reports.
-            </p>
+          {(portalViewFilter === 'all' || portalViewFilter === 'teachers') && (
+            <div
+              className="portal-card portal-card--teacher"
+              onClick={onEnterTeacherSuite}
+              onMouseEnter={() => prefetchAccessPin()}
+              onFocus={() => prefetchAccessPin()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onEnterTeacherSuite();
+                }
+              }}
+            >
+              <div className="portal-card-header">
+                <div className="portal-card-icon-wrap portal-card-icon--teacher">
+                  🧑‍🏫
+                </div>
+                <div className="portal-card-badge portal-card-badge--teacher">
+                  <span>●</span> FOR EDUCATORS
+                </div>
+              </div>
+              <h2 className="portal-card-heading">Teacher Authoring Studio</h2>
+              <p className="portal-card-desc">
+                Construct Cambridge exams, ingest past papers with Gemini AI, and administer proctored assessments.
+              </p>
 
-            <div className="portal-teacher-action-wrap">
-              <button type="button" className="portal-btn portal-btn--teacher">
-                Enter Teacher Suite →
-              </button>
-            </div>
+              {/* Minimalist Teacher Modules Showcase */}
+              <div className="portal-teacher-modules-list">
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">📚</span>
+                  <span className="portal-teacher-module-text">Cambridge Question Bank with Formula Expansion</span>
+                </div>
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">🤖</span>
+                  <span className="portal-teacher-module-text">Gemini Multimodal AI Past Paper PDF Ingestion</span>
+                </div>
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">📝</span>
+                  <span className="portal-teacher-module-text">Standardized Test Builder with AO Mark Balancing</span>
+                </div>
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">📑</span>
+                  <span className="portal-teacher-module-text">Word (.docx), PDF & Comprehensive Mark Schemes</span>
+                </div>
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">🛡️</span>
+                  <span className="portal-teacher-module-text">Anti-Cheat Real-Time Proctoring & Strike Logs</span>
+                </div>
+                <div className="portal-teacher-module-item">
+                  <span className="portal-teacher-module-icon">📊</span>
+                  <span className="portal-teacher-module-text">Automated Multi-Sheet Excel Class Gradebooks</span>
+                </div>
+              </div>
 
-            <div className="portal-card-footer-note">
-              <span>✨</span> Full access to question extraction, test builder, live hosting, and reports.
+              <div className="portal-teacher-action-wrap">
+                <button type="button" className="portal-btn portal-btn--teacher">
+                  Enter Teacher Suite (PIN Protected) →
+                </button>
+              </div>
+
+              <div className="portal-card-footer-note">
+                <span>🔒</span> Protected by 6-digit access PIN • Inactivity auto-lock enabled
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Platform Capabilities & Feature Showcase */}
@@ -558,13 +625,17 @@ export function PortalLandingPage({
           </div>
         </section>
 
-        {/* Footer info */}
+        {/* Minimalist Institutional Footer */}
         <footer className="portal-footer">
           <div className="portal-footer-line">
             <span>ICM Exam Platform</span> • <span>Insan Cendekia Madani</span> • <span>Cambridge International School</span>
           </div>
           <div className="portal-footer-sub">
-            Unified Cambridge Assessment & Secure Examination Portal
+            Unified Cambridge Assessment & Secure Examination Portal • Academic Year 2026/2027
+          </div>
+          <div className="portal-footer-status">
+            <span className="portal-live-dot" />
+            <span>Examination Systems Operational & Synced</span>
           </div>
         </footer>
       </div>
