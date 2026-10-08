@@ -553,9 +553,6 @@ function App() {
                 <div className="footer-brand-desc">
                   Insan Cendekia Madani • Cambridge International School
                 </div>
-                <div className="footer-copyright">
-                  Official Examination & Assessment Suite • Powered by Gemini AI & Supabase
-                </div>
               </div>
             </div>
           </div>

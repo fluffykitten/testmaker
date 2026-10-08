@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/saved": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "baselineDraftId": "2b6704de-f789-4eb2-9ef5-0d27e80ef858",
+      "activeDraftId": "0b24fca8-42e1-4082-8dd2-0548de65dd28",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "brand-logo-icm",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/d1eefbd5-08c4-44d7-a75c-9ca3e5de844e/brand-assets/brand-logo-icm/icm_school_logo.png",
+          "sourcePath": "public/logos/icm_school_logo.png"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "src/pages/SavedTestsPage.tsx:360:755",
+        "src/pages/SavedTestsPage.css:1:300",
+        ".superdesign/init/theme.md"
+      ],
+      "components": [
+        {
+          "name": "NavBar",
+          "id": "f639517e-300f-44de-9499-00fb74926076",
+          "sourcePath": "src/App.tsx",
+          "logoAssetKey": "brand-logo-icm"
+        }
+      ],
+      "drafts": {
+        "2b6704de-f789-4eb2-9ef5-0d27e80ef858": {
+          "title": "Current Saved Tests (Baseline)",
+          "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "0b24fca8-42e1-4082-8dd2-0548de65dd28": {
+          "title": "SaaS Minimalist Subject Hub - ICM Exam Platform",
+          "visualDirection": "two-level subject drill-down to clean table with hover quick actions",
+          "parentDraftId": "2b6704de-f789-4eb2-9ef5-0d27e80ef858",
+          "currentVersion": 1
+        },
+        "eb4f2aae-db1f-4813-aca5-9d2b06ed173f": {
+          "title": "Minimalist Saved Exams Directory",
+          "visualDirection": "integrated subject cards quick filter with compact clean rows and hover action dock",
+          "parentDraftId": "2b6704de-f789-4eb2-9ef5-0d27e80ef858",
+          "currentVersion": 1
+        }
+      }
+    },
+    "/quizzes": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "baselineDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
+      "activeDraftId": "06085a4c-a1ed-4a3a-91c0-137492dc44c1",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "brand-logo-icm",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/d1eefbd5-08c4-44d7-a75c-9ca3e5de844e/brand-assets/brand-logo-icm/icm_school_logo.png",
+          "sourcePath": "public/logos/icm_school_logo.png"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "src/pages/QuizManagerPage.tsx:480:750",
+        "src/pages/QuizManagerPage.css:1:350",
+        ".superdesign/init/theme.md"
+      ],
+      "drafts": {
+        "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e": {
+          "title": "Current Publish Exam Page (Baseline)",
+          "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "06085a4c-a1ed-4a3a-91c0-137492dc44c1": {
+          "title": "ICM Exam Hub - Subject Drill-down",
+          "visualDirection": "two-level subject drill-down to clean table with hover quick actions",
+          "parentDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
+          "currentVersion": 1
+        },
+        "6767bec1-cf16-48f2-be1c-9c8721e78e15": {
+          "title": "Executive Department Cards & Unified Proctoring Directory",
+          "visualDirection": "horizontal quick-filter cards with proctoring directory",
+          "parentDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
+          "currentVersion": 1
+        },
+        "248d3211-8a74-4328-a3d2-7b264695e8c0": {
+          "title": "ICM Exam Hub - Studio Card Layout",
+          "visualDirection": "minimalist studio exam cards with hover quick-action dock in department view",
+          "parentDraftId": "06085a4c-a1ed-4a3a-91c0-137492dc44c1",
+          "currentVersion": 1
+        },
+        "e060e576-34b1-4a4d-9cab-593f842a6a81": {
+          "title": "Executive Modern Exam Cards Grid",
+          "visualDirection": "3-column executive exam cards grid with interactive code badges and twin action buttons in department view",
+          "parentDraftId": "06085a4c-a1ed-4a3a-91c0-137492dc44c1",
+          "currentVersion": 1
+        }
+      }
+    }
+  }
+}

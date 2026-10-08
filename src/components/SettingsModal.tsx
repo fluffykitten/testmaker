@@ -180,33 +180,6 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* 6. Advanced Administration & Security (PIN-Protected Hidden Section) */}
-          <div className="settings-section">
-            <div className="settings-advanced-gate-card">
-              <div className="settings-advanced-gate-info">
-                <div className="settings-advanced-gate-icon">🛡️</div>
-                <div>
-                  <div className="settings-advanced-gate-badge">PIN Protected · 140798</div>
-                  <strong className="settings-advanced-gate-title">
-                    Advanced Administration & Security
-                  </strong>
-                  <p className="settings-advanced-gate-desc">
-                    School class cohorts, student directory & 4-digit PINs, Excel imports, exam security defaults, and cloud backups have been moved to a dedicated administration page.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="settings-advanced-gate-btn"
-                onClick={() => {
-                  onClose();
-                  onOpenAdvancedSettings?.();
-                }}
-              >
-                Open Advanced Settings →
-              </button>
-            </div>
-          </div>
 
           {/* 7. Tools & Reset */}
           <div className="settings-section">
@@ -246,6 +219,25 @@ export function SettingsModal({
                     }}
                   >
                     Lock Now
+                  </button>
+                </div>
+              )}
+
+              {onOpenAdvancedSettings && (
+                <div className="settings-action-row">
+                  <div className="settings-action-info">
+                    <span className="settings-action-name">Advanced Settings</span>
+                    <span className="settings-action-desc">Roster management, security options, and system backups</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-trigger"
+                    onClick={() => {
+                      onClose();
+                      onOpenAdvancedSettings();
+                    }}
+                  >
+                    Open
                   </button>
                 </div>
               )}

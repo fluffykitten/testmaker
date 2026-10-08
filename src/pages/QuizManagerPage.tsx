@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
@@ -24,6 +24,7 @@ import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { getSavedSettings } from '../lib/settings';
+import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
 import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
@@ -33,6 +34,9 @@ interface QuizManagerPageProps {
   onNavigateToSaved?: () => void;
   onNavigateToBank?: () => void;
 }
+
+type SortOption = 'latest' | 'submissions' | 'title';
+type FilterStatus = 'all' | 'active' | 'paused' | 'exam' | 'game';
 
 export function QuizManagerPage({
   onLaunchTestRun,
@@ -54,20 +58,35 @@ export function QuizManagerPage({
       return [];
     }
   });
+
   const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
   const [loading, setLoading] = useState(() => quizzes.length === 0);
   const [, setSubmissionsVersion] = useState(0);
+
+  // ─── Two-Level Architecture State ───────────────────────────────────────────
+  // Level 1: activeSubjectView === null (Show Subject Cards Hub)
+  // Level 2: activeSubjectView === 'all' | '<SubjectName>' (Show Clean Exam List)
+  const [activeSubjectView, setActiveSubjectView] = useState<string | null>(null);
+
+  // Level 2 Controls
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedSubject, setSelectedSubject] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<FilterStatus>('all');
+  const [sortBy, setSortBy] = useState<SortOption>('latest');
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+  const [isGroupedBySubject, setIsGroupedBySubject] = useState<boolean>(false);
+
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
-  const [copiedPinId, setCopiedPinId] = useState<string | null>(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
-  const [isGroupedBySubject, setIsGroupedBySubject] = useState<boolean>(false);
   const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
-  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; quizId: string; title: string }>({ isOpen: false, quizId: '', title: '' });
+  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; quizId: string; title: string }>({
+    isOpen: false,
+    quizId: '',
+    title: '',
+  });
   const [isDeleting, setIsDeleting] = useState(false);
+  const [openMobileMenuId, setOpenMobileMenuId] = useState<string | null>(null);
 
   // Modal states
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -82,28 +101,60 @@ export function QuizManagerPage({
     questions: Question[];
   } | null>(null);
   const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
+
   const configModalDismiss = useBackdropDismiss(() => {
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
     setOriginalQuizCode(null);
   });
 
-  // ─── 1. Load Data on Mount (Cache-First + Parallelized Sync) ────────────────
+  // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
+  const loadData = useCallback(async () => {
+    const sanitize = (list: PublishedQuiz[]) =>
+      list.map((q) => {
+        if (!q.subject || q.subject.toLowerCase() === 'assessment') {
+          return { ...q, subject: 'Chemistry' };
+        }
+        return q;
+      });
+
+    try {
+      setSecurityDefaults(getSavedSettings());
+      const pubList = getPublishedQuizzes();
+      if (pubList.length > 0) {
+        setQuizzes(sanitize(pubList));
+        setLoading(false);
+      }
+
+      const [testsRes, syncedRes] = await Promise.allSettled([
+        fetchCustomTestsWithMetadata(),
+        loadAndSyncPublishedQuizzes(),
+      ]);
+
+      if (testsRes.status === 'fulfilled') {
+        setSavedTests(testsRes.value);
+      }
+      if (syncedRes.status === 'fulfilled') {
+        setQuizzes(sanitize(syncedRes.value));
+      }
+
+      loadAndSyncAllSubmissions().then(() => {
+        setSubmissionsVersion((v) => v + 1);
+      });
+    } catch (err) {
+      console.error('Error loading quiz manager data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadData();
 
-    const handleSubmissionsUpdated = () => {
-      setSubmissionsVersion((v) => v + 1);
-    };
-    const handleSettingsUpdated = () => {
-      setSecurityDefaults(getSavedSettings());
-    };
-    const handleTestsUpdated = () => {
-      loadData();
-    };
-    const handleQuizzesUpdated = () => {
-      loadData();
-    };
+    const handleSubmissionsUpdated = () => setSubmissionsVersion((v) => v + 1);
+    const handleSettingsUpdated = () => setSecurityDefaults(getSavedSettings());
+    const handleTestsUpdated = () => loadData();
+    const handleQuizzesUpdated = () => loadData();
 
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
     window.addEventListener('storage', handleSettingsUpdated);
@@ -116,70 +167,79 @@ export function QuizManagerPage({
       window.removeEventListener('tests_updated', handleTestsUpdated);
       window.removeEventListener('quizzes_updated', handleQuizzesUpdated);
     };
-  }, []);
+  }, [loadData]);
 
-  async function loadData() {
-    const sanitize = (list: PublishedQuiz[]) =>
-      list.map((q) => {
-        if (!q.subject || q.subject.toLowerCase() === 'assessment') {
-          return { ...q, subject: 'Chemistry' };
-        }
-        return q;
-      });
-
-    try {
-      setSecurityDefaults(getSavedSettings());
-      // 1. Immediately show cached local quizzes if not already populated
-      const pubList = getPublishedQuizzes();
-      if (pubList.length > 0) {
-        setQuizzes(sanitize(pubList));
-        setLoading(false);
+  // Keyboard navigation: Escape key returns to Subject Hub
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'Escape' &&
+        activeSubjectView !== null &&
+        !isConfigModalOpen &&
+        !selectedQuizForResults &&
+        !selectedQuizForProctor &&
+        !deleteModalState.isOpen &&
+        !offlineGradingData &&
+        !isSelectOfflineTestOpen
+      ) {
+        setActiveSubjectView(null);
       }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
 
-      // 2 & 3. Parallelize fetching saved tests and syncing quizzes from Supabase cloud
-      const [testsRes, syncedRes] = await Promise.allSettled([
-        fetchCustomTestsWithMetadata(),
-        loadAndSyncPublishedQuizzes(),
-      ]);
-
-      if (testsRes.status === 'fulfilled') {
-        setSavedTests(testsRes.value);
+  // ─── 2. Data Aggregation for Level 1: Subject Hub ──────────────────────────
+  const subjectSummaries = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        subjectName: string;
+        quizCount: number;
+        activeCount: number;
+        pausedCount: number;
+        totalSubmissions: number;
+        latestDate: number;
       }
-      if (syncedRes.status === 'fulfilled') {
-        setQuizzes(sanitize(syncedRes.value));
-      }
-      setLoading(false);
+    >();
 
-      // 4. Non-blocking background sync for student submissions
-      loadAndSyncAllSubmissions()
-        .then(() => {
-          setSubmissionsVersion((v) => v + 1);
-        })
-        .catch((err) => {
-          console.warn('Submissions background sync notice:', err);
-        });
-    } catch (err) {
-      console.error('Error loading quiz manager data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }
+    quizzes.forEach((q) => {
+      const sub = q.subject?.trim() || 'General';
+      const existing = map.get(sub) || {
+        subjectName: sub,
+        quizCount: 0,
+        activeCount: 0,
+        pausedCount: 0,
+        totalSubmissions: 0,
+        latestDate: 0,
+      };
 
-  // ─── 2. Available Subjects List ─────────────────────────────────────────────
-  const availableSubjects = useMemo(() => {
-    const subs = Array.from(
-      new Set(quizzes.map((q) => q.subject?.trim() || 'Chemistry'))
-    ).filter(Boolean);
-    return ['all', ...subs];
+      existing.quizCount += 1;
+      if (q.isActive) existing.activeCount += 1;
+      else existing.pausedCount += 1;
+
+      const subs = getSubmissionsForQuiz(q.id, q.quizCode, q.testId).length;
+      existing.totalSubmissions += subs;
+
+      const d = new Date(q.updatedAt || q.createdAt).getTime();
+      if (d > existing.latestDate) existing.latestDate = d;
+
+      map.set(sub, existing);
+    });
+
+    return Array.from(map.values()).sort((a, b) => b.quizCount - a.quizCount);
   }, [quizzes]);
 
-  // ─── 3. Filtered Quizzes ────────────────────────────────────────────────────
-  const filteredQuizzes = useMemo(() => {
-    return quizzes.filter((quiz) => {
-      const matchesSubject =
-        selectedSubject === 'all' ||
-        (quiz.subject || 'Chemistry').toLowerCase() === selectedSubject.toLowerCase();
-      
+  // ─── 3. Filtered Quizzes for Level 2 Drill-Down ─────────────────────────────
+  const subjectFilteredQuizzes = useMemo(() => {
+    if (!activeSubjectView || activeSubjectView === 'all') return quizzes;
+    return quizzes.filter(
+      (q) => (q.subject || 'General').toLowerCase() === activeSubjectView.toLowerCase()
+    );
+  }, [quizzes, activeSubjectView]);
+
+  const finalFilteredQuizzes = useMemo(() => {
+    const list = subjectFilteredQuizzes.filter((quiz) => {
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
         !q ||
@@ -187,22 +247,46 @@ export function QuizManagerPage({
         quiz.quizCode.toLowerCase().includes(q) ||
         (quiz.subject || '').toLowerCase().includes(q);
 
-      return matchesSubject && matchesSearch;
-    });
-  }, [quizzes, selectedSubject, searchQuery]);
+      if (!matchesSearch) return false;
 
-  // Group by subject dictionary
-  const groupedBySubject = useMemo(() => {
-    const map = new Map<string, PublishedQuiz[]>();
-    filteredQuizzes.forEach((quiz) => {
-      const subj = quiz.subject?.trim() || 'Chemistry';
-      if (!map.has(subj)) map.set(subj, []);
-      map.get(subj)!.push(quiz);
+      if (statusFilter === 'active') return quiz.isActive;
+      if (statusFilter === 'paused') return !quiz.isActive;
+      if (statusFilter === 'exam') return quiz.quizMode !== 'game';
+      if (statusFilter === 'game') return quiz.quizMode === 'game';
+      return true;
+    });
+
+    return list.sort((a, b) => {
+      switch (sortBy) {
+        case 'latest':
+          return new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime();
+        case 'submissions': {
+          const countA = getSubmissionsForQuiz(a.id, a.quizCode, a.testId).length;
+          const countB = getSubmissionsForQuiz(b.id, b.quizCode, b.testId).length;
+          return countB - countA;
+        }
+        case 'title':
+          return a.title.localeCompare(b.title);
+        default:
+          return 0;
+      }
+    });
+  }, [subjectFilteredQuizzes, searchQuery, statusFilter, sortBy]);
+
+  const groupedSections = useMemo(() => {
+    if (!isGroupedBySubject) {
+      return { 'All Assessments': finalFilteredQuizzes };
+    }
+    const map: Record<string, PublishedQuiz[]> = {};
+    finalFilteredQuizzes.forEach((quiz) => {
+      const key = quiz.subject || 'General';
+      if (!map[key]) map[key] = [];
+      map[key].push(quiz);
     });
     return map;
-  }, [filteredQuizzes]);
+  }, [finalFilteredQuizzes, isGroupedBySubject]);
 
-  // ─── 4. Create / Edit Quiz Flow ─────────────────────────────────────────────
+  // ─── 4. Handlers ────────────────────────────────────────────────────────────
   const handleOpenCreateModal = (initialMode: 'exam' | 'game' = 'exam') => {
     if (savedTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before creating an interactive quiz.');
@@ -307,16 +391,7 @@ export function QuizManagerPage({
     });
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
-  };
-
-  const handleQuickSetMode = async (quizId: string, mode: 'exam' | 'game') => {
-    const target = quizzes.find((q) => q.id === quizId);
-    if (!target) return;
-    const updated = { ...target, quizMode: mode, updatedAt: new Date().toISOString() };
-    const saved = await savePublishedQuiz(updated);
-    setQuizzes(saved);
-    setSaveSuccessMsg(`Switched "${updated.title}" to ${mode === 'game' ? '🎮 Quizizz Game Mode' : '📝 Formal Exam Mode'}!`);
-    setTimeout(() => setSaveSuccessMsg(null), 3000);
+    setOpenMobileMenuId(null);
   };
 
   const handleSaveQuizConfig = async () => {
@@ -327,7 +402,6 @@ export function QuizManagerPage({
       return;
     }
 
-    // Prevent token collisions with other active quizzes
     const duplicate = quizzes.find(
       (q) => q.id !== activeQuizDraft.id && q.quizCode.trim().toUpperCase() === cleanCode
     );
@@ -338,12 +412,11 @@ export function QuizManagerPage({
       return;
     }
 
-    // Safety check: warn if changing code on a quiz with existing submissions
     if (originalQuizCode && originalQuizCode.trim().toUpperCase() !== cleanCode) {
       const existingSubsCount = getSubmissionsForQuiz(activeQuizDraft.id, originalQuizCode, activeQuizDraft.testId).length;
       if (existingSubsCount > 0) {
         const proceed = window.confirm(
-          `Notice: This quiz already has ${existingSubsCount} candidate submission(s) recorded under code "${originalQuizCode}". Changing the code to "${cleanCode}" will redirect future candidates to the new code. Existing submissions will remain intact. Proceed with updating the code?`
+          `Notice: This quiz already has ${existingSubsCount} candidate submission(s) recorded under code "${originalQuizCode}". Changing the code will redirect future candidates to the new code. Proceed?`
         );
         if (!proceed) return;
       }
@@ -384,20 +457,6 @@ export function QuizManagerPage({
     const saved = await savePublishedQuiz(updated, originalQuizCode || undefined);
     setQuizzes(saved);
 
-    // Visual filter synchronization: ensure newly saved quiz isn't hidden by active filters
-    if (selectedSubject !== 'all' && selectedSubject.toLowerCase() !== cleanSubject.toLowerCase()) {
-      setSelectedSubject('all');
-    }
-    const qSearch = searchQuery.toLowerCase().trim();
-    if (
-      qSearch &&
-      !updated.title.toLowerCase().includes(qSearch) &&
-      !updated.quizCode.toLowerCase().includes(qSearch) &&
-      !cleanSubject.toLowerCase().includes(qSearch)
-    ) {
-      setSearchQuery('');
-    }
-
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
     setOriginalQuizCode(null);
@@ -407,6 +466,7 @@ export function QuizManagerPage({
 
   const handleDeleteQuiz = (id: string, title: string) => {
     setDeleteModalState({ isOpen: true, quizId: id, title });
+    setOpenMobileMenuId(null);
   };
 
   const handleConfirmDelete = async () => {
@@ -438,315 +498,124 @@ export function QuizManagerPage({
     navigator.clipboard.writeText(url);
     setCopiedLinkId(id);
     setTimeout(() => setCopiedLinkId(null), 2000);
-  };
-
-  const handleCopyPin = (pin: string, id: string) => {
-    navigator.clipboard.writeText(pin);
-    setCopiedPinId(id);
-    setTimeout(() => setCopiedPinId(null), 2000);
+    setOpenMobileMenuId(null);
   };
 
   const handleRunQuizSimulation = async (quiz: PublishedQuiz) => {
     const res = await fetchCustomTestWithQuestions(quiz.testId);
-    let questions = res?.questions || [];
-    if (questions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
-      questions = await fetchQuestionsByIds(quiz.questionIds);
+    if (!res || res.questions.length === 0) {
+      alert('Failed to load questions for this test.');
+      return;
     }
-    const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
-    const mergedHeader = quiz.headerConfig
-      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration }
-      : {
-          title: quiz.title || 'Examination',
-          schoolName: '',
-          subject: quiz.subject || 'Assessment',
-          subjectCode: '',
-          durationMinutes: resolvedDuration,
-          instructions: '',
-        };
-    onLaunchTestRun(questions, mergedHeader);
+
+    const testMeta = savedTests.find((t) => t.id === quiz.testId);
+    const resolvedHeader: ExamHeaderConfig = {
+      title: testMeta?.header_config?.title || quiz.title,
+      schoolName: testMeta?.header_config?.schoolName || '',
+      subject: testMeta?.header_config?.subject || quiz.subject || 'Chemistry',
+      subjectCode: testMeta?.header_config?.subjectCode || '',
+      durationMinutes: quiz.durationMinutes || testMeta?.header_config?.durationMinutes || 45,
+      instructions: testMeta?.header_config?.instructions || 'Simulated Assessment Run',
+      additionalMaterials: testMeta?.header_config?.additionalMaterials || '',
+      teacherPin: quiz.teacherPin || '1234',
+    };
+
+    onLaunchTestRun(res.questions, resolvedHeader);
   };
 
   const handleStartLiveGame = async (quiz: PublishedQuiz) => {
-    const res = await fetchCustomTestWithQuestions(quiz.testId);
-    let questions = res?.questions || [];
-    if (questions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
-      questions = await fetchQuestionsByIds(quiz.questionIds);
+    if (!onLaunchGameHost) {
+      alert('Multiplayer game mode is currently initializing.');
+      return;
     }
-    if (onLaunchGameHost) {
-      onLaunchGameHost(quiz, questions);
-    } else {
-      onLaunchTestRun(questions, quiz.headerConfig);
+
+    try {
+      let finalQuestions: Question[] = [];
+      if (quiz.testId) {
+        const customRes = await fetchCustomTestWithQuestions(quiz.testId);
+        if (customRes && customRes.questions.length > 0) {
+          finalQuestions = customRes.questions;
+        }
+      }
+
+      if (finalQuestions.length === 0 && quiz.questionIds && quiz.questionIds.length > 0) {
+        finalQuestions = await fetchQuestionsByIds(quiz.questionIds);
+      }
+
+      if (finalQuestions.length === 0) {
+        alert('This quiz has no questions associated with it. Please re-configure questions in Test Builder.');
+        return;
+      }
+
+      onLaunchGameHost(quiz, finalQuestions);
+    } catch (err: any) {
+      alert(`Failed to prepare multiplayer host: ${err?.message || 'Unknown error'}`);
     }
   };
 
-  // Helper function to render a quiz card
-  const renderQuizCard = (quiz: PublishedQuiz) => {
-    const directLink = `${window.location.origin}${window.location.pathname}?quiz=${quiz.quizCode}`;
-    const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
-    const isGame = quiz.quizMode === 'game';
+  const activeSubjectMeta = activeSubjectView && activeSubjectView !== 'all'
+    ? getSubjectMetadata(activeSubjectView)
+    : null;
 
-    return (
-      <div key={quiz.id} className={`qm-quiz-card animate-scale-up ${isGame ? 'qm-quiz-card--game' : ''}`}>
-        {/* Card Header */}
-        <div className="qm-card-header">
-          <div className="qm-card-title-group">
-            <div className="qm-pill-row">
-              <span className="qm-subject-pill">{quiz.subject || 'Chemistry'}</span>
-              {quiz.quizCode.startsWith('OFFLINE') || (quiz as any).isOffline ? (
-                <span className="qm-mode-badge" style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #bbf7d0' }}>
-                  📄 OFFLINE PAPER EXAM
-                </span>
-              ) : isGame ? (
-                <span className="qm-mode-badge qm-mode-badge--game">🎮 QUIZIZZ GAME</span>
-              ) : (
-                <span className="qm-mode-badge qm-mode-badge--exam">📝 FORMAL EXAM</span>
-              )}
-            </div>
-            <h3 className="qm-quiz-title">{quiz.title}</h3>
-          </div>
-
-          <button
-            type="button"
-            className={`qm-status-toggle ${quiz.isActive ? 'qm-status--active' : 'qm-status--paused'}`}
-            onClick={() => handleToggleActive(quiz.id)}
-            title="Click to toggle quiz active status"
-          >
-            {quiz.isActive ? '🟢 Active' : '⏸️ Paused'}
-          </button>
-        </div>
-
-        {/* 1-Click Format Switcher Bar on Card */}
-        {isQuizizzAllowed && (
-          <div className="qm-card-format-toggle-bar">
-            <span className="qm-format-lbl">MODE:</span>
-            <button
-              type="button"
-              className={`qm-format-chip ${!isGame ? 'qm-format-chip--active-exam' : ''}`}
-              onClick={() => handleQuickSetMode(quiz.id, 'exam')}
-              title="Switch this quiz to Formal Exam mode"
-            >
-              📝 Formal Exam
-            </button>
-            <button
-              type="button"
-              className={`qm-format-chip ${isGame ? 'qm-format-chip--active-game' : ''}`}
-              onClick={() => handleQuickSetMode(quiz.id, 'game')}
-              title="Switch this quiz to Quizizz Game mode"
-            >
-              🎮 Quizizz Game
-            </button>
+  return (
+    <div className="qm-page" onClick={() => setOpenMobileMenuId(null)}>
+      <div className="qm-container">
+        {/* Loading State */}
+        {loading && (
+          <div className="qm-skeleton-grid animate-fade-in">
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <div key={n} className="qm-skeleton-card animate-pulse" />
+            ))}
           </div>
         )}
 
-        {/* Access Token Banner */}
-        <div className="qm-code-banner">
-          <div className="qm-code-info">
-            <span className="qm-code-lbl">STUDENT ACCESS CODE:</span>
-            <span className="qm-code-value">{quiz.quizCode}</span>
-          </div>
-
-          <div className="qm-code-actions">
-            <button
-              type="button"
-              className="qm-btn-icon"
-              onClick={() => handleCopyCode(quiz.quizCode, quiz.id)}
-              title="Copy Code"
-            >
-              {copiedCodeId === quiz.id ? '✓ Copied' : '📋 Copy Code'}
-            </button>
-            <button
-              type="button"
-              className="qm-btn-icon"
-              onClick={() => handleCopyLink(quiz.quizCode, quiz.id)}
-              title="Copy Direct Link"
-            >
-              {copiedLinkId === quiz.id ? '✓ Copied' : '🔗 Copy Link'}
-            </button>
-          </div>
-        </div>
-
-        {/* Config Badges */}
-        <div className="qm-config-pills">
-          {isGame ? (
-            <>
-              <span className="qm-pill">⚡ {quiz.questionTimerSeconds || 20}s per Question</span>
-              <span className="qm-pill">🏆 {quiz.pointsPerQuestion || 1000} Base Pts</span>
-              {quiz.enablePowerUps && <span className="qm-pill">✂️ Power-Ups</span>}
-              {quiz.enableStreaks && <span className="qm-pill">🔥 Streaks</span>}
-              {quiz.enableFunSounds && <span className="qm-pill">🔊 Sound FX</span>}
-            </>
-          ) : (
-            <>
-              <span className="qm-pill">
-                ⏱️ {quiz.durationMinutes} mins ({quiz.isExamMode ? 'Timed Exam' : 'Practice'})
-              </span>
-              <span className="qm-pill">
-                📝 {quiz.questionCount} Questions • {quiz.totalMarks} Marks
-              </span>
-              <span className={`qm-pill ${quiz.securityEnabled ? 'qm-pill--security' : ''}`}>
-                {quiz.securityEnabled ? '🔒 Anti-Cheating ON' : '🔓 Open Browser'}
-              </span>
-              {quiz.securityEnabled && (quiz.requireTeacherUnlock ?? true) && (
-                <span className="qm-pill qm-pill--pin" title="PIN required to unlock student screen on violation">
-                  🔑 PIN: <strong>{quiz.teacherPin || '1234'}</strong>
-                  <button
-                    type="button"
-                    className="qm-btn-copy-pin"
-                    onClick={() => handleCopyPin(quiz.teacherPin || '1234', quiz.id)}
-                    title="Copy Teacher PIN"
-                  >
-                    {copiedPinId === quiz.id ? '✓ Copied' : '📋'}
-                  </button>
-                </span>
-              )}
-              {quiz.securityEnabled && quiz.enableWatermark && securityDefaults.defaultEnableWatermark && (
-                <span className="qm-pill" title="Dynamic Candidate Watermarking Enabled">💧 Watermark</span>
-              )}
-              {quiz.securityEnabled && quiz.enableMultiMonitorDetection && securityDefaults.defaultEnableMultiMonitor && (
-                <span className="qm-pill" title="Multi-Monitor Detection Active">🖥️ Multi-Screen Shield</span>
-              )}
-              {quiz.requireStudentPin && (
-                <span className="qm-pill qm-pill--pin" title="Student 4-Digit PIN Verification Enforced">
-                  🛡️ Student PIN Enforced
-                </span>
-              )}
-              {quiz.showInstantSolutions && (
-                <span className="qm-pill">💡 Instant Solutions</span>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Direct Link Preview */}
-        <div className="qm-link-preview-box">
-          <input
-            type="text"
-            className="qm-link-preview-input"
-            value={directLink}
-            readOnly
-          />
-        </div>
-
-        {/* Actions 2-Tier Container */}
-        <div className="qm-card-actions-wrap">
-          {/* Top Tier: Full-Width Primary Button */}
-          {isGame ? (
-            <div className="qm-dual-launch-row">
-              <button
-                type="button"
-                className="qm-btn qm-btn-testrun qm-btn-game-host"
-                onClick={() => handleStartLiveGame(quiz)}
-                title="Start real-time multiplayer game session as teacher host"
-              >
-                🎮 Start Live Multiplayer Game (Host)
-              </button>
-              <button
-                type="button"
-                className="qm-btn qm-btn-solo-game"
-                onClick={() => handleRunQuizSimulation(quiz)}
-                title="Test-run this quiz in solo game mode"
-              >
-                🕹️ Solo Run
-              </button>
+        {/* Global Empty State */}
+        {!loading && quizzes.length === 0 && (
+          <div className="qm-empty-state animate-fade-in">
+            <div className="qm-empty-visual">
+              <SubjectIcon subject="general" size={48} />
             </div>
-          ) : (
-            <div className="qm-dual-launch-row">
-              <button
-                type="button"
-                className="qm-btn qm-btn-testrun qm-btn-invigilate"
-                onClick={() => setSelectedQuizForProctor(quiz)}
-                title="Open live invigilation & proctoring cockpit to monitor candidates in real time"
-              >
-                🛡️ Live Proctor ({quiz.quizCode})
-              </button>
-              <button
-                type="button"
-                className="qm-btn qm-btn-solo-game"
-                onClick={() => handleRunQuizSimulation(quiz)}
-                title="Test-run this quiz in the browser as a formal timed exam"
-              >
-                ▶️ Test Exam
-              </button>
-            </div>
-          )}
-
-          {/* Bottom Tier: Results, Settings & Delete */}
-          <div className="qm-card-sub-actions">
-            <button
-              type="button"
-              className="qm-btn qm-btn-results"
-              onClick={() => setSelectedQuizForResults(quiz)}
-              title="View student answers, scores, and proctoring audit log"
-            >
-              📊 View Results {submissionCount > 0 ? `(${submissionCount})` : '(0)'}
-            </button>
-
-            <button
-              type="button"
-              className="qm-btn qm-btn-secondary"
-              onClick={() => handleOpenEditModal(quiz)}
-              title="Configure settings, custom code, subject, or timer"
-            >
-              ⚙️ Settings
-            </button>
-
-            <button
-              type="button"
-              className="qm-btn qm-btn-danger-text"
-              onClick={() => handleDeleteQuiz(quiz.id, quiz.title || 'Untitled Quiz')}
-              title="Delete / Unpublish quiz"
-            >
-              🗑️
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="qm-root animate-fade-in">
-      <div className="qm-container">
-        {/* Page Header */}
-        <div className="qm-top-bar">
-          <div>
-            <div className="qm-title-badge">STUDENT ASSESSMENT HUB</div>
-            <h1 className="qm-page-title">Interactive Quizzes & Live Assessments</h1>
-            <p className="qm-page-subtitle">
-              Convert saved tests into live interactive student quizzes with custom access codes, timer countdowns, and secure anti-cheat controls.
+            <h2 className="qm-empty-heading">No Interactive Quizzes Published Yet</h2>
+            <p className="qm-empty-text">
+              Convert your saved exams into live interactive online tests with instant student codes, live invigilation, or multiplayer game sessions.
             </p>
-          </div>
-
-          <div className="qm-top-actions">
-            <button
-              type="button"
-              className="qm-btn qm-btn-secondary qm-btn-header"
-              onClick={handleOpenOfflineGrader}
-              title="Grade offline paper exam via Excel or Rapid Grid"
-              style={{ background: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0', fontWeight: 700 }}
-            >
-              📊 Grade Offline Exam
-            </button>
-            {isQuizizzAllowed && (
+            <div className="qm-empty-actions">
+              {isQuizizzAllowed && (
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--game"
+                  onClick={() => handleOpenCreateModal('game')}
+                >
+                  🎮 Create Quizizz Game
+                </button>
+              )}
               <button
                 type="button"
-                className="qm-btn qm-btn-primary qm-btn-header qm-btn-quizizz-top"
-                onClick={() => handleOpenCreateModal('game')}
-                title="Create a new fast-paced gamified quiz (Quizizz style)"
+                className="qm-btn qm-btn--primary"
+                onClick={() => handleOpenCreateModal('exam')}
               >
-                🎮 Create Quizizz Game
+                📝 Publish Formal Exam
               </button>
-            )}
-            <button
-              type="button"
-              className={`qm-btn ${isQuizizzAllowed ? 'qm-btn-secondary' : 'qm-btn-primary'} qm-btn-header`}
-              onClick={() => handleOpenCreateModal('exam')}
-              title="Publish as formal timed exam paper"
-            >
-              📝 Publish Formal Exam
-            </button>
+              {savedTests.length === 0 ? (
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={onNavigateToBuilder}
+                >
+                  Open Test Builder
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={onNavigateToSaved}
+                >
+                  View Saved Tests
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Success Alert */}
         {saveSuccessMsg && (
@@ -755,173 +624,996 @@ export function QuizManagerPage({
           </div>
         )}
 
-        {/* Stats Strip */}
-        <div className="qm-stats-grid">
-          <div className="qm-stat-card">
-            <span className="stat-num">{quizzes.length}</span>
-            <span className="stat-lbl">Published Quizzes</span>
-          </div>
-          <div className="qm-stat-card">
-            <span className="stat-num">{quizzes.filter((q) => q.isActive).length}</span>
-            <span className="stat-lbl">Active & Open for Students</span>
-          </div>
-          <div className="qm-stat-card">
-            <span className="stat-num">{quizzes.filter((q) => q.securityEnabled).length}</span>
-            <span className="stat-lbl">Anti-Cheating Guard Active</span>
-          </div>
-          <div className="qm-stat-card">
-            <span className="stat-num">{availableSubjects.length > 1 ? availableSubjects.length - 1 : 1}</span>
-            <span className="stat-lbl">Subjects Covered</span>
-          </div>
-        </div>
-
-        {/* ─── Subject Filter & Search Bar ───────────────────────────────────── */}
-        {quizzes.length > 0 && (
-          <div className="qm-filter-toolbar">
-            {/* Subject Tabs */}
-            <div className="qm-subject-tabs">
-              {availableSubjects.map((subj) => {
-                const count =
-                  subj === 'all'
-                    ? quizzes.length
-                    : quizzes.filter((q) => (q.subject || 'Chemistry').toLowerCase() === subj.toLowerCase()).length;
-                return (
-                  <button
-                    key={subj}
-                    type="button"
-                    className={`qm-subj-tab ${selectedSubject.toLowerCase() === subj.toLowerCase() ? 'qm-subj-tab--active' : ''}`}
-                    onClick={() => setSelectedSubject(subj)}
-                  >
-                    {subj === 'all' ? '🌐 All Subjects' : `📚 ${subj}`}
-                    <span className="qm-subj-count">{count}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Search and Group Toggle */}
-            <div className="qm-filter-right">
-              <div className="qm-search-wrap">
-                <span className="qm-search-icon">🔍</span>
-                <input
-                  type="text"
-                  className="qm-search-input"
-                  placeholder="Search quizzes or code..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    className="qm-search-clear"
-                    onClick={() => setSearchQuery('')}
-                  >
-                    ✕
-                  </button>
-                )}
+        {/* ═══════════════════════════════════════════════════════════════════════
+            LEVEL 1: SUBJECT HUB OVERVIEW (When activeSubjectView === null)
+        ═══════════════════════════════════════════════════════════════════════ */}
+        {!loading && quizzes.length > 0 && activeSubjectView === null && (
+          <div className="qm-hub-view animate-fade-in">
+            {/* Hub Header */}
+            <header className="qm-hub-header">
+              <div className="qm-hub-header-left">
+                <h1 className="qm-hub-title">Interactive Quizzes &amp; Live Assessments</h1>
+                <p className="qm-hub-subtitle">
+                  Manage {quizzes.length} live assessment{quizzes.length !== 1 ? 's' : ''} organized across {subjectSummaries.length} academic departments. Monitor real-time student submissions and launch proctoring cockpits.
+                </p>
               </div>
 
-              <button
-                type="button"
-                className={`qm-group-toggle-btn ${isGroupedBySubject ? 'qm-group-toggle-btn--active' : ''}`}
-                onClick={() => setIsGroupedBySubject((v: boolean) => !v)}
-                title="Toggle grouping by subject sections"
-              >
-                {isGroupedBySubject ? '📁 Grouped by Subject' : '📄 Flat List'}
-              </button>
+              <div className="qm-hub-header-actions">
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary qm-btn--grade-offline"
+                  onClick={handleOpenOfflineGrader}
+                  title="Grade offline physical papers using rapid Excel or visual grid"
+                >
+                  📊 Grade Offline Exam
+                </button>
+
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={() => {
+                    setActiveSubjectView('all');
+                    setStatusFilter('all');
+                    setSearchQuery('');
+                  }}
+                  title="View all quizzes in a unified clean directory"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="7" height="7" />
+                    <rect x="14" y="3" width="7" height="7" />
+                    <rect x="14" y="14" width="7" height="7" />
+                    <rect x="3" y="14" width="7" height="7" />
+                  </svg>
+                  <span>All Quizzes ({quizzes.length})</span>
+                </button>
+
+                {isQuizizzAllowed && (
+                  <button
+                    type="button"
+                    className="qm-btn qm-btn--game"
+                    onClick={() => handleOpenCreateModal('game')}
+                  >
+                    🎮 Quizizz Game
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--primary"
+                  onClick={() => handleOpenCreateModal('exam')}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  <span>Publish Exam</span>
+                </button>
+              </div>
+            </header>
+
+            {/* Department Cards Grid */}
+            <div className="qm-subject-grid">
+              {subjectSummaries.map((summary) => {
+                const meta = getSubjectMetadata(summary.subjectName);
+                const latestDateFormatted = summary.latestDate
+                  ? new Date(summary.latestDate).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })
+                  : null;
+
+                return (
+                  <div
+                    key={summary.subjectName}
+                    className="qm-subject-card"
+                    style={{ '--subject-accent': meta.color } as React.CSSProperties}
+                    onClick={() => {
+                      setActiveSubjectView(summary.subjectName);
+                      setStatusFilter('all');
+                      setSearchQuery('');
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setActiveSubjectView(summary.subjectName);
+                      }
+                    }}
+                  >
+                    {/* Top Row: Subject Logo Badge & Syllabus Code */}
+                    <div className="qm-subject-card-top">
+                      <div
+                        className="qm-subject-logo-badge"
+                        style={{
+                          backgroundColor: meta.bgLight,
+                          borderColor: meta.borderLight,
+                        }}
+                      >
+                        <SubjectIcon subject={summary.subjectName} size={28} />
+                      </div>
+
+                      <span className="qm-subject-code-pill">
+                        {meta.code}
+                      </span>
+                    </div>
+
+                    {/* Subject Title & Description */}
+                    <div className="qm-subject-card-body">
+                      <h2 className="qm-subject-card-title">{summary.subjectName}</h2>
+                      <p className="qm-subject-card-desc">{meta.description}</p>
+                    </div>
+
+                    {/* Metrics Row: Quizzes, Active Status, Submissions */}
+                    <div className="qm-subject-metrics">
+                      <div className="qm-subject-metric-item">
+                        <span className="qm-subject-metric-val">{summary.quizCount}</span>
+                        <span className="qm-subject-metric-lbl">Quizzes</span>
+                      </div>
+                      <div className="qm-subject-metric-sep" />
+                      <div className="qm-subject-metric-item">
+                        <span className="qm-subject-metric-val" style={{ color: '#059669' }}>
+                          {summary.activeCount}
+                        </span>
+                        <span className="qm-subject-metric-lbl">Active</span>
+                      </div>
+                      <div className="qm-subject-metric-sep" />
+                      <div className="qm-subject-metric-item">
+                        <span className="qm-subject-metric-val">{summary.totalSubmissions}</span>
+                        <span className="qm-subject-metric-lbl">Turned In</span>
+                      </div>
+                    </div>
+
+                    {/* Footer: Last Updated & Explore CTA */}
+                    <div className="qm-subject-card-footer">
+                      <span className="qm-subject-last-updated">
+                        {latestDateFormatted ? `Active ${latestDateFormatted}` : 'Active'}
+                      </span>
+
+                      <div className="qm-subject-explore-link">
+                        <span>Explore Quizzes</span>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* ─── Quizzes Content ───────────────────────────────────────────────── */}
-        {loading ? (
-          <div className="qm-loading">
-            <div className="qm-spinner" />
-            <p>Loading assessment hub...</p>
-          </div>
-        ) : quizzes.length === 0 ? (
-          <div className="qm-empty-card animate-scale-up">
-            <div className="qm-empty-icon">🎓</div>
-            <h2 className="qm-empty-title">No Interactive Quizzes Published Yet</h2>
-            <p className="qm-empty-desc">
-              You haven't converted any of your saved tests into an interactive quiz yet.
-              Click the button below to pick a saved test and set up student access codes and security rules.
-            </p>
-            <div className="qm-empty-actions">
-              {isQuizizzAllowed && (
+        {/* ═══════════════════════════════════════════════════════════════════════
+            LEVEL 2: CLEAN EXAM DIRECTORY (When activeSubjectView !== null)
+        ═══════════════════════════════════════════════════════════════════════ */}
+        {!loading && quizzes.length > 0 && activeSubjectView !== null && (
+          <div
+            className="qm-drilldown-view animate-fade-in"
+            style={{ '--subject-accent': activeSubjectMeta?.color || 'var(--color-primary-600)' } as React.CSSProperties}
+          >
+            {/* Breadcrumb Navigation Bar */}
+            <div className="qm-breadcrumb-bar">
+              <div className="qm-breadcrumb-left">
                 <button
                   type="button"
-                  className="qm-btn qm-btn-primary qm-btn-quizizz-top"
-                  onClick={() => handleOpenCreateModal('game')}
+                  className="qm-back-btn"
+                  onClick={() => {
+                    setActiveSubjectView(null);
+                    setSearchQuery('');
+                    setStatusFilter('all');
+                  }}
+                  title="Return to Subject Hub (Press Esc)"
                 >
-                  🎮 Create First Quizizz Game
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                  <span>Departments</span>
                 </button>
-              )}
-              <button
-                type="button"
-                className={`qm-btn ${isQuizizzAllowed ? 'qm-btn-secondary' : 'qm-btn-primary'}`}
-                onClick={() => handleOpenCreateModal('exam')}
-              >
-                📝 Publish Formal Exam
-              </button>
-              {savedTests.length === 0 ? (
+
+                <div className="qm-breadcrumb-divider">/</div>
+
+                <div className="qm-breadcrumb-current">
+                  {activeSubjectView === 'all' ? (
+                    <div className="qm-breadcrumb-icon-wrap">
+                      <SubjectIcon subject="general" size={18} />
+                      <span className="qm-breadcrumb-title">All Departments</span>
+                    </div>
+                  ) : (
+                    <div className="qm-breadcrumb-icon-wrap">
+                      <SubjectIcon subject={activeSubjectView} size={18} />
+                      <span className="qm-breadcrumb-title">{activeSubjectView}</span>
+                    </div>
+                  )}
+                  <span className="qm-breadcrumb-count-badge">
+                    {subjectFilteredQuizzes.length} assessment{subjectFilteredQuizzes.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              </div>
+
+              <div className="qm-breadcrumb-right">
+                {isQuizizzAllowed && (
+                  <button
+                    type="button"
+                    className="qm-btn qm-btn--game qm-btn--sm"
+                    onClick={() => handleOpenCreateModal('game')}
+                  >
+                    🎮 Quizizz
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="qm-btn qm-btn-secondary"
-                  onClick={onNavigateToBuilder}
+                  className="qm-btn qm-btn--primary qm-btn--sm"
+                  onClick={() => handleOpenCreateModal('exam')}
                 >
-                  📝 Open Test Builder
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  <span>+ Publish Exam</span>
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  className="qm-btn qm-btn-secondary"
-                  onClick={onNavigateToSaved}
-                >
-                  📂 View Saved Tests
-                </button>
-              )}
+              </div>
             </div>
-          </div>
-        ) : filteredQuizzes.length === 0 ? (
-          <div className="qm-no-results-card">
-            <p>No quizzes matched your search or subject filter.</p>
-            <button
-              type="button"
-              className="qm-btn qm-btn-secondary"
-              onClick={() => {
-                setSelectedSubject('all');
-                setSearchQuery('');
-              }}
-            >
-              Reset Filters
-            </button>
-          </div>
-        ) : isGroupedBySubject && selectedSubject === 'all' ? (
-          /* Render Grouped by Subject Sections */
-          <div className="qm-subject-sections-list">
-            {Array.from(groupedBySubject.entries()).map(([subj, subjQuizzes]) => (
-              <section key={subj} className="qm-subject-section">
-                <div className="qm-section-header">
-                  <div className="qm-section-title-wrap">
-                    <span className="qm-section-icon">📚</span>
-                    <h2 className="qm-section-title">{subj}</h2>
-                    <span className="qm-section-count-badge">
-                      {subjQuizzes.length} quiz{subjQuizzes.length !== 1 ? 'zes' : ''}
-                    </span>
-                  </div>
+
+            {/* Minimalist Filter Bar */}
+            <div className="qm-filter-bar">
+              <div className="qm-filter-bar-row">
+                {/* Search Box */}
+                <div className="qm-search-box">
+                  <svg className="qm-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <input
+                    type="text"
+                    className="qm-search-input"
+                    placeholder={`Search ${activeSubjectView === 'all' ? 'all' : activeSubjectView} quizzes or codes...`}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      className="qm-search-clear"
+                      onClick={() => setSearchQuery('')}
+                      title="Clear search"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
 
-                <div className="qm-quizzes-grid">
-                  {subjQuizzes.map(renderQuizCard)}
+                {/* View Mode & Sorter */}
+                <div className="qm-filter-controls">
+                  <div className="qm-view-toggle">
+                    <button
+                      type="button"
+                      className={`qm-view-toggle-btn ${viewMode === 'cards' ? 'qm-view-toggle-btn--active' : ''}`}
+                      onClick={() => setViewMode('cards')}
+                      title="Cards Grid View"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="7" height="7" rx="1" />
+                        <rect x="14" y="3" width="7" height="7" rx="1" />
+                        <rect x="14" y="14" width="7" height="7" rx="1" />
+                        <rect x="3" y="14" width="7" height="7" rx="1" />
+                      </svg>
+                      <span>Cards</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`qm-view-toggle-btn ${viewMode === 'table' ? 'qm-view-toggle-btn--active' : ''}`}
+                      onClick={() => setViewMode('table')}
+                      title="Table List View"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <line x1="3" y1="9" x2="21" y2="9" />
+                        <line x1="3" y1="15" x2="21" y2="15" />
+                      </svg>
+                      <span>List</span>
+                    </button>
+                  </div>
+
+                  {activeSubjectView === 'all' && (
+                    <button
+                      type="button"
+                      className={`qm-view-toggle-btn ${isGroupedBySubject ? 'qm-view-toggle-btn--active' : ''}`}
+                      onClick={() => setIsGroupedBySubject((v) => !v)}
+                      style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '5px 10px' }}
+                      title="Group assessments by department"
+                    >
+                      {isGroupedBySubject ? 'Grouped' : 'Flat'}
+                    </button>
+                  )}
+
+                  <div className="qm-sort-wrap">
+                    <span className="qm-sort-label">Sort:</span>
+                    <select
+                      className="qm-sort-select"
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as SortOption)}
+                    >
+                      <option value="latest">Latest Active</option>
+                      <option value="submissions">Most Submissions</option>
+                      <option value="title">Title (A-Z)</option>
+                    </select>
+                  </div>
                 </div>
-              </section>
-            ))}
-          </div>
-        ) : (
-          /* Render Flat Grid */
-          <div className="qm-quizzes-grid">
-            {filteredQuizzes.map(renderQuizCard)}
+              </div>
+
+              {/* Status Filter Chips */}
+              <div className="qm-status-pills-row">
+                <span className="qm-status-pills-label">Status:</span>
+                <div className="qm-status-pills-list">
+                  <button
+                    type="button"
+                    className={`qm-status-pill ${statusFilter === 'all' ? 'qm-status-pill--active' : ''}`}
+                    onClick={() => setStatusFilter('all')}
+                  >
+                    All ({subjectFilteredQuizzes.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`qm-status-pill ${statusFilter === 'active' ? 'qm-status-pill--active' : ''}`}
+                    onClick={() => setStatusFilter('active')}
+                  >
+                    Active ({subjectFilteredQuizzes.filter((q) => q.isActive).length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`qm-status-pill ${statusFilter === 'paused' ? 'qm-status-pill--active' : ''}`}
+                    onClick={() => setStatusFilter('paused')}
+                  >
+                    Paused ({subjectFilteredQuizzes.filter((q) => !q.isActive).length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`qm-status-pill ${statusFilter === 'exam' ? 'qm-status-pill--active' : ''}`}
+                    onClick={() => setStatusFilter('exam')}
+                  >
+                    Formal Exams ({subjectFilteredQuizzes.filter((q) => q.quizMode !== 'game').length})
+                  </button>
+                  {isQuizizzAllowed && (
+                    <button
+                      type="button"
+                      className={`qm-status-pill ${statusFilter === 'game' ? 'qm-status-pill--active' : ''}`}
+                      onClick={() => setStatusFilter('game')}
+                    >
+                      Quizizz Games ({subjectFilteredQuizzes.filter((q) => q.quizMode === 'game').length})
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* No Search Matches State */}
+            {finalFilteredQuizzes.length === 0 && (
+              <div className="qm-empty-state qm-empty-state--compact animate-fade-in">
+                <div className="qm-empty-visual">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                </div>
+                <h3 className="qm-empty-heading">No matching quizzes found</h3>
+                <p className="qm-empty-text">
+                  No published assessments match your active search or status filters. Try clearing your search query.
+                </p>
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setStatusFilter('all');
+                  }}
+                >
+                  Reset Filters
+                </button>
+              </div>
+            )}
+
+            {/* ─── Clean Exam Rows (Linear/Notion-Style Minimalist List) ────── */}
+            {finalFilteredQuizzes.length > 0 && (
+              <div className="qm-list-sections">
+                {Object.keys(groupedSections).map((sectionName) => {
+                  const sectionQuizzes = groupedSections[sectionName] || [];
+                  if (sectionQuizzes.length === 0) return null;
+
+                  return (
+                    <section key={sectionName} className="qm-topic-section animate-fade-in">
+                      {isGroupedBySubject && (
+                        <div className="qm-section-header">
+                          <div className="qm-section-header-left">
+                            <h2 className="qm-section-title">{sectionName}</h2>
+                            <span className="qm-section-badge">{sectionQuizzes.length}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {viewMode === 'cards' ? (
+                        <div className="qm-cards-grid">
+                          {sectionQuizzes.map((quiz) => {
+                            const isGame = isQuizizzAllowed && quiz.quizMode === 'game';
+                            const subName = quiz.subject?.trim() || 'General';
+                            const subMeta = getSubjectMetadata(subName);
+                            const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
+
+                            return (
+                              <div
+                                key={quiz.id}
+                                className="qm-card"
+                                style={{ '--subject-accent': subMeta.color } as React.CSSProperties}
+                                onClick={() => {
+                                  if (isGame) {
+                                    handleStartLiveGame(quiz);
+                                  } else {
+                                    setSelectedQuizForProctor(quiz);
+                                  }
+                                }}
+                              >
+                                {/* Top Bar: Subject Badge + Active/Paused Toggle */}
+                                <div className="qm-card-top">
+                                  <div
+                                    className="qm-card-sub-badge"
+                                    style={{
+                                      backgroundColor: subMeta.bgLight,
+                                      borderColor: subMeta.borderLight,
+                                    }}
+                                  >
+                                    <SubjectIcon subject={subName} size={15} />
+                                    <span className="qm-card-sub-name" style={{ color: subMeta.color }}>
+                                      {subName}
+                                    </span>
+                                    <span className="qm-card-sub-format">
+                                      • {isGame ? 'Quizizz' : 'Exam'}
+                                    </span>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    className={`qm-row-status-btn ${quiz.isActive ? 'qm-row-status--active' : 'qm-row-status--paused'}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleActive(quiz.id);
+                                    }}
+                                    title="Toggle active status"
+                                  >
+                                    <span className="qm-row-status-dot" />
+                                    <span>{quiz.isActive ? 'Active' : 'Paused'}</span>
+                                  </button>
+                                </div>
+
+                                {/* Title & Metadata Specs */}
+                                <div className="qm-card-body">
+                                  <h3 className="qm-card-title" title={quiz.title}>
+                                    {quiz.title}
+                                  </h3>
+
+                                  <div className="qm-card-meta-chips">
+                                    <span className="qm-card-chip">
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <circle cx="12" cy="12" r="10" />
+                                        <polyline points="12 6 12 12 16 14" />
+                                      </svg>
+                                      <span>{isGame ? `${quiz.questionTimerSeconds || 20}s / Q` : `${quiz.durationMinutes || 45} mins`}</span>
+                                    </span>
+
+                                    <span className="qm-card-chip">
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                        <polyline points="14 2 14 8 20 8" />
+                                      </svg>
+                                      <span>{quiz.questionCount || 0} Qs</span>
+                                    </span>
+
+                                    {quiz.securityEnabled && (
+                                      <span className="qm-card-chip qm-card-chip--security" title="Candidate Tab Lockdown Active">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                                        </svg>
+                                        <span>Lockdown</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Student Access Code Box */}
+                                <div
+                                  className="qm-card-code-box"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCopyCode(quiz.quizCode, quiz.id);
+                                  }}
+                                  title="Click to copy student access code"
+                                >
+                                  <div className="qm-card-code-info">
+                                    <span className="qm-card-code-lbl">Access Code</span>
+                                    <span className="qm-card-code-val">{quiz.quizCode}</span>
+                                  </div>
+
+                                  <div className="qm-card-code-btn">
+                                    {copiedCodeId === quiz.id ? (
+                                      <span className="qm-card-code-copied">✓ Copied</span>
+                                    ) : (
+                                      <span className="qm-card-code-copy">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                        </svg>
+                                        Copy
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Submissions Metric Strip */}
+                                <div className="qm-card-metrics-strip">
+                                  <div
+                                    className="qm-card-sub-count"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedQuizForResults(quiz);
+                                    }}
+                                    title="View candidate scorebook"
+                                  >
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <line x1="18" y1="20" x2="18" y2="10" />
+                                      <line x1="12" y1="20" x2="12" y2="4" />
+                                      <line x1="6" y1="20" x2="6" y2="14" />
+                                    </svg>
+                                    <span>
+                                      <strong>{submissionCount}</strong> turned in
+                                    </span>
+                                    <span className="qm-card-metric-arrow">→</span>
+                                  </div>
+
+                                  {quiz.teacherPin && (
+                                    <span className="qm-card-pin-pill" title="Teacher Invigilator Unlock PIN">
+                                      PIN: {quiz.teacherPin}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Card Actions Footer */}
+                                <div className="qm-card-actions">
+                                  <div className="qm-card-main-actions">
+                                    {isGame ? (
+                                      <button
+                                        type="button"
+                                        className="qm-btn qm-btn--game qm-btn--card-main"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleStartLiveGame(quiz);
+                                        }}
+                                      >
+                                        🎮 Start Host
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="qm-btn qm-btn--primary qm-btn--card-main"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedQuizForProctor(quiz);
+                                        }}
+                                      >
+                                        🛡️ Live Proctor
+                                      </button>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      className="qm-btn qm-btn--secondary qm-btn--card-sub"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedQuizForResults(quiz);
+                                      }}
+                                      title="View Results"
+                                    >
+                                      Results
+                                    </button>
+                                  </div>
+
+                                  {/* Micro Action Buttons */}
+                                  <div className="qm-card-micro-actions">
+                                    <button
+                                      type="button"
+                                      className="qm-card-icon-action"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRunQuizSimulation(quiz);
+                                      }}
+                                      title="Test Run as student"
+                                    >
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polygon points="5 3 19 12 5 21 5 3" />
+                                      </svg>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className="qm-card-icon-action"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCopyLink(quiz.quizCode, quiz.id);
+                                      }}
+                                      title={copiedLinkId === quiz.id ? 'Copied link!' : 'Copy Direct Link'}
+                                    >
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                      </svg>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className="qm-card-icon-action"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditModal(quiz);
+                                      }}
+                                      title="Quiz Settings & Anti-cheat"
+                                    >
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <circle cx="12" cy="12" r="3" />
+                                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                                      </svg>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className="qm-card-icon-action qm-card-icon-action--danger"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteQuiz(quiz.id, quiz.title);
+                                      }}
+                                      title="Unpublish & Delete"
+                                    >
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="qm-rows-container">
+                        {sectionQuizzes.map((quiz) => {
+                          const isGame = isQuizizzAllowed && quiz.quizMode === 'game';
+                          const subName = quiz.subject?.trim() || 'General';
+                          const subMeta = getSubjectMetadata(subName);
+                          const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
+
+                          return (
+                            <div
+                              key={quiz.id}
+                              className="qm-exam-row"
+                              onClick={(e) => {
+                                if (
+                                  (e.target as HTMLElement).closest('.qm-row-actions') ||
+                                  (e.target as HTMLElement).closest('.qm-mobile-action-btn') ||
+                                  (e.target as HTMLElement).closest('.qm-row-code-pill') ||
+                                  (e.target as HTMLElement).closest('.qm-row-status-btn')
+                                ) {
+                                  return;
+                                }
+                                // Default row click: open proctor for exams, or host for games
+                                if (isGame) {
+                                  handleStartLiveGame(quiz);
+                                } else {
+                                  setSelectedQuizForProctor(quiz);
+                                }
+                              }}
+                            >
+                              {/* Left Column: Subject Logo, Title & Metadata */}
+                              <div className="qm-exam-main">
+                                <div
+                                  className="qm-exam-icon-slot"
+                                  style={{
+                                    backgroundColor: subMeta.bgLight,
+                                    borderColor: subMeta.borderLight,
+                                  }}
+                                  title={subName}
+                                >
+                                  <SubjectIcon subject={subName} size={18} />
+                                </div>
+
+                                <div className="qm-exam-details">
+                                  <div className="qm-exam-title-row">
+                                    <h3 className="qm-exam-title" title={quiz.title}>
+                                      {quiz.title}
+                                    </h3>
+                                  </div>
+
+                                  <div className="qm-exam-meta-row">
+                                    <span className="qm-exam-subject-tag" style={{ color: subMeta.color }}>
+                                      {subName}
+                                    </span>
+                                    <span className="qm-meta-dot">•</span>
+                                    <span className="qm-exam-format-text">
+                                      {isGame ? 'Quizizz Game' : 'Formal Exam'}
+                                    </span>
+                                    <span className="qm-meta-dot">•</span>
+                                    <span>
+                                      {isGame
+                                        ? `${quiz.questionTimerSeconds || 20}s / Q`
+                                        : `${quiz.durationMinutes || 45} mins`}
+                                    </span>
+                                    <span className="qm-meta-dot">•</span>
+                                    <span>{quiz.questionCount || 0} Questions</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Middle Column: Access Code & Status Pills */}
+                              <div className="qm-exam-stats">
+                                {/* Access Code Pill (1-click copy) */}
+                                <button
+                                  type="button"
+                                  className="qm-row-code-pill"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCopyCode(quiz.quizCode, quiz.id);
+                                  }}
+                                  title="Click to copy student access code"
+                                >
+                                  <span className="qm-row-code-lbl">Code:</span>
+                                  <span className="qm-row-code-val">{quiz.quizCode}</span>
+                                  <span className="qm-row-code-copy-status">
+                                    {copiedCodeId === quiz.id ? '✓ Copied' : '📋'}
+                                  </span>
+                                </button>
+
+                                {/* Submissions Tally */}
+                                <div
+                                  className="qm-stat-badge"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedQuizForResults(quiz);
+                                  }}
+                                  style={{ cursor: 'pointer' }}
+                                  title="Click to view candidate results & scorebook"
+                                >
+                                  <span className="qm-stat-value">{submissionCount}</span>
+                                  <span className="qm-stat-unit">Turned In</span>
+                                </div>
+
+                                {/* Active / Paused Status Toggle */}
+                                <button
+                                  type="button"
+                                  className={`qm-row-status-btn ${quiz.isActive ? 'qm-row-status--active' : 'qm-row-status--paused'}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleToggleActive(quiz.id);
+                                  }}
+                                  title="Toggle active status"
+                                >
+                                  <span className="qm-row-status-dot" />
+                                  <span>{quiz.isActive ? 'Active' : 'Paused'}</span>
+                                </button>
+                              </div>
+
+                              {/* Right Edge: Hover Quick Actions Bar */}
+                              <div className="qm-row-actions">
+                                {/* 1. Primary: Live Proctor (Exam) or Live Host (Game) */}
+                                {isGame ? (
+                                  <button
+                                    type="button"
+                                    className="qm-action-btn qm-action-btn--game"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleStartLiveGame(quiz);
+                                    }}
+                                    title="Start Live Multiplayer Game Host"
+                                    aria-label="Start Game Host"
+                                  >
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="2" y="6" width="20" height="12" rx="2" />
+                                      <path d="M6 12h4m-2-2v4" />
+                                      <line x1="15" y1="11" x2="15.01" y2="11" />
+                                      <line x1="18" y1="13" x2="18.01" y2="13" />
+                                    </svg>
+                                    <span className="qm-action-tooltip">Host Game</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="qm-action-btn qm-action-btn--primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedQuizForProctor(quiz);
+                                    }}
+                                    title={`Open Live Proctoring Cockpit (${quiz.quizCode})`}
+                                    aria-label="Live Proctor"
+                                  >
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                                    </svg>
+                                    <span className="qm-action-tooltip">Proctor</span>
+                                  </button>
+                                )}
+
+                                {/* 2. View Results */}
+                                <button
+                                  type="button"
+                                  className="qm-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedQuizForResults(quiz);
+                                  }}
+                                  title={`View results & scores (${submissionCount})`}
+                                  aria-label="View Results"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="20" x2="18" y2="10" />
+                                    <line x1="12" y1="20" x2="12" y2="4" />
+                                    <line x1="6" y1="20" x2="6" y2="14" />
+                                  </svg>
+                                  <span className="qm-action-tooltip">Results</span>
+                                </button>
+
+                                {/* 3. Test Run Simulation */}
+                                <button
+                                  type="button"
+                                  className="qm-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRunQuizSimulation(quiz);
+                                  }}
+                                  title="Test-run this quiz in the browser as student"
+                                  aria-label="Test Run"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <polygon points="5 3 19 12 5 21 5 3" />
+                                  </svg>
+                                  <span className="qm-action-tooltip">Test Run</span>
+                                </button>
+
+                                {/* 4. Copy Direct Link */}
+                                <button
+                                  type="button"
+                                  className="qm-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCopyLink(quiz.quizCode, quiz.id);
+                                  }}
+                                  title="Copy Direct Join Link"
+                                  aria-label="Copy Link"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                                  </svg>
+                                  <span className="qm-action-tooltip">{copiedLinkId === quiz.id ? 'Copied!' : 'Link'}</span>
+                                </button>
+
+                                {/* 5. Settings / Edit */}
+                                <button
+                                  type="button"
+                                  className="qm-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditModal(quiz);
+                                  }}
+                                  title="Configure settings, code, timer, or PIN"
+                                  aria-label="Configure Settings"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="3" />
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                                  </svg>
+                                  <span className="qm-action-tooltip">Settings</span>
+                                </button>
+
+                                <div className="qm-action-sep" />
+
+                                {/* 6. Delete */}
+                                <button
+                                  type="button"
+                                  className="qm-action-btn qm-action-btn--danger"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteQuiz(quiz.id, quiz.title || 'Untitled Assessment');
+                                  }}
+                                  title="Unpublish and delete quiz"
+                                  aria-label="Delete Quiz"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                  </svg>
+                                  <span className="qm-action-tooltip">Delete</span>
+                                </button>
+                              </div>
+
+                              {/* Mobile Actions Menu Button */}
+                              <div className="qm-mobile-actions">
+                                <button
+                                  type="button"
+                                  className="qm-mobile-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenMobileMenuId(openMobileMenuId === quiz.id ? null : quiz.id);
+                                  }}
+                                  aria-label="Actions menu"
+                                >
+                                  •••
+                                </button>
+
+                                {openMobileMenuId === quiz.id && (
+                                  <div className="qm-mobile-menu animate-fade-in" onClick={(e) => e.stopPropagation()}>
+                                    {isGame ? (
+                                      <button
+                                        type="button"
+                                        className="qm-mobile-menu-item"
+                                        onClick={() => handleStartLiveGame(quiz)}
+                                      >
+                                        🎮 Start Game Host
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="qm-mobile-menu-item"
+                                        onClick={() => setSelectedQuizForProctor(quiz)}
+                                      >
+                                        🛡️ Live Proctor
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="qm-mobile-menu-item"
+                                      onClick={() => setSelectedQuizForResults(quiz)}
+                                    >
+                                      📊 View Results ({submissionCount})
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="qm-mobile-menu-item"
+                                      onClick={() => handleRunQuizSimulation(quiz)}
+                                    >
+                                      ▶️ Test Run
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="qm-mobile-menu-item"
+                                      onClick={() => handleCopyLink(quiz.quizCode, quiz.id)}
+                                    >
+                                      🔗 Copy Direct Link
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="qm-mobile-menu-item"
+                                      onClick={() => handleOpenEditModal(quiz)}
+                                    >
+                                      ⚙️ Quiz Settings
+                                    </button>
+                                    <div className="qm-mobile-menu-divider" />
+                                    <button
+                                      type="button"
+                                      className="qm-mobile-menu-item qm-mobile-menu-item--danger"
+                                      onClick={() => handleDeleteQuiz(quiz.id, quiz.title)}
+                                    >
+                                      🗑️ Delete Quiz
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    </section>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1181,7 +1873,7 @@ export function QuizManagerPage({
                           })
                         }
                       />
-                      <span>🔊 Fun Synthesized Sound FX & Airhorns</span>
+                      <span>🔊 Fun Synthesized Sound FX &amp; Airhorns</span>
                     </label>
 
                     <label className="qm-checkbox-label">
@@ -1195,7 +1887,7 @@ export function QuizManagerPage({
                           })
                         }
                       />
-                      <span>🎉 Meme Reactions & Emoji Feedback</span>
+                      <span>🎉 Meme Reactions &amp; Emoji Feedback</span>
                     </label>
 
                     <label className="qm-checkbox-label">
@@ -1249,34 +1941,31 @@ export function QuizManagerPage({
                     </div>
 
                     <div className="qm-form-group" style={{ flex: 1 }}>
-                      <label className="qm-form-label">Assessment Mode:</label>
+                      <label className="qm-form-label">Exam Mode Type:</label>
                       <select
                         className="qm-form-select"
                         value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
-                        onChange={(e) => {
-                          const isExam = e.target.value === 'exam';
+                        onChange={(e) =>
                           setActiveQuizDraft({
                             ...activeQuizDraft,
-                            isExamMode: isExam,
-                            showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? true),
-                          });
-                        }}
+                            isExamMode: e.target.value === 'exam',
+                          })
+                        }
                       >
-                        <option value="exam">⏱️ Timed Exam Mode</option>
-                        <option value="practice">💡 Self-Paced Practice</option>
+                        <option value="exam">🔒 Timed Exam (Strict Lockdown)</option>
+                        <option value="practice">📖 Practice Mode (Flexible)</option>
                       </select>
                     </div>
                   </div>
 
-                  {/* Anti-Cheating & Security Controls */}
-                  <div className="qm-security-toggle-card">
+                  {/* Anti-Cheating & Proctoring Rules Panel */}
+                  <div className="qm-security-panel">
                     <div className="qm-sec-header">
-                      <span className="sec-icon">🔒</span>
                       <div>
-                        <strong>Anti-Cheating & Exam Browser Lock</strong>
-                        <p>Enforces fullscreen view, tracks Alt+Tab / tab switching, and blocks copy/paste.</p>
+                        <strong>Institutional Security &amp; Anti-Cheating Suite</strong>
+                        <p>Lockdown student tabs, monitor multi-screens, and prevent exam leakages.</p>
                       </div>
-                      <label className="qm-switch">
+                      <label className="qm-switch" title="Toggle anti-cheat guard">
                         <input
                           type="checkbox"
                           checked={activeQuizDraft.securityEnabled}
@@ -1294,15 +1983,7 @@ export function QuizManagerPage({
                     {activeQuizDraft.securityEnabled && (
                       <>
                         <div className="qm-sec-subrules">
-                          <div className="sec-rule-item">✓ Mandatory Fullscreen prompt on start</div>
-                          <div className="sec-rule-item">✓ Real-time Alt+Tab and window blur strikes</div>
-                          <div className="sec-rule-item">✓ Disabled Right-Click, F12 inspect, and Copy/Paste</div>
-                          <div className="sec-rule-item">✓ Timestamped Proctoring Audit Trail on teacher results</div>
-                        </div>
-
-                        {/* Teacher Lock & PIN Configuration */}
-                        <div className="qm-pin-config-box">
-                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                          <label className="qm-checkbox-label">
                             <input
                               type="checkbox"
                               checked={activeQuizDraft.requireTeacherUnlock ?? true}
@@ -1313,64 +1994,11 @@ export function QuizManagerPage({
                                 })
                               }
                             />
-                            <span>🚨 Freeze & Lock Exam on Violation (Requires Teacher PIN to Resume)</span>
+                            <span>Require Teacher 4-Digit PIN to unlock exam if violation triggers</span>
                           </label>
 
-                          {(activeQuizDraft.requireTeacherUnlock ?? true) && (
-                            <div className="qm-pin-input-group animate-fade-in">
-                              <div className="qm-pin-field-wrap">
-                                <label className="qm-form-label" style={{ fontSize: '0.8125rem' }}>
-                                  🔑 Teacher / Invigilator Unlock PIN:
-                                </label>
-                                <div className="qm-pin-inputs-row">
-                                  <input
-                                    type={showDraftPin ? 'text' : 'password'}
-                                    className="qm-form-input qm-pin-input"
-                                    value={activeQuizDraft.teacherPin ?? '1234'}
-                                    onChange={(e) =>
-                                      setActiveQuizDraft({
-                                        ...activeQuizDraft,
-                                        teacherPin: e.target.value,
-                                      })
-                                    }
-                                    placeholder="e.g. 1234 or PROCTOR"
-                                    maxLength={20}
-                                  />
-                                  <button
-                                    type="button"
-                                    className="qm-btn qm-btn-secondary qm-btn-pin-action"
-                                    onClick={() => setShowDraftPin(!showDraftPin)}
-                                    title={showDraftPin ? 'Hide PIN' : 'Show PIN'}
-                                  >
-                                    {showDraftPin ? '🙈 Hide' : '👁️ Show'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="qm-btn qm-btn-secondary qm-btn-pin-action"
-                                    onClick={() => {
-                                      const randomPin = Math.floor(1000 + Math.random() * 9000).toString();
-                                      setActiveQuizDraft({
-                                        ...activeQuizDraft,
-                                        teacherPin: randomPin,
-                                      });
-                                    }}
-                                    title="Generate a random 4-digit PIN"
-                                  >
-                                    🎲 Randomize PIN
-                                  </button>
-                                </div>
-                              </div>
-                              <p className="qm-pin-hint">
-                                💡 When a student switches tabs, presses Alt+Tab, or exits fullscreen, the exam freezes. You or an invigilator must enter this PIN on their screen to unlock it.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Candidate Dynamic Watermarking Toggle (Visible only if enabled in Exam Security Defaults) */}
-                        {securityDefaults.defaultEnableWatermark && (
-                          <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
-                            <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                          {securityDefaults.defaultEnableWatermark && (
+                            <label className="qm-checkbox-label">
                               <input
                                 type="checkbox"
                                 checked={activeQuizDraft.enableWatermark ?? false}
@@ -1381,18 +2009,12 @@ export function QuizManagerPage({
                                   })
                                 }
                               />
-                              <span>💧 Candidate Dynamic Watermarking (Ghost Overlay)</span>
+                              <span>Candidate Dynamic Security Watermark (Anti-Photo Leaks)</span>
                             </label>
-                            <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
-                              Overlays subtle translucent candidate name, ID, class, and session hash on the exam runner and diagrams to deter screen recording and camera photos.
-                            </p>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Multi-Monitor Detection Shield Toggle (Visible only if enabled in Exam Security Defaults) */}
-                        {securityDefaults.defaultEnableMultiMonitor && (
-                          <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
-                            <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                          {securityDefaults.defaultEnableMultiMonitor && (
+                            <label className="qm-checkbox-label">
                               <input
                                 type="checkbox"
                                 checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
@@ -1403,17 +2025,11 @@ export function QuizManagerPage({
                                   })
                                 }
                               />
-                              <span>🖥️ Multi-Monitor / Extended Display Detection</span>
+                              <span>Multi-Monitor Dual-Screen Shield (Prevents secondary monitors)</span>
                             </label>
-                            <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
-                              Continuously checks for connected secondary monitors or split displays and logs proctoring violation alerts if detected.
-                            </p>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Student 4-Digit PIN Verification Shield Toggle (OFF by default) */}
-                        <div className="qm-pin-config-box" style={{ marginTop: '10px' }}>
-                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                          <label className="qm-checkbox-label">
                             <input
                               type="checkbox"
                               checked={activeQuizDraft.requireStudentPin ?? false}
@@ -1421,32 +2037,45 @@ export function QuizManagerPage({
                                 setActiveQuizDraft({
                                   ...activeQuizDraft,
                                   requireStudentPin: e.target.checked,
-                                  limitOneAttempt: e.target.checked ? (activeQuizDraft.limitOneAttempt ?? true) : activeQuizDraft.limitOneAttempt,
                                 })
                               }
                             />
-                            <span>🛡️ Require 4-Digit Student PIN (School Roster)</span>
+                            <span>Require Student 4-Digit Security PIN to enter quiz</span>
                           </label>
-                          <p className="qm-pin-hint" style={{ marginTop: '4px', marginLeft: '24px' }}>
-                            Candidates must select their name and enter their unique 4-digit PIN from the School Student Roster to start. Prevents impersonation and limits each candidate to 1 attempt. (Default: Off)
-                          </p>
-                          {activeQuizDraft.requireStudentPin && (
-                            <div style={{ marginTop: '8px', marginLeft: '24px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                              <label className="qm-checkbox-label" style={{ fontWeight: 600, fontSize: '0.85rem' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={activeQuizDraft.limitOneAttempt ?? true}
-                                  onChange={(e) =>
-                                    setActiveQuizDraft({
-                                      ...activeQuizDraft,
-                                      limitOneAttempt: e.target.checked,
-                                    })
-                                  }
-                                />
-                                <span>Limit each candidate to exactly 1 attempt</span>
-                              </label>
+                        </div>
+
+                        {/* PIN Configuration Box */}
+                        <div className="qm-pin-config-box">
+                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
+                            <span>🔑 Teacher Invigilator Unlock PIN:</span>
+                          </label>
+                          <div className="qm-pin-input-group">
+                            <div className="qm-pin-inputs-row">
+                              <input
+                                type={showDraftPin ? 'text' : 'password'}
+                                className="qm-form-input qm-pin-input"
+                                value={activeQuizDraft.teacherPin || '1234'}
+                                onChange={(e) =>
+                                  setActiveQuizDraft({
+                                    ...activeQuizDraft,
+                                    teacherPin: e.target.value.replace(/\D/g, '').slice(0, 8),
+                                  })
+                                }
+                                placeholder="1234"
+                                maxLength={8}
+                              />
+                              <button
+                                type="button"
+                                className="qm-btn qm-btn-secondary qm-btn-pin-action"
+                                onClick={() => setShowDraftPin((v) => !v)}
+                              >
+                                {showDraftPin ? '🙈 Hide' : '👁️ View'}
+                              </button>
                             </div>
-                          )}
+                            <p className="qm-pin-hint">
+                              Used by the teacher in the classroom to unlock student devices after violation lockouts.
+                            </p>
+                          </div>
                         </div>
                       </>
                     )}
@@ -1461,7 +2090,7 @@ export function QuizManagerPage({
                         borderRadius: '10px',
                         padding: '12px 16px',
                         fontSize: '0.8125rem',
-                        color: '#93c5fd',
+                        color: 'var(--color-text-secondary)',
                         display: 'flex',
                         gap: '10px',
                         alignItems: 'flex-start',
@@ -1469,10 +2098,10 @@ export function QuizManagerPage({
                     >
                       <span style={{ fontSize: '1.25rem' }}>🔒</span>
                       <div>
-                        <strong style={{ color: '#bfdbfe', display: 'block', marginBottom: '2px' }}>
+                        <strong style={{ color: 'var(--color-text-primary)', display: 'block', marginBottom: '2px' }}>
                           Model Solutions Withheld During Exam (Deferred Grading)
                         </strong>
-                        In Timed Exam Mode, model solutions, mark schemes, and scores are never revealed on submission. Students receive an official confirmation receipt with a 3-digit PIN, and results are only released when you evaluate and publish them from the gradebook.
+                        In Timed Exam Mode, model solutions, mark schemes, and scores are never revealed on submission. Students receive an official confirmation receipt, and results are only released when you evaluate and publish them from the gradebook.
                       </div>
                     </div>
                   ) : (
@@ -1555,8 +2184,8 @@ export function QuizManagerPage({
                     style={{
                       padding: '12px 14px',
                       borderRadius: '8px',
-                      border: '1px solid #e2e8f0',
-                      background: '#f8fafc',
+                      border: '1px solid var(--color-border)',
+                      background: 'var(--color-surface-sunken)',
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
@@ -1564,21 +2193,21 @@ export function QuizManagerPage({
                       transition: 'all 0.15s ease',
                     }}
                     onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.borderColor = '#2563eb';
-                      (e.currentTarget as HTMLElement).style.background = '#eff6ff';
+                      (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-primary-500)';
+                      (e.currentTarget as HTMLElement).style.background = 'var(--color-surface-elevated)';
                     }}
                     onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.borderColor = '#e2e8f0';
-                      (e.currentTarget as HTMLElement).style.background = '#f8fafc';
+                      (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-border)';
+                      (e.currentTarget as HTMLElement).style.background = 'var(--color-surface-sunken)';
                     }}
                   >
                     <div>
-                      <div style={{ fontWeight: 700, color: '#0f172a' }}>{t.title || 'Untitled Assessment'}</div>
-                      <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                      <div style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>{t.title || 'Untitled Assessment'}</div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
                         {t.header_config?.subject || t.primarySubject || 'Chemistry'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
                       </div>
                     </div>
-                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#2563eb' }}>Select →</span>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-primary-600)' }}>Select →</span>
                   </div>
                 ))}
               </div>
