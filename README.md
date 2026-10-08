@@ -1,8 +1,7 @@
-# 🐱 fluffykitten's test maker
+# 🏛️ ICM Exam Platform • Cambridge International School
 
-An intelligent, AI-powered examination authoring studio and interactive student assessment platform. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, build customized Cambridge-grade exam papers, host live gamified quiz arenas, conduct proctored assessments, evaluate offline paper exams with automated Excel grading, and generate 1-page printable student diagnostic reports.
+An intelligent, AI-powered examination authoring studio and interactive student assessment platform for **Insan Cendekia Madani (ICM)** in partnership with **Cambridge Assessment International Education**. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, build customized Cambridge-grade exam papers, host live gamified quiz arenas, conduct proctored assessments, evaluate offline paper exams with automated Excel grading, and generate printable student diagnostic reports.
 
-Created with 🐾 by [**fluffykitten**](https://github.com/fluffykitten).
 
 ---
 

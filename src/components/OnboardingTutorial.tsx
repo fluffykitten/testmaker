@@ -15,9 +15,9 @@ interface TutorialStep {
 const STEPS: TutorialStep[] = [
   {
     targetSelector: null, // Welcome step — centered card
-    title: "Welcome to fluffykitten's Test Maker! 🐱",
+    title: 'Welcome to ICM Exam Platform! 🏛️',
     description:
-      'The all-in-one Cambridge & Science exam suite: AI question extraction, drag-and-drop test building, Word/PDF exporting, and interactive anti-cheating live quizzes!',
+      'The official Cambridge & Science examination suite for Insan Cendekia Madani: AI question extraction, drag-and-drop test building, Word/PDF exporting, and interactive anti-cheating live quizzes!',
   },
   {
     targetSelector: '#nav-home',

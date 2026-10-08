@@ -18,6 +18,7 @@ import type { Question } from './types/database';
 import type { ExamHeaderConfig } from './services/testBuilderService';
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
+import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from './assets/logoConstants';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
@@ -338,8 +339,18 @@ function App() {
         <nav className="navbar">
           <div className="navbar-inner">
             <div className="nav-logo" onClick={() => setCurrentPage('home')} style={{ cursor: 'pointer' }}>
-              <img src="/avatar.jpg" alt="fluffykitten" className="nav-cat-avatar" />
-              <span className="nav-title">fluffykitten's test maker</span>
+              <div className="nav-brand-logos">
+                <div className="nav-logo-badge" title="Insan Cendekia Madani">
+                  <img src={ICM_LOGO_PATH} alt="ICM" className="nav-logo-img" />
+                </div>
+                <div className="nav-logo-badge" title="Cambridge Assessment International Education">
+                  <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge" className="nav-logo-img" />
+                </div>
+              </div>
+              <div className="nav-brand-text">
+                <span className="nav-title">ICM Exam Platform</span>
+                <span className="nav-subtitle">Cambridge International School</span>
+              </div>
             </div>
 
             <div className="nav-center">
@@ -400,16 +411,13 @@ function App() {
                 🎓 Student Portal
               </button>
 
-              <a
-                href="https://github.com/fluffykitten"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="nav-creator-pill"
-                title="Created by fluffykitten on GitHub"
+              <div
+                className="nav-institution-pill"
+                title="Insan Cendekia Madani • Cambridge International School"
               >
-                <img src="/avatar.jpg" alt="fluffykitten" className="nav-creator-avatar" />
-                <span className="nav-creator-name">fluffykitten</span>
-              </a>
+                <span className="nav-institution-icon">🏛️</span>
+                <span className="nav-institution-name">ICM • Cambridge Centre</span>
+              </div>
 
               <button
                 type="button"
@@ -527,16 +535,25 @@ function App() {
         {/* ─── Footer ─────────────────────────────────────────────────────────── */}
         <footer className="app-footer">
           <div className="app-footer-inner">
-            <a
-              href="https://github.com/fluffykitten"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="footer-creator"
-            >
-              <img src="/avatar.jpg" alt="fluffykitten" className="footer-creator-avatar" />
-              <span>Created with 🐱 by <strong>fluffykitten</strong></span>
-              <span className="footer-github-tag">github.com/fluffykitten</span>
-            </a>
+            <div className="footer-institution">
+              <div className="footer-logos">
+                <div className="footer-logo-card" title="Insan Cendekia Madani">
+                  <img src={ICM_LOGO_PATH} alt="ICM" className="footer-logo-img" />
+                </div>
+                <div className="footer-logo-card" title="Cambridge Assessment International Education">
+                  <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment" className="footer-logo-img" />
+                </div>
+              </div>
+              <div className="footer-details">
+                <div className="footer-brand-title">ICM Exam Platform</div>
+                <div className="footer-brand-desc">
+                  Insan Cendekia Madani • Cambridge International School
+                </div>
+                <div className="footer-copyright">
+                  Official Examination & Assessment Suite • Powered by Gemini AI & Supabase
+                </div>
+              </div>
+            </div>
           </div>
         </footer>
       </div>
@@ -615,26 +632,45 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
   return (
     <main className="hero-section">
       <div className="hero-content animate-fade-in">
+        {/* ─── Institutional Brand Showcase Banner ─── */}
+        <div className="hero-brand-banner">
+          <div className="hero-logo-card hero-logo-card--icm" title="Insan Cendekia Madani">
+            <img src={ICM_LOGO_PATH} alt="Insan Cendekia Madani" className="hero-logo-img" />
+          </div>
+
+          <div className="hero-brand-divider">
+            <div className="hero-brand-tag">
+              <span className="hero-brand-dot" />
+              <span>Official Examination & Assessment Suite</span>
+            </div>
+            <span className="hero-brand-subtag">Insan Cendekia Madani • Cambridge International School</span>
+          </div>
+
+          <div className="hero-logo-card hero-logo-card--cambridge" title="Cambridge Assessment International Education">
+            <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment International Education" className="hero-logo-img" />
+          </div>
+        </div>
+
         {/* Top Header Badge */}
         <div className="hero-badge-pill">
-          <span className="badge-sparkle">✨</span>
-          <span>Next-Gen Cambridge & Science Assessment Suite</span>
+          <span className="badge-sparkle">🏛️</span>
+          <span>Cambridge Assessment & Secondary Examination Suite</span>
         </div>
 
         <h1 className="hero-title">
-          fluffykitten's
-          <br />
-          <span className="text-gradient">test maker</span>
+          <span className="hero-title-prefix">ICM</span>{' '}
+          <span className="text-gradient">Exam Platform</span>
         </h1>
 
         <p className="hero-description">
-          Ingest past papers with AI, build differentiated assessments with live KaTeX rendering,
-          export Word/PDF test papers & examiner mark schemes, and run anti-cheating live quizzes with Excel reports.
+          The unified examination authoring, AI paper ingestion, and proctored testing suite for <strong>Insan Cendekia Madani</strong>.
+          Ingest Cambridge past papers with Gemini AI, build syllabus-aligned assessments with live KaTeX rendering,
+          export standardized Word/PDF exam papers & examiner mark schemes, and execute secure proctored live examinations.
         </p>
 
         {/* ─── Live KPI Metrics Ribbon ─── */}
         <div className="hero-stats-ribbon">
-          <div className="hero-stat-card" onClick={() => onNavigate('bank')}>
+          <div className="hero-stat-card" onClick={() => onNavigate('bank')} title="View Question Bank">
             <span className="stat-icon">📚</span>
             <div className="stat-info">
               <strong>{stats.totalQuestions > 0 ? stats.totalQuestions : '150+'}</strong>
@@ -642,27 +678,27 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
             </div>
           </div>
 
-          <div className="hero-stat-card" onClick={() => onNavigate('saved')}>
+          <div className="hero-stat-card" onClick={() => onNavigate('saved')} title="View Custom Test Papers">
             <span className="stat-icon">📑</span>
             <div className="stat-info">
               <strong>{stats.savedTests}</strong>
-              <span>Saved Custom Tests</span>
+              <span>Saved Test Papers</span>
             </div>
           </div>
 
-          <div className="hero-stat-card" onClick={() => onNavigate('quizzes')}>
+          <div className="hero-stat-card" onClick={() => onNavigate('quizzes')} title="View Live Exam Sessions">
             <span className="stat-icon">🚀</span>
             <div className="stat-info">
               <strong>{stats.quizzes}</strong>
-              <span>Live Quizzes</span>
+              <span>Live & Online Exams</span>
             </div>
           </div>
 
-          <div className="hero-stat-card" onClick={() => onNavigate('bank')}>
+          <div className="hero-stat-card" onClick={() => onNavigate('bank')} title="View Starred Questions">
             <span className="stat-icon">⭐</span>
             <div className="stat-info">
               <strong>{stats.bookmarks}</strong>
-              <span>Bookmarked Questions</span>
+              <span>Bookmarked Exemplars</span>
             </div>
           </div>
         </div>
@@ -700,7 +736,7 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
               <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h12a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            Saved Tests
+            Saved Test Papers
           </button>
 
           <button
@@ -711,7 +747,7 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Interactive Quizzes
+            Interactive Live Exams
           </button>
 
           <button
@@ -723,17 +759,17 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
               <path d="M10 14V2M6 6l4-4 4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M3 13v4a2 2 0 002 2h10a2 2 0 002-2v-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
-            Upload Papers
+            Upload Past Papers
           </button>
         </div>
 
-        {/* ─── 4-Step Workflow Visual Guide ─── */}
+        {/* ─── 4-Step Cambridge Examination Pipeline ─── */}
         <div className="workflow-container">
           <div className="workflow-step" onClick={() => onNavigate('upload')}>
             <span className="step-num">1</span>
             <div className="step-content">
               <strong>Ingest Past Papers</strong>
-              <p>Upload PDF exams & mark schemes with Gemini AI diagram extraction</p>
+              <p>Upload Cambridge PDF exams & mark schemes with Gemini AI diagram extraction</p>
             </div>
           </div>
 
@@ -742,8 +778,8 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
           <div className="workflow-step" onClick={() => onNavigate('builder')}>
             <span className="step-num">2</span>
             <div className="step-content">
-              <strong>Assemble & Differentiate</strong>
-              <p>Drag-and-drop questions, balance marks, and generate AI variants</p>
+              <strong>Assemble & Balance</strong>
+              <p>Balance AO1/AO2/AO3 marks, syllabus coverage, and generate AI variants</p>
             </div>
           </div>
 
@@ -752,8 +788,8 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
           <div className="workflow-step" onClick={() => onNavigate('saved')}>
             <span className="step-num">3</span>
             <div className="step-content">
-              <strong>Export Papers & Schemes</strong>
-              <p>Download Word (.docx), PDF tests, and comprehensive examiner notes</p>
+              <strong>Official Papers & Schemes</strong>
+              <p>Export Word (.docx), printable PDF test papers, and comprehensive mark schemes</p>
             </div>
           </div>
 
@@ -762,8 +798,8 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
           <div className="workflow-step" onClick={() => onNavigate('quizzes')}>
             <span className="step-num">4</span>
             <div className="step-content">
-              <strong>Run Anti-Cheat Quizzes</strong>
-              <p>Launch live online exams with proctoring audit and Excel reports</p>
+              <strong>Run Proctored Exams</strong>
+              <p>Launch live online exams with anti-cheat lockdown and Excel gradebooks</p>
             </div>
           </div>
         </div>

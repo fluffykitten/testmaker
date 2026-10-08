@@ -11,6 +11,7 @@ import { StudentResultModal } from '../components/StudentResultModal';
 import { prefetchAccessPin } from '../components/PinGate';
 import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
+import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
 import './PortalLandingPage.css';
 
 interface PortalLandingPageProps {
@@ -245,14 +246,18 @@ export function PortalLandingPage({
       <div className="portal-content">
         {/* Compact Brand Header */}
         <header className="portal-brand-header">
-          <div className="portal-avatar-wrap">
-            <img src="/avatar.jpg" alt="fluffykitten" className="portal-cat-avatar" />
-            <span className="portal-online-dot" />
+          <div className="portal-brand-logos">
+            <div className="portal-logo-card" title="Insan Cendekia Madani">
+              <img src={ICM_LOGO_PATH} alt="ICM" className="portal-logo-img" />
+            </div>
+            <div className="portal-logo-card" title="Cambridge Assessment International Education">
+              <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment" className="portal-logo-img" />
+            </div>
           </div>
 
-          <h1 className="portal-title">fluffykitten's test maker</h1>
+          <h1 className="portal-title">ICM Exam Platform</h1>
           <p className="portal-subtitle">
-            Interactive Student Assessment Portal & Teacher Examination Suite
+            Interactive Student Assessment Portal & Teacher Examination Suite • Insan Cendekia Madani
           </p>
         </header>
 
@@ -556,10 +561,10 @@ export function PortalLandingPage({
         {/* Footer info */}
         <footer className="portal-footer">
           <div className="portal-footer-line">
-            <span>fluffykitten AI Assessment Platform</span> • <span>Version 2.5</span> • <span>Powered by Supabase & Gemini</span>
+            <span>ICM Exam Platform</span> • <span>Insan Cendekia Madani</span> • <span>Cambridge International School</span>
           </div>
           <div className="portal-footer-sub">
-            Built for Cambridge Educators & Interactive Learning
+            Unified Cambridge Assessment & Secure Examination Portal
           </div>
         </footer>
       </div>

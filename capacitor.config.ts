@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.fluffykitten.testmaker',
-  appName: 'fluffykitten Test Maker',
+  appName: 'ICM Exam Platform',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

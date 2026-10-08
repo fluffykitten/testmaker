@@ -65,36 +65,38 @@
   align-items: center;
 }
 
-.portal-avatar-wrap {
-  position: relative;
-  display: inline-block;
-  margin-bottom: 8px;
+.portal-brand-logos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
-.portal-cat-avatar {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: 2.5px solid var(--color-surface-elevated);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.22);
-  object-fit: cover;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+.portal-logo-card {
+  background: #ffffff;
+  padding: 6px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s ease;
 }
 
-.portal-avatar-wrap:hover .portal-cat-avatar {
-  transform: scale(1.08) rotate(3deg);
+.portal-logo-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
 }
 
-.portal-online-dot {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  width: 13px;
-  height: 13px;
-  background: #10b981;
-  border: 2px solid var(--color-bg);
-  border-radius: 50%;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+.portal-logo-img {
+  height: 36px;
+  width: auto;
+  max-width: 140px;
+  object-fit: contain;
+  display: block;
 }
 
 .portal-title {

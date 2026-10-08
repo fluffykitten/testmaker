@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { verifyPinAgainstHashOrPlain } from '../utils/cryptoUtils';
 import { TurnstileWidget } from './TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
+import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
 import './PinGate.css';
 
 const PIN_LENGTH = 6;
@@ -333,18 +334,23 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
                 <path d="M5 13l4 4L19 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </div>
-            <p className="pin-success-text">Welcome in! 🐱</p>
+            <p className="pin-success-text">Welcome to ICM Exam Platform!</p>
           </>
         ) : (
           <>
-            {/* Avatar & Branding */}
-            <div className="pin-gate-avatar-wrapper">
-              <img src="/avatar.jpg" alt="fluffykitten" className="pin-gate-avatar" />
+            {/* Logos & Branding */}
+            <div className="pin-gate-brand-wrapper">
+              <div className="pin-gate-logo-card" title="Insan Cendekia Madani">
+                <img src={ICM_LOGO_PATH} alt="ICM" className="pin-gate-logo-img" />
+              </div>
+              <div className="pin-gate-logo-card" title="Cambridge Assessment International Education">
+                <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment" className="pin-gate-logo-img" />
+              </div>
             </div>
 
-            <h2 className="pin-gate-title">Enter Access PIN</h2>
+            <h2 className="pin-gate-title">ICM Exam Platform</h2>
             <p className="pin-gate-subtitle">
-              Please enter your 6-digit PIN to continue
+              Insan Cendekia Madani • Enter your 6-digit access PIN
             </p>
 
             {/* Lockout Banner */}
@@ -455,14 +461,9 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
               </button>
             )}
 
-            <a
-              href="https://github.com/fluffykitten"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="pin-gate-creator-link"
-            >
-              by github.com/fluffykitten
-            </a>
+            <div className="pin-gate-creator-link">
+              Insan Cendekia Madani • Cambridge International School
+            </div>
           </>
         )}
       </div>
