@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { PinGate } from './components/PinGate';
 import { OnboardingTutorial } from './components/OnboardingTutorial';
-import { ConnectionStatus } from './components/ConnectionStatus';
 import { SettingsModal } from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
@@ -338,42 +337,39 @@ function App() {
         {/* ─── Navigation ─────────────────────────────────────────────────────── */}
         <nav className="navbar">
           <div className="navbar-inner">
-            <div className="nav-logo" onClick={() => setCurrentPage('home')} style={{ cursor: 'pointer' }}>
-              <div className="nav-brand-logos">
-                <div className="nav-logo-badge" title="Insan Cendekia Madani">
-                  <img src={ICM_LOGO_PATH} alt="ICM" className="nav-logo-img" />
-                </div>
-                <div className="nav-logo-badge" title="Cambridge Assessment International Education">
-                  <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge" className="nav-logo-img" />
-                </div>
-              </div>
-              <div className="nav-brand-text">
-                <span className="nav-title">ICM Exam Platform</span>
-                <span className="nav-subtitle">Cambridge International School</span>
-              </div>
+            <div
+              className="nav-logo"
+              onClick={() => setCurrentPage('home')}
+              id="nav-home"
+              style={{ cursor: 'pointer' }}
+              title="Return to Dashboard"
+            >
+              <img src={ICM_LOGO_PATH} alt="ICM" className="nav-logo-img" />
             </div>
 
             <div className="nav-center">
-              <button
-                className={`nav-tab ${currentPage === 'home' ? 'nav-tab--active' : ''}`}
-                onClick={() => setCurrentPage('home')}
-                id="nav-home"
-              >
-                Dashboard
-              </button>
               <button
                 className={`nav-tab ${currentPage === 'bank' ? 'nav-tab--active' : ''}`}
                 onClick={() => setCurrentPage('bank')}
                 id="nav-bank"
               >
-                Question Bank
+                <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                </svg>
+                <span>Question Bank</span>
               </button>
               <button
                 className={`nav-tab ${currentPage === 'builder' ? 'nav-tab--active' : ''}`}
                 onClick={() => setCurrentPage('builder')}
                 id="nav-builder"
               >
-                Test Builder
+                <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 20h9"/>
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                </svg>
+                <span>Test Builder</span>
                 {selectedCount > 0 && (
                   <span className="nav-tab-badge">{selectedCount}</span>
                 )}
@@ -383,21 +379,33 @@ function App() {
                 onClick={() => setCurrentPage('saved')}
                 id="nav-saved"
               >
-                Saved Tests
+                <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>Saved Tests</span>
               </button>
               <button
                 className={`nav-tab ${currentPage === 'quizzes' ? 'nav-tab--active' : ''}`}
                 onClick={() => setCurrentPage('quizzes')}
                 id="nav-quizzes"
               >
-                Interactive Quizzes
+                <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+                <span>Publish Exam</span>
               </button>
               <button
                 className={`nav-tab ${currentPage === 'upload' ? 'nav-tab--active' : ''}`}
                 onClick={() => setCurrentPage('upload')}
                 id="nav-upload"
               >
-                Upload Papers
+                <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span>Upload Papers</span>
               </button>
             </div>
 
@@ -408,16 +416,15 @@ function App() {
                 onClick={() => setAppMode('portal')}
                 title="Switch to Student Quiz Portal"
               >
-                🎓 Student Portal
+                <span>🎓 Student Portal</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
               </button>
 
-              <div
-                className="nav-institution-pill"
-                title="Insan Cendekia Madani • Cambridge International School"
-              >
-                <span className="nav-institution-icon">🏛️</span>
-                <span className="nav-institution-name">ICM • Cambridge Centre</span>
-              </div>
+              <div className="nav-divider" />
 
               <button
                 type="button"
@@ -431,8 +438,6 @@ function App() {
                   <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
                 </svg>
               </button>
-
-              <ConnectionStatus />
             </div>
           </div>
         </nav>

@@ -36,3 +36,6 @@ scratch/
 
 # Local test & backup data
 backup/
+
+# Superdesign temporary outputs
+.superdesign/tmp/

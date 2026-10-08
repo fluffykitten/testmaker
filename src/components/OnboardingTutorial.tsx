@@ -23,7 +23,7 @@ const STEPS: TutorialStep[] = [
     targetSelector: '#nav-home',
     title: '🏠 System Dashboard',
     description:
-      'Your command center. View real-time question statistics, quick-action shortcuts, and the 4-step assessment workflow.',
+      'Your command center. Click the ICM logo anytime to return to the Dashboard, view real-time question statistics, and quick shortcuts.',
     position: 'bottom',
   },
   {
@@ -49,7 +49,7 @@ const STEPS: TutorialStep[] = [
   },
   {
     targetSelector: '#nav-quizzes',
-    title: '🚀 Interactive Quizzes & Proctoring',
+    title: '🚀 Publish Exam & Live Proctoring',
     description:
       'Launch paperless live assessments with access codes, anti-cheating Exam Browser mode (Alt+Tab lock), live answer logs, and multi-sheet Excel (.xlsx) gradebooks!',
     position: 'bottom',
