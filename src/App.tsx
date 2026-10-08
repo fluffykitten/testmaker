@@ -13,8 +13,8 @@ import { PortalLandingPage } from './pages/PortalLandingPage';
 import { resolveStudentQuiz } from './services/quizCodeService';
 import type { PublishedQuiz } from './services/quizManagerService';
 import { supabase } from './lib/supabase';
-import type { Question } from './types/database';
-import type { ExamHeaderConfig } from './services/testBuilderService';
+import type { Question, CustomTest } from './types/database';
+import { getLocalTests, type ExamHeaderConfig } from './services/testBuilderService';
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from './assets/logoConstants';
@@ -568,6 +568,13 @@ function App() {
 
 // ─── Home / Dashboard Page ─────────────────────────────────────────────────────
 
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good Morning, Teacher';
+  if (hour < 18) return 'Good Afternoon, Teacher';
+  return 'Good Evening, Teacher';
+}
+
 interface HomePageProps {
   onNavigate: (page: Page) => void;
   selectedCount: number;
@@ -581,6 +588,7 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
     quizzes: 0,
     bookmarks: 0,
   });
+  const [recentTests, setRecentTests] = useState<CustomTest[]>([]);
 
   useEffect(() => {
     async function loadStats() {
@@ -590,9 +598,9 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
           .from('questions')
           .select('*', { count: 'exact', head: true });
 
-        // Fetch local saved tests & quizzes
-        const savedTestsRaw = localStorage.getItem('testmaker_saved_tests');
-        const savedTestsCount = savedTestsRaw ? JSON.parse(savedTestsRaw).length : 0;
+        // Fetch local saved tests from testBuilderService
+        const localTests = getLocalTests();
+        setRecentTests(localTests.slice(0, 4));
 
         let quizzesCount = 0;
         const quizzesRaw = localStorage.getItem('fluffykitten_published_quizzes');
@@ -623,7 +631,7 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
 
         setStats({
           totalQuestions: count || 0,
-          savedTests: savedTestsCount,
+          savedTests: localTests.length,
           quizzes: quizzesCount,
           bookmarks: bookmarksCount,
         });
@@ -634,283 +642,269 @@ function HomePage({ onNavigate, selectedCount, onRestartTutorial }: HomePageProp
     loadStats();
   }, []);
 
+  const greeting = getGreeting();
+  const dateFormatted = new Date().toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+
   return (
-    <main className="hero-section">
-      <div className="hero-content animate-fade-in">
-        {/* ─── Institutional Brand Showcase Banner ─── */}
-        <div className="hero-brand-banner">
-          <div className="hero-logo-card hero-logo-card--icm" title="Insan Cendekia Madani">
-            <img src={ICM_LOGO_PATH} alt="Insan Cendekia Madani" className="hero-logo-img" />
-          </div>
-
-          <div className="hero-brand-divider">
-            <div className="hero-brand-tag">
-              <span className="hero-brand-dot" />
-              <span>Official Examination & Assessment Suite</span>
-            </div>
-            <span className="hero-brand-subtag">Insan Cendekia Madani • Cambridge International School</span>
-          </div>
-
-          <div className="hero-logo-card hero-logo-card--cambridge" title="Cambridge Assessment International Education">
-            <img src={CAMBRIDGE_LOGO_PATH} alt="Cambridge Assessment International Education" className="hero-logo-img" />
+    <div className="dash-container animate-fade-in">
+      {/* ─── Top Greeting & Compact Stats Header ─── */}
+      <header className="dash-header">
+        <div className="dash-greeting-wrap">
+          <div className="dash-accent-bar" />
+          <div>
+            <h1 className="dash-title">{greeting}</h1>
+            <p className="dash-date">
+              {dateFormatted} <span className="dash-sep">•</span> Insan Cendekia Madani Assessment Workspace
+            </p>
           </div>
         </div>
 
-        {/* Top Header Badge */}
-        <div className="hero-badge-pill">
-          <span className="badge-sparkle">🏛️</span>
-          <span>Cambridge Assessment & Secondary Examination Suite</span>
-        </div>
-
-        <h1 className="hero-title">
-          <span className="hero-title-prefix">ICM</span>{' '}
-          <span className="text-gradient">Exam Platform</span>
-        </h1>
-
-        <p className="hero-description">
-          The unified examination authoring, AI paper ingestion, and proctored testing suite for <strong>Insan Cendekia Madani</strong>.
-          Ingest Cambridge past papers with Gemini AI, build syllabus-aligned assessments with live KaTeX rendering,
-          export standardized Word/PDF exam papers & examiner mark schemes, and execute secure proctored live examinations.
-        </p>
-
-        {/* ─── Live KPI Metrics Ribbon ─── */}
-        <div className="hero-stats-ribbon">
-          <div className="hero-stat-card" onClick={() => onNavigate('bank')} title="View Question Bank">
-            <span className="stat-icon">📚</span>
-            <div className="stat-info">
-              <strong>{stats.totalQuestions > 0 ? stats.totalQuestions : '150+'}</strong>
-              <span>Questions in Bank</span>
-            </div>
-          </div>
-
-          <div className="hero-stat-card" onClick={() => onNavigate('saved')} title="View Custom Test Papers">
-            <span className="stat-icon">📑</span>
-            <div className="stat-info">
-              <strong>{stats.savedTests}</strong>
-              <span>Saved Test Papers</span>
-            </div>
-          </div>
-
-          <div className="hero-stat-card" onClick={() => onNavigate('quizzes')} title="View Live Exam Sessions">
-            <span className="stat-icon">🚀</span>
-            <div className="stat-info">
-              <strong>{stats.quizzes}</strong>
-              <span>Live & Online Exams</span>
-            </div>
-          </div>
-
-          <div className="hero-stat-card" onClick={() => onNavigate('bank')} title="View Starred Questions">
-            <span className="stat-icon">⭐</span>
-            <div className="stat-info">
-              <strong>{stats.bookmarks}</strong>
-              <span>Bookmarked Exemplars</span>
-            </div>
-          </div>
-        </div>
-
-        {/* ─── Quick Actions ─── */}
-        <div className="hero-actions">
+        {/* Compact Horizontal KPI Pills */}
+        <div className="dash-stats-ribbon">
           <button
-            className="hero-btn hero-btn--primary"
+            type="button"
+            className="dash-stat-pill"
             onClick={() => onNavigate('bank')}
-            id="hero-bank-btn"
+            title="Open Question Bank"
           >
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path d="M4 6h12M4 10h12M4 14h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            Browse Question Bank
+            <span className="dash-stat-dot dash-stat-dot--blue" />
+            <span className="dash-stat-val">
+              {stats.totalQuestions > 0 ? stats.totalQuestions.toLocaleString() : '150+'}
+            </span>
+            <span className="dash-stat-label">Questions</span>
           </button>
 
           <button
-            className="hero-btn hero-btn--secondary"
-            onClick={() => onNavigate('builder')}
-            id="hero-builder-btn"
-          >
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path d="M4 4h12v12H4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path d="M4 8h12M8 4v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            Test Builder {selectedCount > 0 ? `(${selectedCount})` : ''}
-          </button>
-
-          <button
-            className="hero-btn hero-btn--secondary"
+            type="button"
+            className="dash-stat-pill"
             onClick={() => onNavigate('saved')}
-            id="hero-saved-btn"
+            title="Open Saved Tests"
           >
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h12a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            Saved Test Papers
+            <span className="dash-stat-dot dash-stat-dot--green" />
+            <span className="dash-stat-val">{stats.savedTests}</span>
+            <span className="dash-stat-label">Test Papers</span>
           </button>
 
           <button
-            className="hero-btn hero-btn--quizzes"
+            type="button"
+            className="dash-stat-pill"
             onClick={() => onNavigate('quizzes')}
-            id="hero-quizzes-btn"
+            title="Manage Published Exams"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Interactive Live Exams
+            <span className="dash-stat-dot dash-stat-dot--amber" />
+            <span className="dash-stat-val">{stats.quizzes}</span>
+            <span className="dash-stat-label">Live Exams</span>
           </button>
 
           <button
-            className="hero-btn hero-btn--secondary"
-            onClick={() => onNavigate('upload')}
-            id="hero-upload-btn"
+            type="button"
+            className="dash-stat-pill"
+            onClick={() => onNavigate('bank')}
+            title="View Bookmarked Questions"
           >
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path d="M10 14V2M6 6l4-4 4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M3 13v4a2 2 0 002 2h10a2 2 0 002-2v-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            Upload Past Papers
+            <span className="dash-stat-dot dash-stat-dot--purple" />
+            <span className="dash-stat-val">{stats.bookmarks}</span>
+            <span className="dash-stat-label">Bookmarked</span>
           </button>
         </div>
+      </header>
 
-        {/* ─── 4-Step Cambridge Examination Pipeline ─── */}
-        <div className="workflow-container">
-          <div className="workflow-step" onClick={() => onNavigate('upload')}>
-            <span className="step-num">1</span>
-            <div className="step-content">
-              <strong>Ingest Past Papers</strong>
-              <p>Upload Cambridge PDF exams & mark schemes with Gemini AI diagram extraction</p>
+      {/* ─── Main Workspace Split (Option 2) ─── */}
+      <div className="dash-grid">
+        {/* Left Column: Launchpad Workflows */}
+        <div className="dash-col-left">
+          <div className="dash-section-header">
+            <div>
+              <h2 className="dash-section-title">Launchpad</h2>
+              <span className="dash-section-subtitle">Operational Workflows</span>
             </div>
           </div>
 
-          <div className="workflow-arrow">→</div>
+          <div className="dash-launch-grid">
+            {/* Tile 1: Question Bank */}
+            <button
+              type="button"
+              className="dash-launch-card dash-launch-card--bank"
+              onClick={() => onNavigate('bank')}
+              id="dash-launch-bank"
+            >
+              <div className="dash-launch-icon-wrap dash-launch-icon-wrap--blue">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                </svg>
+              </div>
+              <div className="dash-launch-meta">
+                <h3 className="dash-launch-name">Question Bank</h3>
+                <p className="dash-launch-desc">Search, filter & organize questions with formula support</p>
+              </div>
+              <span className="dash-launch-arrow">→</span>
+            </button>
 
-          <div className="workflow-step" onClick={() => onNavigate('builder')}>
-            <span className="step-num">2</span>
-            <div className="step-content">
-              <strong>Assemble & Balance</strong>
-              <p>Balance AO1/AO2/AO3 marks, syllabus coverage, and generate AI variants</p>
-            </div>
+            {/* Tile 2: Test Builder */}
+            <button
+              type="button"
+              className="dash-launch-card dash-launch-card--builder"
+              onClick={() => onNavigate('builder')}
+              id="dash-launch-builder"
+            >
+              <div className="dash-launch-icon-wrap dash-launch-icon-wrap--green">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9"/>
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                </svg>
+              </div>
+              <div className="dash-launch-meta">
+                <div className="dash-launch-title-row">
+                  <h3 className="dash-launch-name">Test Builder</h3>
+                  {selectedCount > 0 && (
+                    <span className="dash-launch-badge">{selectedCount} queued</span>
+                  )}
+                </div>
+                <p className="dash-launch-desc">Assemble exams with live mark balancing & preview</p>
+              </div>
+              <span className="dash-launch-arrow">→</span>
+            </button>
+
+            {/* Tile 3: Publish Exam */}
+            <button
+              type="button"
+              className="dash-launch-card"
+              onClick={() => onNavigate('quizzes')}
+              id="dash-launch-publish"
+            >
+              <div className="dash-launch-icon-wrap dash-launch-icon-wrap--slate">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </div>
+              <div className="dash-launch-meta">
+                <h3 className="dash-launch-name">Publish Exam</h3>
+                <p className="dash-launch-desc">Schedule live assessments, access codes & gradebooks</p>
+              </div>
+              <span className="dash-launch-arrow">→</span>
+            </button>
+
+            {/* Tile 4: Upload Past Papers */}
+            <button
+              type="button"
+              className="dash-launch-card"
+              onClick={() => onNavigate('upload')}
+              id="dash-launch-upload"
+            >
+              <div className="dash-launch-icon-wrap dash-launch-icon-wrap--slate">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <div className="dash-launch-meta">
+                <h3 className="dash-launch-name">Upload Papers</h3>
+                <p className="dash-launch-desc">Extract questions and diagrams directly from PDF exam files</p>
+              </div>
+              <span className="dash-launch-arrow">→</span>
+            </button>
           </div>
 
-          <div className="workflow-arrow">→</div>
-
-          <div className="workflow-step" onClick={() => onNavigate('saved')}>
-            <span className="step-num">3</span>
-            <div className="step-content">
-              <strong>Official Papers & Schemes</strong>
-              <p>Export Word (.docx), printable PDF test papers, and comprehensive mark schemes</p>
-            </div>
-          </div>
-
-          <div className="workflow-arrow">→</div>
-
-          <div className="workflow-step" onClick={() => onNavigate('quizzes')}>
-            <span className="step-num">4</span>
-            <div className="step-content">
-              <strong>Run Proctored Exams</strong>
-              <p>Launch live online exams with anti-cheat lockdown and Excel gradebooks</p>
-            </div>
+          {/* Minimal Tutorial Helper */}
+          <div className="dash-tutorial-box">
+            <span className="dash-tutorial-text">Need a walkthrough of the platform?</span>
+            <button
+              type="button"
+              className="dash-tutorial-btn"
+              onClick={onRestartTutorial}
+            >
+              Restart Tutorial ↺
+            </button>
           </div>
         </div>
 
-        {/* ─── Feature Showcase (6 Core Capabilities) ─── */}
-        <div className="feature-grid">
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            }
-            title="Question Bank & Formula Search"
-            description="Browse exam questions by topic, difficulty, marks, and auto-expanding chemical formulas (H2SO4, KMnO4, \Delta H)."
-            accent="indigo"
-          />
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M12 16v-4M12 8h.01M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            }
-            title="AI Ingestion Pipeline"
-            description="Upload PDF past papers and let Gemini AI extract questions, diagrams, KaTeX equations, and mark schemes automatically."
-            accent="violet"
-          />
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                <path d="M9 14l2 2 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            }
-            title="Test Builder & Live Analytics"
-            description="Drag-and-drop questions into custom exams with live syllabus coverage, difficulty balance meters, and mark counters."
-            accent="emerald"
-          />
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            }
-            title="Word, PDF & Mark Schemes"
-            description="One-click export to Word (.docx), student test PDFs, and Comprehensive Teacher Mark Schemes with examiner guidance."
-            accent="amber"
-          />
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2" />
-                <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            }
-            title="Interactive Quizzes & Anti-Cheat"
-            description="Run paperless exams with custom tokens, full-screen lockdown, Alt+Tab prevention, and proctoring violation logs."
-            accent="cyan"
-          />
-          <FeatureCard
-            icon={
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M18 20V10M12 20V4M6 20v-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            }
-            title="Excel Gradebooks & Audit Reports"
-            description="Inspect question-by-question candidate answers and export native multi-sheet Excel (.xlsx) class gradebooks."
-            accent="rose"
-          />
-        </div>
+        {/* Right Column: Recent Test Papers */}
+        <div className="dash-col-right">
+          <div className="dash-section-header">
+            <div>
+              <h2 className="dash-section-title">Recent Test Papers</h2>
+              <span className="dash-section-subtitle">Saved Drafts & Assessment Papers</span>
+            </div>
+            {recentTests.length > 0 && (
+              <button
+                type="button"
+                className="dash-view-all-btn"
+                onClick={() => onNavigate('saved')}
+              >
+                View All Saved ({stats.savedTests}) →
+              </button>
+            )}
+          </div>
 
-        {/* Restart Tutorial Button */}
-        <div className="hero-footer-actions">
-          <button className="tutorial-restart-btn" onClick={onRestartTutorial}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              <path d="M22 2v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Restart Interactive Tutorial
-          </button>
+          <div className="dash-recent-card">
+            {recentTests.length > 0 ? (
+              <div className="dash-recent-list">
+                {recentTests.map((test, index) => {
+                  const title = test.title || test.header_config?.title || `Assessment Paper #${index + 1}`;
+                  const qCount = Array.isArray(test.question_ids) ? test.question_ids.length : 0;
+                  const marks = test.total_marks || 0;
+                  const dateStr = test.created_at ? new Date(test.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'Recent';
+
+                  return (
+                    <div key={test.id || index} className="dash-recent-item">
+                      <div className="dash-recent-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                          <polyline points="14 2 14 8 20 8"/>
+                          <line x1="16" y1="13" x2="8" y2="13"/>
+                          <line x1="16" y1="17" x2="8" y2="17"/>
+                          <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                      </div>
+
+                      <div className="dash-recent-info">
+                        <h4 className="dash-recent-name">{title}</h4>
+                        <div className="dash-recent-tags">
+                          <span>{qCount} Questions</span>
+                          {marks > 0 && <span>• {marks} Marks</span>}
+                          <span>• {dateStr}</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="dash-recent-action-btn"
+                        onClick={() => onNavigate('saved')}
+                      >
+                        Open Paper →
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="dash-empty-tests">
+                <div className="dash-empty-icon">📝</div>
+                <h4 className="dash-empty-title">No test papers created yet</h4>
+                <p className="dash-empty-desc">
+                  Assemble questions from the Question Bank into custom examination papers with automated mark balancing.
+                </p>
+                <button
+                  type="button"
+                  className="dash-empty-btn"
+                  onClick={() => onNavigate('builder')}
+                >
+                  Create Your First Test →
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-
-      {/* Background decoration */}
-      <div className="hero-bg-glow" />
-    </main>
-  );
-}
-
-// ─── Feature Card Component ──────────────────────────────────────────────────
-
-interface FeatureCardProps {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  accent: 'indigo' | 'violet' | 'emerald' | 'amber' | 'cyan' | 'rose';
-}
-
-function FeatureCard({ icon, title, description, accent }: FeatureCardProps) {
-  return (
-    <div className={`feature-card feature-card--${accent}`}>
-      <div className={`feature-card-icon feature-card-icon--${accent}`}>
-        {icon}
-      </div>
-      <h3 className="feature-card-title">{title}</h3>
-      <p className="feature-card-desc">{description}</p>
     </div>
   );
 }
