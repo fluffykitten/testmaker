@@ -2,9 +2,11 @@
 // Stores and tracks student quiz attempts, responses, scores, and proctoring audit logs.
 // Supports Excel (.xlsx) exports for individual candidates and class-wide gradebooks.
 
-import * as XLSX from 'xlsx';
-import { exportFileUniversal } from './fileExportBridge';
 import { supabase } from '../lib/supabase';
+import {
+  exportAllSubmissionsExcelICM,
+  exportSingleSubmissionExcelICM,
+} from './icmExcelExportService';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
@@ -361,6 +363,34 @@ export interface ProctoringViolationEvent {
   event: string;
   strike: number;
   severity: 'warning' | 'critical';
+  type?: 'tab_switch' | 'blur' | 'window_blur' | 'fullscreen_exit' | 'multi_monitor' | 'blocked_shortcut' | 'print_screen' | 'dev_tools' | 'vm_detected';
+  detail?: string;
+  elapsedExamSeconds?: number;
+}
+
+export interface AnswerChangeLogEntry {
+  questionIndex: number;
+  questionId: string;
+  previousAnswer: string | number;
+  newAnswer: string | number;
+  timestamp: string;          // ISO timestamp
+  elapsedExamSeconds: number; // Seconds into the exam
+  timeSinceLastActionMs: number; // Rapid-fire detection (< 2000ms)
+}
+
+export interface QuestionTimeAnalytics {
+  questionIndex: number;
+  questionId: string;
+  totalDwellSeconds: number;
+  visitCount: number;
+  firstVisitElapsedSeconds: number;
+  lastVisitElapsedSeconds: number;
+}
+
+export interface ExamForensics {
+  answerChangeLogs?: AnswerChangeLogEntry[];
+  questionTimeAnalytics?: QuestionTimeAnalytics[];
+  exceededMaxViolations?: boolean;
 }
 
 export interface StudentSubmission {
@@ -387,6 +417,7 @@ export interface StudentSubmission {
   status?: SubmissionStatus;     // 'submitted' (pending) | 'grading' | 'graded' | 'published' (released)
   resultPin?: string;            // 3-digit personal PIN for secure result retrieval
   updatedAt?: string;            // Timestamp of latest grading or teacher adjustment
+  forensics?: ExamForensics;     // Forensic audit telemetry (answer changes, dwell times, violation threshold)
 }
 
 const SUBMISSIONS_STORAGE_KEY = 'fluffykitten_quiz_submissions';
@@ -571,7 +602,10 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
       percentage: submission.percentage,
       violations_count: submission.violationsCount,
       proctoring_logs: submission.proctoringLogs,
-      raw_answers: submission.rawAnswers || {},
+      raw_answers: {
+        ...(submission.rawAnswers || {}),
+        ...(submission.forensics ? { _forensics: submission.forensics } : {}),
+      },
       question_results: submission.questionResults,
       topic_breakdown: submission.topicBreakdown,
       status: submission.status || 'submitted',
@@ -687,7 +721,10 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
       percentage: submission.percentage,
       violations_count: submission.violationsCount,
       proctoring_logs: submission.proctoringLogs,
-      raw_answers: submission.rawAnswers || {},
+      raw_answers: {
+        ...(submission.rawAnswers || {}),
+        ...(submission.forensics ? { _forensics: submission.forensics } : {}),
+      },
       question_results: submission.questionResults,
       topic_breakdown: submission.topicBreakdown,
       status: submission.status || 'submitted',
@@ -799,31 +836,38 @@ export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmissi
       .order('submitted_at', { ascending: false });
 
     if (!error && Array.isArray(data) && data.length > 0) {
-      return data.map((row: any) => ({
-        id: row.id,
-        quizId: row.quiz_id,
-        quizCode: row.quiz_code,
-        quizTitle: row.quiz_title,
-        subject: row.subject,
-        studentName: row.student_name,
-        studentClass: row.student_class,
-        candidateNumber: row.candidate_number,
-        submittedAt: row.submitted_at,
-        durationSeconds: row.duration_seconds,
-        score: Number(row.score) || 0,
-        totalMarks: Number(row.total_marks) || 0,
-        percentage: Number(row.percentage) || 0,
-        violationsCount: Number(row.violations_count) || 0,
-        proctoringLogs: row.proctoring_logs || [],
-        rawAnswers: row.raw_answers || {},
-        questionResults: row.question_results || [],
-        topicBreakdown: row.topic_breakdown || {},
-        status: (row.status as SubmissionStatus) || 'submitted',
-        teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-        teacherNotes: row.teacher_notes || '',
-        resultPin: row.result_pin || '',
-        updatedAt: row.updated_at || row.submitted_at,
-      }));
+      return data.map((row: any) => {
+        const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+        const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+        delete (rawAnswers as any)._forensics;
+
+        return {
+          id: row.id,
+          quizId: row.quiz_id,
+          quizCode: row.quiz_code,
+          quizTitle: row.quiz_title,
+          subject: row.subject,
+          studentName: row.student_name,
+          studentClass: row.student_class,
+          candidateNumber: row.candidate_number,
+          submittedAt: row.submitted_at,
+          durationSeconds: row.duration_seconds,
+          score: Number(row.score) || 0,
+          totalMarks: Number(row.total_marks) || 0,
+          percentage: Number(row.percentage) || 0,
+          violationsCount: Number(row.violations_count) || 0,
+          proctoringLogs: row.proctoring_logs || [],
+          rawAnswers,
+          questionResults: row.question_results || [],
+          topicBreakdown: row.topic_breakdown || {},
+          status: (row.status as SubmissionStatus) || 'submitted',
+          teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+          teacherNotes: row.teacher_notes || '',
+          resultPin: row.result_pin || '',
+          updatedAt: row.updated_at || row.submitted_at,
+          forensics,
+        };
+      });
     }
   } catch (err) {
     console.warn('Could not fetch from quiz_submissions table, trying app_config:', err);
@@ -927,31 +971,38 @@ export async function fetchSubmissionsFromSupabase(
 
     const { data, error } = await query;
     if (!error && Array.isArray(data) && data.length > 0) {
-      const cloudSubs: StudentSubmission[] = data.map((row: any) => ({
-        id: row.id,
-        quizId: row.quiz_id,
-        quizCode: row.quiz_code,
-        quizTitle: row.quiz_title,
-        subject: row.subject,
-        studentName: row.student_name,
-        studentClass: row.student_class,
-        candidateNumber: row.candidate_number,
-        submittedAt: row.submitted_at,
-        durationSeconds: row.duration_seconds,
-        score: Number(row.score) || 0,
-        totalMarks: Number(row.total_marks) || 0,
-        percentage: Number(row.percentage) || 0,
-        violationsCount: Number(row.violations_count) || 0,
-        proctoringLogs: row.proctoring_logs || [],
-        rawAnswers: row.raw_answers || {},
-        questionResults: row.question_results || [],
-        topicBreakdown: row.topic_breakdown || {},
-        status: (row.status as SubmissionStatus) || 'submitted',
-        teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-        teacherNotes: row.teacher_notes || '',
-        resultPin: row.result_pin || '',
-        updatedAt: row.updated_at || row.submitted_at,
-      }));
+      const cloudSubs: StudentSubmission[] = data.map((row: any) => {
+        const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+        const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+        delete (rawAnswers as any)._forensics;
+
+        return {
+          id: row.id,
+          quizId: row.quiz_id,
+          quizCode: row.quiz_code,
+          quizTitle: row.quiz_title,
+          subject: row.subject,
+          studentName: row.student_name,
+          studentClass: row.student_class,
+          candidateNumber: row.candidate_number,
+          submittedAt: row.submitted_at,
+          durationSeconds: row.duration_seconds,
+          score: Number(row.score) || 0,
+          totalMarks: Number(row.total_marks) || 0,
+          percentage: Number(row.percentage) || 0,
+          violationsCount: Number(row.violations_count) || 0,
+          proctoringLogs: row.proctoring_logs || [],
+          rawAnswers,
+          questionResults: row.question_results || [],
+          topicBreakdown: row.topic_breakdown || {},
+          status: (row.status as SubmissionStatus) || 'submitted',
+          teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+          teacherNotes: row.teacher_notes || '',
+          resultPin: row.result_pin || '',
+          updatedAt: row.updated_at || row.submitted_at,
+          forensics,
+        };
+      });
 
       // Merge with local storage
       const local = getSubmissionsForQuiz(quizId, quizCode, testId);
@@ -1058,6 +1109,10 @@ export async function fetchStudentResultsCloud(
         let hasUnreleased = false;
 
         matchingRows.forEach((row: any) => {
+          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+          delete (rawAnswers as any)._forensics;
+
           const sub: StudentSubmission = {
             id: row.id,
             quizId: row.quiz_id,
@@ -1074,13 +1129,14 @@ export async function fetchStudentResultsCloud(
             percentage: Number(row.percentage) || 0,
             violationsCount: Number(row.violations_count) || 0,
             proctoringLogs: row.proctoring_logs || [],
-            rawAnswers: row.raw_answers || {},
+            rawAnswers,
             questionResults: row.question_results || [],
             topicBreakdown: row.topic_breakdown || {},
             status: (row.status as SubmissionStatus) || 'submitted',
             teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
             teacherNotes: row.teacher_notes || '',
             resultPin: row.result_pin || '',
+            forensics,
           };
 
           if (sub.status === 'published') {
@@ -1232,280 +1288,25 @@ export function formatSubmissionDateTime(dateVal: string | number | undefined | 
 /**
  * Exports comprehensive class gradebook and item analysis to Excel (.xlsx)
  */
-export function exportAllSubmissionsExcel(
+export async function exportAllSubmissionsExcel(
   quizTitle: string,
   quizCode: string,
   totalMarks: number,
-  submissions: StudentSubmission[]
-): void {
-  if (!submissions || submissions.length === 0) {
-    alert('No submissions available to export.');
-    return;
+  submissions: StudentSubmission[],
+  options?: {
+    subject?: string;
+    targetClass?: string;
+    schoolName?: string;
   }
-
-  const wb = XLSX.utils.book_new();
-
-  const isOffline =
-    !quizCode ||
-    quizCode.toUpperCase().startsWith('OFFLINE') ||
-    submissions.every((s) => s.durationSeconds === 0) ||
-    submissions[0]?.teacherNotes?.toLowerCase().includes('offline');
-
-  // ── Sheet 1: Gradebook Summary ──────────────────────────────────────────────
-  const summaryRows = submissions.map((s, idx) => {
-    const base: Record<string, any> = {
-      'Rank': idx + 1,
-      'Candidate Name': s.studentName,
-      'Class / Section': s.studentClass || 'General',
-      'Candidate #': s.candidateNumber || '-',
-      'Score Earned': s.score,
-      'Total Marks': s.totalMarks || totalMarks,
-      'Percentage': `${Math.round(s.percentage)}%`,
-      'Grade':
-        s.percentage >= 90
-          ? 'A*'
-          : s.percentage >= 80
-          ? 'A'
-          : s.percentage >= 70
-          ? 'B'
-          : s.percentage >= 60
-          ? 'C'
-          : s.percentage >= 50
-          ? 'D'
-          : s.percentage >= 40
-          ? 'E'
-          : 'U',
-    };
-
-    if (!isOffline) {
-      base['Time Taken'] = `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`;
-      base['Strikes'] = s.violationsCount;
-      base['Integrity Status'] =
-        s.violationsCount === 0
-          ? 'Clean (0 Strikes)'
-          : s.violationsCount >= 3
-          ? 'Flagged / Disqualified'
-          : `Suspicious (${s.violationsCount} strikes)`;
-    }
-
-    base['Date Submitted'] = formatSubmissionDateTime(s.submittedAt);
-    return base;
-  });
-
-  const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-  wsSummary['!cols'] = isOffline
-    ? [
-        { wch: 6 },
-        { wch: 25 },
-        { wch: 16 },
-        { wch: 14 },
-        { wch: 12 },
-        { wch: 12 },
-        { wch: 12 },
-        { wch: 8 },
-        { wch: 22 },
-      ]
-    : [
-        { wch: 6 },
-        { wch: 25 },
-        { wch: 16 },
-        { wch: 14 },
-        { wch: 12 },
-        { wch: 12 },
-        { wch: 12 },
-        { wch: 8 },
-        { wch: 14 },
-        { wch: 10 },
-        { wch: 24 },
-        { wch: 22 },
-      ];
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Gradebook Summary');
-
-  // ── Sheet 2: Question Item Analysis ────────────────────────────────────────
-  // Group by question identifier to remain 100% accurate even when questions were shuffled
-  const questionMap = new Map<string, {
-    key: string;
-    questionNumber: number;
-    topic: string;
-    maxMarks: number;
-    correctCount: number;
-    totalEarned: number;
-    attemptCount: number;
-  }>();
-
-  submissions.forEach((sub) => {
-    if (sub.questionResults && Array.isArray(sub.questionResults)) {
-      sub.questionResults.forEach((qr, idx) => {
-        const qKey = qr.questionId || `q_${qr.questionNumber || idx + 1}`;
-        let item = questionMap.get(qKey);
-        if (!item) {
-          item = {
-            key: qKey,
-            questionNumber: qr.questionNumber || idx + 1,
-            topic: qr.topic || 'General',
-            maxMarks: qr.maxMarks || 1,
-            correctCount: 0,
-            totalEarned: 0,
-            attemptCount: 0,
-          };
-          questionMap.set(qKey, item);
-        }
-        item.attemptCount++;
-        if (qr.isCorrect) item.correctCount++;
-        item.totalEarned += qr.earnedMarks || 0;
-      });
-    }
-  });
-
-  if (questionMap.size > 0) {
-    const sortedQuestions = Array.from(questionMap.values()).sort(
-      (a, b) => a.questionNumber - b.questionNumber
-    );
-
-    const itemAnalysis = sortedQuestions.map((item, idx) => {
-      const qNum = item.questionNumber || idx + 1;
-      const totalAttempts = item.attemptCount || submissions.length || 1;
-      const accuracy = ((item.correctCount / totalAttempts) * 100).toFixed(1);
-      const avgEarned = (item.totalEarned / totalAttempts).toFixed(2);
-
-      return {
-        'Question #': `Q${qNum}`,
-        'Topic': item.topic,
-        'Max Marks': item.maxMarks,
-        'Class Accuracy (%)': `${accuracy}%`,
-        'Correct Submissions': item.correctCount,
-        'Incorrect Submissions': totalAttempts - item.correctCount,
-        'Avg Earned Marks': avgEarned,
-      };
-    });
-
-    const wsItem = XLSX.utils.json_to_sheet(itemAnalysis);
-    wsItem['!cols'] = [
-      { wch: 12 },
-      { wch: 28 },
-      { wch: 12 },
-      { wch: 20 },
-      { wch: 20 },
-      { wch: 22 },
-      { wch: 18 },
-    ];
-    XLSX.utils.book_append_sheet(wb, wsItem, 'Item Analysis');
-  }
-
-  // ── Sheet 3: Security & Proctoring Audit Trail ─────────────────────────────
-  if (!isOffline) {
-    const proctorLogs: any[] = [];
-    submissions.forEach((sub) => {
-      if (sub.proctoringLogs && sub.proctoringLogs.length > 0) {
-        sub.proctoringLogs.forEach((log) => {
-          proctorLogs.push({
-            'Candidate Name': sub.studentName,
-            'Strike': `Strike ${log.strike}`,
-            'Timestamp': formatProctorTimestamp(log.timestamp),
-            'Security Event': log.event,
-            'Severity': log.severity.toUpperCase(),
-          });
-        });
-      }
-    });
-
-    if (proctorLogs.length > 0) {
-      const wsProctor = XLSX.utils.json_to_sheet(proctorLogs);
-      wsProctor['!cols'] = [
-        { wch: 24 },
-        { wch: 12 },
-        { wch: 16 },
-        { wch: 45 },
-        { wch: 12 },
-      ];
-      XLSX.utils.book_append_sheet(wb, wsProctor, 'Proctoring Audit Log');
-    }
-  }
-
-  const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const filename = `${quizTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}_${quizCode}_results.xlsx`;
-  exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+): Promise<void> {
+  return exportAllSubmissionsExcelICM(quizTitle, quizCode, totalMarks, submissions, options);
 }
 
 /**
  * Exports an individual student's detailed response report to Excel (.xlsx)
+ * with official Sekolah Insan Cendekia Madani (ICM) branding, model keys,
+ * and psychometric diagnostics.
  */
-export function exportSingleSubmissionExcel(submission: StudentSubmission): void {
-  const wb = XLSX.utils.book_new();
-
-  const isOffline =
-    !submission.quizCode ||
-    submission.quizCode.toUpperCase().startsWith('OFFLINE') ||
-    submission.durationSeconds === 0 ||
-    submission.teacherNotes?.toLowerCase().includes('offline');
-
-  // ── Sheet 1: Candidate Overview ────────────────────────────────────────────
-  const overviewRows: Array<{ Property: string; Value: any }> = [
-    { Property: 'Candidate Name', Value: submission.studentName },
-    { Property: 'Quiz Title', Value: submission.quizTitle },
-    { Property: 'Subject', Value: submission.subject || 'General' },
-    { Property: 'Assessment Mode', Value: isOffline ? 'Offline Paper Exam' : submission.quizCode },
-    { Property: 'Score Earned', Value: `${submission.score} / ${submission.totalMarks}` },
-    { Property: 'Percentage', Value: `${submission.percentage.toFixed(1)}%` },
-  ];
-
-  if (!isOffline) {
-    overviewRows.push(
-      { Property: 'Time Taken', Value: `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
-      { Property: 'Violation Strikes', Value: submission.violationsCount },
-      { Property: 'Integrity Status', Value: submission.violationsCount === 0 ? 'Clean (0 Strikes)' : 'Flagged' }
-    );
-  }
-
-  overviewRows.push({ Property: 'Submission Date', Value: formatSubmissionDateTime(submission.submittedAt) });
-
-  const wsOverview = XLSX.utils.json_to_sheet(overviewRows);
-  wsOverview['!cols'] = [{ wch: 20 }, { wch: 40 }];
-  XLSX.utils.book_append_sheet(wb, wsOverview, 'Candidate Overview');
-
-  // ── Sheet 2: Question Responses & Model Solutions ──────────────────────────
-  if (submission.questionResults && submission.questionResults.length > 0) {
-    const qRows = submission.questionResults.map((qr) => ({
-      'Question #': `Q${qr.questionNumber}`,
-      'Topic': qr.topic,
-      'Marks': `${qr.earnedMarks} / ${qr.maxMarks}`,
-      'Result': qr.isCorrect ? 'Correct ✓' : 'Incorrect ✗',
-      'Student Answer': formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, false),
-      'Model Solution / Correct Answer': formatCandidateAnswer(qr.correctAnswer, qr.options, qr.gradingMethod, false) || qr.correctAnswer || '',
-      'Misconception Alerts': qr.misconceptions?.join('; ') || '',
-    }));
-
-    const wsQuestions = XLSX.utils.json_to_sheet(qRows);
-    wsQuestions['!cols'] = [
-      { wch: 12 },
-      { wch: 25 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 30 },
-      { wch: 40 },
-      { wch: 35 },
-    ];
-    XLSX.utils.book_append_sheet(wb, wsQuestions, 'Responses & Solutions');
-  }
-
-  // ── Sheet 3: Proctoring Audit Log ──────────────────────────────────────────
-  if (submission.proctoringLogs && submission.proctoringLogs.length > 0) {
-    const proctorRows = submission.proctoringLogs.map((log) => ({
-      'Strike': `Strike ${log.strike}`,
-      'Time': formatProctorTimestamp(log.timestamp),
-      'Event Description': log.event,
-      'Severity': log.severity.toUpperCase(),
-    }));
-
-    const wsProctor = XLSX.utils.json_to_sheet(proctorRows);
-    wsProctor['!cols'] = [{ wch: 12 }, { wch: 16 }, { wch: 45 }, { wch: 12 }];
-    XLSX.utils.book_append_sheet(wb, wsProctor, 'Proctoring Log');
-  }
-
-  const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const safeName = submission.studentName.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-  const filename = `${safeName}_${submission.quizCode}_report.xlsx`;
-  exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+export async function exportSingleSubmissionExcel(submission: StudentSubmission): Promise<void> {
+  return exportSingleSubmissionExcelICM(submission);
 }

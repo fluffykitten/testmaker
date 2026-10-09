@@ -849,7 +849,12 @@ export function OfflineGradingModal({
                         headerConfig.title || 'Offline Assessment',
                         'OFFLINE',
                         totalMarks,
-                        displayedSubmissions
+                        displayedSubmissions,
+                        {
+                          schoolName: headerConfig.schoolName,
+                          subject: headerConfig.subject,
+                          targetClass: selectedClass !== 'all' ? selectedClass : undefined,
+                        }
                       );
                     }}
                     title="Export complete Excel gradebook with item-by-item breakdown"
@@ -1158,7 +1163,12 @@ export function OfflineGradingModal({
                       headerConfig.title || 'Offline Exam Assessment',
                       'OFFLINE',
                       totalMarks,
-                      displayedSubmissions
+                      displayedSubmissions,
+                      {
+                        schoolName: headerConfig.schoolName,
+                        subject: headerConfig.subject,
+                        targetClass: selectedClass !== 'all' ? selectedClass : undefined,
+                      }
                     );
                   }}
                 >
@@ -1193,7 +1203,12 @@ export function OfflineGradingModal({
                     headerConfig.title || 'Offline Assessment',
                     'OFFLINE',
                     totalMarks,
-                    gradedSubmissions
+                    gradedSubmissions,
+                    {
+                      schoolName: headerConfig.schoolName,
+                      subject: headerConfig.subject,
+                      targetClass: selectedClass !== 'all' ? selectedClass : undefined,
+                    }
                   );
                 }}
               >

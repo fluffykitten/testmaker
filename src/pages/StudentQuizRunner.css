@@ -1900,3 +1900,20 @@
     opacity: 1;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DIAGRAM & QUESTION IMAGE PROTECTION (Feature 6: Anti-Lens, Anti-Save)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.sq-q-diagram-wrap img,
+.sq-q-diagram-img,
+.sq-sub-diagram-wrap img,
+.sol-diagram-wrap img,
+.sq-zoomed-img,
+.exam-diagram-img,
+.question-image-container img {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-user-drag: none !important;
+  -webkit-touch-callout: none !important;
+  pointer-events: auto;
+}

@@ -7,7 +7,10 @@
       "baselineDraftId": "2b6704de-f789-4eb2-9ef5-0d27e80ef858",
       "activeDraftId": "0b24fca8-42e1-4082-8dd2-0548de65dd28",
       "designSystemPath": ".superdesign/design-system.md",
-      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "referenceIds": [
+        "brand-logo-icm",
+        "brand-logo-cambridge"
+      ],
       "brandAssets": {
         "logo": {
           "assetKey": "brand-logo-icm",
@@ -55,7 +58,10 @@
       "baselineDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
       "activeDraftId": "26b832ab-afc1-4ce9-8a2e-2fb5f1c59939",
       "designSystemPath": ".superdesign/design-system.md",
-      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "referenceIds": [
+        "brand-logo-icm",
+        "brand-logo-cambridge"
+      ],
       "brandAssets": {
         "logo": {
           "assetKey": "brand-logo-icm",
@@ -113,7 +119,10 @@
       "baselineDraftId": "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e",
       "activeDraftId": "5ea8f419-cf15-4648-9689-b8e921fd0db1",
       "designSystemPath": ".superdesign/design-system.md",
-      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "referenceIds": [
+        "brand-logo-icm",
+        "brand-logo-cambridge"
+      ],
       "brandAssets": {
         "logo": {
           "assetKey": "brand-logo-icm",
@@ -162,11 +171,56 @@
       "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
       "activeDraftId": "7fadd304-42fb-4cfc-845b-f8dbaa8a0489",
       "designSystemPath": ".superdesign/design-system.md",
-      "referenceIds": ["brand-logo-icm"],
+      "referenceIds": [
+        "brand-logo-icm"
+      ],
       "drafts": {
         "7fadd304-42fb-4cfc-845b-f8dbaa8a0489": {
           "title": "ICM Exam Assistant Suite",
           "visualDirection": "minimalist light theme with ICM navy blue and green accents for calculator, periodic table, scratchpad, and attachments",
+          "currentVersion": 1
+        }
+      }
+    },
+    "results-modal": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "baselineDraftId": "55ef76cb-4e07-40d0-971d-24e7aea04119",
+      "activeDraftId": "65ef632c-2f0a-40ce-a5b9-6bf88841164a",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [
+        "results-modal-current-screenshot",
+        "brand-logo-icm"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "brand-logo-icm",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/d1eefbd5-08c4-44d7-a75c-9ca3e5de844e/brand-assets/brand-logo-icm/icm_school_logo.png",
+          "sourcePath": "public/logos/icm_school_logo.png"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "src/components/QuizResultsModal.tsx:860:1425",
+        "src/components/QuizResultsModal.css:1:400",
+        ".superdesign/init/theme.md"
+      ],
+      "drafts": {
+        "55ef76cb-4e07-40d0-971d-24e7aea04119": {
+          "title": "Current Quiz Results Modal (Baseline)",
+          "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "65ef632c-2f0a-40ce-a5b9-6bf88841164a": {
+          "title": "Minimalist ICM Results Workspace",
+          "visualDirection": "top header utilities (re-grade, run batch AI, release) with prominent main export buttons (batch 1-page PDF, class report, excel) and 2-line clean candidate cards",
+          "parentDraftId": "55ef76cb-4e07-40d0-971d-24e7aea04119",
+          "currentVersion": 2
+        },
+        "82c4e795-4ace-4ee6-9762-3b83dbc0b9bd": {
+          "title": "Executive Academic ICM Results Modal",
+          "visualDirection": "authoritative ICM deep navy header and shell with fresh green accent line, monochromatic toolbar, high-contrast dark status bar, and tinted KPI cards",
+          "parentDraftId": "55ef76cb-4e07-40d0-971d-24e7aea04119",
           "currentVersion": 1
         }
       }

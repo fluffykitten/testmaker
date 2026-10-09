@@ -13,6 +13,9 @@ import {
   cleanMcqOptionContent,
   type StudentSubmission,
   type QuestionSubmissionResult,
+  type AnswerChangeLogEntry,
+  type QuestionTimeAnalytics,
+  type ExamForensics,
 } from '../services/quizSubmissionService';
 import {
   gradeDeterministicAnswer,
@@ -73,6 +76,7 @@ interface ViolationRecord {
   type: 'tab_switch' | 'fullscreen_exit' | 'blocked_shortcut' | 'window_blur' | 'multi_monitor';
   timestamp: string;
   detail: string;
+  elapsedExamSeconds?: number;
 }
 
 const QUICK_CHEM_SYMBOLS = [
@@ -398,12 +402,32 @@ export function StudentQuizRunner({
   const [pinError, setPinError] = useState<string | null>(null);
   const [isUnlocking, setIsUnlocking] = useState<boolean>(false);
   const [violations, setViolations] = useState<ViolationRecord[]>(() => savedExam?.violations || []);
+  const [maxViolations, setMaxViolations] = useState<number>(() => savedExam?.maxViolations ?? 0);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
   const [multiMonitorDetected, setMultiMonitorDetected] = useState<boolean>(false);
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => { });
+
+  // 🕵️ Forensic Telemetry Refs (Answer Change History & Dwell Times)
+  const answerChangeHistoryRef = useRef<AnswerChangeLogEntry[]>([]);
+  const lastAnswerActionTimeRef = useRef<number>(Date.now());
+  const textChangeDebounceRef = useRef<Record<string | number, any>>({});
+  const currentQuestionEnterTimeRef = useRef<number>(Date.now());
+  const activeQuestionIndexRef = useRef<number>(currentIndex);
+  const questionTimeMapRef = useRef<
+    Record<
+      number,
+      {
+        totalDwellSeconds: number;
+        visitCount: number;
+        firstVisitElapsedSeconds: number;
+        lastVisitElapsedSeconds: number;
+      }
+    >
+  >({});
+  const isWindowActiveRef = useRef<boolean>(true);
 
   // 🔐 Examiner / Teacher Emergency Recovery Action State
   const [showTeacherActionModal, setShowTeacherActionModal] = useState<boolean>(false);
@@ -575,6 +599,9 @@ export function StudentQuizRunner({
           if (data.securityEnabled !== undefined) {
             setSecurityEnabled(data.securityEnabled);
           }
+          if (data.maxViolations !== undefined) {
+            setMaxViolations(data.maxViolations);
+          }
           if (data.enableWatermark !== undefined) {
             setEnableWatermark(data.enableWatermark);
           }
@@ -630,7 +657,11 @@ export function StudentQuizRunner({
     (type: ViolationRecord['type'], detail: string) => {
       if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
       const nowIso = new Date().toISOString();
-      const rec: ViolationRecord = { type, timestamp: nowIso, detail };
+      const elapsedExamSeconds = startTime ? Math.max(0, Math.floor((Date.now() - startTime) / 1000)) : 0;
+      const rec: ViolationRecord = { type, timestamp: nowIso, detail, elapsedExamSeconds };
+      const newCount = violations.length + 1;
+      const isExceeded = maxViolations > 0 && newCount >= maxViolations;
+
       setViolations((prev) => [...prev, rec]);
 
       // Broadcast to live invigilator cockpit stream
@@ -647,11 +678,15 @@ export function StudentQuizRunner({
             totalQuestions: quizStats.totalItems,
             currentIndex: currentIndex + 1,
             timeLeftSeconds: timeLeft,
-            violationsCount: violations.length + 1,
+            violationsCount: newCount,
             lastViolation: detail,
-            lockReason: detail,
+            lockReason: isExceeded
+              ? `Exceeded security strike allowance (${newCount}/${maxViolations}): ${detail}`
+              : detail,
             multiMonitorDetected,
             lastHeartbeat: Date.now(),
+            exceededMaxViolations: isExceeded,
+            maxViolations,
             recentViolations: [...violations, rec].map((v) => ({
               timestamp: v.timestamp,
               detail: v.detail,
@@ -659,21 +694,33 @@ export function StudentQuizRunner({
             })),
           },
           {
-            type,
-            detail,
-            severity: type === 'multi_monitor' || type === 'tab_switch' ? 'critical' : 'warning',
+            type: isExceeded ? 'exceeded_limit' : type,
+            detail: isExceeded
+              ? `🚨 EXCEEDED LIMIT (${newCount}/${maxViolations}) - ${detail}`
+              : detail,
+            severity: isExceeded || type === 'multi_monitor' || type === 'tab_switch' ? 'critical' : 'warning',
           }
         );
       }
 
       if (requireTeacherUnlock && isExamMode) {
         setIsLockedByProctor(true);
-        setLockReason(detail);
+        setLockReason(
+          isExceeded
+            ? `Security violation limit exceeded (${newCount}/${maxViolations}): ${detail}. Invigilator must verify and unlock or conclude attempt.`
+            : detail
+        );
         setLockTime(nowIso);
         setPinError(null);
         setPinInput('');
       } else {
-        setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${formatProctorTimestamp(nowIso)})`);
+        if (isExceeded) {
+          setSecurityAlert(
+            `⚠️ INVIGILATOR NOTICE: You have accumulated ${newCount} security notices (Limit: ${maxViolations}). Your proctor has been formally alerted.`
+          );
+        } else {
+          setSecurityAlert(`⚠️ SECURITY VIOLATION: ${detail} (Recorded at ${formatProctorTimestamp(nowIso)})`);
+        }
       }
     },
     [
@@ -683,6 +730,8 @@ export function StudentQuizRunner({
       securityEnabled,
       requireTeacherUnlock,
       isExamMode,
+      startTime,
+      maxViolations,
       resolvedQuizCode,
       sessionHash,
       candidateName,
@@ -965,6 +1014,15 @@ export function StudentQuizRunner({
           severity: 'info',
         });
         submitExamRef.current();
+      } else if (cmd.type === 'pardon') {
+        setViolations([]);
+        setIsLockedByProctor(false);
+        setLockReason('');
+        setLockTime('');
+        setPinInput('');
+        setPinError(null);
+        setSecurityAlert('✅ Security strikes pardoned and cleared by invigilator. Please stay in fullscreen.');
+        setTimeout(() => setSecurityAlert(null), 5000);
       } else if (cmd.type === 'announcement') {
         setTeacherAnnouncement(cmd.message || null);
       }
@@ -991,7 +1049,8 @@ export function StudentQuizRunner({
     quizStats,
     currentIndex,
     timeLeft,
-    violations
+    violations,
+    maxViolations,
   });
 
   useEffect(() => {
@@ -1006,7 +1065,8 @@ export function StudentQuizRunner({
       quizStats,
       currentIndex,
       timeLeft,
-      violations
+      violations,
+      maxViolations,
     };
   });
 
@@ -1022,6 +1082,8 @@ export function StudentQuizRunner({
         : s.documentHidden
           ? 'warning'
           : 'active';
+
+    const isExceeded = s.maxViolations > 0 && s.violations.length >= s.maxViolations;
 
     sendStudentHeartbeat({
       studentId: sessionHash,
@@ -1039,6 +1101,8 @@ export function StudentQuizRunner({
       multiMonitorDetected: isSubmittingOrFinished ? false : s.multiMonitorDetected,
       deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
       lastHeartbeat: Date.now(),
+      exceededMaxViolations: isExceeded,
+      maxViolations: s.maxViolations,
       recentViolations: s.violations.map((v) => ({
         timestamp: v.timestamp,
         detail: v.detail,
@@ -1074,6 +1138,141 @@ export function StudentQuizRunner({
     multiMonitorDetected,
     sendCurrentHeartbeat
   ]);
+
+  // ─── 3. Question Navigation & Dwell Time Telemetry (Feature 5) ─────────────
+  useEffect(() => {
+    if (!hasStarted || isSubmitted) return;
+
+    const now = Date.now();
+    const prevIdx = activeQuestionIndexRef.current;
+    const dwell = isWindowActiveRef.current
+      ? Math.max(0, (now - currentQuestionEnterTimeRef.current) / 1000)
+      : 0;
+
+    // Accumulate dwell into previous question
+    if (questionTimeMapRef.current[prevIdx]) {
+      questionTimeMapRef.current[prevIdx].totalDwellSeconds += dwell;
+    } else {
+      const firstVisit = startTime ? Math.max(0, Math.floor((now - startTime) / 1000)) : 0;
+      questionTimeMapRef.current[prevIdx] = {
+        totalDwellSeconds: dwell,
+        visitCount: 1,
+        firstVisitElapsedSeconds: firstVisit,
+        lastVisitElapsedSeconds: firstVisit,
+      };
+    }
+
+    // Initialize or increment new question entry
+    const currentElapsed = startTime ? Math.max(0, Math.floor((now - startTime) / 1000)) : 0;
+    if (questionTimeMapRef.current[currentIndex]) {
+      questionTimeMapRef.current[currentIndex].visitCount += 1;
+      questionTimeMapRef.current[currentIndex].lastVisitElapsedSeconds = currentElapsed;
+    } else {
+      questionTimeMapRef.current[currentIndex] = {
+        totalDwellSeconds: 0,
+        visitCount: 1,
+        firstVisitElapsedSeconds: currentElapsed,
+        lastVisitElapsedSeconds: currentElapsed,
+      };
+    }
+
+    activeQuestionIndexRef.current = currentIndex;
+    currentQuestionEnterTimeRef.current = now;
+  }, [currentIndex, hasStarted, isSubmitted, startTime]);
+
+  // Window Focus Dwell Pause Guard
+  useEffect(() => {
+    if (!hasStarted || isSubmitted) return;
+
+    const handleFocus = () => {
+      isWindowActiveRef.current = true;
+      currentQuestionEnterTimeRef.current = Date.now();
+    };
+
+    const handleBlur = () => {
+      const now = Date.now();
+      const dwell = Math.max(0, (now - currentQuestionEnterTimeRef.current) / 1000);
+      const currIdx = activeQuestionIndexRef.current;
+      if (questionTimeMapRef.current[currIdx]) {
+        questionTimeMapRef.current[currIdx].totalDwellSeconds += dwell;
+      }
+      isWindowActiveRef.current = false;
+    };
+
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [hasStarted, isSubmitted]);
+
+  // Global Diagram Drag Blocker (Feature 6)
+  useEffect(() => {
+    if (!securityEnabled || !hasStarted || isSubmitted) return;
+    const handleDragStart = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragstart', handleDragStart);
+    return () => {
+      window.removeEventListener('dragstart', handleDragStart);
+    };
+  }, [securityEnabled, hasStarted, isSubmitted]);
+
+  // Answer Change Forensic Logger (Feature 3)
+  const recordAnswerChange = useCallback(
+    (qIndex: number, prevAns: string | number | undefined, newAns: string | number) => {
+      const prevStr = prevAns !== undefined && prevAns !== null ? String(prevAns) : '';
+      const newStr = newAns !== undefined && newAns !== null ? String(newAns) : '';
+      if (prevStr === newStr) return;
+
+      const now = Date.now();
+      const timeSinceLastActionMs = now - lastAnswerActionTimeRef.current;
+      lastAnswerActionTimeRef.current = now;
+
+      const q = questions[qIndex];
+      const qId = q?.id || `q_${qIndex}`;
+      const elapsedExamSeconds = startTime ? Math.max(0, Math.floor((now - startTime) / 1000)) : 0;
+
+      answerChangeHistoryRef.current.push({
+        questionIndex: qIndex,
+        questionId: String(qId),
+        previousAnswer: prevAns !== undefined ? prevAns : '',
+        newAnswer: newAns,
+        timestamp: new Date().toISOString(),
+        elapsedExamSeconds,
+        timeSinceLastActionMs,
+      });
+    },
+    [questions, startTime]
+  );
+
+  const buildExamForensics = useCallback((): ExamForensics => {
+    const now = Date.now();
+    const currIdx = activeQuestionIndexRef.current;
+    if (isWindowActiveRef.current && questionTimeMapRef.current[currIdx]) {
+      const dwell = Math.max(0, (now - currentQuestionEnterTimeRef.current) / 1000);
+      questionTimeMapRef.current[currIdx].totalDwellSeconds += dwell;
+    }
+
+    const questionTimeAnalytics: QuestionTimeAnalytics[] = questions.map((q, idx) => {
+      const data = questionTimeMapRef.current[idx];
+      return {
+        questionIndex: idx,
+        questionId: String(q.id || `q_${idx}`),
+        totalDwellSeconds: Math.round(data?.totalDwellSeconds || 0),
+        visitCount: data?.visitCount || (answers[idx] !== undefined ? 1 : 0),
+        firstVisitElapsedSeconds: data?.firstVisitElapsedSeconds || 0,
+        lastVisitElapsedSeconds: data?.lastVisitElapsedSeconds || 0,
+      };
+    });
+
+    return {
+      answerChangeLogs: [...answerChangeHistoryRef.current],
+      questionTimeAnalytics,
+      exceededMaxViolations: maxViolations > 0 && violations.length >= maxViolations,
+    };
+  }, [questions, answers, maxViolations, violations.length]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {
@@ -1235,13 +1434,17 @@ export function StudentQuizRunner({
             timestamp: v.timestamp,
             event: v.detail,
             strike: i + 1,
-            severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+            severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+            type: v.type,
+            detail: v.detail,
+            elapsedExamSeconds: v.elapsedExamSeconds,
           })),
           rawAnswers: { ...answers },
           questionResults: qResults,
           topicBreakdown,
           status: 'submitted',
           resultPin: generateResultPin(),
+          forensics: buildExamForensics(),
         };
 
         saveDeviceReceipt({
@@ -1447,12 +1650,16 @@ export function StudentQuizRunner({
           timestamp: v.timestamp,
           event: v.detail,
           strike: i + 1,
-          severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+          severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+          type: v.type,
+          detail: v.detail,
+          elapsedExamSeconds: v.elapsedExamSeconds,
         })),
         rawAnswers: answers,
         questionResults: qResults,
         topicBreakdown,
         status: 'graded',
+        forensics: buildExamForensics(),
       };
 
       setCompletedSubmission(submission);
@@ -2433,16 +2640,21 @@ export function StudentQuizRunner({
       .map((r) => `${r.label}: ${nextMap[r.label]}`)
       .join('; ');
 
+    const prevVal = answers[currentIndex];
+    recordAnswerChange(currentIndex, prevVal, serialized);
     setAnswers((prev) => ({ ...prev, [currentIndex]: serialized }));
   };
 
   const handleClearTable = () => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+    const prevVal = answers[currentIndex];
+    recordAnswerChange(currentIndex, prevVal, '');
     setAnswers((prev) => ({ ...prev, [currentIndex]: '' }));
   };
 
   const handleSelectOption = (optionIndex: number) => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+    const prevVal = answers[currentIndex];
     if (isMultiSelect) {
       const letter = String.fromCharCode(65 + optionIndex);
       const currentVal = String(answers[currentIndex] || '');
@@ -2454,8 +2666,10 @@ export function StudentQuizRunner({
         set.add(letter);
       }
       const sorted = Array.from(set).sort().join(', ');
+      recordAnswerChange(currentIndex, prevVal, sorted);
       setAnswers((prev) => ({ ...prev, [currentIndex]: sorted }));
     } else {
+      recordAnswerChange(currentIndex, prevVal, optionIndex);
       setAnswers((prev) => ({ ...prev, [currentIndex]: optionIndex }));
     }
   };
@@ -2463,18 +2677,36 @@ export function StudentQuizRunner({
   const handleTextAnswerChange = (val: string) => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => ({ ...prev, [currentIndex]: val }));
+
+    if (textChangeDebounceRef.current[currentIndex]) {
+      clearTimeout(textChangeDebounceRef.current[currentIndex]);
+    }
+    const prevVal = answers[currentIndex];
+    textChangeDebounceRef.current[currentIndex] = setTimeout(() => {
+      recordAnswerChange(currentIndex, prevVal, val);
+    }, 700);
   };
 
   const handleSubAnswerChange = (subKey: string, val: string) => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => ({ ...prev, [subKey]: val }));
+
+    if (textChangeDebounceRef.current[subKey]) {
+      clearTimeout(textChangeDebounceRef.current[subKey]);
+    }
+    const prevVal = answers[subKey];
+    textChangeDebounceRef.current[subKey] = setTimeout(() => {
+      recordAnswerChange(currentIndex, prevVal, val);
+    }, 700);
   };
 
   const handleInsertSymbol = (targetKey: string | number, symbol: string) => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
     setAnswers((prev) => {
       const currentVal = String(prev[targetKey] || '');
-      return { ...prev, [targetKey]: currentVal + symbol };
+      const newVal = currentVal + symbol;
+      recordAnswerChange(currentIndex, currentVal, newVal);
+      return { ...prev, [targetKey]: newVal };
     });
   };
 
@@ -3989,6 +4221,8 @@ export function StudentQuizRunner({
                           alt={`Diagram for Question ${idx + 1}`}
                           loading="lazy"
                           decoding="async"
+                          draggable={false}
+                          onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
                           style={{
                             maxWidth: '100%',
                             maxHeight: '340px',
@@ -3996,6 +4230,7 @@ export function StudentQuizRunner({
                             border: '1px solid var(--color-border)',
                             cursor: 'zoom-in',
                             background: '#ffffff',
+                            userSelect: 'none',
                           }}
                           onClick={() => setZoomedImage(q.diagram_url || null)}
                           title="Click to zoom diagram"
@@ -4048,6 +4283,8 @@ export function StudentQuizRunner({
                                     alt={`Diagram for Part (${sub.subId})`}
                                     loading="lazy"
                                     decoding="async"
+                                    draggable={false}
+                                    onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
                                     style={{
                                       maxWidth: '100%',
                                       maxHeight: '260px',
@@ -4055,6 +4292,7 @@ export function StudentQuizRunner({
                                       border: '1px solid var(--color-border)',
                                       cursor: 'zoom-in',
                                       background: '#ffffff',
+                                      userSelect: 'none',
                                     }}
                                     onClick={() => setZoomedImage(subQ.diagram_url || null)}
                                     title="Click to zoom diagram"
@@ -4198,7 +4436,10 @@ export function StudentQuizRunner({
                     timestamp: v.timestamp,
                     event: v.detail,
                     strike: i + 1,
-                    severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+                    severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+                    type: v.type,
+                    detail: v.detail,
+                    elapsedExamSeconds: v.elapsedExamSeconds,
                   })),
                   questionResults: results.questionResults,
                   topicBreakdown: Object.fromEntries(
@@ -4211,6 +4452,7 @@ export function StudentQuizRunner({
                       },
                     ])
                   ),
+                  forensics: buildExamForensics(),
                 };
                 exportStudentFeedbackReportPdf(submissionToExport);
               }}
@@ -4253,7 +4495,10 @@ export function StudentQuizRunner({
                     timestamp: v.timestamp,
                     event: v.detail,
                     strike: i + 1,
-                    severity: v.type === 'blocked_shortcut' ? 'critical' : 'warning',
+                    severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+                    type: v.type,
+                    detail: v.detail,
+                    elapsedExamSeconds: v.elapsedExamSeconds,
                   })),
                   questionResults: results.questionResults,
                   topicBreakdown: Object.fromEntries(
@@ -4266,6 +4511,7 @@ export function StudentQuizRunner({
                       },
                     ])
                   ),
+                  forensics: buildExamForensics(),
                 };
                 exportIndividualStudentReportPdf(submissionToExport);
               }}
@@ -4787,6 +5033,8 @@ export function StudentQuizRunner({
                   className="sq-q-diagram-img"
                   loading="lazy"
                   decoding="async"
+                  draggable={false}
+                  onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
                   onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
                   title="Click to zoom diagram"
                 />
@@ -4927,6 +5175,8 @@ export function StudentQuizRunner({
                             className="sq-q-diagram-img"
                             loading="lazy"
                             decoding="async"
+                            draggable={false}
+                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
                             style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
                             onClick={() => setZoomedImage(sub.diagram_url || null)}
                             title="Click to zoom diagram"
@@ -5511,7 +5761,13 @@ export function StudentQuizRunner({
             onClick={(e) => e.stopPropagation()}
             style={{ position: 'relative', overflow: 'hidden' }}
           >
-            <img src={zoomedImage} alt="Zoomed diagram" className="sq-zoomed-img" />
+            <img
+              src={zoomedImage}
+              alt="Zoomed diagram"
+              className="sq-zoomed-img"
+              draggable={false}
+              onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+            />
             {securityEnabled && enableWatermark && (
               <CandidateWatermark
                 candidateName={candidateName}
