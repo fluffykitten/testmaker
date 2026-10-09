@@ -16,7 +16,9 @@ import {
   toggleQuizActiveStatus,
   createDraftFromTest,
   type PublishedQuiz,
+  type ExamAttachment,
 } from '../services/quizManagerService';
+import { uploadExamAttachment } from '../services/storageService';
 import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
 import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { QuizResultsModal } from '../components/QuizResultsModal';
@@ -90,6 +92,8 @@ export function QuizManagerPage({
 
   // Modal states
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [attachmentUploadError, setAttachmentUploadError] = useState<string | null>(null);
   const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
   const [securityDefaults, setSecurityDefaults] = useState(() => getSavedSettings());
   const isQuizizzAllowed = Boolean(securityDefaults.enableQuizizzMode);
@@ -106,6 +110,7 @@ export function QuizManagerPage({
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
     setOriginalQuizCode(null);
+    setAttachmentUploadError(null);
   });
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
@@ -310,6 +315,7 @@ export function QuizManagerPage({
       draft.enableMultiMonitorDetection = false;
     }
     setOriginalQuizCode(null);
+    setAttachmentUploadError(null);
     setActiveQuizDraft(draft);
     setIsConfigModalOpen(true);
   };
@@ -383,8 +389,15 @@ export function QuizManagerPage({
     const currentSettings = getSavedSettings();
     setSecurityDefaults(currentSettings);
     setOriginalQuizCode(quiz.quizCode);
+    setAttachmentUploadError(null);
     setActiveQuizDraft({
       ...quiz,
+      attachments: quiz.attachments ? [...quiz.attachments] : [],
+      allowCalculator: quiz.allowCalculator ?? false,
+      calculatorType: quiz.calculatorType || 'scientific',
+      allowPeriodicTable: quiz.allowPeriodicTable ?? false,
+      allowScratchpad: quiz.allowScratchpad ?? false,
+      allowFormulaSheet: quiz.allowFormulaSheet ?? false,
       quizMode: quiz.quizMode || 'exam',
       enableWatermark: currentSettings.defaultEnableWatermark ? (quiz.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (quiz.enableMultiMonitorDetection ?? false) : false,
@@ -392,6 +405,42 @@ export function QuizManagerPage({
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
     setOpenMobileMenuId(null);
+  };
+
+  const handleUploadAttachment = async (files: FileList | null) => {
+    if (!files || files.length === 0 || !activeQuizDraft) return;
+    setIsUploadingAttachment(true);
+    setAttachmentUploadError(null);
+    try {
+      const uploadedList: ExamAttachment[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (file.size > 25 * 1024 * 1024) {
+          throw new Error(`File "${file.name}" exceeds the 25 MB limit.`);
+        }
+        const att = await uploadExamAttachment(file, activeQuizDraft.quizCode || 'EXAM');
+        uploadedList.push(att);
+      }
+      setActiveQuizDraft((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          attachments: [...(prev.attachments || []), ...uploadedList],
+        };
+      });
+    } catch (err: any) {
+      setAttachmentUploadError(err.message || 'Failed to upload attachment');
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  };
+
+  const handleRemoveAttachment = (attachmentId: string) => {
+    if (!activeQuizDraft) return;
+    setActiveQuizDraft({
+      ...activeQuizDraft,
+      attachments: (activeQuizDraft.attachments || []).filter((a) => a.id !== attachmentId),
+    });
   };
 
   const handleSaveQuizConfig = async () => {
@@ -1629,17 +1678,27 @@ export function QuizManagerPage({
       {/* ─── Create & Configure Quiz Modal ────────────────────────────────────── */}
       {isConfigModalOpen && activeQuizDraft && createPortal(
         <div className="qm-modal-backdrop animate-fade-in" {...configModalDismiss}>
-          <div className="qm-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
-            <div className="qm-modal-header">
-              <div>
-                <h2 className="qm-modal-title">
-                  {originalQuizCode ? `Edit Quiz: ${activeQuizDraft.title}` : 'Configure Interactive Quiz Settings'}
-                </h2>
-                <p className="qm-modal-sub">
-                  {originalQuizCode
-                    ? 'Update access token, PIN, time limit, and anti-cheating rules'
-                    : 'Set up student access code, subject, timer rules, and anti-cheating controls'}
-                </p>
+          <div className="qm-modal-card qm-studio-modal animate-scale-up" onClick={(e) => e.stopPropagation()}>
+            {/* ─── Minimalist Header with ICM Logo ─────────────────────── */}
+            <div className="qm-modal-header qm-studio-header">
+              <div className="qm-studio-header-brand">
+                <img
+                  src="/logos/icm_school_logo.png"
+                  alt="ICM Logo"
+                  className="qm-studio-logo"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLElement).style.display = 'none';
+                  }}
+                />
+                <div className="qm-studio-header-divider" />
+                <div>
+                  <h2 className="qm-modal-title">
+                    {originalQuizCode ? `Exam Settings: ${activeQuizDraft.title}` : 'Configure Exam Settings'}
+                  </h2>
+                  <p className="qm-modal-sub">
+                    Cambridge International School ID395 • {activeQuizDraft.subject || 'Assessment'}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
@@ -1649,323 +1708,388 @@ export function QuizManagerPage({
                   setActiveQuizDraft(null);
                   setOriginalQuizCode(null);
                 }}
+                title="Close settings"
               >
                 ✕
               </button>
             </div>
 
-            <div className="qm-modal-body">
-              {/* Step 1: Select Saved Test */}
-              <div className="qm-form-group">
-                <label className="qm-form-label">Select Source Test from Saved Exams:</label>
-                <select
-                  className="qm-form-select"
-                  value={selectedTestId || ''}
-                  onChange={(e) => handleSelectSavedTest(e.target.value)}
-                  disabled={Boolean(originalQuizCode)}
-                >
-                  {savedTests.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.title} ({t.primarySubject || t.header_config?.subject || 'Chemistry'} • {t.question_ids?.length || 0} questions • {t.total_marks} marks)
-                    </option>
-                  ))}
-                </select>
-                {originalQuizCode && (
-                  <span className="qm-form-hint" style={{ fontSize: '0.78rem' }}>
-                    Source test questions are locked to this quiz. To publish a different test, create a new interactive quiz.
-                  </span>
-                )}
-              </div>
-
-              {/* Step 2: Subject & Title */}
-              <div className="qm-form-row">
-                <div className="qm-form-group" style={{ flex: 1 }}>
-                  <label className="qm-form-label">Subject:</label>
-                  <input
-                    type="text"
-                    className="qm-form-input"
-                    value={activeQuizDraft.subject}
-                    onChange={(e) =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        subject: e.target.value,
-                      })
-                    }
-                    placeholder="e.g. Chemistry, Physics, Biology"
-                  />
-                </div>
-
-                <div className="qm-form-group" style={{ flex: 2 }}>
-                  <label className="qm-form-label">Quiz Title:</label>
-                  <input
-                    type="text"
-                    className="qm-form-input"
-                    value={activeQuizDraft.title}
-                    onChange={(e) =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        title: e.target.value,
-                      })
-                    }
-                    placeholder="e.g. End of Term Chemistry Assessment"
-                  />
-                </div>
-              </div>
-
-              {/* Step 3: Custom Quiz Code */}
-              <div className="qm-form-group">
-                <label className="qm-form-label">Custom Quiz Code / Token:</label>
-                <div className="qm-code-input-wrap">
-                  <span className="qm-code-prefix-icon">🔑</span>
-                  <input
-                    type="text"
-                    className="qm-form-input qm-form-input--code"
-                    value={activeQuizDraft.quizCode}
-                    onChange={(e) =>
-                      setActiveQuizDraft({
-                        ...activeQuizDraft,
-                        quizCode: e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''),
-                      })
-                    }
-                    placeholder="e.g. CHEM-101 or MIDTERM26"
-                    maxLength={16}
-                  />
-                </div>
-                {activeQuizDraft.quizCode.trim().length > 0 &&
-                  quizzes.some(
-                    (q) =>
-                      q.id !== activeQuizDraft.id &&
-                      q.quizCode.trim().toUpperCase() === activeQuizDraft.quizCode.trim().toUpperCase()
-                  ) ? (
-                  <span style={{ color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'block', marginTop: '6px' }}>
-                    ⚠️ This Quiz Code is already in use by another quiz. Please choose a unique code.
-                  </span>
-                ) : (
-                  <span className="qm-form-hint">
-                    Students will use this exact code to join on the landing page.
-                  </span>
-                )}
-              </div>
-
-              {/* Step 4: Assessment Format (Formal Exam vs Quizizz Game) */}
-              {isQuizizzAllowed && (
-                <div className="qm-form-group">
-                  <label className="qm-form-label">Quiz Assessment Format:</label>
-                  <div className="qm-mode-selector-grid">
-                    <div
-                      className={`qm-mode-card ${activeQuizDraft.quizMode !== 'game' ? 'qm-mode-card--selected' : ''}`}
-                      onClick={() =>
-                        setActiveQuizDraft({
-                          ...activeQuizDraft,
-                          quizMode: 'exam',
-                        })
-                      }
+            {/* ─── Unified 1-Page Settings Body ─────────────────────────── */}
+            <div className="qm-modal-body qm-studio-body">
+              <div className="qm-studio-grid">
+                {/* ═══ LEFT COLUMN: Identification & Timing ═══════════════ */}
+                <div className="qm-studio-col">
+                  {/* Section 1: Identification */}
+                  <section className="qm-studio-section">
+                    <h3 className="qm-studio-section-title">
+                      <span>🏷️</span> Identification
+                    </h3>
+                  {/* Select Saved Test */}
+                  <div className="qm-form-group">
+                    <label className="qm-form-label">Select Source Test from Saved Exams:</label>
+                    <select
+                      className="qm-form-select"
+                      value={selectedTestId || ''}
+                      onChange={(e) => handleSelectSavedTest(e.target.value)}
+                      disabled={Boolean(originalQuizCode)}
                     >
-                      <span className="qm-mode-icon">📝</span>
-                      <div className="qm-mode-info">
-                        <strong>Formal Exam Mode</strong>
-                        <p>Timed assessment with fullscreen lockdown, tab-switch tracking, and proctoring audit log.</p>
-                      </div>
-                    </div>
-
-                    <div
-                      className={`qm-mode-card ${activeQuizDraft.quizMode === 'game' ? 'qm-mode-card--selected qm-mode-card--game-sel' : ''}`}
-                      onClick={() =>
-                        setActiveQuizDraft({
-                          ...activeQuizDraft,
-                          quizMode: 'game',
-                        })
-                      }
-                    >
-                      <span className="qm-mode-icon">🎮</span>
-                      <div className="qm-mode-info">
-                        <strong>Quizizz Game Mode (MCQ)</strong>
-                        <p>Fast-paced game-show with power-ups (50/50, time freeze), answer streaks, fun sounds, and live leaderboard.</p>
-                      </div>
-                    </div>
+                      {savedTests.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title} ({t.primarySubject || t.header_config?.subject || 'Chemistry'} • {t.question_ids?.length || 0} questions • {t.total_marks} marks)
+                        </option>
+                      ))}
+                    </select>
+                    {originalQuizCode && (
+                      <span className="qm-form-hint" style={{ fontSize: '0.78rem' }}>
+                        Source test questions are locked to this quiz. To publish a different test, create a new interactive quiz.
+                      </span>
+                    )}
                   </div>
-                </div>
-              )}
 
-              {/* Conditional Settings based on quizMode */}
-              {isQuizizzAllowed && activeQuizDraft.quizMode === 'game' ? (
-                /* ─── Game Mode Settings ────────────────────────────────────────── */
-                <div className="qm-game-settings-panel animate-fade-in">
+                  {/* Subject & Title */}
                   <div className="qm-form-row">
                     <div className="qm-form-group" style={{ flex: 1 }}>
-                      <label className="qm-form-label">Seconds Per Question:</label>
-                      <select
-                        className="qm-form-select"
-                        value={activeQuizDraft.questionTimerSeconds || 20}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            questionTimerSeconds: parseInt(e.target.value, 10),
-                          })
-                        }
-                      >
-                        <option value={10}>⚡ 10 Seconds (Speedrun)</option>
-                        <option value={15}>⏱️ 15 Seconds (Fast)</option>
-                        <option value={20}>⏱️ 20 Seconds (Standard)</option>
-                        <option value={30}>⏱️ 30 Seconds (Relaxed)</option>
-                        <option value={45}>⏱️ 45 Seconds (Deep Thinking)</option>
-                        <option value={60}>⏱️ 60 Seconds (Calculations)</option>
-                      </select>
-                    </div>
-
-                    <div className="qm-form-group" style={{ flex: 1 }}>
-                      <label className="qm-form-label">Base Points / Question:</label>
+                      <label className="qm-form-label">Subject:</label>
                       <input
-                        type="number"
+                        type="text"
                         className="qm-form-input"
-                        value={activeQuizDraft.pointsPerQuestion || 1000}
+                        value={activeQuizDraft.subject}
                         onChange={(e) =>
                           setActiveQuizDraft({
                             ...activeQuizDraft,
-                            pointsPerQuestion: parseInt(e.target.value, 10) || 1000,
+                            subject: e.target.value,
                           })
                         }
-                        step={100}
-                        min={100}
-                        max={5000}
+                        placeholder="e.g. Chemistry, Physics, Biology"
                       />
                     </div>
-                  </div>
 
-                  {/* Game Toggles Grid */}
-                  <div className="qm-game-toggles-grid">
-                    <label className="qm-checkbox-label">
+                    <div className="qm-form-group" style={{ flex: 2 }}>
+                      <label className="qm-form-label">Quiz Title:</label>
                       <input
-                        type="checkbox"
-                        checked={activeQuizDraft.enablePowerUps ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            enablePowerUps: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>✂️ Power-Ups (50/50, Time Freeze, 2× Points)</span>
-                    </label>
-
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.enableStreaks ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            enableStreaks: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>🔥 Streak Multipliers (Up to 3× Score)</span>
-                    </label>
-
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.enableFunSounds ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            enableFunSounds: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>🔊 Fun Synthesized Sound FX &amp; Airhorns</span>
-                    </label>
-
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.enableMemes ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            enableMemes: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>🎉 Meme Reactions &amp; Emoji Feedback</span>
-                    </label>
-
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.shuffleQuestions ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            shuffleQuestions: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>🔀 Randomize Question Order</span>
-                    </label>
-
-                    <label className="qm-checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={activeQuizDraft.shuffleOptions ?? true}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            shuffleOptions: e.target.checked,
-                          })
-                        }
-                      />
-                      <span>🔀 Randomize MCQ Choices</span>
-                    </label>
-                  </div>
-                </div>
-              ) : (
-                /* ─── Formal Exam Mode Settings ─────────────────────────────────── */
-                <>
-                  <div className="qm-form-row">
-                    <div className="qm-form-group" style={{ flex: 1 }}>
-                      <label className="qm-form-label">Duration (Minutes):</label>
-                      <input
-                        type="number"
+                        type="text"
                         className="qm-form-input"
-                        value={activeQuizDraft.durationMinutes}
+                        value={activeQuizDraft.title}
                         onChange={(e) =>
                           setActiveQuizDraft({
                             ...activeQuizDraft,
-                            durationMinutes: parseInt(e.target.value, 10) || 0,
+                            title: e.target.value,
                           })
                         }
-                        min={5}
-                        max={300}
+                        placeholder="e.g. End of Term Chemistry Assessment"
                       />
-                    </div>
-
-                    <div className="qm-form-group" style={{ flex: 1 }}>
-                      <label className="qm-form-label">Exam Mode Type:</label>
-                      <select
-                        className="qm-form-select"
-                        value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
-                        onChange={(e) =>
-                          setActiveQuizDraft({
-                            ...activeQuizDraft,
-                            isExamMode: e.target.value === 'exam',
-                          })
-                        }
-                      >
-                        <option value="exam">🔒 Timed Exam (Strict Lockdown)</option>
-                        <option value="practice">📖 Practice Mode (Flexible)</option>
-                      </select>
                     </div>
                   </div>
 
-                  {/* Anti-Cheating & Proctoring Rules Panel */}
-                  <div className="qm-security-panel">
-                    <div className="qm-sec-header">
+                  {/* Custom Quiz Code */}
+                  <div className="qm-form-group">
+                    <label className="qm-form-label">Custom Quiz Code / Token:</label>
+                    <div className="qm-code-input-wrap">
+                      <span className="qm-code-prefix-icon">🔑</span>
+                      <input
+                        type="text"
+                        className="qm-form-input qm-form-input--code"
+                        value={activeQuizDraft.quizCode}
+                        onChange={(e) =>
+                          setActiveQuizDraft({
+                            ...activeQuizDraft,
+                            quizCode: e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''),
+                          })
+                        }
+                        placeholder="e.g. CHEM-101 or MIDTERM26"
+                        maxLength={16}
+                      />
+                    </div>
+                    {activeQuizDraft.quizCode.trim().length > 0 &&
+                      quizzes.some(
+                        (q) =>
+                          q.id !== activeQuizDraft.id &&
+                          q.quizCode.trim().toUpperCase() === activeQuizDraft.quizCode.trim().toUpperCase()
+                      ) ? (
+                      <span style={{ color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'block', marginTop: '6px' }}>
+                        ⚠️ This Quiz Code is already in use by another quiz. Please choose a unique code.
+                      </span>
+                    ) : (
+                      <span className="qm-form-hint">
+                        Students will use this exact code to join on the landing page.
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Target Class Cohort */}
+                  <div className="qm-form-group">
+                    <label className="qm-form-label">Target Class / Cohort (Optional):</label>
+                    <input
+                      type="text"
+                      className="qm-form-input"
+                      value={activeQuizDraft.targetClass || ''}
+                      onChange={(e) =>
+                        setActiveQuizDraft({
+                          ...activeQuizDraft,
+                          targetClass: e.target.value,
+                        })
+                      }
+                      placeholder="e.g. 10-A, Grade 11 Chemistry, or leave blank for all students"
+                    />
+                    <span className="qm-form-hint">
+                      Filters student submissions by class roster during live invigilation and analytics.
+                    </span>
+                  </div>
+
+                  {/* Assessment Format (Formal Exam vs Quizizz Game) */}
+                  {isQuizizzAllowed && (
+                    <div className="qm-form-group" style={{ marginTop: '8px' }}>
+                      <label className="qm-form-label">Assessment Format:</label>
+                      <div className="qm-mode-selector-grid">
+                        <div
+                          className={`qm-mode-card ${activeQuizDraft.quizMode !== 'game' ? 'qm-mode-card--selected' : ''}`}
+                          onClick={() =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              quizMode: 'exam',
+                            })
+                          }
+                        >
+                          <span className="qm-mode-icon">📝</span>
+                          <div className="qm-mode-info">
+                            <strong>Formal Exam Mode</strong>
+                            <p>Timed assessment with fullscreen lockdown, proctoring audit log, and examiner tools.</p>
+                          </div>
+                        </div>
+
+                        <div
+                          className={`qm-mode-card ${activeQuizDraft.quizMode === 'game' ? 'qm-mode-card--selected qm-mode-card--game-sel' : ''}`}
+                          onClick={() =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              quizMode: 'game',
+                            })
+                          }
+                        >
+                          <span className="qm-mode-icon">🎮</span>
+                          <div className="qm-mode-info">
+                            <strong>Quizizz Game Mode (MCQ)</strong>
+                            <p>Fast-paced game-show with power-ups, answer streaks, sound FX, and live leaderboard.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                  {/* Section 2: Format & Timing */}
+                  <section className="qm-studio-section">
+                    <h3 className="qm-studio-section-title">
+                      <span>⏱️</span> Format &amp; Timing
+                    </h3>
+                  {isQuizizzAllowed && activeQuizDraft.quizMode === 'game' ? (
+                    /* Game Mode Settings */
+                    <div className="qm-game-settings-panel">
+                      <div className="qm-form-row">
+                        <div className="qm-form-group" style={{ flex: 1 }}>
+                          <label className="qm-form-label">Seconds Per Question:</label>
+                          <select
+                            className="qm-form-select"
+                            value={activeQuizDraft.questionTimerSeconds || 20}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                questionTimerSeconds: parseInt(e.target.value, 10),
+                              })
+                            }
+                          >
+                            <option value={10}>⚡ 10 Seconds (Speedrun)</option>
+                            <option value={15}>⏱️ 15 Seconds (Fast)</option>
+                            <option value={20}>⏱️ 20 Seconds (Standard)</option>
+                            <option value={30}>⏱️ 30 Seconds (Relaxed)</option>
+                            <option value={45}>⏱️ 45 Seconds (Deep Thinking)</option>
+                            <option value={60}>⏱️ 60 Seconds (Calculations)</option>
+                          </select>
+                        </div>
+
+                        <div className="qm-form-group" style={{ flex: 1 }}>
+                          <label className="qm-form-label">Base Points / Question:</label>
+                          <input
+                            type="number"
+                            className="qm-form-input"
+                            value={activeQuizDraft.pointsPerQuestion || 1000}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                pointsPerQuestion: parseInt(e.target.value, 10) || 1000,
+                              })
+                            }
+                            step={100}
+                            min={100}
+                            max={5000}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="qm-game-toggles-grid">
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.enablePowerUps ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                enablePowerUps: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>✂️ Power-Ups (50/50, Time Freeze, 2× Points)</span>
+                        </label>
+
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.enableStreaks ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                enableStreaks: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>🔥 Streak Multipliers (Up to 3× Score)</span>
+                        </label>
+
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.enableFunSounds ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                enableFunSounds: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>🔊 Fun Sound FX &amp; Synthesized Cues</span>
+                        </label>
+
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.enableMemes ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                enableMemes: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>🎉 Meme Reactions &amp; Emoji Feedback</span>
+                        </label>
+
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.shuffleQuestions ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                shuffleQuestions: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>🔀 Randomize Question Order</span>
+                        </label>
+
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={activeQuizDraft.shuffleOptions ?? true}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                shuffleOptions: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>🔀 Randomize MCQ Choices</span>
+                        </label>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Formal Exam Mode Timing */
+                    <div className="qm-timing-panel">
+                      <div className="qm-form-row">
+                        <div className="qm-form-group" style={{ flex: 1 }}>
+                          <label className="qm-form-label">Duration (Minutes):</label>
+                          <input
+                            type="number"
+                            className="qm-form-input"
+                            value={activeQuizDraft.durationMinutes}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                durationMinutes: parseInt(e.target.value, 10) || 0,
+                              })
+                            }
+                            min={5}
+                            max={300}
+                          />
+                          <span className="qm-form-hint">Standard Cambridge papers: 45–120 mins.</span>
+                        </div>
+
+                        <div className="qm-form-group" style={{ flex: 1 }}>
+                          <label className="qm-form-label">Exam Mode Type:</label>
+                          <select
+                            className="qm-form-select"
+                            value={activeQuizDraft.isExamMode ? 'exam' : 'practice'}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                isExamMode: e.target.value === 'exam',
+                              })
+                            }
+                          >
+                            <option value="exam">🔒 Timed Exam (Strict Lockdown)</option>
+                            <option value="practice">📖 Practice Mode (Flexible)</option>
+                          </select>
+                          <span className="qm-form-hint">Practice mode allows flexible pauses and retry.</span>
+                        </div>
+                      </div>
+
+                      {/* Practice Mode Solution Release */}
+                      {!activeQuizDraft.isExamMode && (
+                        <div className="qm-checkbox-row" style={{ marginTop: '16px' }}>
+                          <label className="qm-checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.showInstantSolutions}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  showInstantSolutions: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              {/* ═══ RIGHT COLUMN: Security (Top) + Tools + Attachments ══ */}
+              <div className="qm-studio-col">
+                {/* 1. Security & Integrity (TOP of Right Column) */}
+                <section className="qm-studio-section">
+                  <h3 className="qm-studio-section-title">
+                    <span>🛡️</span> Security &amp; Integrity
+                  </h3>
+                  <div className="qm-studio-card qm-studio-security-card">
+                    <div className="qm-studio-card-row">
                       <div>
-                        <strong>Institutional Security &amp; Anti-Cheating Suite</strong>
-                        <p>Lockdown student tabs, monitor multi-screens, and prevent exam leakages.</p>
+                        <strong className="qm-studio-card-title">Browser Lockdown</strong>
+                        <p className="qm-studio-card-sub">Blocks tab switching and unauthorized applications</p>
                       </div>
-                      <label className="qm-switch" title="Toggle anti-cheat guard">
+                      <label className="qm-switch" title="Toggle browser lockdown">
                         <input
                           type="checkbox"
                           checked={activeQuizDraft.securityEnabled}
@@ -1981,75 +2105,53 @@ export function QuizManagerPage({
                     </div>
 
                     {activeQuizDraft.securityEnabled && (
-                      <>
-                        <div className="qm-sec-subrules">
-                          <label className="qm-checkbox-label">
+                      <div className="qm-studio-security-sub">
+                        <div className="qm-studio-card-row">
+                          <div>
+                            <span className="qm-studio-sub-label">Candidate Watermark</span>
+                            <p className="qm-studio-card-sub">Dynamic student ID overlay to prevent photo leaks</p>
+                          </div>
+                          <label className="qm-switch" title="Toggle candidate watermark">
                             <input
                               type="checkbox"
-                              checked={activeQuizDraft.requireTeacherUnlock ?? true}
+                              checked={activeQuizDraft.enableWatermark ?? false}
                               onChange={(e) =>
                                 setActiveQuizDraft({
                                   ...activeQuizDraft,
-                                  requireTeacherUnlock: e.target.checked,
+                                  enableWatermark: e.target.checked,
                                 })
                               }
                             />
-                            <span>Require Teacher 4-Digit PIN to unlock exam if violation triggers</span>
-                          </label>
-
-                          {securityDefaults.defaultEnableWatermark && (
-                            <label className="qm-checkbox-label">
-                              <input
-                                type="checkbox"
-                                checked={activeQuizDraft.enableWatermark ?? false}
-                                onChange={(e) =>
-                                  setActiveQuizDraft({
-                                    ...activeQuizDraft,
-                                    enableWatermark: e.target.checked,
-                                  })
-                                }
-                              />
-                              <span>Candidate Dynamic Security Watermark (Anti-Photo Leaks)</span>
-                            </label>
-                          )}
-
-                          {securityDefaults.defaultEnableMultiMonitor && (
-                            <label className="qm-checkbox-label">
-                              <input
-                                type="checkbox"
-                                checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
-                                onChange={(e) =>
-                                  setActiveQuizDraft({
-                                    ...activeQuizDraft,
-                                    enableMultiMonitorDetection: e.target.checked,
-                                  })
-                                }
-                              />
-                              <span>Multi-Monitor Dual-Screen Shield (Prevents secondary monitors)</span>
-                            </label>
-                          )}
-
-                          <label className="qm-checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={activeQuizDraft.requireStudentPin ?? false}
-                              onChange={(e) =>
-                                setActiveQuizDraft({
-                                  ...activeQuizDraft,
-                                  requireStudentPin: e.target.checked,
-                                })
-                              }
-                            />
-                            <span>Require Student 4-Digit Security PIN to enter quiz</span>
+                            <span className="qm-slider" />
                           </label>
                         </div>
 
-                        {/* PIN Configuration Box */}
-                        <div className="qm-pin-config-box">
-                          <label className="qm-checkbox-label" style={{ fontWeight: 700 }}>
-                            <span>🔑 Teacher Invigilator Unlock PIN:</span>
+                        <div className="qm-studio-card-row">
+                          <div>
+                            <span className="qm-studio-sub-label">Multi-Monitor Detection</span>
+                            <p className="qm-studio-card-sub">Alerts invigilator if student has secondary displays</p>
+                          </div>
+                          <label className="qm-switch" title="Toggle multi-monitor detection">
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  enableMultiMonitorDetection: e.target.checked,
+                                })
+                              }
+                            />
+                            <span className="qm-slider" />
                           </label>
-                          <div className="qm-pin-input-group">
+                        </div>
+
+                        <div className="qm-studio-pin-row">
+                          <div>
+                            <span className="qm-studio-sub-label">Teacher Unlock PIN</span>
+                            <p className="qm-studio-card-sub">Classroom PIN to unlock student lockout strikes</p>
+                          </div>
+                          <div className="qm-pin-input-group" style={{ marginTop: 0 }}>
                             <div className="qm-pin-inputs-row">
                               <input
                                 type={showDraftPin ? 'text' : 'password'}
@@ -2063,69 +2165,222 @@ export function QuizManagerPage({
                                 }
                                 placeholder="1234"
                                 maxLength={8}
+                                style={{ width: '85px', padding: '6px 8px', fontSize: '0.875rem' }}
                               />
                               <button
                                 type="button"
-                                className="qm-btn qm-btn-secondary qm-btn-pin-action"
+                                className="qm-btn qm-btn-secondary"
+                                style={{ padding: '4px 8px', fontSize: '0.75rem' }}
                                 onClick={() => setShowDraftPin((v) => !v)}
                               >
-                                {showDraftPin ? '🙈 Hide' : '👁️ View'}
+                                {showDraftPin ? '🙈' : '👁️'}
                               </button>
                             </div>
-                            <p className="qm-pin-hint">
-                              Used by the teacher in the classroom to unlock student devices after violation lockouts.
-                            </p>
                           </div>
                         </div>
-                      </>
+                      </div>
                     )}
                   </div>
+                </section>
 
-                  {/* Model Solutions & Results Release Policy */}
-                  {activeQuizDraft.isExamMode ? (
-                    <div
-                      style={{
-                        background: 'rgba(59, 130, 246, 0.08)',
-                        border: '1px solid rgba(59, 130, 246, 0.25)',
-                        borderRadius: '10px',
-                        padding: '12px 16px',
-                        fontSize: '0.8125rem',
-                        color: 'var(--color-text-secondary)',
-                        display: 'flex',
-                        gap: '10px',
-                        alignItems: 'flex-start',
-                      }}
-                    >
-                      <span style={{ fontSize: '1.25rem' }}>🔒</span>
-                      <div>
-                        <strong style={{ color: 'var(--color-text-primary)', display: 'block', marginBottom: '2px' }}>
-                          Model Solutions Withheld During Exam (Deferred Grading)
-                        </strong>
-                        In Timed Exam Mode, model solutions, mark schemes, and scores are never revealed on submission. Students receive an official confirmation receipt, and results are only released when you evaluate and publish them from the gradebook.
+                {/* 2. Candidate Tools (BELOW Security) */}
+                <section className="qm-studio-section">
+                  <h3 className="qm-studio-section-title">
+                    <span>🧰</span> Candidate Tools
+                  </h3>
+                  <div className="qm-studio-card">
+                    {/* Calculator with inline Scientific vs Basic toggle */}
+                    <div className="qm-studio-card-row">
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '1.1rem' }}>🧮</span>
+                          <strong className="qm-studio-card-title">Calculator</strong>
+                        </div>
+                        {activeQuizDraft.allowCalculator && (
+                          <div className="qm-studio-calc-pills">
+                            <button
+                              type="button"
+                              className={`qm-studio-calc-pill ${activeQuizDraft.calculatorType !== 'basic' ? 'active' : ''}`}
+                              onClick={() => setActiveQuizDraft({ ...activeQuizDraft, calculatorType: 'scientific' })}
+                            >
+                              Scientific
+                            </button>
+                            <button
+                              type="button"
+                              className={`qm-studio-calc-pill ${activeQuizDraft.calculatorType === 'basic' ? 'active' : ''}`}
+                              onClick={() => setActiveQuizDraft({ ...activeQuizDraft, calculatorType: 'basic' })}
+                            >
+                              Basic
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="qm-checkbox-row">
-                      <label className="qm-checkbox-label">
+                      <label className="qm-switch" title="Toggle calculator">
                         <input
                           type="checkbox"
-                          checked={activeQuizDraft.showInstantSolutions}
+                          checked={activeQuizDraft.allowCalculator ?? false}
                           onChange={(e) =>
                             setActiveQuizDraft({
                               ...activeQuizDraft,
-                              showInstantSolutions: e.target.checked,
+                              allowCalculator: e.target.checked,
                             })
                           }
                         />
-                        <span>Show model solutions, marking schemes, and misconception warnings on submission</span>
+                        <span className="qm-slider" />
                       </label>
                     </div>
-                  )}
-                </>
-              )}
-            </div>
 
-            <div className="qm-modal-footer">
+                    <div className="qm-studio-divider" />
+
+                    {/* 3 Reference Tool Quick Toggles */}
+                    <div className="qm-studio-tools-row">
+                      <label className="qm-studio-tool-toggle">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.allowPeriodicTable ?? false}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              allowPeriodicTable: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="qm-studio-tool-chip">
+                          <span>🧪</span>
+                          <span>Periodic Table</span>
+                        </span>
+                      </label>
+
+                      <label className="qm-studio-tool-toggle">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.allowScratchpad ?? false}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              allowScratchpad: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="qm-studio-tool-chip">
+                          <span>📝</span>
+                          <span>Scratchpad</span>
+                        </span>
+                      </label>
+
+                      <label className="qm-studio-tool-toggle">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.allowFormulaSheet ?? false}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              allowFormulaSheet: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="qm-studio-tool-chip">
+                          <span>📐</span>
+                          <span>Formula Sheet</span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 3. Attachments & Reference Materials */}
+                <section className="qm-studio-section">
+                  <h3 className="qm-studio-section-title">
+                    <span>📎</span> Attachments &amp; Reference Inserts
+                    {((activeQuizDraft.attachments?.length || 0) > 0) && (
+                      <span className="qm-tool-count-chip" style={{ marginLeft: '8px' }}>
+                        {activeQuizDraft.attachments?.length} attached
+                      </span>
+                    )}
+                  </h3>
+
+                  {/* Upload Dropzone */}
+                  <label className={`qm-attachment-dropzone ${isUploadingAttachment ? 'qm-attachment-dropzone--uploading' : ''}`}>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,image/*,.docx,.txt"
+                      style={{ display: 'none' }}
+                      disabled={isUploadingAttachment}
+                      onChange={(e) => {
+                        handleUploadAttachment(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                    {isUploadingAttachment ? (
+                      <div className="qm-attachment-dropzone-inner">
+                        <span className="qm-spinner" />
+                        <span>Uploading file...</span>
+                      </div>
+                    ) : (
+                      <div className="qm-attachment-dropzone-inner" style={{ padding: '8px 12px' }}>
+                        <span className="qm-dropzone-icon" style={{ fontSize: '1.25rem' }}>📥</span>
+                        <div>
+                          <strong>Click or drag to attach reference materials</strong>
+                          <p>PDF case studies, formula sheets, maps (Max 25 MB)</p>
+                        </div>
+                      </div>
+                    )}
+                  </label>
+
+                  {attachmentUploadError && (
+                    <div className="qm-alert-error" style={{ marginTop: '6px' }}>
+                      ⚠️ {attachmentUploadError}
+                    </div>
+                  )}
+
+                  {/* Staged Attachments List */}
+                  {activeQuizDraft.attachments && activeQuizDraft.attachments.length > 0 && (
+                    <div className="qm-attachment-list" style={{ marginTop: '8px' }}>
+                      {activeQuizDraft.attachments.map((att) => (
+                        <div key={att.id} className="qm-attachment-item" style={{ padding: '6px 10px' }}>
+                          <span className="qm-attachment-icon" style={{ fontSize: '1rem' }}>
+                            {att.fileType === 'pdf' ? '📄' : att.fileType === 'image' ? '🖼️' : '📝'}
+                          </span>
+                          <div className="qm-attachment-info">
+                            <span className="qm-attachment-name" title={att.name}>{att.name}</span>
+                            <span className="qm-attachment-meta">
+                              {att.sizeBytes ? `${(att.sizeBytes / 1024 / 1024).toFixed(2)} MB` : 'File'}
+                            </span>
+                          </div>
+                          <div className="qm-attachment-actions">
+                            <a
+                              href={att.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="qm-attachment-btn"
+                              title="View document"
+                            >
+                              View
+                            </a>
+                            <button
+                              type="button"
+                              className="qm-attachment-btn qm-attachment-btn--delete"
+                              onClick={() => handleRemoveAttachment(att.id)}
+                              title="Remove attachment"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
+            </div>
+          </div>
+
+          <div className="qm-modal-footer qm-studio-footer">
+            <span className="qm-studio-footer-note">
+              Settings apply to candidates entering code {activeQuizDraft.quizCode || '—'}
+            </span>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
                 type="button"
                 className="qm-btn qm-btn-secondary"
@@ -2142,9 +2397,10 @@ export function QuizManagerPage({
                 className="qm-btn qm-btn-primary"
                 onClick={handleSaveQuizConfig}
               >
-                {originalQuizCode ? '💾 Save Changes' : '🚀 Save & Publish Quiz'}
+                {originalQuizCode ? 'Save Changes' : 'Save & Publish Exam'}
               </button>
             </div>
+          </div>
           </div>
         </div>,
         document.body

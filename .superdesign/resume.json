@@ -53,7 +53,7 @@
       "targetKind": "existing-ui",
       "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
       "baselineDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
-      "activeDraftId": "06085a4c-a1ed-4a3a-91c0-137492dc44c1",
+      "activeDraftId": "26b832ab-afc1-4ce9-8a2e-2fb5f1c59939",
       "designSystemPath": ".superdesign/design-system.md",
       "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
       "brandAssets": {
@@ -65,14 +65,20 @@
       },
       "contextFiles": [
         ".superdesign/design-system.md",
-        "src/pages/QuizManagerPage.tsx:480:750",
-        "src/pages/QuizManagerPage.css:1:350",
+        "src/pages/QuizManagerPage.tsx:1680:2518",
+        "src/pages/QuizManagerPage.css:2100:2322",
         ".superdesign/init/theme.md"
       ],
       "drafts": {
         "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e": {
           "title": "Current Publish Exam Page (Baseline)",
           "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "26b832ab-afc1-4ce9-8a2e-2fb5f1c59939": {
+          "title": "ICM Exam Studio | High-Density Publisher (1-Page Unified)",
+          "visualDirection": "unified 1-page two-column studio layout with left exam identity and timing, right candidate tools and security suite",
+          "parentDraftId": "7a0889fe-ecf9-4ed4-b6ec-ae523e96ea7e",
           "currentVersion": 1
         },
         "06085a4c-a1ed-4a3a-91c0-137492dc44c1": {
@@ -147,6 +153,20 @@
           "title": "Minimalist Upload Studio Ingestion Hub",
           "visualDirection": "focused single-column card with segmented domain controls and collapsible preferences",
           "parentDraftId": "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e",
+          "currentVersion": 1
+        }
+      }
+    },
+    "candidate-tools": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "activeDraftId": "7fadd304-42fb-4cfc-845b-f8dbaa8a0489",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": ["brand-logo-icm"],
+      "drafts": {
+        "7fadd304-42fb-4cfc-845b-f8dbaa8a0489": {
+          "title": "ICM Exam Assistant Suite",
+          "visualDirection": "minimalist light theme with ICM navy blue and green accents for calculator, periodic table, scratchpad, and attachments",
           "currentVersion": 1
         }
       }

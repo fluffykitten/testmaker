@@ -30,6 +30,9 @@ import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
+import { ExamAttachmentModal } from '../components/ExamAttachmentModal';
+import { ExamScratchpadModal } from '../components/ExamScratchpadModal';
+import type { ExamAttachment } from '../services/quizManagerService';
 import { ExamAudioPlayer } from '../components/ExamAudioPlayer';
 import { CandidateWatermark } from '../components/CandidateWatermark';
 import { flushClipboard, detectMultiMonitor, formatSessionHash } from '../utils/examSecurityUtils';
@@ -354,10 +357,18 @@ export function StudentQuizRunner({
   });
   const effectiveDurationMinutes = headerConfig?.durationMinutes || (timeLeft ? Math.round(timeLeft / 60) : 45);
 
-  // Reference & Tool Drawers
+  // Reference & Tool Drawers & Permissions
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
   const [showCalculator, setShowCalculator] = useState<boolean>(false);
   const [showResourceBooklet, setShowResourceBooklet] = useState<boolean>(false);
+  const [showAttachmentModal, setShowAttachmentModal] = useState<boolean>(false);
+  const [showScratchpad, setShowScratchpad] = useState<boolean>(false);
+  const [allowCalculator, setAllowCalculator] = useState<boolean | undefined>(() => savedExam?.allowCalculator);
+  const [calculatorType, setCalculatorType] = useState<'scientific' | 'basic'>(() => savedExam?.calculatorType || 'scientific');
+  const [allowPeriodicTable, setAllowPeriodicTable] = useState<boolean | undefined>(() => savedExam?.allowPeriodicTable);
+  const [allowScratchpad, setAllowScratchpad] = useState<boolean | undefined>(() => savedExam?.allowScratchpad);
+  const [_allowFormulaSheet, setAllowFormulaSheet] = useState<boolean | undefined>(() => savedExam?.allowFormulaSheet);
+  const [examAttachments, setExamAttachments] = useState<ExamAttachment[]>(() => savedExam?.attachments || []);
   const [showMobileNav, setShowMobileNav] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
   const [isStemScrolledPast, setIsStemScrolledPast] = useState<boolean>(false);
@@ -583,6 +594,24 @@ export function StudentQuizRunner({
           }
           if (data.limitOneAttempt !== undefined) {
             setLimitOneAttempt(data.limitOneAttempt);
+          }
+          if (data.allowCalculator !== undefined) {
+            setAllowCalculator(data.allowCalculator);
+          }
+          if (data.calculatorType) {
+            setCalculatorType(data.calculatorType);
+          }
+          if (data.allowPeriodicTable !== undefined) {
+            setAllowPeriodicTable(data.allowPeriodicTable);
+          }
+          if (data.allowScratchpad !== undefined) {
+            setAllowScratchpad(data.allowScratchpad);
+          }
+          if (data.allowFormulaSheet !== undefined) {
+            setAllowFormulaSheet(data.allowFormulaSheet);
+          }
+          if (data.attachments && data.attachments.length > 0) {
+            setExamAttachments(data.attachments);
           }
           setIsTeacherLocked(true);
         }
@@ -4285,7 +4314,8 @@ export function StudentQuizRunner({
         <div className="sq-runner-header-right">
           {/* Interactive Exam Reference Tools: Periodic Table, Scientific Calculator, Resource Booklet */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {hasResourceBooklet && (
+            {/* Teacher-Uploaded Reference Attachments */}
+            {examAttachments && examAttachments.length > 0 && (
               <button
                 type="button"
                 className="sq-btn"
@@ -4293,6 +4323,35 @@ export function StudentQuizRunner({
                   background: 'rgba(16, 185, 129, 0.15)',
                   color: '#34d399',
                   border: '1px solid rgba(16, 185, 129, 0.35)',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setShowAttachmentModal(true)}
+                title="Open Reference Attachments uploaded by teacher"
+              >
+                <span>📎</span>
+                <span>Attachments</span>
+                <span style={{ fontSize: '0.6875rem', background: 'rgba(16, 185, 129, 0.3)', padding: '1px 6px', borderRadius: '999px' }}>
+                  {examAttachments.length}
+                </span>
+              </button>
+            )}
+
+            {/* Cambridge Insert / Resource Booklet (Only if exam contains explicit insert questions) */}
+            {hasResourceBooklet && (
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'rgba(14, 165, 233, 0.15)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(14, 165, 233, 0.35)',
                   borderRadius: '8px',
                   fontSize: '0.8125rem',
                   fontWeight: 700,
@@ -4310,7 +4369,7 @@ export function StudentQuizRunner({
               </button>
             )}
 
-            {isChemistryExam && (
+            {(allowPeriodicTable ?? false) && (
               <button
                 type="button"
                 className="sq-btn"
@@ -4335,7 +4394,7 @@ export function StudentQuizRunner({
               </button>
             )}
 
-            {isStemOrMathExam && (
+            {(allowCalculator ?? false) && (
               <button
                 type="button"
                 className="sq-btn"
@@ -4353,10 +4412,35 @@ export function StudentQuizRunner({
                   cursor: 'pointer',
                 }}
                 onClick={() => setShowCalculator(true)}
-                title="Open Scientific Calculator"
+                title={calculatorType === 'basic' ? "Open Basic Calculator" : "Open Scientific Calculator"}
               >
                 <span>🧮</span>
                 <span>Calculator</span>
+              </button>
+            )}
+
+            {(allowScratchpad ?? false) && (
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  background: 'rgba(234, 179, 8, 0.15)',
+                  color: '#facc15',
+                  border: '1px solid rgba(234, 179, 8, 0.35)',
+                  borderRadius: '8px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 700,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setShowScratchpad(true)}
+                title="Open In-Exam Rough Work & Scratchpad Sheet"
+              >
+                <span>📝</span>
+                <span>Scratchpad</span>
               </button>
             )}
 
@@ -5449,10 +5533,25 @@ export function StudentQuizRunner({
         onClose={() => setShowPeriodicTable(false)}
       />
 
-      {/* On-Screen Scientific Calculator Modal */}
+      {/* On-Screen Calculator Modal */}
       <ScientificCalculatorModal
         isOpen={showCalculator}
         onClose={() => setShowCalculator(false)}
+        mode={calculatorType || 'scientific'}
+      />
+
+      {/* Teacher Reference Materials & Attachments Modal */}
+      <ExamAttachmentModal
+        isOpen={showAttachmentModal}
+        onClose={() => setShowAttachmentModal(false)}
+        attachments={examAttachments}
+      />
+
+      {/* Digital Scratchpad & Rough Sheet Modal */}
+      <ExamScratchpadModal
+        isOpen={showScratchpad}
+        onClose={() => setShowScratchpad(false)}
+        storageKey={`exam_scratchpad_${resolvedQuizCode || 'session'}`}
       />
 
       {/* Cambridge Insert / Resource Booklet Drawer */}

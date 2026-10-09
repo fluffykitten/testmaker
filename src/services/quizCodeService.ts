@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
-import type { PublishedQuiz } from './quizManagerService';
+import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 
 export interface StudentQuizData {
@@ -26,6 +26,15 @@ export interface StudentQuizData {
   requireStudentPin?: boolean;
   limitOneAttempt?: boolean;
   targetClass?: string;
+
+  // Student Exam Reference Tools Suite
+  allowCalculator?: boolean;
+  calculatorType?: 'scientific' | 'basic';
+  allowPeriodicTable?: boolean;
+  allowScratchpad?: boolean;
+  allowFormulaSheet?: boolean;
+  attachments?: ExamAttachment[];
+
   // Game mode fields
   quizMode?: 'exam' | 'game';
   enablePowerUps?: boolean;
@@ -182,6 +191,14 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       requireStudentPin: published.requireStudentPin ?? false,
       limitOneAttempt: published.limitOneAttempt ?? true,
       targetClass: published.targetClass,
+      // Student Exam Reference Tools Suite
+      allowCalculator: published.allowCalculator,
+      calculatorType: published.calculatorType,
+      allowPeriodicTable: published.allowPeriodicTable,
+      allowScratchpad: published.allowScratchpad,
+      allowFormulaSheet: published.allowFormulaSheet,
+      attachments: published.attachments,
+      // Game mode fields
       quizMode: published.quizMode,
       enablePowerUps: published.enablePowerUps,
       enableStreaks: published.enableStreaks,

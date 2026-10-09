@@ -6,11 +6,13 @@ import './ScientificCalculatorModal.css';
 interface ScientificCalculatorModalProps {
   isOpen: boolean;
   onClose: () => void;
+  mode?: 'basic' | 'scientific';
 }
 
 export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps> = ({
   isOpen,
   onClose,
+  mode = 'scientific',
 }) => {
   const backdropDismiss = useBackdropDismiss(onClose);
   const [expression, setExpression] = useState<string>('');
@@ -127,14 +129,16 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
 
   if (!isOpen) return null;
 
+  const isBasic = mode === 'basic';
+
   return createPortal(
     <div className="sc-modal-backdrop animate-fade-in" {...backdropDismiss}>
-      <div className="sc-modal-card animate-scale-up" onClick={(e) => e.stopPropagation()}>
+      <div className={`sc-modal-card animate-scale-up ${isBasic ? 'sc-modal-card--basic' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="sc-header">
           <div className="sc-title-wrap">
-            <span>🧮</span>
-            <strong>Scientific Calculator</strong>
+            <span className="sc-title-icon-badge">🧮</span>
+            <span>{isBasic ? 'Basic Calculator' : 'Scientific Calculator'}</span>
           </div>
           <button type="button" className="sc-close-btn" onClick={onClose} title="Close Calculator">
             ✕
@@ -147,49 +151,82 @@ export const ScientificCalculatorModal: React.FC<ScientificCalculatorModalProps>
           <div className="sc-res-row">{result}</div>
         </div>
 
-        {/* Scientific & Arithmetic Keypad */}
-        <div className="sc-keypad">
-          {/* Scientific Row 1 */}
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('sqrt')}>√x</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('sq')}>x²</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput('^')}>xʸ</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('exp10')}>×10ˣ</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('log')}>log</button>
+        {/* Keypad */}
+        {isBasic ? (
+          <div className="sc-keypad sc-keypad--basic">
+            {/* Basic Row 1 */}
+            <button type="button" className="sc-btn sc-btn--ac" onClick={handleClear}>AC</button>
+            <button type="button" className="sc-btn sc-btn--del" onClick={handleDelete}>DEL</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('pct')}>%</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('÷')}>÷</button>
 
-          {/* Scientific Row 2 */}
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('ln')}>ln</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('pi')}>π</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput('(')}>(</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput(')')}>)</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('pct')}>%</button>
+            {/* Basic Row 2 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('7')}>7</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('8')}>8</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('9')}>9</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('×')}>×</button>
 
-          {/* Main Keypad Row 1 */}
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('7')}>7</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('8')}>8</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('9')}>9</button>
-          <button type="button" className="sc-btn sc-btn--del" onClick={handleDelete}>DEL</button>
-          <button type="button" className="sc-btn sc-btn--ac" onClick={handleClear}>AC</button>
+            {/* Basic Row 3 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('4')}>4</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('5')}>5</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('6')}>6</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('-')}>−</button>
 
-          {/* Main Keypad Row 2 */}
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('4')}>4</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('5')}>5</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('6')}>6</button>
-          <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('×')}>×</button>
-          <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('÷')}>÷</button>
+            {/* Basic Row 4 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('1')}>1</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('2')}>2</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('3')}>3</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('+')}>+</button>
 
-          {/* Main Keypad Row 3 */}
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('1')}>1</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('2')}>2</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('3')}>3</button>
-          <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('+')}>+</button>
-          <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('-')}>−</button>
+            {/* Basic Row 5 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('0')} style={{ gridColumn: 'span 2' }}>0</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('.')}>.</button>
+            <button type="button" className="sc-btn sc-btn--eq" onClick={handleEquals}>=</button>
+          </div>
+        ) : (
+          <div className="sc-keypad">
+            {/* Scientific Row 1 */}
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('sqrt')}>√x</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('sq')}>x²</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput('^')}>xʸ</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('exp10')}>×10ˣ</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('log')}>log</button>
 
-          {/* Main Keypad Row 4 */}
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('0')}>0</button>
-          <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('.')}>.</button>
-          <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('ans')}>Ans</button>
-          <button type="button" className="sc-btn sc-btn--eq" onClick={handleEquals} style={{ gridColumn: 'span 2' }}>=</button>
-        </div>
+            {/* Scientific Row 2 */}
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('ln')}>ln</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('pi')}>π</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput('(')}>(</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleInput(')')}>)</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('pct')}>%</button>
+
+            {/* Main Keypad Row 1 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('7')}>7</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('8')}>8</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('9')}>9</button>
+            <button type="button" className="sc-btn sc-btn--del" onClick={handleDelete}>DEL</button>
+            <button type="button" className="sc-btn sc-btn--ac" onClick={handleClear}>AC</button>
+
+            {/* Main Keypad Row 2 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('4')}>4</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('5')}>5</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('6')}>6</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('×')}>×</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('÷')}>÷</button>
+
+            {/* Main Keypad Row 3 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('1')}>1</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('2')}>2</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('3')}>3</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('+')}>+</button>
+            <button type="button" className="sc-btn sc-btn--op" onClick={() => handleInput('-')}>−</button>
+
+            {/* Main Keypad Row 4 */}
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('0')}>0</button>
+            <button type="button" className="sc-btn sc-btn--num" onClick={() => handleInput('.')}>.</button>
+            <button type="button" className="sc-btn sc-btn--fn" onClick={() => handleApplyFunction('ans')}>Ans</button>
+            <button type="button" className="sc-btn sc-btn--eq" onClick={handleEquals} style={{ gridColumn: 'span 2' }}>=</button>
+          </div>
+        )}
       </div>
     </div>,
     document.body

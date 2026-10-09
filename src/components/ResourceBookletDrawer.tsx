@@ -54,7 +54,7 @@ export function ResourceBookletDrawer({
       const qRef = q.resource_ref || `Resource Q${q.question_number || idx + 1}`;
       const img = q.diagram_url;
 
-      if (q.resource_ref || q.diagram_source === 'insert' || (img && !map.has(qRef))) {
+      if (q.resource_ref || q.diagram_source === 'insert') {
         if (!map.has(qRef)) {
           map.set(qRef, {
             id: qRef,
@@ -68,7 +68,7 @@ export function ResourceBookletDrawer({
 
       // Check sub-questions
       (q.sub_questions || []).forEach((sub) => {
-        if (sub.resource_ref || sub.diagram_url) {
+        if (sub.resource_ref || (sub as any).diagram_source === 'insert') {
           const subRef = sub.resource_ref || `${qRef} ${sub.sub_id}`;
           if (!map.has(subRef)) {
             map.set(subRef, {

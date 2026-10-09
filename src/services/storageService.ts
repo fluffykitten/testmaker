@@ -5,6 +5,7 @@
 
 import { supabase } from '../lib/supabase';
 import { getSavedSettings } from '../lib/settings';
+import type { ExamAttachment } from './quizManagerService';
 
 const DEFAULT_R2_ENDPOINT = 'https://testmaker-media.icmadani.workers.dev';
 const DEFAULT_R2_SECRET = 'tm_r2_uploader_secret_2026';
@@ -253,4 +254,71 @@ export async function testR2Connection(): Promise<{ ok: boolean; latencyMs: numb
   } catch (err: any) {
     return { ok: false, latencyMs: Math.round(performance.now() - start), error: err?.message || 'Network error' };
   }
+}
+
+/**
+ * Uploads an exam reference document/attachment (PDF, Image, etc.) for formal exams.
+ * Routes to Cloudflare R2 or Supabase Storage, with robust Base64 fallback.
+ */
+export async function uploadExamAttachment(
+  file: File,
+  quizCode: string = 'EXAM'
+): Promise<ExamAttachment> {
+  const timestamp = Date.now();
+  const rand = Math.random().toString(36).substring(2, 7);
+  const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const pathKey = `attachments/${quizCode.toUpperCase()}_${timestamp}_${cleanName}`;
+  const isPdf = file.type.includes('pdf') || file.name.toLowerCase().endsWith('.pdf');
+  const isImage = file.type.startsWith('image/');
+  const fileType: 'pdf' | 'image' | 'doc' = isPdf ? 'pdf' : (isImage ? 'image' : 'doc');
+
+  let publicUrl: string | null = null;
+
+  // 1. Try Cloudflare R2 Proxy if enabled
+  if (isR2StorageEnabled()) {
+    try {
+      publicUrl = await uploadToR2Proxy(file, pathKey);
+    } catch (err) {
+      console.warn('R2 attachment upload failed, falling back to Supabase:', err);
+    }
+  }
+
+  // 2. Fallback to Supabase Storage
+  if (!publicUrl) {
+    try {
+      let bucketName = 'exam-diagrams';
+      const { data, error } = await supabase.storage
+        .from(bucketName)
+        .upload(pathKey, file, {
+          contentType: file.type || 'application/octet-stream',
+          upsert: true,
+        });
+
+      if (!error && data) {
+        const urlData = supabase.storage.from(bucketName).getPublicUrl(pathKey);
+        publicUrl = urlData.data?.publicUrl || null;
+      }
+    } catch (err) {
+      console.warn('Supabase attachment upload exception:', err);
+    }
+  }
+
+  // 3. Fallback to local Base64 Data URL if offline or network failure
+  if (!publicUrl) {
+    publicUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read file buffer'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  return {
+    id: `att_${timestamp}_${rand}`,
+    name: file.name,
+    url: publicUrl,
+    fileType,
+    sizeBytes: file.size,
+    uploadedAt: new Date().toISOString(),
+  };
 }

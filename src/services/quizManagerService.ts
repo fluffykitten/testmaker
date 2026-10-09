@@ -7,6 +7,16 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
 import { getSavedSettings } from '../lib/settings';
 
+export interface ExamAttachment {
+  id: string;
+  name: string;
+  url: string;
+  fileType: 'pdf' | 'image' | 'doc';
+  sizeBytes?: number;
+  uploadedAt: string;
+  description?: string;
+}
+
 export interface PublishedQuiz {
   id: string;                            // Unique published quiz ID
   testId: string;                        // Associated CustomTest ID
@@ -32,6 +42,15 @@ export interface PublishedQuiz {
   isActive: boolean;                     // Open for student submissions
   createdAt: string;
   updatedAt: string;
+
+  // Student Exam Reference Tools Suite
+  allowCalculator?: boolean;             // Explicitly enable/disable on-screen calculator
+  calculatorType?: 'scientific' | 'basic'; // Calculator type: 'scientific' (default) or 'basic'
+  allowPeriodicTable?: boolean;          // Explicitly enable/disable Cambridge Periodic Table
+  allowScratchpad?: boolean;             // In-exam digital rough-work scratchpad
+  allowFormulaSheet?: boolean;           // Standard formula & constants reference sheet
+  attachments?: ExamAttachment[];        // Teacher-uploaded reference files (PDF, images, case studies)
+
   // Game Mode Configuration (Quizizz / Kahoot Style)
   quizMode?: 'exam' | 'game';            // Which runner to launch (default 'exam')
   enablePowerUps?: boolean;               // Allow 50/50, time freeze, double points
@@ -527,6 +546,13 @@ export function createDraftFromTest(
     isActive: existing?.isActive ?? true,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    // Student Exam Reference Tools Suite (off by default)
+    allowCalculator: existing?.allowCalculator ?? false,
+    calculatorType: existing?.calculatorType || 'scientific',
+    allowPeriodicTable: existing?.allowPeriodicTable ?? false,
+    allowScratchpad: existing?.allowScratchpad ?? false,
+    allowFormulaSheet: existing?.allowFormulaSheet ?? false,
+    attachments: existing?.attachments ? [...existing.attachments] : [],
     // Game mode defaults
     quizMode: existing?.quizMode || 'exam',
     enablePowerUps: existing?.enablePowerUps ?? true,
