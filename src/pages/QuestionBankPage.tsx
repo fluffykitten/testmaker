@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import {
   fetchQuestions,
   fetchSyllabuses,
@@ -13,12 +13,14 @@ import type { Question, Syllabus } from '../types/database';
 import { QuestionFilters } from '../components/QuestionFilters';
 import { QuestionCard } from '../components/QuestionCard';
 import { QuestionDetailModal } from '../components/QuestionDetailModal';
-import { QuestionEditorModal } from '../components/QuestionEditorModal';
-import { QuestionVariantModal } from '../components/QuestionVariantModal';
-import { SmartTestAssemblerModal } from '../components/SmartTestAssemblerModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
-import { ExportModal } from '../components/ExportModal';
 import './QuestionBankPage.css';
+
+// Lazy-load heavier modal workflows so the main Question Bank loads instantly
+const QuestionEditorModal = lazy(() => import('../components/QuestionEditorModal').then((m) => ({ default: m.QuestionEditorModal })));
+const QuestionVariantModal = lazy(() => import('../components/QuestionVariantModal').then((m) => ({ default: m.QuestionVariantModal })));
+const SmartTestAssemblerModal = lazy(() => import('../components/SmartTestAssemblerModal').then((m) => ({ default: m.SmartTestAssemblerModal })));
+const ExportModal = lazy(() => import('../components/ExportModal').then((m) => ({ default: m.ExportModal })));
 
 const PAGE_SIZE_STORAGE_KEY = 'testmaker_bank_page_size';
 const DEFAULT_PAGE_SIZE = 12;
@@ -112,30 +114,52 @@ export function QuestionBankPage({
   const [exportQuestions, setExportQuestions] = useState<Question[]>([]);
   const [isExportLoading, setIsExportLoading] = useState(false);
 
-  // Load syllabuses on mount
+  // Load syllabuses and initial topics concurrently on mount (no waterfall)
   useEffect(() => {
-    async function loadSyllabuses() {
-      try {
-        const sList = await fetchSyllabuses();
-        setSyllabuses(sList);
-      } catch (err: any) {
+    let isMounted = true;
+    Promise.all([
+      fetchSyllabuses().catch((err) => {
         console.error('Error loading syllabuses:', err);
+        return [] as Syllabus[];
+      }),
+      fetchTopics(filters.syllabusId).catch((err) => {
+        console.error('Error loading topics for subject/syllabus:', err);
+        return [] as { topic: string; subTopics: string[] }[];
+      }),
+    ]).then(([sList, tList]) => {
+      if (isMounted) {
+        setSyllabuses(sList);
+        setTopics(tList);
       }
-    }
-    loadSyllabuses();
+    });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Fetch topics dynamically whenever the selected syllabus/subject filter changes
+  // Update topics whenever the selected syllabus/subject filter changes
+  const isFirstRender = useRef(true);
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    let isMounted = true;
     async function loadTopics() {
       try {
         const tList = await fetchTopics(filters.syllabusId);
-        setTopics(tList);
+        if (isMounted) {
+          setTopics(tList);
+        }
       } catch (err: any) {
         console.error('Error loading topics for subject/syllabus:', err);
       }
     }
     loadTopics();
+    return () => {
+      isMounted = false;
+    };
   }, [filters.syllabusId]);
 
   // Fetch questions whenever filters change
@@ -621,99 +645,111 @@ export function QuestionBankPage({
       )}
 
       {/* ─── Question Variant Generator Modal ───────────────────────────────── */}
-      <QuestionVariantModal
-        isOpen={variantModalState.isOpen}
-        question={variantModalState.question}
-        onClose={() => setVariantModalState({ isOpen: false, question: null })}
-        onSaveToBank={(newQuestion) => {
-          setQuestions((prev) => {
-            if (prev.some((q) => q.id === newQuestion.id)) return prev;
-            return [newQuestion, ...prev];
-          });
-          setTotalCount((c) => c + 1);
-          window.dispatchEvent(new Event('questions_updated'));
-          setActionToast({
-            message: `✨ Variant question ${newQuestion.question_number} saved to Question Bank!`,
-            type: 'success',
-          });
-          setTimeout(() => setActionToast(null), 3000);
-        }}
-        onAddToTest={(newQuestion) => {
-          if (!selectedQuestionIds.has(newQuestion.id)) {
-            onToggleSelectQuestion(newQuestion);
-          }
-          window.dispatchEvent(new Event('questions_updated'));
-          setActionToast({
-            message: `✨ Variant question ${newQuestion.question_number} added to custom test!`,
-            type: 'success',
-          });
-          setTimeout(() => setActionToast(null), 3000);
-        }}
-        onOpenInEditor={(variantQuestion) => {
-          setVariantModalState({ isOpen: false, question: null });
-          setEditorState({ isOpen: true, question: variantQuestion });
-        }}
-      />
+      {variantModalState.isOpen && (
+        <Suspense fallback={null}>
+          <QuestionVariantModal
+            isOpen={variantModalState.isOpen}
+            question={variantModalState.question}
+            onClose={() => setVariantModalState({ isOpen: false, question: null })}
+            onSaveToBank={(newQuestion) => {
+              setQuestions((prev) => {
+                if (prev.some((q) => q.id === newQuestion.id)) return prev;
+                return [newQuestion, ...prev];
+              });
+              setTotalCount((c) => c + 1);
+              window.dispatchEvent(new Event('questions_updated'));
+              setActionToast({
+                message: `✨ Variant question ${newQuestion.question_number} saved to Question Bank!`,
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
+            }}
+            onAddToTest={(newQuestion) => {
+              if (!selectedQuestionIds.has(newQuestion.id)) {
+                onToggleSelectQuestion(newQuestion);
+              }
+              window.dispatchEvent(new Event('questions_updated'));
+              setActionToast({
+                message: `✨ Variant question ${newQuestion.question_number} added to custom test!`,
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
+            }}
+            onOpenInEditor={(variantQuestion) => {
+              setVariantModalState({ isOpen: false, question: null });
+              setEditorState({ isOpen: true, question: variantQuestion });
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* ─── Smart Test Auto-Assembler Modal ─────────────────────────────── */}
-      <SmartTestAssemblerModal
-        isOpen={isAssemblerOpen}
-        onClose={() => setIsAssemblerOpen(false)}
-        syllabuses={syllabuses}
-        topics={topics}
-        onLoadIntoBuilder={(assembled) => {
-          // Select all assembled questions
-          assembled.forEach((q) => {
-            if (!selectedQuestionIds.has(q.id)) {
-              onToggleSelectQuestion(q);
-            }
-          });
+      {isAssemblerOpen && (
+        <Suspense fallback={null}>
+          <SmartTestAssemblerModal
+            isOpen={isAssemblerOpen}
+            onClose={() => setIsAssemblerOpen(false)}
+            syllabuses={syllabuses}
+            topics={topics}
+            onLoadIntoBuilder={(assembled) => {
+              // Select all assembled questions
+              assembled.forEach((q) => {
+                if (!selectedQuestionIds.has(q.id)) {
+                  onToggleSelectQuestion(q);
+                }
+              });
 
-          setActionToast({
-            message: `⚡ Auto-assembled ${assembled.length} questions for custom test!`,
-            type: 'success',
-          });
-          setTimeout(() => setActionToast(null), 3000);
+              setActionToast({
+                message: `⚡ Auto-assembled ${assembled.length} questions for custom test!`,
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
 
-          if (onNavigateToBuilder) {
-            onNavigateToBuilder();
-          }
-        }}
-      />
+              if (onNavigateToBuilder) {
+                onNavigateToBuilder();
+              }
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* ─── Question Editor Modal (Create or Edit) ────────────────────────── */}
-      <QuestionEditorModal
-        isOpen={editorState.isOpen}
-        question={editorState.question}
-        syllabuses={syllabuses}
-        onClose={() => setEditorState({ isOpen: false, question: null })}
-        onSave={(savedQuestion) => {
-          setQuestions((prev) => {
-            const exists = prev.some((q) => q.id === savedQuestion.id);
-            if (exists) {
-              return prev.map((q) => (q.id === savedQuestion.id ? savedQuestion : q));
-            }
-            return [savedQuestion, ...prev];
-          });
+      {editorState.isOpen && (
+        <Suspense fallback={null}>
+          <QuestionEditorModal
+            isOpen={editorState.isOpen}
+            question={editorState.question}
+            syllabuses={syllabuses}
+            onClose={() => setEditorState({ isOpen: false, question: null })}
+            onSave={(savedQuestion) => {
+              setQuestions((prev) => {
+                const exists = prev.some((q) => q.id === savedQuestion.id);
+                if (exists) {
+                  return prev.map((q) => (q.id === savedQuestion.id ? savedQuestion : q));
+                }
+                return [savedQuestion, ...prev];
+              });
 
-          if (selectedDetailQuestion && selectedDetailQuestion.id === savedQuestion.id) {
-            setSelectedDetailQuestion(savedQuestion);
-          }
+              if (selectedDetailQuestion && selectedDetailQuestion.id === savedQuestion.id) {
+                setSelectedDetailQuestion(savedQuestion);
+              }
 
-          if (!editorState.question?.id) {
-            setTotalCount((c) => c + 1);
-          }
+              if (!editorState.question?.id) {
+                setTotalCount((c) => c + 1);
+              }
 
-          window.dispatchEvent(new Event('questions_updated'));
-          setActionToast({
-            message: editorState.question?.id
-              ? `Question ${savedQuestion.question_number} updated!`
-              : `Question ${savedQuestion.question_number} created and added to bank!`,
-            type: 'success',
-          });
-          setTimeout(() => setActionToast(null), 3000);
-        }}
-      />
+              window.dispatchEvent(new Event('questions_updated'));
+              setActionToast({
+                message: editorState.question?.id
+                  ? `Question ${savedQuestion.question_number} updated!`
+                  : `Question ${savedQuestion.question_number} created and added to bank!`,
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* ─── Confirm Delete Modal ─────────────────────────────────────────── */}
       <ConfirmDeleteModal
@@ -727,24 +763,26 @@ export function QuestionBankPage({
 
       {/* ─── Quick Export Modal ────────────────────────────────────────────── */}
       {isQuickExportOpen && (
-        <ExportModal
-          isOpen={isQuickExportOpen}
-          onClose={() => setIsQuickExportOpen(false)}
-          questions={exportQuestions}
-          headerConfig={{
-            title: 'Selected Questions Export',
-            schoolName: 'Cambridge Assessment',
-            subject: filters.syllabusId
-              ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_name || 'General Examination'
-              : 'General Examination',
-            subjectCode: filters.syllabusId
-              ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_code || ''
-              : '',
-            durationMinutes: Math.max(15, exportQuestions.reduce((acc: number, q: Question) => acc + (q.marks || 1), 0)),
-            instructions: 'Answer all questions in the spaces provided.',
-            layoutTemplate: 'cambridge',
-          }}
-        />
+        <Suspense fallback={null}>
+          <ExportModal
+            isOpen={isQuickExportOpen}
+            onClose={() => setIsQuickExportOpen(false)}
+            questions={exportQuestions}
+            headerConfig={{
+              title: 'Selected Questions Export',
+              schoolName: 'Cambridge Assessment',
+              subject: filters.syllabusId
+                ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_name || 'General Examination'
+                : 'General Examination',
+              subjectCode: filters.syllabusId
+                ? syllabuses.find((s: Syllabus) => s.id === filters.syllabusId)?.subject_code || ''
+                : '',
+              durationMinutes: Math.max(15, exportQuestions.reduce((acc: number, q: Question) => acc + (q.marks || 1), 0)),
+              instructions: 'Answer all questions in the spaces provided.',
+              layoutTemplate: 'cambridge',
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

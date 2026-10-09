@@ -18,6 +18,7 @@ import { getLocalTests, type ExamHeaderConfig } from './services/testBuilderServ
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from './assets/logoConstants';
+import { prewarmQuestionBankData } from './services/questionBankService';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
@@ -121,6 +122,14 @@ function App() {
     initAutoBackupPeriodicScheduler();
     loadAndSyncSchoolClasses().catch(() => {});
     loadAndSyncGoogleDriveClientId().catch(() => {});
+
+    // Proactively pre-warm Question Bank chunk and database cache in background
+    const prewarmTimer = setTimeout(() => {
+      import('./pages/QuestionBankPage');
+      prewarmQuestionBankData();
+    }, 1200);
+
+    return () => clearTimeout(prewarmTimer);
   }, []);
 
   // Sync selected questions to sessionStorage
@@ -351,6 +360,10 @@ function App() {
               <button
                 className={`nav-tab ${currentPage === 'bank' ? 'nav-tab--active' : ''}`}
                 onClick={() => setCurrentPage('bank')}
+                onMouseEnter={() => {
+                  import('./pages/QuestionBankPage');
+                  prewarmQuestionBankData();
+                }}
                 id="nav-bank"
               >
                 <svg className="nav-tab-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -665,6 +678,10 @@ function HomePage({ onNavigate, selectedCount }: HomePageProps) {
             type="button"
             className="dash-stat-pill"
             onClick={() => onNavigate('bank')}
+            onMouseEnter={() => {
+              import('./pages/QuestionBankPage');
+              prewarmQuestionBankData();
+            }}
             title="Open Question Bank"
           >
             <span className="dash-stat-dot dash-stat-dot--blue" />
@@ -726,6 +743,10 @@ function HomePage({ onNavigate, selectedCount }: HomePageProps) {
               type="button"
               className="dash-launch-card dash-launch-card--bank"
               onClick={() => onNavigate('bank')}
+              onMouseEnter={() => {
+                import('./pages/QuestionBankPage');
+                prewarmQuestionBankData();
+              }}
               id="dash-launch-bank"
             >
               <div className="dash-launch-icon-wrap dash-launch-icon-wrap--blue">

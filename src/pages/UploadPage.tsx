@@ -259,21 +259,28 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
       <div className="upload-page-inner">
         {/* Page Header */}
         <div className="upload-page-header animate-fade-in">
+          <span className="upload-page-eyebrow">Assessment Import</span>
           <h1 className="upload-page-title">
             Upload Past Paper
           </h1>
           <p className="upload-page-desc">
-            Upload a past paper PDF. The AI extracts questions, formulas, diagrams, and auto-generates or matches the mark scheme.
+            Stage assessment documents for automated question extraction, diagram detection, and syllabus alignment.
           </p>
         </div>
 
         {/* Stage: Idle — Show Upload Zone & Draft Recovery Banner */}
         {pipelineState.stage === 'idle' && (
-          <div className="upload-page-center">
+          <div className="upload-page-content">
             {/* Unsaved Draft Recovery Banner */}
             {draftInfo?.exists && (
               <div className="upload-draft-banner animate-fade-in">
-                <div className="upload-draft-icon">💾</div>
+                <div className="upload-draft-icon-wrap">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                    <polyline points="17 21 17 13 7 13 7 21"/>
+                    <polyline points="7 3 7 8 15 8"/>
+                  </svg>
+                </div>
                 <div className="upload-draft-content">
                   <div className="upload-draft-header">
                     <strong>Unsaved Extraction Draft Found</strong>
@@ -292,7 +299,7 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
                     disabled={isRestoringDraft}
                     id="resume-draft-btn"
                   >
-                    {isRestoringDraft ? 'Restoring…' : '⚡ Resume Review'}
+                    {isRestoringDraft ? 'Restoring…' : 'Resume Review'}
                   </button>
                   <button
                     type="button"
@@ -329,7 +336,7 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
               onClick={handleCancel}
               id="retry-upload-btn"
             >
-              ← Try Another PDF
+              ← Select Another Paper
             </button>
           </div>
         )}
@@ -381,13 +388,17 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
         {/* Stage: Complete — Success */}
         {pipelineState.stage === 'complete' && savedCount !== null && (
           <div className="upload-success animate-fade-in">
-            <div className="upload-success-icon">🎉</div>
+            <div className="upload-success-icon-wrap">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <span className="upload-success-eyebrow">Extraction Complete</span>
             <h2 className="upload-success-title">
-              {savedCount} Questions Saved!
+              {savedCount} Questions Ingested
             </h2>
             <p className="upload-success-desc">
-              The extracted questions are now in your question bank and ready
-              to use in the Test Builder.
+              The extracted questions have been cataloged into your Question Bank and are ready for test assembly or direct export.
             </p>
             <div className="upload-success-actions">
               {onBuildTest && extractedIds.length > 0 && (
@@ -396,11 +407,11 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
                   onClick={() => onBuildTest(extractedIds)}
                   id="build-test-btn"
                 >
-                  Build Test with these Questions
+                  Assemble Test with these Questions
                 </button>
               )}
               <button
-                className={`upload-success-btn ${(!onBuildTest || extractedIds.length === 0) ? 'upload-success-btn--primary' : ''}`}
+                className={`upload-success-btn ${(!onBuildTest || extractedIds.length === 0) ? 'upload-success-btn--primary' : 'upload-success-btn--secondary'}`}
                 onClick={handleCancel}
                 id="upload-another-btn"
               >

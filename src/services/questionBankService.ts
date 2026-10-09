@@ -44,6 +44,12 @@ const topicsCache = new Map<string, { data: { topic: string; subTopics: string[]
 const paperTypesCache = new Map<string, { data: PaperTypesSummary; timestamp: number }>();
 const questionsQueryCache = new Map<string, { data: QuestionQueryResult; timestamp: number }>();
 
+// In-flight promise deduplication to prevent redundant concurrent queries
+let inFlightSyllabuses: Promise<Syllabus[]> | null = null;
+const inFlightTopics = new Map<string, Promise<{ topic: string; subTopics: string[] }[]>>();
+const inFlightPaperTypes = new Map<string, Promise<PaperTypesSummary>>();
+const inFlightQuestions = new Map<string, Promise<QuestionQueryResult>>();
+
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
 
 export function clearQuestionBankCache(): void {
@@ -51,6 +57,10 @@ export function clearQuestionBankCache(): void {
   topicsCache.clear();
   paperTypesCache.clear();
   questionsQueryCache.clear();
+  inFlightSyllabuses = null;
+  inFlightTopics.clear();
+  inFlightPaperTypes.clear();
+  inFlightQuestions.clear();
 }
 
 if (typeof window !== 'undefined') {
@@ -60,26 +70,37 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Fetches all available syllabuses/subjects (cached in memory)
+ * Fetches all available syllabuses/subjects (cached in memory with deduplication)
  */
 export async function fetchSyllabuses(): Promise<Syllabus[]> {
   if (syllabusesCache && Date.now() - syllabusesCache.timestamp < CACHE_TTL_MS) {
     return syllabusesCache.data;
   }
-
-  const { data, error } = await supabase
-    .from('syllabuses')
-    .select('*')
-    .order('subject_name', { ascending: true });
-
-  if (error) {
-    console.error('Failed to fetch syllabuses:', error);
-    return syllabusesCache ? syllabusesCache.data : [];
+  if (inFlightSyllabuses) {
+    return inFlightSyllabuses;
   }
 
-  const result = data as Syllabus[];
-  syllabusesCache = { data: result, timestamp: Date.now() };
-  return result;
+  inFlightSyllabuses = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('syllabuses')
+        .select('*')
+        .order('subject_name', { ascending: true });
+
+      if (error) {
+        console.error('Failed to fetch syllabuses:', error);
+        return syllabusesCache ? syllabusesCache.data : [];
+      }
+
+      const result = data as Syllabus[];
+      syllabusesCache = { data: result, timestamp: Date.now() };
+      return result;
+    } finally {
+      inFlightSyllabuses = null;
+    }
+  })();
+
+  return inFlightSyllabuses;
 }
 
 /**
@@ -137,7 +158,7 @@ export function inferTopicFromContent(text?: string, subTopic?: string): string 
 }
 
 /**
- * Fetches distinct topics for a given syllabus (or all syllabuses) with intelligent inference (cached)
+ * Fetches distinct topics for a given syllabus (or all syllabuses) with lightweight query (cached & deduplicated)
  */
 export async function fetchTopics(syllabusId?: string): Promise<{ topic: string; subTopics: string[] }[]> {
   const cacheKey = syllabusId || '__all__';
@@ -145,59 +166,73 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.data;
   }
-
-  let query = supabase
-    .from('questions')
-    .select('topic, sub_topic, question_text, syllabus_id');
-
-  if (syllabusId) {
-    query = query.eq('syllabus_id', syllabusId);
+  const inFlight = inFlightTopics.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  let { data, error } = await query;
+  const promise = (async () => {
+    try {
+      // Lightweight payload: Avoid fetching heavy question_text across all questions
+      let query = supabase
+        .from('questions')
+        .select('topic, sub_topic, syllabus_id');
 
-  // Fallback: If syllabusId filter yielded no results, fetch all questions to avoid empty topic lists
-  if ((!data || data.length === 0) && syllabusId) {
-    const fallbackRes = await supabase.from('questions').select('topic, sub_topic, question_text, syllabus_id');
-    if (fallbackRes.data && fallbackRes.data.length > 0) {
-      data = fallbackRes.data;
-    }
-  }
-
-  if (error || !data) {
-    console.error('Failed to fetch topics:', error);
-    return cached ? cached.data : [];
-  }
-
-  // Aggregate topics and distinct sub-topics with smart inference
-  const topicMap = new Map<string, Set<string>>();
-
-  data.forEach((row: any) => {
-    let rawTopic = row.topic?.trim() || '';
-    if (!rawTopic || rawTopic.toLowerCase() === 'general') {
-      rawTopic = inferTopicFromContent(row.question_text, row.sub_topic);
-    }
-
-    if (rawTopic && rawTopic.trim()) {
-      const cleanTopic = rawTopic.trim();
-      if (!topicMap.has(cleanTopic)) {
-        topicMap.set(cleanTopic, new Set());
+      if (syllabusId) {
+        query = query.eq('syllabus_id', syllabusId);
       }
-      if (row.sub_topic && row.sub_topic.trim() && row.sub_topic.trim().toLowerCase() !== 'general') {
-        topicMap.get(cleanTopic)!.add(row.sub_topic.trim());
+
+      let { data, error } = await query;
+
+      // Fallback: If syllabusId filter yielded no results, fetch all questions to avoid empty topic lists
+      if ((!data || data.length === 0) && syllabusId) {
+        const fallbackRes = await supabase.from('questions').select('topic, sub_topic, syllabus_id');
+        if (fallbackRes.data && fallbackRes.data.length > 0) {
+          data = fallbackRes.data;
+        }
       }
+
+      if (error || !data) {
+        console.error('Failed to fetch topics:', error);
+        return cached ? cached.data : [];
+      }
+
+      // Aggregate topics and distinct sub-topics
+      const topicMap = new Map<string, Set<string>>();
+
+      data.forEach((row: any) => {
+        let rawTopic = row.topic?.trim() || '';
+        if (!rawTopic || rawTopic.toLowerCase() === 'general') {
+          rawTopic = inferTopicFromContent(undefined, row.sub_topic);
+        }
+
+        if (rawTopic && rawTopic.trim()) {
+          const cleanTopic = rawTopic.trim();
+          if (!topicMap.has(cleanTopic)) {
+            topicMap.set(cleanTopic, new Set());
+          }
+          if (row.sub_topic && row.sub_topic.trim() && row.sub_topic.trim().toLowerCase() !== 'general') {
+            topicMap.get(cleanTopic)!.add(row.sub_topic.trim());
+          }
+        }
+      });
+
+      const result = Array.from(topicMap.entries())
+        .map(([topic, subTopicsSet]) => ({
+          topic,
+          subTopics: Array.from(subTopicsSet).sort(),
+        }))
+        .sort((a, b) => a.topic.localeCompare(b.topic));
+
+      topicsCache.set(cacheKey, { data: result, timestamp: Date.now() });
+      return result;
+    } finally {
+      inFlightTopics.delete(cacheKey);
     }
-  });
+  })();
 
-  const result = Array.from(topicMap.entries())
-    .map(([topic, subTopicsSet]) => ({
-      topic,
-      subTopics: Array.from(subTopicsSet).sort(),
-    }))
-    .sort((a, b) => a.topic.localeCompare(b.topic));
-
-  topicsCache.set(cacheKey, { data: result, timestamp: Date.now() });
-  return result;
+  inFlightTopics.set(cacheKey, promise);
+  return promise;
 }
 
 /**
@@ -209,77 +244,90 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.data;
   }
-
-  let query = supabase
-    .from('questions')
-    .select('series, paper_number, syllabus_id');
-
-  if (syllabusId) {
-    query = query.eq('syllabus_id', syllabusId);
+  const inFlight = inFlightPaperTypes.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  let { data, error } = await query;
+  const promise = (async () => {
+    try {
+      let query = supabase
+        .from('questions')
+        .select('series, paper_number, syllabus_id');
 
-  // Fallback: If syllabusId filter yielded no results, fetch all questions to ensure options are available
-  if ((!data || data.length === 0) && syllabusId) {
-    const fallbackRes = await supabase
-      .from('questions')
-      .select('series, paper_number, syllabus_id');
-    if (fallbackRes.data && fallbackRes.data.length > 0) {
-      data = fallbackRes.data;
-    }
-  }
-
-  if (error || !data) {
-    console.error('Failed to fetch paper types:', error);
-    return cached ? cached.data : { seriesOptions: [], paperNumberOptions: [] };
-  }
-
-  const seriesMap = new Map<string, number>();
-  const paperNumMap = new Map<string, number>();
-
-  data.forEach((row: any) => {
-    if (row.series && typeof row.series === 'string' && row.series.trim()) {
-      const s = row.series.trim();
-      seriesMap.set(s, (seriesMap.get(s) || 0) + 1);
-    }
-    if (row.paper_number !== null && row.paper_number !== undefined) {
-      const p = String(row.paper_number).trim();
-      if (p) {
-        paperNumMap.set(p, (paperNumMap.get(p) || 0) + 1);
+      if (syllabusId) {
+        query = query.eq('syllabus_id', syllabusId);
       }
+
+      let { data, error } = await query;
+
+      // Fallback: If syllabusId filter yielded no results, fetch all questions to ensure options are available
+      if ((!data || data.length === 0) && syllabusId) {
+        const fallbackRes = await supabase
+          .from('questions')
+          .select('series, paper_number, syllabus_id');
+        if (fallbackRes.data && fallbackRes.data.length > 0) {
+          data = fallbackRes.data;
+        }
+      }
+
+      if (error || !data) {
+        console.error('Failed to fetch paper types:', error);
+        return cached ? cached.data : { seriesOptions: [], paperNumberOptions: [] };
+      }
+
+      const seriesMap = new Map<string, number>();
+      const paperNumMap = new Map<string, number>();
+
+      data.forEach((row: any) => {
+        if (row.series && typeof row.series === 'string' && row.series.trim()) {
+          const s = row.series.trim();
+          seriesMap.set(s, (seriesMap.get(s) || 0) + 1);
+        }
+        if (row.paper_number !== null && row.paper_number !== undefined) {
+          const p = String(row.paper_number).trim();
+          if (p) {
+            paperNumMap.set(p, (paperNumMap.get(p) || 0) + 1);
+          }
+        }
+      });
+
+      const seriesOptions = Array.from(seriesMap.entries())
+        .map(([series, count]) => ({
+          value: `series:${series}`,
+          label: `${series} (${count})`,
+          rawName: series,
+          count,
+        }))
+        .sort((a, b) => b.count - a.count || a.rawName.localeCompare(b.rawName));
+
+      const paperNumberOptions = Array.from(paperNumMap.entries())
+        .map(([val, count]) => {
+          const isPureDigits = /^\d+$/.test(val);
+          return {
+            value: `paper:${val}`,
+            label: isPureDigits ? `Paper ${val} (${count})` : `${val} (${count})`,
+            paperNumber: val,
+            count,
+          };
+        })
+        .sort((a, b) => {
+          const numA = Number(a.paperNumber);
+          const numB = Number(b.paperNumber);
+          if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+          return a.label.localeCompare(b.label);
+        });
+
+      const result = { seriesOptions, paperNumberOptions };
+      paperTypesCache.set(cacheKey, { data: result, timestamp: Date.now() });
+      return result;
+    } finally {
+      inFlightPaperTypes.delete(cacheKey);
     }
-  });
+  })();
 
-  const seriesOptions = Array.from(seriesMap.entries())
-    .map(([series, count]) => ({
-      value: `series:${series}`,
-      label: `${series} (${count})`,
-      rawName: series,
-      count,
-    }))
-    .sort((a, b) => b.count - a.count || a.rawName.localeCompare(b.rawName));
-
-  const paperNumberOptions = Array.from(paperNumMap.entries())
-    .map(([val, count]) => {
-      const isPureDigits = /^\d+$/.test(val);
-      return {
-        value: `paper:${val}`,
-        label: isPureDigits ? `Paper ${val} (${count})` : `${val} (${count})`,
-        paperNumber: val,
-        count,
-      };
-    })
-    .sort((a, b) => {
-      const numA = Number(a.paperNumber);
-      const numB = Number(b.paperNumber);
-      if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-      return a.label.localeCompare(b.label);
-    });
-
-  const result = { seriesOptions, paperNumberOptions };
-  paperTypesCache.set(cacheKey, { data: result, timestamp: Date.now() });
-  return result;
+  inFlightPaperTypes.set(cacheKey, promise);
+  return promise;
 }
 
 export interface SubjectTopicSummary {
@@ -511,265 +559,290 @@ export async function fetchQuestions(
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.data;
   }
-
-  const {
-    searchQuery,
-    syllabusId,
-    topic,
-    subTopic,
-    difficulty,
-    paperNumber,
-    paperType,
-    year,
-    series,
-    minMarks,
-    maxMarks,
-    questionStyle,
-    sortBy = 'year_desc',
-    page = 1,
-    pageSize = 12,
-  } = params;
-
-  // Build the base filtered query
-  const buildFilteredQuery = () => {
-    let q = supabase
-      .from('questions')
-      .select('*', { count: 'exact' });
-
-    // Filter: Syllabus
-    if (syllabusId) {
-      q = q.eq('syllabus_id', syllabusId);
-    }
-
-    // Filter: Topic
-    if (topic) {
-      q = q.eq('topic', topic);
-    }
-
-    // Filter: Sub-topic
-    if (subTopic) {
-      q = q.eq('sub_topic', subTopic);
-    }
-
-    // Filter: Difficulty
-    if (difficulty) {
-      q = q.eq('difficulty', difficulty);
-    }
-
-    // Filter: Paper Type (Presets, Specific Paper Number, or Exam Series e.g. "Try Out TKA 1")
-    const activePaperType = paperType || (typeof paperNumber === 'string' ? paperNumber : undefined);
-
-    if (activePaperType) {
-      if (activePaperType === 'mcq' || activePaperType === 'preset:mcq') {
-        q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
-      } else if (activePaperType === 'theory' || activePaperType === 'preset:theory') {
-        q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
-      } else if (activePaperType === 'atp' || activePaperType === 'preset:atp') {
-        q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
-      } else if (activePaperType.startsWith('series:')) {
-        const seriesVal = activePaperType.replace('series:', '').trim();
-        q = q.eq('series', seriesVal);
-      } else if (activePaperType.startsWith('paper:')) {
-        const rawP = activePaperType.replace('paper:', '').trim();
-        const pNum = Number(rawP);
-        if (!isNaN(pNum) && /^\d+$/.test(rawP)) {
-          q = q.or(`paper_number.eq.${pNum},paper_number.eq.${rawP}`);
-        } else {
-          q = q.eq('paper_number', rawP);
-        }
-      } else {
-        const parsedNum = Number(activePaperType);
-        if (!isNaN(parsedNum) && /^\d+$/.test(activePaperType.trim())) {
-          q = q.or(`paper_number.eq.${parsedNum},paper_number.eq.${activePaperType.trim()}`);
-        } else {
-          q = q.ilike('series', `%${activePaperType.trim()}%`);
-        }
-      }
-    } else {
-      if (paperNumber) {
-        if (typeof paperNumber === 'number') {
-          q = q.or(`paper_number.eq.${paperNumber},paper_number.eq.${String(paperNumber)}`);
-        } else if (paperNumber === 'mcq') {
-          q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23, '1', '2', '11', '12', '13', '21', '22', '23']);
-        } else if (paperNumber === 'theory') {
-          q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43, '3', '4', '31', '32', '33', '41', '42', '43']);
-        } else if (paperNumber === 'atp') {
-          q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
-        } else {
-          q = q.eq('paper_number', paperNumber);
-        }
-      }
-
-      if (series) {
-        q = q.ilike('series', `%${series}%`);
-      }
-    }
-
-    // Filter: Year
-    if (year) {
-      q = q.eq('year', year);
-    }
-
-    // Filter: Marks Range
-    if (minMarks !== undefined) {
-      q = q.gte('marks', minMarks);
-    }
-    if (maxMarks !== undefined) {
-      q = q.lte('marks', maxMarks);
-    }
-    // Filter: Question Style
-    if (questionStyle) {
-      q = q.eq('question_style', questionStyle);
-    }
-
-    // Filter: Has Audio Track
-    if (params.hasAudio) {
-      q = q.not('audio_url', 'is', null).neq('audio_url', '');
-    }
-
-    // Filter: Bookmarks Only
-    if (params.bookmarkedOnly) {
-      const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
-      if (bookmarkedIds.length === 0) {
-        return null;
-      }
-      q = q.in('id', bookmarkedIds);
-    }
-
-    // Filter: Custom Teacher Tag
-    if (params.customTag) {
-      const tagMap = getAllQuestionTagsMap();
-      const targetTag = params.customTag.toLowerCase().trim().replace(/^#/, '');
-      const taggedIds = Object.keys(tagMap).filter((id) =>
-        tagMap[id].some((t) => t.toLowerCase() === targetTag)
-      );
-      if (taggedIds.length === 0) {
-        return null;
-      }
-      q = q.in('id', taggedIds);
-    }
-
-    // Filter: Full-text search with Chemical Formula, LaTeX Symbol & Custom Tag Expansion
-    if (searchQuery && searchQuery.trim()) {
-      const rawTerm = searchQuery.trim();
-      const isTagQuery = rawTerm.startsWith('#');
-      const tagMap = getAllQuestionTagsMap();
-
-      if (isTagQuery) {
-        // Explicit tag search: e.g. #tka, #mock2026, #homework
-        const cleanTag = rawTerm.replace(/^#+/, '').trim().toLowerCase();
-        const matchedTagIds = Object.keys(tagMap).filter((id) =>
-          tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
-        );
-        if (matchedTagIds.length === 0) {
-          // If no questions match this explicit tag, return null so empty state renders
-          return null;
-        }
-        q = q.in('id', matchedTagIds);
-      } else {
-        const term = rawTerm;
-        const formulaExp = expandFormulaSearch(term);
-        const lowerTerm = term.toLowerCase();
-
-        // Check if search term matches any custom teacher tags
-        const tagMatchedIds = Object.keys(tagMap).filter((id) =>
-          tagMap[id].some((t) => t.toLowerCase() === lowerTerm || t.toLowerCase().includes(lowerTerm))
-        );
-
-        const tokensToSearch = Array.from(
-          new Set(
-            [term, ...formulaExp.expandedTokens]
-              .map((t) => t.trim())
-              .filter((t) => t.length > 0)
-          )
-        );
-
-        const textClauses = tokensToSearch
-          .slice(0, 15)
-          .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`);
-
-        if (tagMatchedIds.length > 0) {
-          const idClause = tagMatchedIds.length === 1
-            ? `id.eq.${tagMatchedIds[0]}`
-            : `id.in.(${tagMatchedIds.slice(0, 50).join(',')})`;
-          q = q.or([idClause, ...textClauses].join(','));
-        } else if (textClauses.length > 1) {
-          q = q.or(textClauses.join(','));
-        } else {
-          q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
-        }
-      }
-    }
-
-    return q;
-  };
-
-  const initialQuery = buildFilteredQuery();
-  if (initialQuery === null) {
-    return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
+  const inFlight = inFlightQuestions.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  // Fetch initial batch (up to 1,000 questions)
-  const { data, error, count } = await initialQuery.range(0, 999);
+  const promise = (async () => {
+    try {
+      const {
+        searchQuery,
+        syllabusId,
+        topic,
+        subTopic,
+        difficulty,
+        paperNumber,
+        paperType,
+        year,
+        series,
+        minMarks,
+        maxMarks,
+        questionStyle,
+        sortBy = 'year_desc',
+        page = 1,
+        pageSize = 12,
+      } = params;
 
-  if (error) {
-    console.error('Failed to fetch questions:', error);
-    return {
-      questions: [],
-      totalCount: 0,
-      page,
-      totalPages: 1,
-    };
-  }
+      // Build the base filtered query
+      const buildFilteredQuery = () => {
+        let q = supabase
+          .from('questions')
+          .select('*', { count: 'exact' });
 
-  const rawQuestions: any[] = Array.isArray(data) ? [...data] : [];
-  const totalCount = count ?? rawQuestions.length;
+        // Filter: Syllabus
+        if (syllabusId) {
+          q = q.eq('syllabus_id', syllabusId);
+        }
 
-  // If total matching records exceed 1,000, fetch remaining batches in parallel
-  if (totalCount > 1000) {
-    const batchPromises = [];
-    for (let offset = 1000; offset < totalCount && offset < 5000; offset += 1000) {
-      const batchQuery = buildFilteredQuery();
-      if (batchQuery) {
-        batchPromises.push(batchQuery.range(offset, Math.min(offset + 999, totalCount - 1)));
+        // Filter: Topic
+        if (topic) {
+          q = q.eq('topic', topic);
+        }
+
+        // Filter: Sub-topic
+        if (subTopic) {
+          q = q.eq('sub_topic', subTopic);
+        }
+
+        // Filter: Difficulty
+        if (difficulty) {
+          q = q.eq('difficulty', difficulty);
+        }
+
+        // Filter: Paper Type (Presets, Specific Paper Number, or Exam Series e.g. "Try Out TKA 1")
+        const activePaperType = paperType || (typeof paperNumber === 'string' ? paperNumber : undefined);
+
+        if (activePaperType) {
+          if (activePaperType === 'mcq' || activePaperType === 'preset:mcq') {
+            q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23]);
+          } else if (activePaperType === 'theory' || activePaperType === 'preset:theory') {
+            q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43]);
+          } else if (activePaperType === 'atp' || activePaperType === 'preset:atp') {
+            q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
+          } else if (activePaperType.startsWith('series:')) {
+            const seriesVal = activePaperType.replace('series:', '').trim();
+            q = q.eq('series', seriesVal);
+          } else if (activePaperType.startsWith('paper:')) {
+            const rawP = activePaperType.replace('paper:', '').trim();
+            const pNum = Number(rawP);
+            if (!isNaN(pNum) && /^\d+$/.test(rawP)) {
+              q = q.or(`paper_number.eq.${pNum},paper_number.eq.${rawP}`);
+            } else {
+              q = q.eq('paper_number', rawP);
+            }
+          } else {
+            const parsedNum = Number(activePaperType);
+            if (!isNaN(parsedNum) && /^\d+$/.test(activePaperType.trim())) {
+              q = q.or(`paper_number.eq.${parsedNum},paper_number.eq.${activePaperType.trim()}`);
+            } else {
+              q = q.ilike('series', `%${activePaperType.trim()}%`);
+            }
+          }
+        } else {
+          if (paperNumber) {
+            if (typeof paperNumber === 'number') {
+              q = q.or(`paper_number.eq.${paperNumber},paper_number.eq.${String(paperNumber)}`);
+            } else if (paperNumber === 'mcq') {
+              q = q.in('paper_number', [1, 2, 11, 12, 13, 21, 22, 23, '1', '2', '11', '12', '13', '21', '22', '23']);
+            } else if (paperNumber === 'theory') {
+              q = q.in('paper_number', [3, 4, 31, 32, 33, 41, 42, 43, '3', '4', '31', '32', '33', '41', '42', '43']);
+            } else if (paperNumber === 'atp') {
+              q = q.in('paper_number', [6, 61, 62, 63, '6', '61', '62', '63']);
+            } else {
+              q = q.eq('paper_number', paperNumber);
+            }
+          }
+
+          if (series) {
+            q = q.ilike('series', `%${series}%`);
+          }
+        }
+
+        // Filter: Year
+        if (year) {
+          q = q.eq('year', year);
+        }
+
+        // Filter: Marks Range
+        if (minMarks !== undefined) {
+          q = q.gte('marks', minMarks);
+        }
+        if (maxMarks !== undefined) {
+          q = q.lte('marks', maxMarks);
+        }
+        // Filter: Question Style
+        if (questionStyle) {
+          q = q.eq('question_style', questionStyle);
+        }
+
+        // Filter: Has Audio Track
+        if (params.hasAudio) {
+          q = q.not('audio_url', 'is', null).neq('audio_url', '');
+        }
+
+        // Filter: Bookmarks Only
+        if (params.bookmarkedOnly) {
+          const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
+          if (bookmarkedIds.length === 0) {
+            return null;
+          }
+          q = q.in('id', bookmarkedIds);
+        }
+
+        // Filter: Custom Teacher Tag
+        if (params.customTag) {
+          const tagMap = getAllQuestionTagsMap();
+          const targetTag = params.customTag.toLowerCase().trim().replace(/^#/, '');
+          const taggedIds = Object.keys(tagMap).filter((id) =>
+            tagMap[id].some((t) => t.toLowerCase() === targetTag)
+          );
+          if (taggedIds.length === 0) {
+            return null;
+          }
+          q = q.in('id', taggedIds);
+        }
+
+        // Filter: Full-text search with Chemical Formula, LaTeX Symbol & Custom Tag Expansion
+        if (searchQuery && searchQuery.trim()) {
+          const rawTerm = searchQuery.trim();
+          const isTagQuery = rawTerm.startsWith('#');
+          const tagMap = getAllQuestionTagsMap();
+
+          if (isTagQuery) {
+            // Explicit tag search: e.g. #tka, #mock2026, #homework
+            const cleanTag = rawTerm.replace(/^#+/, '').trim().toLowerCase();
+            const matchedTagIds = Object.keys(tagMap).filter((id) =>
+              tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
+            );
+            if (matchedTagIds.length === 0) {
+              // If no questions match this explicit tag, return null so empty state renders
+              return null;
+            }
+            q = q.in('id', matchedTagIds);
+          } else {
+            const term = rawTerm;
+            const formulaExp = expandFormulaSearch(term);
+            const lowerTerm = term.toLowerCase();
+
+            // Check if search term matches any custom teacher tags
+            const tagMatchedIds = Object.keys(tagMap).filter((id) =>
+              tagMap[id].some((t) => t.toLowerCase() === lowerTerm || t.toLowerCase().includes(lowerTerm))
+            );
+
+            const tokensToSearch = Array.from(
+              new Set(
+                [term, ...formulaExp.expandedTokens]
+                  .map((t) => t.trim())
+                  .filter((t) => t.length > 0)
+              )
+            );
+
+            const textClauses = tokensToSearch
+              .slice(0, 15)
+              .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`);
+
+            if (tagMatchedIds.length > 0) {
+              const idClause = tagMatchedIds.length === 1
+                ? `id.eq.${tagMatchedIds[0]}`
+                : `id.in.(${tagMatchedIds.slice(0, 50).join(',')})`;
+              q = q.or([idClause, ...textClauses].join(','));
+            } else if (textClauses.length > 1) {
+              q = q.or(textClauses.join(','));
+            } else {
+              q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+            }
+          }
+        }
+
+        return q;
+      };
+
+      const initialQuery = buildFilteredQuery();
+      if (initialQuery === null) {
+        return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
       }
-    }
-    const batchResults = await Promise.all(batchPromises);
-    for (const res of batchResults) {
-      if (res.data && Array.isArray(res.data)) {
-        rawQuestions.push(...res.data);
+
+      // Fetch initial batch (up to 1,000 questions)
+      const { data, error, count } = await initialQuery.range(0, 999);
+
+      if (error) {
+        console.error('Failed to fetch questions:', error);
+        return {
+          questions: [],
+          totalCount: 0,
+          page,
+          totalPages: 1,
+        };
       }
+
+      const rawQuestions: any[] = Array.isArray(data) ? [...data] : [];
+      const totalCount = count ?? rawQuestions.length;
+
+      // If total matching records exceed 1,000, fetch remaining batches in parallel
+      if (totalCount > 1000) {
+        const batchPromises = [];
+        for (let offset = 1000; offset < totalCount && offset < 5000; offset += 1000) {
+          const batchQuery = buildFilteredQuery();
+          if (batchQuery) {
+            batchPromises.push(batchQuery.range(offset, Math.min(offset + 999, totalCount - 1)));
+          }
+        }
+        const batchResults = await Promise.all(batchPromises);
+        for (const res of batchResults) {
+          if (res.data && Array.isArray(res.data)) {
+            rawQuestions.push(...res.data);
+          }
+        }
+      }
+
+      // Normalize all fetched questions
+      const normalizedQuestions: Question[] = rawQuestions.map(normalizeQuestionRecord);
+
+      // Apply complete natural sorting across the ENTIRE result set
+      const sortedQuestions = sortQuestionsList(normalizedQuestions, sortBy);
+
+      // Paginate from the perfectly sorted master list
+      const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+      const safePage = Math.min(Math.max(1, page), totalPages);
+      const from = (safePage - 1) * pageSize;
+      const to = from + pageSize;
+      const pageQuestions = sortedQuestions.slice(from, to);
+
+      const queryResult: QuestionQueryResult = {
+        questions: pageQuestions,
+        totalCount,
+        page: safePage,
+        totalPages,
+      };
+
+      // Cache query result in memory (limit cache to 100 queries)
+      if (questionsQueryCache.size >= 100) {
+        const oldest = questionsQueryCache.keys().next().value;
+        if (oldest) questionsQueryCache.delete(oldest);
+      }
+      questionsQueryCache.set(cacheKey, { data: queryResult, timestamp: Date.now() });
+
+      return queryResult;
+    } finally {
+      inFlightQuestions.delete(cacheKey);
     }
-  }
+  })();
 
-  // Normalize all fetched questions
-  const normalizedQuestions: Question[] = rawQuestions.map(normalizeQuestionRecord);
+  inFlightQuestions.set(cacheKey, promise);
+  return promise;
+}
 
-  // Apply complete natural sorting across the ENTIRE result set
-  const sortedQuestions = sortQuestionsList(normalizedQuestions, sortBy);
-
-  // Paginate from the perfectly sorted master list
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const safePage = Math.min(Math.max(1, page), totalPages);
-  const from = (safePage - 1) * pageSize;
-  const to = from + pageSize;
-  const pageQuestions = sortedQuestions.slice(from, to);
-
-  const queryResult: QuestionQueryResult = {
-    questions: pageQuestions,
-    totalCount,
-    page: safePage,
-    totalPages,
-  };
-
-  // Cache query result in memory (limit cache to 100 queries)
-  if (questionsQueryCache.size >= 100) {
-    const oldest = questionsQueryCache.keys().next().value;
-    if (oldest) questionsQueryCache.delete(oldest);
-  }
-  questionsQueryCache.set(cacheKey, { data: queryResult, timestamp: Date.now() });
-
-  return queryResult;
+/**
+ * Proactively prefetches initial question bank data in the background (idle/hover)
+ */
+export function prewarmQuestionBankData(pageSize = 12): void {
+  try {
+    fetchSyllabuses().catch(() => {});
+    fetchTopics().catch(() => {});
+    fetchPaperTypes().catch(() => {});
+    fetchQuestions({ sortBy: 'year_desc', page: 1, pageSize }).catch(() => {});
+  } catch {}
 }
 
 /**

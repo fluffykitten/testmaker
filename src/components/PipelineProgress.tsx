@@ -5,14 +5,14 @@ interface PipelineProgressProps {
   state: PipelineState;
 }
 
-const STAGE_LABELS: Record<string, { label: string; icon: string }> = {
-  uploading: { label: 'Uploading PDF', icon: '📤' },
-  extracting: { label: 'AI Extraction', icon: '🤖' },
-  'cropping-diagrams': { label: 'Processing Diagrams', icon: '✂️' },
-  reviewing: { label: 'Ready for Review', icon: '✅' },
-  saving: { label: 'Saving to Database', icon: '💾' },
-  complete: { label: 'Complete', icon: '🎉' },
-  error: { label: 'Error', icon: '❌' },
+const STAGE_LABELS: Record<string, { label: string }> = {
+  uploading: { label: 'Reading PDF' },
+  extracting: { label: 'Question Processing' },
+  'cropping-diagrams': { label: 'Diagram Detection' },
+  reviewing: { label: 'Ready for Review' },
+  saving: { label: 'Saving Questions' },
+  complete: { label: 'Processing Complete' },
+  error: { label: 'Processing Failed' },
 };
 
 const STAGE_ORDER = ['uploading', 'extracting', 'cropping-diagrams', 'reviewing'];
@@ -25,7 +25,6 @@ export function PipelineProgress({ state }: PipelineProgressProps) {
   if (state.stage === 'idle') return null;
 
   const currentStageIdx = STAGE_ORDER.indexOf(state.stage);
-  const stageInfo = STAGE_LABELS[state.stage] || { label: state.stage, icon: '⏳' };
 
   return (
     <div className={`pipeline-progress animate-fade-in ${state.stage === 'error' ? 'pipeline-progress--error' : ''}`}>
@@ -66,7 +65,9 @@ export function PipelineProgress({ state }: PipelineProgressProps) {
 
       {/* Status Message */}
       <div className="pipeline-status">
-        <span className="pipeline-status-icon">{stageInfo.icon}</span>
+        {state.stage !== 'error' && state.stage !== 'complete' && (
+          <span className="pipeline-status-spinner" />
+        )}
         <span className="pipeline-status-text">{state.message}</span>
       </div>
 

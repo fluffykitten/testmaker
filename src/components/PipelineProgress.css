@@ -122,8 +122,20 @@
   gap: 10px;
 }
 
-.pipeline-status-icon {
-  font-size: 1.125rem;
+.pipeline-status-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary-600);
+  border-radius: 50%;
+  animation: pipeline-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pipeline-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .pipeline-status-text {

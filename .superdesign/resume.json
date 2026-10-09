@@ -100,6 +100,56 @@
           "currentVersion": 1
         }
       }
+    },
+    "/upload": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "baselineDraftId": "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e",
+      "activeDraftId": "5ea8f419-cf15-4648-9689-b8e921fd0db1",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": ["brand-logo-icm", "brand-logo-cambridge"],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "brand-logo-icm",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/d1eefbd5-08c4-44d7-a75c-9ca3e5de844e/brand-assets/brand-logo-icm/icm_school_logo.png",
+          "sourcePath": "public/logos/icm_school_logo.png"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "src/pages/UploadPage.tsx:255:416",
+        "src/pages/UploadPage.css:1:120",
+        "src/components/PdfUpload.tsx:180:558",
+        "src/components/PdfUpload.css:1:250",
+        ".superdesign/init/theme.md"
+      ],
+      "components": [
+        {
+          "name": "NavBar",
+          "id": "f639517e-300f-44de-9499-00fb74926076",
+          "sourcePath": "src/App.tsx",
+          "logoAssetKey": "brand-logo-icm"
+        }
+      ],
+      "drafts": {
+        "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e": {
+          "title": "Current Upload Past Paper (Baseline)",
+          "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "5ea8f419-cf15-4648-9689-b8e921fd0db1": {
+          "title": "Linear-Style Two-Column Staging Workspace",
+          "visualDirection": "two-column layout with left document staging cards and right extraction parameter panel",
+          "parentDraftId": "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e",
+          "currentVersion": 1
+        },
+        "85f8ea0a-eb12-4f06-99cc-05aeeb85a303": {
+          "title": "Minimalist Upload Studio Ingestion Hub",
+          "visualDirection": "focused single-column card with segmented domain controls and collapsible preferences",
+          "parentDraftId": "8fc5cf6a-558a-4271-b4d2-7a9d56dda62e",
+          "currentVersion": 1
+        }
+      }
     }
   }
 }
