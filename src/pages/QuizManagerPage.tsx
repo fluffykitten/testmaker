@@ -63,7 +63,7 @@ export function QuizManagerPage({
 
   const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
   const [loading, setLoading] = useState(() => quizzes.length === 0);
-  const [, setSubmissionsVersion] = useState(0);
+  const [submissionsVersion, setSubmissionsVersion] = useState(0);
 
   // ─── Two-Level Architecture State ───────────────────────────────────────────
   // Level 1: activeSubjectView === null (Show Subject Cards Hub)
@@ -131,9 +131,10 @@ export function QuizManagerPage({
         setLoading(false);
       }
 
-      const [testsRes, syncedRes] = await Promise.allSettled([
+      const [testsRes, syncedRes, submissionsRes] = await Promise.allSettled([
         fetchCustomTestsWithMetadata(),
         loadAndSyncPublishedQuizzes(),
+        loadAndSyncAllSubmissions(),
       ]);
 
       if (testsRes.status === 'fulfilled') {
@@ -142,10 +143,9 @@ export function QuizManagerPage({
       if (syncedRes.status === 'fulfilled') {
         setQuizzes(sanitize(syncedRes.value));
       }
-
-      loadAndSyncAllSubmissions().then(() => {
+      if (submissionsRes.status === 'fulfilled') {
         setSubmissionsVersion((v) => v + 1);
-      });
+      }
     } catch (err) {
       console.error('Error loading quiz manager data:', err);
     } finally {
@@ -233,7 +233,7 @@ export function QuizManagerPage({
     });
 
     return Array.from(map.values()).sort((a, b) => b.quizCount - a.quizCount);
-  }, [quizzes]);
+  }, [quizzes, submissionsVersion]);
 
   // ─── 3. Filtered Quizzes for Level 2 Drill-Down ─────────────────────────────
   const subjectFilteredQuizzes = useMemo(() => {
@@ -276,7 +276,7 @@ export function QuizManagerPage({
           return 0;
       }
     });
-  }, [subjectFilteredQuizzes, searchQuery, statusFilter, sortBy]);
+  }, [subjectFilteredQuizzes, searchQuery, statusFilter, sortBy, submissionsVersion]);
 
   const groupedSections = useMemo(() => {
     if (!isGroupedBySubject) {

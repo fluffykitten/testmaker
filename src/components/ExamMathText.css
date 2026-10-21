@@ -4,9 +4,16 @@
   display: inline;
   line-height: inherit;
   color: inherit;
-  text-align: justify;
-  text-justify: inter-word;
+  text-align: start;
 }
+
+.exam-math-wrapper.exam-math-arabic,
+.exam-text-block.exam-text-arabic {
+  direction: rtl;
+  text-align: right;
+  font-family: 'Segoe UI', Tahoma, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+}
+
 
 .exam-math-inline {
   display: inline-block;

@@ -5,7 +5,7 @@ import { ExamVisualRender } from './ExamVisualRender';
 import { ExamDataTable } from './ExamDataTable';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { formatPaperBadge } from '../utils/paperUtils';
-import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../lib/gemini';
+import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
 import {
   generateExamDiagram,
   suggestDiagramPrompt,
@@ -339,7 +339,7 @@ function TestQuestionItemComponent({
                 <div className="test-q-sub-header">
                   <span className="test-q-sub-id">{sub.sub_id}</span>
                   <div className="test-q-sub-text">
-                    <ExamMathText content={sub.question_text} />
+                    <ExamMathText content={stripDuplicateSubIdPrefix(sub.sub_id, sub.question_text)} />
                   </div>
                   <span className="test-q-sub-marks">[{sub.marks}]</span>
                 </div>

@@ -96,14 +96,31 @@ Analyze the attached exam past paper PDF page(s) and any mark scheme content.`
 Analyze the attached exam paper PDF page(s) and any mark scheme / answer key content.`;
 
   const structureRule = isIgcse
-    ? `CRITICAL RULE FOR MULTI-PART / STRUCTURED QUESTIONS (e.g. Paper 4, Theory, Extended papers):
-Do NOT split sub-parts into separate top-level questions! Group all parts belonging to Question 1 under a SINGLE Question 1 container object.
+    ? `CRITICAL RULE FOR ALL MULTI-PART / STRUCTURED EXAMS (Paper 4 Theory, Paper 5 Practical, Paper 6 Alt to Practical, A-Level Papers):
+- Do NOT split sub-parts (e.g. (a), (b), (c)) into separate top-level questions!
+- Group all sub-parts belonging to each question under its corresponding Question container object (e.g. all parts of Question 1 under Question 1, all parts of Question 2 under Question 2, Question 3 under Question 3).
+- NEVER merge Question 2 or any of its sub-parts into Question 1!
+- Every numbered question (1, 2, 3...) MUST be its own distinct Question object in the "questions" array!
+
+CAMBRIDGE PAPER 5 & PAPER 6 PRACTICAL & ALTERNATIVE TO PRACTICAL EXAMS (CHEMISTRY 0620/5x/6x, 9701, PHYSICS 0625/5x/6x, 9702, BIOLOGY 0610/5x/6x, 9700):
+CRITICAL LABORATORY PROCEDURE & INSTRUCTION PRESERVATION:
+1. FULL EXPERIMENT INSTRUCTIONS (TOP PRIORITY):
+   - Practical and Alternative to Practical papers contain detailed laboratory instructions, apparatus procedures, and numbered experiments (e.g. "Instructions: You are going to do five experiments.", "Experiment 1: • Rinse the burette...", "Experiment 2: • ...", "Experiment 3: • ...", "Experiment 4: • ...", "Experiment 5: • ...", or "Tests on solid A...").
+   - You MUST transcribe ALL instructions, procedures, and experiment steps (Experiment 1 to 5) COMPLETELY and VERBATIM inside the parent Question "question_text"!
+   - NEVER drop, truncate, summarize, or omit the experiment instructions (Experiment 1 to 5)! Both students and teachers require every single step, measurement, and reagent instruction to answer the questions and complete the data tables.
+2. EXPERIMENTAL DATA TABLES:
+   - When a results table (e.g. Table 1.1 with experiment columns/rows) is printed in the paper:
+     * Extract it in "data_tables" array or directly in Markdown table format within the question text.
+3. SEPARATE PRACTICAL QUESTIONS:
+   - Question 1 (e.g. Thermochemistry / calorimetry / rates investigation) -> "question_number": "1"
+   - Question 2 (e.g. Tests on solid A / Qualitative analysis with reagents) -> "question_number": "2". NEVER merge Question 2 into Question 1!
+   - Question 3 (e.g. Planning investigation / alloy percentage by mass) -> "question_number": "3".
 
 CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
 1. INTRODUCTORY SCENARIO STEMS VS SUB-QUESTIONS:
    - In Cambridge structured papers, section (a) often begins with an introductory experimental setup, apparatus description, reaction equation, or diagram, followed by sub-parts (i), (ii).
    - NEVER drop or skip the introductory setup text of (a)! 
-     * Place ONLY the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true). DO NOT duplicate sub-parts (a), (b), (c) inside parent question_text! Sub-parts belong exclusively in the "sub_questions" array.
+     * Place the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true). DO NOT duplicate sub-parts (a), (b), (c) inside parent question_text! Sub-parts belong exclusively in the "sub_questions" array.
      * In the first sub-question "(a)(i)", ALSO preserve the section context (e.g. "(a) A student investigates the reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.") so that sub-question (a)(i) is completely self-contained!
    - When section (b) or section (c) introduces a new scenario, reaction, or graph followed by (i), (ii):
      * Prepend the section introductory text to the first sub-part "(b)(i)" (e.g. "(b) The student repeats the experiment using powdered marble chips.\\\\n\\\\n(i) Explain why the rate of reaction increases.").
@@ -1623,9 +1640,32 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
 }
 
 /**
+ * Strips redundant sub-id prefix (e.g. "(a) ", "(b)(i) ", "a. ") from sub-question text
+ * so that badges in the UI do not display duplicate labels (e.g. avoiding "(a) (a) Complete Table 1.1.").
+ */
+export function stripDuplicateSubIdPrefix(subId?: string | null, text?: string | null): string {
+  if (!text || typeof text !== 'string') return '';
+  const trimmed = text.trim();
+  if (!subId || typeof subId !== 'string') return trimmed;
+
+  const cleanSub = subId.replace(/[().\s]/g, '');
+  // Matches e.g. '(b) (i)', '(b)(i)', '(a)', 'a.', 'a)', '(ii)', 'ii.'
+  const pattern = /^\s*(?:\([a-zA-Z0-9]+\)(?:\s*\([a-zA-Z0-9]+\))?|[a-zA-Z0-9]+[.)])\s+/;
+  const match = trimmed.match(pattern);
+  if (match) {
+    const matchedClean = match[0].replace(/[().\s]/g, '');
+    if (cleanSub.startsWith(matchedClean) || matchedClean === cleanSub || cleanSub.endsWith(matchedClean)) {
+      return trimmed.slice(match[0].length).trim();
+    }
+  }
+  return trimmed;
+}
+
+/**
  * Strips duplicate sub-questions (e.g. (a), (b)(i), (c)...) from the parent question stem
  * when structured sub-questions are already broken out into sub_questions array.
  * Keeps only the authentic introductory scenario, apparatus description, or reaction context.
+ * PROTECTS experimental procedures (Experiment 1 to 5), lab instructions, apparatus notes, and markdown tables.
  */
 export function stripDuplicateSubQuestionsFromStem(
   stem?: string | null,
@@ -1643,38 +1683,54 @@ export function stripDuplicateSubQuestionsFromStem(
   const lines = trimmedStem.split('\n');
 
   // Candidate regex patterns for sub-question start
-  // Matches: "(a)", "(a)(i)", "(i)", "a.", "a)", "1.", "(1)"
+  // Matches: "(a)", "(a)(i)", "(i)", "a.", "a)"
   const subStartPattern = /^\s*(?:\([a-z0-9]+\)(?:\([a-z0-9]+\))?|[a-z0-9]+[.)])\s+/i;
 
   let exactFirstSubRegex: RegExp | null = null;
   if (firstSubId) {
     const escaped = firstSubId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    exactFirstSubRegex = new RegExp(`^\\s*${escaped}\\s+`, 'i');
+    exactFirstSubRegex = new RegExp(`^\\s*${escaped}\\s*`, 'i');
   }
+
+  // Experimental procedures, lab instructions, apparatus notes, or data table headings must NEVER be cut!
+  const isProcedureOrMeta = (line: string): boolean => {
+    const l = line.trim();
+    return (
+      /^(?:experiment\s+\d+|instructions?|procedures?|methods?|steps?\s+\d+|table\s+\d+|figures?\s+\d+|fig\.\s*|[•\-\*])/i.test(l)
+    );
+  };
+
+  const cleanFirstSubText = (firstSub.question_text || '')
+    .replace(/^\s*(?:\([a-zA-Z0-9]+\)\s*)+|^\s*[a-zA-Z0-9]+[.)]\s*/i, '')
+    .trim()
+    .slice(0, 25);
 
   let cutIndex = -1;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (isProcedureOrMeta(line)) {
+      continue;
+    }
 
     const matchesExact = exactFirstSubRegex ? exactFirstSubRegex.test(line) : false;
     const matchesGeneral = subStartPattern.test(line);
 
-    if (matchesExact || (i > 0 && matchesGeneral)) {
+    if (matchesExact) {
+      cutIndex = i;
+      break;
+    }
+
+    // Only allow general match if it matches the first sub-question's actual text content
+    if (i > 0 && matchesGeneral) {
       const remainingText = lines.slice(i).join('\n');
       const hasMarksOrDots = /\[\d+\]|\.{4,}/.test(remainingText);
-      const hasNextSub = lines.slice(i + 1).some((l) => subStartPattern.test(l));
-
-      const cleanFirstSubText = (firstSub.question_text || '')
-        .replace(/^[\s(a-z0-9.)\]:]+/i, '')
-        .trim()
-        .slice(0, 20);
 
       const matchesText =
         cleanFirstSubText.length > 5 &&
         line.toLowerCase().includes(cleanFirstSubText.toLowerCase());
 
-      if (matchesExact || hasNextSub || (hasMarksOrDots && matchesText)) {
+      if (matchesText && hasMarksOrDots) {
         cutIndex = i;
         break;
       }
@@ -1685,13 +1741,14 @@ export function stripDuplicateSubQuestionsFromStem(
     return lines.slice(0, cutIndex).join('\n').trim();
   }
 
-  // Also check inline match if all content was compressed into a single line
-  if (cutIndex < 0 && exactFirstSubRegex && firstSubId) {
+  // Only check inline match if stem is completely unformatted and compressed into a single line (no newlines)
+  if (cutIndex < 0 && lines.length <= 1 && exactFirstSubRegex && firstSubId && cleanFirstSubText.length > 5) {
     const escaped = firstSubId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const inlineMatch = trimmedStem.match(new RegExp(`(\\s+)(${escaped}\\s+[\\s\\S]+)`, 'i'));
+    const escapedCleanText = cleanFirstSubText.slice(0, 15).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const inlineMatch = trimmedStem.match(new RegExp(`(\\s+)(${escaped}\\s+.*?${escapedCleanText})`, 'i'));
     if (inlineMatch && inlineMatch.index !== undefined && inlineMatch.index > 0) {
       const candidateStem = trimmedStem.slice(0, inlineMatch.index).trim();
-      if (candidateStem.length > 0) {
+      if (candidateStem.length > 0 && !candidateStem.endsWith('Table')) {
         return candidateStem;
       }
     }
@@ -2240,9 +2297,12 @@ export async function extractQuestionsFromPdf(
             return {
               ...sq,
               diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
-              question_text: stripDuplicateOptionsFromStem(
-                ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
-                sqOptions || rawOptions
+              question_text: stripDuplicateSubIdPrefix(
+                sq.sub_id,
+                stripDuplicateOptionsFromStem(
+                  ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
+                  sqOptions || rawOptions
+                )
               ),
               options: sqOptions,
               data_tables: Array.isArray((sq as any).data_tables) ? (sq as any).data_tables : undefined,

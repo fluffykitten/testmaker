@@ -7,7 +7,7 @@ import { QuestionEditorModal } from './QuestionEditorModal';
 import { DiagramCropModal } from './DiagramCropModal';
 import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
-import { stripDuplicateOptionsFromStem } from '../lib/gemini';
+import { stripDuplicateOptionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
 import { propagateReadingPassages, stitchPassagesToQuestions } from '../lib/pdfProcessor';
 import { formatPaperLabel } from '../utils/paperUtils';
 import './ExtractionReview.css';
@@ -52,7 +52,10 @@ function cleanExtractedQuestions(qs: ExtractedQuestion[], passages?: ExtractedPa
     question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
     sub_questions: (q.sub_questions || []).map((sq) => ({
       ...sq,
-      question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+      question_text: stripDuplicateSubIdPrefix(
+        sq.sub_id,
+        stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+      ),
     })),
   }));
 }

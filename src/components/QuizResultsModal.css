@@ -609,6 +609,20 @@
   margin: 0;
 }
 
+.qrm-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(138, 191, 68, 0.2);
+  border-top-color: var(--icm-green, #8abf44);
+  border-radius: 50%;
+  animation: qrm-spin 0.8s linear infinite;
+  margin: 0 auto 12px;
+}
+
+@keyframes qrm-spin {
+  to { transform: rotate(360deg); }
+}
+
 .qrm-roster-footer {
   padding: 10px 14px;
   border-top: 1px solid var(--color-border);

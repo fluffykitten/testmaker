@@ -21,6 +21,8 @@ import {
   gradeDeterministicAnswer,
   resolveQuestionModelAnswer,
   extractMultiSelectTargetLetters,
+  isArabicText,
+  ARABIC_OPTION_LETTERS,
 } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import {
@@ -5060,10 +5062,13 @@ export function StudentQuizRunner({
                   </div>
                 )}
                 {currentQuestion.options.map((optionText, oIdx) => {
-                  const letter = String.fromCharCode(65 + oIdx);
+                  const isArabicQ = isArabicText(currentQuestion.question_text || '') || currentQuestion.options?.some((o) => isArabicText(o));
+                  const letter = isArabicQ && oIdx < ARABIC_OPTION_LETTERS.length
+                    ? ARABIC_OPTION_LETTERS[oIdx]
+                    : String.fromCharCode(65 + oIdx);
                   const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
                   const isSelected = isMultiSelect
-                    ? selectedLetters.includes(letter)
+                    ? selectedLetters.includes(String.fromCharCode(65 + oIdx)) || selectedLetters.includes(letter)
                     : Number(answers[currentIndex]) === oIdx;
                   return (
                     <button
@@ -5071,6 +5076,7 @@ export function StudentQuizRunner({
                       type="button"
                       className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''}`}
                       onClick={() => handleSelectOption(oIdx)}
+                      dir={isArabicQ ? 'rtl' : 'auto'}
                     >
                       <span
                         className="sq-choice-letter"
@@ -5225,6 +5231,7 @@ export function StudentQuizRunner({
                         <div className="sq-sub-input-wrap">
                           <textarea
                             className="sq-text-answer-area"
+                            dir="auto"
                             placeholder={isLanguageExam ? `Type answer for part (${sub.sub_id})...` : `Type answer, equation, or steps for (${sub.sub_id})...`}
                             value={subVal}
                             onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
@@ -5390,6 +5397,7 @@ export function StudentQuizRunner({
 
                 <textarea
                   className="sq-text-answer-area"
+                  dir="auto"
                   placeholder={
                     isLanguageExam
                       ? 'Type your answer, analysis, or explanation here...'

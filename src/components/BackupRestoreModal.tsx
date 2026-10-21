@@ -14,6 +14,7 @@ import {
   type RestoreResult,
 } from '../services/restoreService';
 import {
+  loadGsiScript,
   requestGoogleDriveTokenDetails,
   GoogleDriveAuthExpiredError,
   listGoogleDriveBackups,
@@ -97,6 +98,7 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
   // Load estimate stats & sync client ID when opening
   useEffect(() => {
     if (isOpen) {
+      loadGsiScript().catch(() => {});
       getBackupEstimate().then((est) => setStats(est));
       setGdriveToken(getSessionDriveToken());
       loadAndSyncGoogleDriveClientId().then((id) => {
@@ -777,7 +779,7 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                     <strong style={{ color: 'var(--color-text-primary)', display: 'block', marginBottom: '4px' }}>
                       ⚙️ Required Google Cloud Origin Setup:
                     </strong>
-                    To prevent <em>"Error 401: invalid_client / no registered origin"</em>, add your current URL under <strong>Authorized JavaScript origins</strong> in Google Cloud Console:
+                    To prevent <em>"Error 401: invalid_client / no registered origin"</em>, add your current URL under <strong>Authorized JavaScript origins</strong> in Google Cloud Console (strictly without trailing slash):
                     <div style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -806,6 +808,9 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       >
                         Copy Origin
                       </button>
+                    </div>
+                    <div style={{ marginTop: '8px', fontSize: '0.7rem', color: 'var(--color-text-tertiary)', borderTop: '1px dashed rgba(99, 102, 241, 0.2)', paddingTop: '6px' }}>
+                      🛡️ <strong>Note on deployed sites:</strong> If you see <em>"Failed to load Google Identity Services SDK"</em>, ensure ad-blockers (e.g. uBlock Origin, AdGuard) or Brave Shields are not blocking Google's authentication script.
                     </div>
                   </div>
                 </div>

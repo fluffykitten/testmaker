@@ -48,6 +48,9 @@ const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const BACKUP_FOLDER_NAME = 'TestMaker Backups';
 
+const GSI_ERROR_HINT =
+  'Failed to load Google Identity Services SDK. If you are using an ad-blocker (uBlock Origin, Brave Shields, AdGuard, or Privacy Badger), it may be blocking accounts.google.com on this domain. Please pause your ad-blocker for this site and verify that your deployed domain is added to "Authorized JavaScript origins" in Google Cloud Console.';
+
 /**
  * Dynamically loads the Google Identity Services client script if not already present,
  * with polling fallback to eliminate script-listener race conditions.
@@ -61,17 +64,27 @@ export function loadGsiScript(): Promise<void> {
     if (existing) {
       if (window.google?.accounts?.oauth2) return resolve();
 
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', (e) => reject(e));
+      existing.addEventListener('load', () => {
+        if (window.google?.accounts?.oauth2) resolve();
+      });
+      existing.addEventListener('error', () => reject(new Error(GSI_ERROR_HINT)));
 
       // Guard against race if load event already fired before attaching listener
+      let pollCount = 0;
       const pollTimer = setInterval(() => {
+        pollCount++;
         if (window.google?.accounts?.oauth2) {
           clearInterval(pollTimer);
           resolve();
+        } else if (pollCount > 100) { // 5-second polling timeout
+          clearInterval(pollTimer);
+          if (window.google?.accounts?.oauth2) {
+            resolve();
+          } else {
+            reject(new Error(GSI_ERROR_HINT));
+          }
         }
       }, 50);
-      setTimeout(() => clearInterval(pollTimer), 3000);
       return;
     }
 
@@ -79,8 +92,18 @@ export function loadGsiScript(): Promise<void> {
     script.src = GIS_SCRIPT_URL;
     script.async = true;
     script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load Google Identity Services SDK.'));
+    script.onload = () => {
+      if (window.google?.accounts?.oauth2) {
+        resolve();
+      } else {
+        // Allow brief initialization buffer after script load event
+        setTimeout(() => {
+          if (window.google?.accounts?.oauth2) resolve();
+          else reject(new Error(GSI_ERROR_HINT));
+        }, 300);
+      }
+    };
+    script.onerror = () => reject(new Error(GSI_ERROR_HINT));
     document.head.appendChild(script);
   });
 }

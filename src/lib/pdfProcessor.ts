@@ -12,6 +12,7 @@ import {
   normalizePaper4SubQuestions,
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
+  stripDuplicateSubIdPrefix,
   cleanQuotesAndTemperatures,
   type SubjectDomain,
 } from './gemini';
@@ -533,6 +534,87 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
   });
 }
 
+/**
+ * Ensures Practical Exam Questions (Cambridge Paper 5 & 6) do not have Question 2 (Qualitative Analysis on solid A)
+ * mistakenly grouped into Question 1 (Calorimetry / Thermochemistry).
+ */
+export function separatePracticalQuestions(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  const result: ExtractedQuestion[] = [];
+
+  for (const q of questions) {
+    if (!q.sub_questions || q.sub_questions.length <= 2) {
+      result.push(q);
+      continue;
+    }
+
+    const qNum = String(q.question_number).trim();
+    // Only check Question 1 if it has sub-questions switching to solid A / qualitative analysis
+    if (qNum === '1') {
+      let splitIdx = -1;
+      for (let i = 1; i < q.sub_questions.length; i++) {
+        const sq = q.sub_questions[i];
+        const text = sq.question_text || '';
+        const isQ2Start =
+          /tests on solid|solution [A-Z] in a test-tube|portion of solution [A-Z]|solid [A-Z]\./i.test(text) &&
+          !/magnesium|temperature|thermometer|burette/i.test(text);
+        if (isQ2Start) {
+          splitIdx = i;
+          break;
+        }
+      }
+
+      if (splitIdx > 0) {
+        const q1Subs = q.sub_questions.slice(0, splitIdx);
+        const q2Subs = q.sub_questions.slice(splitIdx);
+
+        const q1Marks = q1Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
+        const q2Marks = q2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
+
+        result.push({
+          ...q,
+          sub_questions: q1Subs,
+          total_marks: q1Marks || q.total_marks,
+        });
+
+        // Check if Question 2 already exists in the list
+        const existingQ2Idx = questions.findIndex((item) => String(item.question_number).trim() === '2');
+        if (existingQ2Idx >= 0) {
+          const existingQ2 = questions[existingQ2Idx];
+          const combinedSubs = [...q2Subs, ...(existingQ2.sub_questions || [])];
+          const uniqueSubMap = new Map<string, SubQuestion>();
+          combinedSubs.forEach((s) => {
+            const k = (s.sub_id || '').replace(/[().\s]/g, '').toLowerCase();
+            if (!uniqueSubMap.has(k)) uniqueSubMap.set(k, s);
+          });
+          const mergedQ2Subs = Array.from(uniqueSubMap.values());
+          questions[existingQ2Idx] = {
+            ...existingQ2,
+            sub_questions: mergedQ2Subs,
+            total_marks: mergedQ2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0),
+          };
+        } else {
+          result.push({
+            ...q,
+            question_number: '2',
+            parent_question_id: 'Q2',
+            question_text:
+              'You are provided with one solid: solid A. Do the following tests on solid A. Record all of your observations at each stage.',
+            sub_questions: q2Subs,
+            total_marks: q2Marks || 15,
+            topic: 'Qualitative Analysis',
+            sub_topic: 'Identification of ions and gases',
+          });
+        }
+        continue;
+      }
+    }
+
+    result.push(q);
+  }
+
+  return result;
+}
+
 // ─── Full Pipeline Orchestrator (Zero Storage Uploads during Preview) ─────────
 
 /**
@@ -722,12 +804,22 @@ export async function runExtractionPipeline(
               (adjustedQ.sub_questions && adjustedQ.sub_questions.length > 0) &&
               !adjustedQ.sub_questions.some((s) => normSubKey(s.sub_id) === 'a' || normSubKey(s.sub_id).startsWith('a'));
 
-            const chosenQuestionText =
-              isAdjustedContinuation && existing.question_text
-                ? existing.question_text
-                : existing.question_text && existing.question_text.length >= (adjustedQ.question_text?.length || 0)
-                ? existing.question_text
-                : (adjustedQ.question_text || existing.question_text);
+            const existingLen = (existing.question_text || '').trim().length;
+            const adjustedLen = (adjustedQ.question_text || '').trim().length;
+
+            let chosenQuestionText = existing.question_text || '';
+            if (adjustedLen > existingLen) {
+              // If adjusted text contains experimental procedures, or is substantially more complete
+              if (
+                !isAdjustedContinuation ||
+                adjustedQ.question_text?.toLowerCase().includes('experiment') ||
+                adjustedLen > existingLen + 150
+              ) {
+                chosenQuestionText = adjustedQ.question_text || existing.question_text || '';
+              }
+            } else if (!chosenQuestionText && adjustedQ.question_text) {
+              chosenQuestionText = adjustedQ.question_text;
+            }
 
             questionMap.set(qNumClean, {
               ...existing,
@@ -782,7 +874,8 @@ export async function runExtractionPipeline(
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(stitchedQuestions);
-      const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
+      const separated = separatePracticalQuestions(propagated);
+      const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(separated));
       const finalizedQuestions = normalized.map((q) => ({
         ...q,
         question_text: stripDuplicateSubQuestionsFromStem(
@@ -791,7 +884,10 @@ export async function runExtractionPipeline(
         ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
-          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+          question_text: stripDuplicateSubIdPrefix(
+            sq.sub_id,
+            stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+          ),
         })),
       }));
 
@@ -860,8 +956,9 @@ export async function runExtractionPipeline(
       }
 
       const stitched = stitchPassagesToQuestions(result.questions, verifiedPassages);
+      const separated = separatePracticalQuestions(stitched);
       result.questions = normalizePaper4SubQuestions(
-        normalizeQuestionStyles(propagateReadingPassages(stitched))
+        normalizeQuestionStyles(propagateReadingPassages(separated))
       ).map((q) => ({
         ...q,
         question_text: stripDuplicateSubQuestionsFromStem(
@@ -870,7 +967,10 @@ export async function runExtractionPipeline(
         ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
-          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+          question_text: stripDuplicateSubIdPrefix(
+            sq.sub_id,
+            stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+          ),
         })),
       }));
       result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;

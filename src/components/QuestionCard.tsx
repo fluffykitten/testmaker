@@ -7,7 +7,7 @@ import { ExamAudioPlayer } from './ExamAudioPlayer';
 import { ExamVisualRender } from './ExamVisualRender';
 import { ExamDataTable } from './ExamDataTable';
 import { formatPaperBadge } from '../utils/paperUtils';
-import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem } from '../lib/gemini';
+import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -307,7 +307,7 @@ function QuestionCardComponent({
                 <div className="q-sub-item-header">
                   <span className="q-sub-id">{sub.sub_id}</span>
                   <div className="q-sub-text">
-                    <ExamMathText content={sub.question_text} />
+                    <ExamMathText content={stripDuplicateSubIdPrefix(sub.sub_id, sub.question_text)} />
                   </div>
                   <span className="q-sub-marks">[{sub.marks}]</span>
                 </div>

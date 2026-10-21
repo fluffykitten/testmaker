@@ -281,12 +281,18 @@ export function cleanMcqOptionContent(text: string, oIdx?: number): string {
   let clean = text.trim();
   // Strip duplicate prefix like "Option A: A " -> "Option A: "
   clean = clean.replace(/^Option\s+([A-F]):\s+[A-F][\.\)\s:-]+\s*/i, 'Option $1: ');
+  const arLetters = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];
   if (oIdx !== undefined && oIdx >= 0 && oIdx < 26) {
     const letter = String.fromCharCode(65 + oIdx);
-    clean = clean.replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '');
+    clean = clean.replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[.)\\s:-]+)\\s*`, 'i'), '');
+    if (oIdx < arLetters.length) {
+      const arL = arLetters[oIdx];
+      clean = clean.replace(new RegExp(`^\\s*(\\(${arL}\\)|${arL}[.)\\s:-]+)\\s*`), '');
+    }
   } else {
     // Strip standalone leading "A ", "A. ", "A) ", "(A) ", "A: "
     clean = clean.replace(/^[([]?[A-Fa-f][)\]\.:\s-]+\s*/, '');
+    clean = clean.replace(/^[([]?[أإآابجددهـ][.)\]:\s-]+\s*/, '');
   }
   return clean.trim();
 }

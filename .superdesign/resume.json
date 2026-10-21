@@ -224,6 +224,49 @@
           "currentVersion": 1
         }
       }
+    },
+    "candidate-results-portal": {
+      "targetKind": "existing-ui",
+      "projectId": "d1eefbd5-08c4-44d7-a75c-9ca3e5de844e",
+      "baselineDraftId": "65378ef0-6bef-414a-9604-593da72f8395",
+      "activeDraftId": "bd922676-4b93-445e-93f8-a0376619938f",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [
+        "5447eb4e-7c75-4075-803b-f251bc08f031",
+        "brand-logo-icm"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "brand-logo-icm",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/d1eefbd5-08c4-44d7-a75c-9ca3e5de844e/brand-assets/brand-logo-icm/icm_school_logo.png",
+          "sourcePath": "public/logos/icm_school_logo.png"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "src/components/StudentResultModal.tsx:89:378",
+        "src/components/StudentResultModal.css:1:350",
+        ".superdesign/init/theme.md"
+      ],
+      "drafts": {
+        "65378ef0-6bef-414a-9604-593da72f8395": {
+          "title": "Current Candidate Results Portal (Baseline)",
+          "visualDirection": "ground truth baseline reproduction",
+          "currentVersion": 1
+        },
+        "4f75bbb2-dc5f-4344-aa9b-388aee53d178": {
+          "title": "Minimalist Candidate Results Portal - ICM Exam Platform",
+          "visualDirection": "clean white surface (#ffffff) with crisp hairline borders (#e2e8f0), high-clarity performance banner with circular score ring and official grade pill, and structured examiner feedback cards",
+          "parentDraftId": "65378ef0-6bef-414a-9604-593da72f8395",
+          "currentVersion": 1
+        },
+        "bd922676-4b93-445e-93f8-a0376619938f": {
+          "title": "Executive Light Academic Dashboard & Diagnostic Review",
+          "visualDirection": "ultra-clean high-density light layout with candidate scorecard strip, action dock for PDF reports, topic mastery cards, and clean question review accordion",
+          "parentDraftId": "65378ef0-6bef-414a-9604-593da72f8395",
+          "currentVersion": 1
+        }
+      }
     }
   }
 }

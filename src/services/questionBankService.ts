@@ -113,6 +113,13 @@ export function inferTopicFromContent(text?: string, subTopic?: string): string 
   if (!text) return 'General';
   const lower = text.toLowerCase();
 
+  // Arabic Language & Islamic Studies
+  if (/نحو|فاعل|مفعول|مبتدأ|خبر|إعراب|اعراب|فعل|اسم|حرف/u.test(text)) return 'النحو والصرف (Arabic Grammar)';
+  if (/قراءة|نص|فقرة|فهم المقروء|استيعاب/u.test(text)) return 'فهم المقروء (Reading Comprehension)';
+  if (/بلاغة|تشبيه|استعارة|كناية|محسنات/u.test(text)) return 'البلاغة والأدب (Rhetoric & Literature)';
+  if (/مفردات|معنى|مرادف|ضد|معجم/u.test(text)) return 'المفردات والدلالة (Vocabulary)';
+  if (/قرآن|تفسير|حديث|فقه|عقيدة|توحيد|سيرة/u.test(text)) return 'الدراسات الإسلامية (Islamic Studies)';
+
   // English & Languages
   if (/reading|comprehension|passage|text\s*\d|komodo|article|paragraph/i.test(lower)) return 'Reading Comprehension';
   if (/listen|dialogue|speaker|conversation|audio|recording|transcript/i.test(lower)) return 'Listening Comprehension';

@@ -173,6 +173,7 @@ export function InlineGapText({
               type="text"
               id={`gap-input-${compId}-${seg.gapNum}`}
               className={`sq-gap-input sq-cloze-input-${compId}`}
+              dir="auto"
               value={gapVal}
               placeholder={`[ ${seg.gapNum} ]`}
               onChange={(e) => onGapChange?.(seg.gapId, e.target.value)}

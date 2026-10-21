@@ -41,6 +41,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [submissions, setSubmissions] = useState<StudentSubmission[]>(() =>
     getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId)
   );
+  const [isLoadingSubmissions, setIsLoadingSubmissions] = useState<boolean>(() => {
+    return getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length === 0;
+  });
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'flagged'>('all');
@@ -113,12 +116,17 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
   const refreshSubmissions = useCallback(async () => {
     try {
+      if (submissions.length === 0) {
+        setIsLoadingSubmissions(true);
+      }
       const subs = await fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode, quiz.testId);
       setSubmissions(subs);
     } catch (e) {
       console.warn('Failed to refresh submissions:', e);
+    } finally {
+      setIsLoadingSubmissions(false);
     }
-  }, [quiz.id, quiz.quizCode, quiz.testId]);
+  }, [quiz.id, quiz.quizCode, quiz.testId, submissions.length]);
 
   useEffect(() => {
     refreshSubmissions();
@@ -1141,7 +1149,15 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               </div>
             </div>
 
-            {submissions.length === 0 ? (
+            {isLoadingSubmissions && submissions.length === 0 ? (
+              <div className="qrm-empty-roster">
+                <div className="qrm-loading-spinner" />
+                <h3>Syncing Submissions…</h3>
+                <p>
+                  Connecting to cloud database to retrieve candidate papers and audit telemetry.
+                </p>
+              </div>
+            ) : submissions.length === 0 ? (
               <div className="qrm-empty-roster">
                 <div className="empty-icon">📝</div>
                 <h3>No Submissions Yet</h3>

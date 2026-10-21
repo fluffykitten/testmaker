@@ -4,6 +4,7 @@
 
 import type { Question, MarkScheme } from '../types/database';
 import { parseRobustJson, getApiKeyForChunk } from '../lib/gemini';
+import { isArabicText, normalizeArabicText } from './deterministicGradingService';
 
 export interface AICriteriaPoint {
   point: string;
@@ -119,13 +120,15 @@ function fallbackRuleBasedEvaluation(
   subMarkScheme: string | undefined,
   studentAnswer: string
 ): AIEvaluationResult {
-  const cleanAnswer = studentAnswer.toLowerCase();
   const criteriaList = subMarkScheme
     ? subMarkScheme.split(/(?:;|\n)+/).map((p) => p.trim()).filter(Boolean)
     : [
         ...(markScheme?.marking_points || []),
         ...(markScheme?.acceptable_answers || []),
       ];
+
+  const isAr = isArabicText(studentAnswer) || criteriaList.some(isArabicText);
+  const cleanAnswer = isAr ? normalizeArabicText(studentAnswer).toLowerCase() : studentAnswer.toLowerCase();
 
   if (criteriaList.length === 0) {
     const isNonEmpty = cleanAnswer.trim().length >= 10;
@@ -148,15 +151,17 @@ function fallbackRuleBasedEvaluation(
   const missingKeyPoints: string[] = [];
 
   for (const criterion of criteriaList) {
-    // Extract key words (> 3 chars)
-    const keywords = criterion
+    // Extract key words (> 2 chars for Arabic, >= 4 for English)
+    const normCrit = isAr ? normalizeArabicText(criterion) : criterion;
+    const keywords = normCrit
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, '')
       .split(/\s+/)
-      .filter((w) => w.length >= 4 && !['than', 'with', 'from', 'this', 'that', 'they', 'will', 'have', 'more', 'less'].includes(w));
+      .filter((w) => w.length >= (isAr ? 2 : 4) && !['than', 'with', 'from', 'this', 'that', 'they', 'will', 'have', 'more', 'less'].includes(w));
 
     const matchedCount = keywords.filter((kw) => cleanAnswer.includes(kw)).length;
-    const isAchieved = keywords.length > 0 ? matchedCount >= Math.ceil(keywords.length * 0.4) : cleanAnswer.length > 10;
+    const minThreshold = Math.max(1, Math.ceil(keywords.length * 0.35));
+    const isAchieved = keywords.length > 0 ? matchedCount >= minThreshold : cleanAnswer.length > 10;
 
     criteriaResults.push({
       point: criterion,
