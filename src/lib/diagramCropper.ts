@@ -207,18 +207,23 @@ function detectQuestionBoundary(
   if (!ctx) return false;
 
   const { width } = sourceCanvas;
-  const marginWidth = Math.max(1, Math.round(width * LEFT_MARGIN_FRACTION));
+  // Start at 7% of page width so we completely skip the outer 0–6.5% vertical
+  // "DO NOT WRITE IN THIS MARGIN" border text and barcodes on Cambridge papers!
+  // Bold question numbers ("1", "2", "17") sit in the 7%–12.5% column.
+  const marginStartX = Math.max(0, Math.round(width * 0.07));
+  const marginEndX = Math.max(marginStartX + 1, Math.round(width * LEFT_MARGIN_FRACTION));
 
   // Clamp to canvas bounds
+  const sx = Math.min(width - 1, marginStartX);
   const sy = Math.max(0, Math.round(stripY));
   const sh = Math.min(sourceCanvas.height - sy, Math.max(1, Math.round(stripHeight)));
-  const sw = Math.min(width - 0, marginWidth);
+  const sw = Math.min(width - sx, Math.max(1, marginEndX - sx));
 
   if (sh <= 0 || sw <= 0) return false;
 
   let imageData: ImageData;
   try {
-    imageData = ctx.getImageData(0, sy, sw, sh);
+    imageData = ctx.getImageData(sx, sy, sw, sh);
   } catch {
     return false;
   }
@@ -226,7 +231,7 @@ function detectQuestionBoundary(
   const data = imageData.data;
   let darkPixelCount = 0;
 
-  // Sample every pixel row/col in the left margin
+  // Sample every pixel row/col in the question-number margin band
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3];
     if (a < 10) continue;
@@ -334,13 +339,17 @@ function cropFromCanvas(
   const rawCropW = Math.round(((xmax - xmin) / 1000) * width);
   const rawCropH = Math.round(((ymax - ymin) / 1000) * height);
 
+  // Safe printable horizontal bounds (excludes outer 5.5% margins where "DO NOT WRITE IN THIS MARGIN" and barcodes live)
+  const minPrintableX = Math.round(width * 0.055);
+  const maxPrintableX = Math.round(width * 0.945);
+
   // Add generous padding (15% of crop dimensions)
   const padX = Math.round(rawCropW * BASE_PADDING_FRACTION);
   const padY = Math.round(rawCropH * BASE_PADDING_FRACTION);
 
-  let cropX = Math.max(0, rawCropX - padX);
+  let cropX = Math.max(minPrintableX, rawCropX - padX);
   let cropY = Math.max(0, rawCropY - padY);
-  let cropW = Math.min(width - cropX, Math.max(MIN_CROP_WIDTH, rawCropW + 2 * padX));
+  let cropW = Math.min(maxPrintableX - cropX, Math.max(MIN_CROP_WIDTH, rawCropW + 2 * padX));
   let cropH = Math.min(height - cropY, Math.max(MIN_CROP_HEIGHT, rawCropH + 2 * padY));
 
   // ─── Initial crop for edge scanning ──────────────────────────────────
@@ -416,19 +425,23 @@ function cropFromCanvas(
       }
     }
 
-    // ── Left expansion (no boundary guard needed) ─────────────────
-    if (contentEdges.left && cropX > 0) {
-      const expansion = Math.min(cropX, expandX);
-      cropX -= expansion;
-      cropW += expansion;
-      expanded = true;
+    // ── Left expansion (clamped to printable margin) ──────────────
+    if (contentEdges.left && cropX > minPrintableX) {
+      const expansion = Math.min(cropX - minPrintableX, expandX);
+      if (expansion > 0) {
+        cropX -= expansion;
+        cropW += expansion;
+        expanded = true;
+      }
     }
 
-    // ── Right expansion (no boundary guard needed) ────────────────
-    if (contentEdges.right && (cropX + cropW) < width) {
-      const expansion = Math.min(width - cropX - cropW, expandX);
-      cropW += expansion;
-      expanded = true;
+    // ── Right expansion (clamped to printable margin) ─────────────
+    if (contentEdges.right && (cropX + cropW) < maxPrintableX) {
+      const expansion = Math.min(maxPrintableX - cropX - cropW, expandX);
+      if (expansion > 0) {
+        cropW += expansion;
+        expanded = true;
+      }
     }
 
     // If no edge had content, the crop is clean — stop expanding

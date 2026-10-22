@@ -102,54 +102,96 @@ Analyze the attached exam paper PDF page(s) and any mark scheme / answer key con
 - NEVER merge Question 2 or any of its sub-parts into Question 1!
 - Every numbered question (1, 2, 3...) MUST be its own distinct Question object in the "questions" array!
 
+NON-QUESTION PAGES & REFERENCE APPENDICES EXCLUSION (CRITICAL):
+- NEVER extract reference appendices or administrative pages as questions or sub-questions!
+- Strictly IGNORE:
+  * Cover pages & general candidate instructions (Page 1) — only use Page 1 to populate "paper_metadata".
+  * Blank pages ("BLANK PAGE") and copyright / permission acknowledgement notices.
+  * Reference data sheets at the back of the paper: "The Periodic Table of Elements", "Notes for use in qualitative analysis", "Tests for anions", "Tests for aqueous cations", "Tests for gases", "Flame tests for metal ions", and mathematical/physics formula sheets.
+- If a PDF chunk consists exclusively of blank pages or reference appendices, return "questions": [].
+
+CAMBRIDGE PAPER 2 & PAPER 1 MULTIPLE CHOICE EXAMS (CHEMISTRY 0620/1x/2x, PHYSICS 0625/1x/2x, BIOLOGY 0610/1x/2x):
+1. TABULAR OPTION MCQs (ROWS LABELED A, B, C, D):
+   - Many Cambridge MCQs present a multi-column comparison table where the rows themselves are labeled A, B, C, and D (e.g. Q1 cause of gas pressure / effect of temperature; Q7 chemical formulae across columns; Q8 tick "✓" and cross "✗" columns; Q15 Contact process conditions; Q23 alloy strength and explanation; Q28 anode and cathode ionic half-equations; Q31 structural isomers yes/no table).
+   - For EVERY Tabular Option MCQ:
+     a) Transcribe the COMPLETE Markdown Table (including column headers and rows A, B, C, D) directly inside "question_text" so the table layout and column headers are 100% preserved!
+     b) Visually inspect the PDF page image for tick marks ("✓") and cross marks ("✗") inside table cells (as in Q8) — raw PDF text often omits dingbat glyphs, so you MUST read ✓ and ✗ visually!
+     c) ALSO populate the "options" array with self-contained row summaries combining the column headers and cell values:
+        e.g. "options": ["A. cause: collisions between gas particles | effect: collisions become less frequent", "B. ...", "C. ...", "D. ..."] (or for ✓/✗ tables: "A. electrical energy: ✗ | electrolysis: ✗", etc.).
+     d) If the question ALSO has molecular structures or apparatus diagrams above the table (e.g. Q31 showing structures X and Y above the comparison table), set "has_diagram": true, "diagram_source": "qp", and "bounding_box" around the structures X and Y!
+2. GRAPHICAL 4-OPTION MCQs ("choice_grid" — DIAGRAMS A, B, C, D):
+   - When options A, B, C, D are 4 visual diagrams, apparatus setups, reaction pathway graphs, or organic structural formulas (e.g. Q2 acidic gas diffusion apparatus A–D; Q10 reaction pathway diagrams A–D; Q32 structures of butanoic acid A–D; Q35 polymer chain + monomer diagrams A–D):
+     a) Set "has_diagram": true, "diagram_source": "qp", "diagram_type": "choice_grid".
+     b) Set a single generous "bounding_box" encompassing all 4 visual option diagrams A, B, C, D together (and if there is a stem diagram immediately above them, such as the polymer chain in Q35, include both the stem diagram and options A–D in the bounding box).
+     c) In "options", provide clear descriptive text/formula labels for each visual option rather than bare letters:
+        e.g. for Q32: ["A. propan-1-ol ($CH_3CH_2CH_2OH$)", "B. butan-1-ol ($CH_3CH_2CH_2CH_2OH$)", "C. propanoic acid ($CH_3CH_2COOH$)", "D. butanoic acid ($CH_3CH_2CH_2COOH$)"].
+3. NUMBERED STATEMENTS IN MCQs (1, 2, 3, 4):
+   - When a question lists numbered statements (1, 2, 3 or 1, 2, 3, 4) followed by "Which statements are correct?" and options like "A 1 and 2", "B 1 and 4", "C 2 and 3", "D 3 and 4":
+     * Keep all numbered statements 1–4 inside "question_text" (formatted as a clean list).
+     * Put ONLY the lettered choices in "options": ["A. 1 and 2", "B. 1 and 4", "C. 2 and 3", "D. 3 and 4"].
+
 CAMBRIDGE PAPER 5 & PAPER 6 PRACTICAL & ALTERNATIVE TO PRACTICAL EXAMS (CHEMISTRY 0620/5x/6x, 9701, PHYSICS 0625/5x/6x, 9702, BIOLOGY 0610/5x/6x, 9700):
 CRITICAL LABORATORY PROCEDURE & INSTRUCTION PRESERVATION:
-1. FULL EXPERIMENT INSTRUCTIONS (TOP PRIORITY):
-   - Practical and Alternative to Practical papers contain detailed laboratory instructions, apparatus procedures, and numbered experiments (e.g. "Instructions: You are going to do five experiments.", "Experiment 1: • Rinse the burette...", "Experiment 2: • ...", "Experiment 3: • ...", "Experiment 4: • ...", "Experiment 5: • ...", or "Tests on solid A...").
-   - You MUST transcribe ALL instructions, procedures, and experiment steps (Experiment 1 to 5) COMPLETELY and VERBATIM inside the parent Question "question_text"!
-   - NEVER drop, truncate, summarize, or omit the experiment instructions (Experiment 1 to 5)! Both students and teachers require every single step, measurement, and reagent instruction to answer the questions and complete the data tables.
-2. EXPERIMENTAL DATA TABLES:
-   - When a results table (e.g. Table 1.1 with experiment columns/rows) is printed in the paper:
-     * Extract it in "data_tables" array or directly in Markdown table format within the question text.
-3. SEPARATE PRACTICAL QUESTIONS:
-   - Question 1 (e.g. Thermochemistry / calorimetry / rates investigation) -> "question_number": "1"
-   - Question 2 (e.g. Tests on solid A / Qualitative analysis with reagents) -> "question_number": "2". NEVER merge Question 2 into Question 1!
-   - Question 3 (e.g. Planning investigation / alloy percentage by mass) -> "question_number": "3".
+1. FULL EXPERIMENT INSTRUCTIONS ACROSS PAGES (TOP PRIORITY):
+   - Practical and Alternative to Practical papers often place the entire experimental procedure on the first page of a question (e.g. Page 3: "1 You are going to investigate the temperature change... Instructions: You are going to do five experiments. Experiment 1: • Rinse the burette... Experiment 2... Experiment 3... Experiment 4... Experiment 5..."), while sub-questions (a), (b), (c)... start on the NEXT page (Page 4)!
+   - You MUST transcribe ALL instructions, procedures, and experiment steps (Experiment 1 to 5, or "Tests on solid A" preparation steps) COMPLETELY and VERBATIM inside the parent Question "question_text"!
+   - NEVER drop, truncate, summarize, or omit the experiment instructions! Both students and teachers require every single step, volume, and reagent instruction to complete the data tables and answer the sub-questions.
+2. EXPERIMENTAL DATA TABLES & GRAPH GRIDS (PAGE-ACCURATE ATTACHMENT):
+   - When sub-question (a) asks to "Complete Table 1.1" (e.g. on Page 4):
+     * Transcribe the complete Markdown table for Table 1.1 inside sub-question "(a)"'s "question_text" AND in "data_tables".
+     * Note that in Practical Paper 5, volumes stated in the Experiment 1–5 instructions (e.g. 30.0, 25.0, 20.0, 15.0, 10.0 cm³) are the expected entries for the volume column in Table 1.1!
+   - When sub-question (b) asks to plot a graph on "Fig. 1.1" (e.g. on Page 4):
+     * Attach the graph grid diagram directly to sub-question "(b)" ("has_diagram": true, "diagram_source": "qp", "diagram_type": "graph", "resource_ref": "Fig. 1.1", "page_number": <exact PDF page of Fig. 1.1>, "bounding_box": [...]).
+     * NEVER attach Fig. 1.1 to the parent Question 1 if Question 1 started on an earlier page (Page 3) that has no diagram!
+3. SEPARATE PRACTICAL QUESTIONS & QUESTION 3 EXTENDED PLANNING:
+   - Question 1 (Rate / Thermochemistry / Titration investigation) -> "question_number": "1"
+   - Question 2 (Qualitative analysis / "Tests on solid A") -> "question_number": "2". NEVER merge Question 2 into Question 1! Preserve multi-line observation prompts verbatim (e.g. "dropwise: ...", "in excess: ...").
+   - Question 3 (Extended 6-mark Planning Investigation, e.g. "Plan an investigation to find the percentage by mass of aluminium in a sample of duralumin... [6]") -> "question_number": "3".
+     * Question 3 in Paper 5/6 typically has NO (a), (b) sub-parts! Extract it with "question_style": "Structured", "sub_questions": [], "total_marks": 6, include any stimulus table (e.g. Table 3.1 metal reactions) in both "question_text" (Markdown) and "data_tables", and provide all 6 marking points in "mark_scheme.marking_points".
 
-CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
-1. INTRODUCTORY SCENARIO STEMS VS SUB-QUESTIONS:
-   - In Cambridge structured papers, section (a) often begins with an introductory experimental setup, apparatus description, reaction equation, or diagram, followed by sub-parts (i), (ii).
-   - NEVER drop or skip the introductory setup text of (a)! 
-     * Place the overall scenario/apparatus description in the parent Question container ("question_text" and "has_diagram": true). DO NOT duplicate sub-parts (a), (b), (c) inside parent question_text! Sub-parts belong exclusively in the "sub_questions" array.
-     * In the first sub-question "(a)(i)", ALSO preserve the section context (e.g. "(a) A student investigates the reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.") so that sub-question (a)(i) is completely self-contained!
-   - When section (b) or section (c) introduces a new scenario, reaction, or graph followed by (i), (ii):
-     * Prepend the section introductory text to the first sub-part "(b)(i)" (e.g. "(b) The student repeats the experiment using powdered marble chips.\\\\n\\\\n(i) Explain why the rate of reaction increases.").
-     * If section (b) has its own graph or apparatus diagram, set "has_diagram": true, diagram_source="qp", and bounding_box directly on sub-question "(b)(i)"!
-   - When a part has direct marks without roman numerals (e.g. "(a) State the formula of hydrochloric acid. [1]" or "(c) Describe one effect... [2]"):
-     * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" or "(c)" and its marks. NEVER swallow it into parent question_text where it loses its marks and student answer box!
+CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP PRIORITY):
+1. INTRODUCTORY SCENARIO STEMS, WORD BANKS & SUB-QUESTIONS:
+   - If a question begins with a shared word bank / list of substances and instruction (e.g. Q1: "A list of gases is shown: ammonia, carbon dioxide... Answer the following questions using only the gases from the list... Give the name of the gas that:"), place the ENTIRE word bank and lead-in prompt ("Give the name of the gas that:") in the parent Question "question_text", and extract (a), (b), (c), (d), (e), (f) into "sub_questions".
+   - In Cambridge structured papers, section (a) often begins with an introductory experimental setup, isotope/element context, reaction equation, or diagram, followed by sub-parts (i), (ii).
+   - NEVER drop or skip the introductory setup text of (a), (b), (c), or (f)!
+     * Place the overall question opening stem in the parent Question "question_text". DO NOT duplicate sub-parts (a), (b), (c) inside parent "question_text"!
+     * When section (a), (b), (c), or (f) has introductory text before (i), (ii) (e.g. "(b) The relative atomic mass of boron to one decimal place is 10.8." before "(i) Determine the relative abundance...", or "(c) Aluminium is extracted from its purified ore as shown in Fig. 2.1." before "(i) Name the ore..."), ALWAYS prepend that section's introductory text to its first sub-part ("(a)(i)", "(b)(i)", "(c)(i)", "(f)(i)") so that every sub-question is 100% self-contained!
+   - PAGE-ACCURATE SUB-QUESTION DIAGRAMS (CRITICAL):
+     * Multi-page structured questions often introduce diagrams in later sub-parts on subsequent pages (e.g. Question 2 starts on Page 3 with Table 2.1, introduces Fig. 2.1 electrolysis cell in part (c) on Page 4, and introduces Fig. 2.2 electronic configuration brackets in part (f)(ii) on Page 5; or Question 4 introduces Fig. 4.1 graph in part (b) on Page 8).
+     * Attach each diagram directly to the specific sub-question that introduces or uses it (e.g. Fig. 2.1 on "(c)(i)" with "page_number": 4; Fig. 2.2 on "(f)(ii)" with "page_number": 5; Fig. 4.1 on "(b)(i)" with "page_number": 8)!
+     * ALWAYS set "page_number" on every sub-question to the exact 1-indexed PDF page number (within the chunk) where that sub-question and its diagram appear! NEVER set parent "has_diagram": true on Page 3 if the diagram actually lives on Page 4!
+   - SCAFFOLDED MULTI-STEP CALCULATIONS (BULLETED STEPS INSIDE ONE SUB-QUESTION):
+     * When a single sub-question (e.g. Q4(c) [5]) asks to calculate a quantity "using the following steps:" followed by unnumbered bullet points ("• Calculate the number of moles... .............. mol", "• Determine the number of moles... .............. mol", etc.) with a single mark bracket [5] at the bottom:
+     * Keep ALL bulleted steps and their unit answer lines together inside that single sub-question "(c)"! Do NOT split unlabelled bullets into fake sub-ids. Put the step-by-step numerical answers in "(c)"'s "mark_scheme".
+   - STRUCTURED RESPONSE CUES, FILL-IN EQUATIONS & TABLES:
+     * Preserve all structured response prompts, numbered answer lines, and unit suffixes inside the sub-question's "question_text":
+       - Dual prompts: "name: ..............................\\nexplanation: .............................." or "test: ..............................\\nobservations: .............................." or "from .............................. to .............................." or "temperature: .............................. °C\\npressure: .............................. kPa" or "method 1: ..............................\\nmethod 2: .............................."
+       - Ranked lists: "1 .............................. most reactive\\n2 ..............................\\n3 ..............................\\n4 .............................."
+       - Incomplete chemical/ionic equations: "$............ + ....Br^-(aq) \\\\rightarrow .................... + ....................$"
+     * When a table includes a key (e.g. "key: ✓ = displacement reaction occurs, ✗ = displacement reaction does not occur") and empty cells for the student to complete, transcribe the table (with ✓, ✗, shaded cells as "—", and blank cells as "[       ]") AND the key in "question_text".
 
-2. "total_marks": Sum of all sub-question marks.
-3. "sub_questions": Array containing all sub-parts with their respective text, marks, and mark schemes.
+2. "total_marks": Sum of all sub-question marks (must match the "[Total: X]" printed at the end of the question).
+3. "sub_questions": Array containing all sub-parts with their respective text, marks, page_number, diagram fields, and mark schemes.
 
 4. DIAGRAM TYPOLOGY & EMBEDDED VALUE DETECTION:
    - "diagram_type": Classify visual content if present:
-     * "graph": Cartesian coordinate graphs, axes with units (e.g. speed-time, extension-load, cooling curve).
-     * "circuit": Electrical circuits, schematics with components (resistors, switches, power supplies, ammeters).
+     * "graph": Cartesian coordinate graphs, axes with units, or plotting grids (e.g. Fig. 1.1, Fig. 4.1).
+     * "circuit": Electrical circuits, schematics with components.
      * "choice_grid": Multiple-choice question with 4 graphical diagram choices A, B, C, D. Set bounding_box around all 4 diagrams together, and provide descriptive text labels in "options".
-     * "apparatus": Laboratory apparatus setup or diagram.
+     * "apparatus": Laboratory apparatus setup, electrolysis cell (Fig. 2.1), chromatography diagram, or dot-and-cross ion template (Fig. 2.2).
      * "photo": Real photographic image or biological specimen.
-   - "has_embedded_values": Set true if the visual contains explicit numbers, dimensions, or coordinates (e.g. "1.4 m", "12 V", "20 cm³") that govern the calculations.
+   - "has_embedded_values": Set true if the visual contains explicit numbers, dimensions, or coordinates (e.g. "1.70 cm", "2.60 cm", "3.50 cm", "4.40 cm" on a chromatography diagram) that govern the calculations.
 
 5. SUB-QUESTION DEPENDENCY MAPPING:
-   - "depends_on_sub_ids": In multi-part structured questions, if a sub-part requires the numerical answer or result of a previous sub-part (e.g. "using your value from (b)(i)", "hence calculate the energy transferred..."), record the IDs of those prerequisite sub-parts in an array (e.g. ["(b)(i)"]).
+   - "depends_on_sub_ids": In multi-part structured questions, if a sub-part requires the numerical answer or observation from a previous sub-part (e.g. "(b)(ii) Pour the solution left in the test-tube from (b)(i)...", "(f)(ii) To the product from (f)(i)..."), record the prerequisite sub-part IDs (e.g. ["(b)(i)"]).
 
 6. MULTI-PAGE STRADDLING QUESTIONS & CONTINUATION FRAGMENTS:
-   - Cambridge structured questions regularly span across 2 pages (e.g. parent scenario, Figure 4.1, (a), (b), (c) on one page; (d), Figure 4.3, [Total: 7] on the next page).
-   - NEVER drop earlier sub-parts when a question continues onto a second page!
-   - If a chunk begins with a continuation sub-part (e.g. "(d)", "(b)(iv)", "(c)") without a large question number heading:
-     * Deduce the parent question number from context (e.g. followed by Question 5 -> belongs to Question 4).
-     * Always set "question_number": "4" (clean integer only, NEVER "4(d)", "4 d", or "(d)").
-     * Extract the sub-part into "sub_questions" with sub_id "(d)".`
+   - Cambridge structured questions regularly span across 2 or 3 pages (e.g. Question 1 across Pages 3–5; Question 2 across Pages 3–5 or Pages 6–8).
+   - NEVER drop earlier sub-parts when a question continues onto a second or third page!
+   - If a chunk begins with a continuation sub-part (e.g. "(c)", "(b)(ii)", "(f)(i)") without a large question number heading:
+     * Deduce the parent question number from context (e.g. followed by Question 3 -> belongs to Question 2).
+     * Always set "question_number": "2" (clean integer only, NEVER "2(c)", "2 c", or "(c)").
+     * Extract each sub-part into "sub_questions" with its exact sub_id and exact "page_number".`
     : `QUESTION STRUCTURE RULES (GENERAL / NON-IGCSE):
 - If a question has sub-parts (e.g. (a), (b), (i), (ii), or 1.1, 1.2), group them under the parent question container object in 'sub_questions'.
 - If questions are standalone numbered questions (e.g. 1, 2, 3, 4, 5...) without sub-parts, extract each as its own top-level question object with an empty 'sub_questions: []' array.
@@ -185,58 +227,96 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY & CONTEXT PRESERVATION (TOP PRIORITY):
     ? `[
         {
           "sub_id": "(a)(i)",
+          "page_number": 1,
           "question_text": "(a) A student investigates the rate of reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.",
           "marks": 1,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
           "mark_scheme": "carbon dioxide / $CO_2$ [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(a)(ii)",
-          "question_text": "Describe a test for this gas.\\\\ntest: ...\\\\nresult: ...",
+          "page_number": 1,
+          "question_text": "Describe a test for this gas.\\\\ntest: ..............................\\\\nobservations: ..............................",
           "marks": 2,
-          "mark_scheme": "limewater [1]; turns milky / cloudy [1]"${subGuidanceSnippet}
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
+          "mark_scheme": "test: limewater [1]; observations: turns milky / cloudy [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(b)(i)",
-          "question_text": "(b) The student measures the volume of gas produced over time.\\\\n\\\\n(i) Explain why the rate of reaction decreases as the reaction proceeds.",
+          "page_number": 2,
+          "question_text": "(b) The student measures the volume of gas produced over time and plots the graph shown in Fig. 1.2.\\\\n\\\\n(i) Explain why the rate of reaction decreases as the reaction proceeds.",
           "marks": 2,
+          "has_diagram": true,
+          "diagram_source": "qp",
+          "diagram_type": "graph",
+          "resource_ref": "Fig. 1.2",
+          "bounding_box": [120, 140, 480, 780],
           "mark_scheme": "Concentration of reactants decreases [1]; fewer successful collisions per unit time [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(b)(ii)",
-          "question_text": "Calculate the volume of $CO_2$ gas produced at standard temperature and pressure from 0.05 mol of $CaCO_3$.",
+          "page_number": 2,
+          "question_text": "Calculate the volume of $CO_2$ gas produced at room temperature and pressure from 0.05 mol of $CaCO_3$.",
           "marks": 2,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
           "mark_scheme": "$0.05 \\\\times 24 = 1.2 \\\\text{ dm}^3$ [2]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(c)",
+          "page_number": 2,
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
           "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\\\ge E_a$ [1]"${subGuidanceSnippet}
         }
       ]`
     : `[
         {
           "sub_id": "(a)",
+          "page_number": 1,
           "question_text": "State the formula of hydrochloric acid.",
           "marks": 1,
+          "has_diagram": false,
+          "bounding_box": null,
           "mark_scheme": "$HCl$ [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(b)",
+          "page_number": 1,
           "question_text": "Explain why the rate of reaction decreases as the reaction proceeds.",
           "marks": 2,
+          "has_diagram": false,
+          "bounding_box": null,
           "mark_scheme": "Concentration of reactants decreases [1]; fewer successful collisions per unit time [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(c)",
+          "page_number": 1,
           "question_text": "Complete the table to show the formula and physical state of each compound at r.t.p.\\\\n\\\\n| Compound Name | Formula | State at r.t.p. |\\\\n|---|---|---|\\\\n| Methane | $CH_4$ | gas |\\\\n| Calcium carbonate | $CaCO_3$ | solid |\\\\n| Sodium chloride | [       ] | [       ] |",
           "marks": 2,
+          "has_diagram": false,
+          "bounding_box": null,
           "mark_scheme": "$NaCl$ [1]; solid [1]"${subGuidanceSnippet}
         },
         {
           "sub_id": "(d)",
+          "page_number": 2,
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
+          "has_diagram": false,
+          "bounding_box": null,
           "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\\\ge E_a$ [1]"${subGuidanceSnippet}
         }
       ]`;
@@ -378,35 +458,43 @@ CRITICAL FORMATTING RULES:
    - FILL-IN-THE-BLANK SENTENCES:
      * Transcribe completion statements with clear blank lines (e.g. 'Organisms are classified into groups by the .......................................... that they share.') and mark brackets [ ].
 3. Group all sub-questions inside their parent question's sub_questions array if the question has sub-parts. For standalone questions, keep sub_questions empty.
-4. CHEMICAL FORMULAS, WORD EQUATIONS & KATEX MATH STANDARDIZATION:
-   - Convert ALL mathematical symbols, chemical formulas, and equations to KaTeX-compatible LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
+4. CHEMICAL FORMULAS, REVERSIBLE EQUATIONS & KATEX MATH STANDARDIZATION:
+   - Convert ALL mathematical symbols, chemical formulas, ionic charges, and equations to KaTeX-compatible LaTeX enclosed in single dollar signs (e.g. '$CH_4$', '$CaCO_3$', '$\\text{Fe}_2\\text{O}_3$', '$Pb^{2+}(aq) + 2I^-(aq) \\rightarrow PbI_2(s)$', '$0.05 \\times 24 = 1.2\\text{ dm}^3$').
+   - REVERSIBLE REACTIONS & EQUILIBRIUM HARPOONS: Visually inspect chemical equations for reversible reaction harpoons ('\\rightleftharpoons' or '⇌', e.g. '$CH_4(g) + H_2O(g) \\rightleftharpoons CO(g) + 3H_2(g)$'). Raw PDF text layers often drop the harpoon glyph, so always verify reaction arrows against the visual image and preserve state symbols $(s), (l), (g), (aq)$ and enthalpy changes ($\\Delta H = +200\\text{ kJ/mol}$).
    - Use explicit multiplication: write '\\times' instead of bare '*' or 'x'.
    - NEVER write unescaped '%' inside LaTeX math mode as KaTeX treats '%' as a comment delimiter that truncates formulas. Write '\\%' or keep percentages in plain text outside dollar signs (e.g. '85%' or '$85\\%$').
    - TEMPERATURES & DEGREES: DO NOT wrap temperatures or degrees in LaTeX dollar signs ($...$). Write temperatures strictly as plain text (e.g. '78°C', '25°C', '100°C', '-10°C', NOT '$78°C$' or '$78^\\circ\\text{C}$'). The degree symbol breaks KaTeX math mode.
    - For Biology word equations and reaction paths, use arrows: '$glucose \\rightarrow alcohol + carbon dioxide$' or '$carbon dioxide + water \\rightarrow glucose + oxygen$'.
-   - For nuclide/isotope notation, use standard LaTeX format: '{}^{40}_{20}\\text{W}'.
-5. Identify paper provenance: series (or exam session/period), year, paper_number (or paper title if applicable).
+   - For nuclide/isotope notation, use standard LaTeX format: '{}^{10}\\text{B}', '{}^{11}\\text{B}', '{}^{40}_{20}\\text{W}'.
+5. Identify paper provenance: series (or exam session/period, e.g. "Oct/Nov" for October/November or O/N, "May/June" for M/J, "Feb/March" for F/M), year, paper_number (e.g. 21, 41, 53).
 6. DIAGRAMS, GRAPHS & SCHEMATICS:
-   - Set has_diagram=true for drawings, apparatus setups, circuit schematics, cell illustrations, graphs, and reaction flowcharts.
+   - Set has_diagram=true for drawings, apparatus setups, circuit schematics, organic molecular structures, chromatography diagrams, dot-and-cross ion templates, cell illustrations, graphs, and reaction flowcharts.
    - Set diagram_source="qp".
-   - Set bounding_box [ymin, xmin, ymax, xmax] (0-1000 scale) generously with at least 80 units margin on all sides.
+   - Set page_number to the exact PDF page (1-indexed within the chunk) where that diagram visually appears.
+   - Set bounding_box [ymin, xmin, ymax, xmax] (0-1000 scale) generously around the figure, axis labels, keys, and figure caption, staying strictly inside the printable content area (excluding outer page margins/barcodes).
 7. TICK BOX QUESTIONS:
    - If a question asks to "Tick (✓) the conclusions/boxes", format choices as [ ] and put options array on that question/sub-question.
-8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
-9. ANSWER KEYS & SOLUTIONS: If the PDF contains an answer key or solutions grid at the end (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
+8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\rightleftharpoons, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
+9. MARK SCHEMES, ANSWER KEYS & AUTONOMOUS SOLUTION SYNTHESIS (CRITICAL):
+   - If a Mark Scheme PDF is attached or an answer key appears at the end of the document, extract the exact official marking points and acceptable answers.
+   - If NO Mark Scheme is attached (Question Paper only), you MUST solve every single question, sub-question, table completion, and scaffolded calculation step yourself using official Cambridge IGCSE/A-Level marking standards!
+     * For Multiple Choice: determine the exact correct letter (A, B, C, or D) and set "acceptable_answers": ["<Letter>"] and "marking_points": ["<Letter> — <concise scientific reason/working> [1]"].
+     * For Structured & Practical questions: provide every marking point with "[1]" mark allocations in each sub-question's "mark_scheme" (including balanced equations, state symbols, step-by-step mole calculations, qualitative observations with reagents, and 6-point experimental plans).
 10. CURRENCY & PRICES: When transcribing prices or costs (e.g. $25, $1.50), write them as normal text without LaTeX delimiters to prevent math rendering conflicts.
-11. CAMBRIDGE PAPER 4 / THEORY SUB-QUESTION CONTEXT PRESERVATION (CRITICAL):
-   - In structured exams (Paper 4 / Theory), questions often feature introductory scenario/apparatus setups for sections (a), (b), (c) followed by sub-parts (i), (ii).
-   - ABSOLUTELY NEVER drop or omit the introductory text or diagram of (a) or (b)!
+11. CAMBRIDGE PAPER 4 & PAPER 5 SUB-QUESTION CONTEXT & DIAGRAM PLACEMENT (CRITICAL):
+   - In structured exams (Paper 4 Theory / Paper 5 Practical), questions often feature introductory setups for sections (a), (b), (c), (f) followed by sub-parts (i), (ii).
+   - ABSOLUTELY NEVER drop or omit the introductory text or diagram of any section!
    - When (a) has setup text before (i), (ii):
-     * Put the overall setup text and apparatus diagram in the parent Question container ("question_text" and "has_diagram": true).
+     * Put the overall question stem in the parent Question container ("question_text").
      * ALSO preserve the (a) context on the first sub-question "(a)(i)" so the sub-question is completely self-contained.
-   - When (b) or (c) introduces a new scenario or graph followed by (i), (ii):
-     * Prepend the section introductory text to the first sub-part "(b)(i)".
-     * Set "has_diagram": true and diagram bounding_box directly on "(b)(i)" if that section introduces a graph or figure!
-   - When (a) is a standalone question with marks (e.g. "(a) State the formula... [1]"):
-     * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" and marks! NEVER put it in parent question_text.
-12. MULTIPLE CHOICE OPTIONS: All choices must be extracted exclusively into the "options" array. NEVER duplicate or write the choices (A, B, C, D) inside "question_text".
+   - When (b), (c), or (f) introduces a new scenario, diagram, or graph followed by (i), (ii) (or when (b) is a graph plotting task on Fig. 1.1):
+     * Prepend the section introductory text to the first sub-part "(b)(i)" / "(c)(i)" / "(f)(i)".
+     * Set "has_diagram": true, "page_number": <exact page of figure>, and "bounding_box" directly on that specific sub-question (e.g. Fig. 1.1 on "(b)", Fig. 2.1 on "(c)(i)", Fig. 2.2 on "(f)(ii)", Fig. 4.1 on "(b)(i)")! NEVER attach a later page's figure to the parent question if the parent question started on an earlier page!
+   - When (a), (c), (d), or (e) is a standalone sub-question with marks (e.g. "(a) Complete Table 1.1. [5]" or "(e) Explain the apparent unreactivity of aluminium. [2]"):
+     * Extract it directly as its own sub-question in "sub_questions" with sub_id "(a)" or "(e)" and its marks! NEVER swallow it into parent question_text.
+12. MULTIPLE CHOICE OPTIONS:
+   - For standard text MCQs: extract choices A, B, C, D exclusively into the "options" array and NEVER duplicate them inside "question_text".
+   - For Tabular Option MCQs (where rows A, B, C, D form a multi-column comparison table or ✓/✗ grid): transcribe the COMPLETE Markdown Table (including headers and rows A–D) in "question_text" AND populate self-contained row summaries in "options".
 ${!isIgcse ? `13. NON-IGCSE & INDONESIAN TKA / UTBK / AKM / NATIONAL STEM EXAMS (TOP PRIORITY):
    A. TRUE MULTIPLE SELECT ("Pilihan Ganda Kompleks" / "Pilih semua kesimpulan yang benar" / "Pilih semua pernyataan yang benar"):
       - When a question explicitly asks to choose all correct conclusions or statements (e.g. "pilih semua kesimpulan yang benar", "pilih semua pernyataan yang benar", "select all that apply", "[Multiple Select]"), AND the options (A, B, C, D, E) are independent statements (NOT combination bundles like "1 dan 2"):
@@ -2273,6 +2361,28 @@ export async function extractQuestionsFromPdf(
     }));
   }
 
+  // Filter out any accidentally extracted reference appendices (e.g. Periodic Table, Qualitative Analysis Notes, Blank Pages)
+  const isReferenceAppendixItem = (q: ExtractedQuestion): boolean => {
+    const text = (q.question_text || '').trim();
+    const qNum = String(q.question_number || '').trim();
+    if (/^(?:Notes for use in qualitative analysis|The Periodic Table of Elements|Tests for anions|Tests for aqueous cations|Tests for gases|Flame tests for metal ions|BLANK PAGE)$/i.test(text)) {
+      return true;
+    }
+    if (
+      /Notes for use in qualitative analysis|The Periodic Table of Elements/i.test(text) &&
+      (!q.sub_questions || q.sub_questions.length === 0) &&
+      (!q.options || q.options.length === 0)
+    ) {
+      return true;
+    }
+    if (/^(?:periodic|notes|appendix|blank)/i.test(qNum)) {
+      return true;
+    }
+    return false;
+  };
+
+  parsed.questions = parsed.questions.filter((q) => !isReferenceAppendixItem(q));
+
   // Normalize all questions to clean ext artifacts, normalize options, preserve data_tables, and ensure bare LaTeX formulas outside $ are wrapped in $...$
   parsed.questions = parsed.questions.map((q) => {
     const rawOptions = normalizeOptions(q.options)?.map((opt) =>
@@ -2283,33 +2393,61 @@ export async function extractQuestionsFromPdf(
       rawOptions
     );
 
+    const normalizedSubs = Array.isArray(q.sub_questions)
+      ? q.sub_questions.map((sq) => {
+          const sqOptions = normalizeOptions((sq as any).options)?.map((opt) =>
+            ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt))
+          ) || null;
+          const hasValidSqBox = Array.isArray(sq.bounding_box) && sq.bounding_box.length >= 4;
+          const sqHasDiagram = Boolean(sq.has_diagram || hasValidSqBox || sq.diagram_url);
+          return {
+            ...sq,
+            has_diagram: sqHasDiagram,
+            diagram_source:
+              sq.diagram_source ||
+              (hasInsert && sq.resource_ref ? 'insert' : sqHasDiagram ? 'qp' : null),
+            question_text: stripDuplicateSubIdPrefix(
+              sq.sub_id,
+              stripDuplicateOptionsFromStem(
+                ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
+                sqOptions || rawOptions
+              )
+            ),
+            options: sqOptions,
+            data_tables: Array.isArray((sq as any).data_tables) ? (sq as any).data_tables : undefined,
+            mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
+          };
+        })
+      : q.sub_questions;
+
+    // Prevent wrong-page parent diagram crops when a multi-page question starts on Page N (e.g. Page 3 instructions/text)
+    // and its diagram (e.g. Fig. 1.1 or Fig. 2.1) actually belongs to a sub-question on Page N+1 (Page 4):
+    let parentHasDiagram = Boolean(q.has_diagram || (Array.isArray(q.bounding_box) && q.bounding_box.length >= 4));
+    let parentBoundingBox = q.bounding_box;
+    if (parentHasDiagram && Array.isArray(normalizedSubs) && normalizedSubs.length > 0) {
+      const subWithLaterPageDiagram = normalizedSubs.find(
+        (sq) =>
+          sq.has_diagram &&
+          sq.page_number &&
+          q.page_number &&
+          sq.page_number > q.page_number &&
+          (!q.resource_ref || !sq.resource_ref || q.resource_ref === sq.resource_ref || JSON.stringify(q.bounding_box) === JSON.stringify(sq.bounding_box))
+      );
+      if (subWithLaterPageDiagram && !/fig\.|figure|diagram|apparatus|shown/i.test(cleanedText)) {
+        parentHasDiagram = false;
+        parentBoundingBox = null;
+      }
+    }
+
     return {
       ...q,
-      diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : q.has_diagram ? 'qp' : null),
+      has_diagram: parentHasDiagram,
+      bounding_box: parentBoundingBox,
+      diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : parentHasDiagram ? 'qp' : null),
       question_text: cleanedText,
       options: rawOptions,
       data_tables: Array.isArray(q.data_tables) ? q.data_tables : undefined,
-      sub_questions: Array.isArray(q.sub_questions)
-        ? q.sub_questions.map((sq) => {
-            const sqOptions = normalizeOptions((sq as any).options)?.map((opt) =>
-              ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(opt))
-            ) || null;
-            return {
-              ...sq,
-              diagram_source: sq.diagram_source || (hasInsert && sq.resource_ref ? 'insert' : sq.diagram_url ? 'qp' : null),
-              question_text: stripDuplicateSubIdPrefix(
-                sq.sub_id,
-                stripDuplicateOptionsFromStem(
-                  ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.question_text || '')),
-                  sqOptions || rawOptions
-                )
-              ),
-              options: sqOptions,
-              data_tables: Array.isArray((sq as any).data_tables) ? (sq as any).data_tables : undefined,
-              mark_scheme: sq.mark_scheme ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(sq.mark_scheme)) : sq.mark_scheme,
-            };
-          })
-        : q.sub_questions,
+      sub_questions: normalizedSubs,
     };
   });
 

@@ -759,31 +759,58 @@ export async function runExtractionPipeline(
               mergedSubMap.set(k, sq);
             });
 
+            // Check if adjustedQ is a later-page continuation that placed a diagram at the parent level
+            // while none of its sub-questions claimed it yet:
+            const anyAdjustedSubHasDiagram = (adjustedQ.sub_questions || []).some(
+              (s) => s.has_diagram || (Array.isArray(s.bounding_box) && s.bounding_box.length >= 4)
+            );
+            let assignedContinuationDiagram = false;
+
             (adjustedQ.sub_questions || []).forEach((sq) => {
               const k = normSubKey(sq.sub_id) || sq.sub_id;
               const prev = mergedSubMap.get(k);
               if (!prev) {
-                // If existing question already has a diagram and this continuation sub-question has its own diagram,
-                // attach the diagram specifically to this sub-question!
+                // Only promote adjustedQ's parent diagram to the FIRST new sub-question if adjustedQ is on a later page
+                // and none of adjustedQ's sub-questions already claimed the diagram.
+                const promoteContinuationDiagram =
+                  !assignedContinuationDiagram &&
+                  !anyAdjustedSubHasDiagram &&
+                  Boolean(adjustedQ.has_diagram && adjustedQ.bounding_box) &&
+                  (adjustedQ.page_number || 1) > (existing.page_number || 1);
+
+                if (promoteContinuationDiagram) {
+                  assignedContinuationDiagram = true;
+                }
+
                 mergedSubMap.set(k, {
                   ...sq,
-                  has_diagram: sq.has_diagram || (adjustedQ.has_diagram && !existing.has_diagram ? true : false),
-                  diagram_source: sq.diagram_source || (adjustedQ.diagram_source && !existing.diagram_source ? adjustedQ.diagram_source : null),
-                  bounding_box: sq.bounding_box || (adjustedQ.bounding_box && !existing.bounding_box ? adjustedQ.bounding_box : null),
+                  page_number: sq.page_number || adjustedQ.page_number,
+                  has_diagram: Boolean(sq.has_diagram || promoteContinuationDiagram),
+                  diagram_source: sq.diagram_source || (promoteContinuationDiagram ? adjustedQ.diagram_source || 'qp' : null),
+                  resource_ref: sq.resource_ref || (promoteContinuationDiagram ? adjustedQ.resource_ref : null),
+                  bounding_box: sq.bounding_box || (promoteContinuationDiagram ? adjustedQ.bounding_box : null),
                 });
               } else {
-                // Keep the more complete version of the sub-question text
+                // Keep the more complete version of the sub-question text and preserve exact diagram page_number
+                const sqHasNewDiagram = !prev.has_diagram && Boolean(sq.has_diagram);
                 mergedSubMap.set(k, {
                   ...prev,
+                  page_number: sqHasNewDiagram ? (sq.page_number || prev.page_number) : (prev.page_number || sq.page_number),
                   question_text:
                     sq.question_text && sq.question_text.length > (prev.question_text?.length || 0)
                       ? sq.question_text
                       : prev.question_text,
                   marks: sq.marks || prev.marks,
-                  mark_scheme: sq.mark_scheme || prev.mark_scheme,
+                  mark_scheme:
+                    sq.mark_scheme && sq.mark_scheme.length > (prev.mark_scheme?.length || 0)
+                      ? sq.mark_scheme
+                      : prev.mark_scheme,
                   options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
+                  data_tables: prev.data_tables && prev.data_tables.length > 0 ? prev.data_tables : sq.data_tables,
                   has_diagram: prev.has_diagram || sq.has_diagram,
                   diagram_source: prev.diagram_source || sq.diagram_source,
+                  resource_ref: prev.resource_ref || sq.resource_ref,
+                  diagram_type: prev.diagram_type || sq.diagram_type,
                   bounding_box: prev.bounding_box || sq.bounding_box,
                 });
               }
@@ -821,23 +848,43 @@ export async function runExtractionPipeline(
               chosenQuestionText = adjustedQ.question_text;
             }
 
+            // Merge data_tables across chunks without duplicating by id
+            const combinedTables = [...(existing.data_tables || []), ...(adjustedQ.data_tables || [])];
+            const uniqueTablesMap = new Map<string, any>();
+            combinedTables.forEach((t, idx) => {
+              const key = (t?.id || t?.title || `tbl_${idx}`).toLowerCase().trim();
+              if (!uniqueTablesMap.has(key)) uniqueTablesMap.set(key, t);
+            });
+            const mergedDataTables = uniqueTablesMap.size > 0 ? Array.from(uniqueTablesMap.values()) : undefined;
+
+            // Only adopt adjustedQ's parent diagram onto existing if existing had no diagram, adjustedQ's diagram was NOT
+            // already promoted to a continuation sub-question, and adjustedQ is on the same page as existing:
+            const adoptAdjustedParentDiagram =
+              !existing.has_diagram &&
+              Boolean(adjustedQ.has_diagram) &&
+              !assignedContinuationDiagram &&
+              !anyAdjustedSubHasDiagram &&
+              (adjustedQ.page_number === existing.page_number || !existing.page_number);
+
             questionMap.set(qNumClean, {
               ...existing,
+              page_number: adoptAdjustedParentDiagram ? (adjustedQ.page_number || existing.page_number) : existing.page_number,
               question_text: chosenQuestionText,
               options:
                 adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
                   ? adjustedQ.options
                   : existing.options,
+              data_tables: mergedDataTables,
               mark_scheme:
                 adjustedQ.mark_scheme && Object.keys(adjustedQ.mark_scheme).length > 0
                   ? adjustedQ.mark_scheme
                   : existing.mark_scheme,
-              total_marks: Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0, totalSubMarks),
+              total_marks: totalSubMarks > 0 ? totalSubMarks : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0),
               sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
-              has_diagram: existing.has_diagram || adjustedQ.has_diagram,
-              diagram_source: existing.diagram_source || adjustedQ.diagram_source,
-              resource_ref: existing.resource_ref || adjustedQ.resource_ref,
-              bounding_box: existing.bounding_box || adjustedQ.bounding_box,
+              has_diagram: existing.has_diagram || adoptAdjustedParentDiagram,
+              diagram_source: existing.diagram_source || (adoptAdjustedParentDiagram ? adjustedQ.diagram_source : null),
+              resource_ref: existing.resource_ref || (adoptAdjustedParentDiagram ? adjustedQ.resource_ref : null),
+              bounding_box: existing.bounding_box || (adoptAdjustedParentDiagram ? adjustedQ.bounding_box : null),
             });
           }
         });

@@ -147,9 +147,59 @@ export async function detectAndSplitInDocumentAnswerKey(
 }
 
 /**
+ * Scans backwards from the end of the PDF to find the last page that actually contains exam questions.
+ * Automatically excludes trailing non-question pages such as:
+ * - "BLANK PAGE"
+ * - "The Periodic Table of Elements"
+ * - "Notes for use in qualitative analysis" ("Tests for anions", "Tests for aqueous cations", "Tests for gases", "Flame tests for metal ions")
+ * - Pure copyright / permission acknowledgement pages with no question marks
+ *
+ * Because only trailing pages at the back of the PDF are trimmed, pages 1..effectiveTotalPages
+ * preserve their exact 1-based original PDF page numbers for diagram cropping!
+ */
+async function detectEffectiveQuestionPageCount(rawBytes: Uint8Array, fallbackTotal: number): Promise<number> {
+  if (fallbackTotal <= 2) return fallbackTotal;
+  try {
+    const pdfJsDoc = await pdfjsLib.getDocument({ data: rawBytes.slice(0) }).promise;
+    let effectiveEnd = pdfJsDoc.numPages;
+
+    for (let p = pdfJsDoc.numPages; p >= 2; p--) {
+      const page = await pdfJsDoc.getPage(p);
+      const textContent = await page.getTextContent();
+      const text = textContent.items
+        .map((item: any) => item.str || '')
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const isBlankPage = /\bBLANK\s+PAGE\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text);
+      const isPeriodicTable = /\bThe\s+Periodic\s+Table\s+of\s+Elements\b/i.test(text);
+      const isQualAnalysisNotes =
+        /\bNotes\s+for\s+use\s+in\s+qualitative\s+analysis\b/i.test(text) ||
+        (/\bTests\s+for\s+anions\b/i.test(text) && /\bTests\s+for\s+aqueous\s+cations\b/i.test(text)) ||
+        (/\bTests\s+for\s+gases\b/i.test(text) && /\bFlame\s+tests\s+for\s+metal\s+ions\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text));
+      const isAdditionalBlank = /\bAdditional\s+Page\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text);
+
+      if (isBlankPage || isPeriodicTable || isQualAnalysisNotes || isAdditionalBlank) {
+        effectiveEnd = p - 1;
+      } else {
+        // Reached the last actual question page
+        break;
+      }
+    }
+
+    return Math.max(1, effectiveEnd);
+  } catch {
+    return fallbackTotal;
+  }
+}
+
+/**
  * Inspects a PDF file or bytes in memory. If it exceeds 6 pages (e.g. 16-page paper with 40 questions),
- * splits it into 2 (or 3) balanced chunks so that Gemini can process all pages concurrently in parallel.
- * This prevents single-call token exhaustion and accelerates extraction.
+ * trims trailing non-question reference/blank pages and splits the active question pages into
+ * balanced chunks so that Gemini can process all pages concurrently in parallel.
+ * This prevents single-call token exhaustion, avoids hallucinating questions from reference appendices,
+ * and accelerates extraction.
  */
 export async function splitPdfForParallelExtraction(
   fileOrBytes: File | Uint8Array | ArrayBuffer,
@@ -158,35 +208,51 @@ export async function splitPdfForParallelExtraction(
   try {
     const rawBytes = await toUint8Array(fileOrBytes);
     const doc = await PDFDocument.load(rawBytes);
-    const totalPages = doc.getPageCount();
+    const rawTotalPages = doc.getPageCount();
+    const totalPages = await detectEffectiveQuestionPageCount(rawBytes, rawTotalPages);
 
-    // If PDF is 3 pages or fewer (single section or short worksheet), process in a single pass
-    if (totalPages <= 3) {
+    // If active question pages are 4 or fewer, process in a single pass
+    if (totalPages <= 4) {
+      if (totalPages === rawTotalPages) {
+        return [
+          {
+            chunkIndex: 0,
+            startPage: 1,
+            endPage: totalPages,
+            pdfBase64: uint8ArrayToBase64(rawBytes),
+          },
+        ];
+      }
+      const trimmedDoc = await PDFDocument.create();
+      const indices = Array.from({ length: totalPages }, (_, i) => i);
+      const copied = await trimmedDoc.copyPages(doc, indices);
+      copied.forEach((p) => trimmedDoc.addPage(p));
+      const trimmedBytes = await trimmedDoc.save();
       return [
         {
           chunkIndex: 0,
           startPage: 1,
           endPage: totalPages,
-          pdfBase64: uint8ArrayToBase64(rawBytes),
+          pdfBase64: uint8ArrayToBase64(trimmedBytes),
         },
       ];
     }
 
     // Determine number of chunks (balanced distribution):
-    // 1-3 pages: single chunk
-    // 4-9 pages: 2 chunks (~3-5 pages each)
-    // 10-24 pages (e.g. 12-20 page Paper 4 / Theory / Extended): 3 chunks (~4-7 pages each)
+    // 1-4 pages: single chunk
+    // 5-12 pages (e.g. Paper 5 [9 active pages] or Paper 4 [12 active pages]): 2 chunks (~5-6 pages each)
+    // 13-24 pages (e.g. 40-question Paper 2 [15 active pages]): 3 chunks (~5 pages each)
     // 25+ pages: up to 4 chunks
     const numChunks =
-      totalPages <= 3 ? 1 :
-      totalPages <= 9 ? 2 :
+      totalPages <= 4 ? 1 :
+      totalPages <= 12 ? 2 :
       totalPages <= 24 ? 3 :
       Math.min(4, Math.ceil(totalPages / maxPagesPerChunk));
 
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
-    // Overlap for straddling questions (e.g. 2-page structured physics/chemistry questions):
-    // Use 3-page overlap for 10+ page papers so 2-page questions are never severed across chunks.
-    const overlapPages = totalPages >= 10 ? 3 : 2;
+    // Overlap for straddling questions (e.g. 2-3 page structured physics/chemistry/practical questions):
+    // Use 3-page overlap for 9+ page papers so 3-page questions (like Paper 5 Q1 or Paper 4 Q2) are never severed across chunks.
+    const overlapPages = totalPages >= 9 ? 3 : 2;
 
     const chunks: PdfChunk[] = [];
 
