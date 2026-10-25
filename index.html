@@ -10,10 +10,38 @@
     <meta name="description" content="Official examination and assessment platform for Insan Cendekia Madani, Cambridge International School. Build standardized exams, analyze past papers, and execute secure proctored tests." />
     <meta name="theme-color" content="#1e40af" />
     <title>ICM Exam Platform • Cambridge International School</title>
-    <!-- Google Identity Services SDK for Google Drive & Google Forms OAuth (async, non-blocking) -->
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
       (function() {
+        // Fast OAuth token receiver for Google direct popup flow (bypasses ad-blockers)
+        try {
+          if (window.opener && window.location.hash) {
+            var hash = window.location.hash.substring(1);
+            if (hash.indexOf('access_token=') !== -1) {
+              var params = new URLSearchParams(hash);
+              var token = params.get('access_token');
+              var expiresIn = params.get('expires_in') || '3599';
+              if (token) {
+                window.opener.postMessage({
+                  type: 'GOOGLE_OAUTH_TOKEN_SUCCESS',
+                  accessToken: token,
+                  expiresIn: parseInt(expiresIn, 10)
+                }, window.location.origin);
+                window.close();
+                return;
+              }
+            } else if (hash.indexOf('error=') !== -1) {
+              var errParams = new URLSearchParams(hash);
+              var errMsg = errParams.get('error') || 'Google sign-in was denied';
+              window.opener.postMessage({
+                type: 'GOOGLE_OAUTH_TOKEN_ERROR',
+                error: errMsg
+              }, window.location.origin);
+              window.close();
+              return;
+            }
+          }
+        } catch(e) {}
+
         try {
           var raw = localStorage.getItem('testmaker_user_settings');
           var settings = raw ? JSON.parse(raw) : null;

@@ -15,7 +15,6 @@ import {
   getSubQuestionKey,
   detectGridDetails,
   FORMS_API_CONSOLE_URL,
-  revokeGoogleFormsToken,
   type GoogleFormResult,
   type GoogleFormsProgress,
   type SectionBreakMode,
@@ -56,8 +55,19 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
   const [isGcpLinkNeeded, setIsGcpLinkNeeded] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [isRevokingToken, setIsRevokingToken] = useState(false);
-  const [revokedNotice, setRevokedNotice] = useState(false);
+  const [copiedOrigin, setCopiedOrigin] = useState(false);
+
+  const handleCopyOrigin = async () => {
+    try {
+      if (typeof window !== 'undefined') {
+        await navigator.clipboard.writeText(window.location.origin);
+        setCopiedOrigin(true);
+        setTimeout(() => setCopiedOrigin(false), 2500);
+      }
+    } catch (err) {
+      console.warn('Clipboard write failed:', err);
+    }
+  };
 
   // Export Settings & Anti-cheat Options (Fixes Issues #16, #17, #18, #19)
   const [isRequired, setIsRequired] = useState(true);
@@ -405,8 +415,8 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
         errMsg = 'The Google sign-in popup was closed before authorization completed.';
       } else if (errMsg === 'access_denied') {
         errMsg = 'Google account permission was denied. Please accept the permission request to allow TestMaker to create the quiz.';
-      } else if (errMsg.includes('origin_mismatch')) {
-        errMsg = `Google OAuth Origin Mismatch: Please add ${window.location.origin} to 'Authorized JavaScript origins' under your OAuth Client ID in Google Cloud Console.`;
+      } else if (errMsg.includes('origin_mismatch') || errMsg.includes('redirect_uri_mismatch')) {
+        errMsg = `Google OAuth Origin / Redirect URI Mismatch: Please ensure ${window.location.origin} is added to both 'Authorized JavaScript origins' and 'Authorized redirect URIs' in Google Cloud Console.`;
       }
 
       setError(errMsg);
@@ -480,18 +490,6 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
     exportGoogleFormsQuiz(headerConfig, questions);
   };
 
-  // Handle Token Revocation / Sign out (Fixes Issue #15)
-  const handleRevokeToken = async () => {
-    setIsRevokingToken(true);
-    try {
-      await revokeGoogleFormsToken();
-      setRevokedNotice(true);
-      setTimeout(() => setRevokedNotice(false), 3500);
-    } finally {
-      setIsRevokingToken(false);
-    }
-  };
-
   return (
     <div className="gf-modal-overlay" onClick={onClose}>
       <div className="gf-modal-container" onClick={(e) => e.stopPropagation()}>
@@ -526,7 +524,6 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
             onClick={() => setActiveTab('api')}
           >
             ⚡ 1-Click Native API
-            <span className="gf-tab-badge gf-tab-badge--purple">Direct</span>
           </button>
 
           <button
@@ -535,7 +532,6 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
             onClick={() => setActiveTab('script')}
           >
             📋 Google Apps Script
-            <span className="gf-tab-badge gf-tab-badge--green">Zero Setup</span>
           </button>
 
           <button
@@ -544,7 +540,6 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
             onClick={() => setActiveTab('csv')}
           >
             📁 Form Builder CSV
-            <span className="gf-tab-badge gf-tab-badge--blue">Add-on</span>
           </button>
         </div>
 
@@ -651,10 +646,6 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
               {!result && (
                 <div className="gf-api-intro">
                   <h4>Create Google Form Quiz in Your Google Drive</h4>
-                  <p>
-                    Connects directly to official <strong>Google Forms API v1</strong> using your Google account.
-                    Automatically formats questions, point values, auto-grading answer keys, feedback, and table images.
-                  </p>
                 </div>
               )}
 
@@ -780,47 +771,72 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
                   </div>
                   <p className="gf-error-message">{error}</p>
 
-                  {isGcpLinkNeeded && (
-                    <a
-                      href={FORMS_API_CONSOLE_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="gf-error-action-btn"
-                    >
-                      🔗 Open Google Cloud Console to Enable Forms API
-                    </a>
-                  )}
+                  <div className="gf-error-actions-group">
+                    {isGcpLinkNeeded && (
+                      <a
+                        href={FORMS_API_CONSOLE_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="gf-error-action-btn"
+                      >
+                        🔗 Open Google Cloud Console to Enable Forms API
+                      </a>
+                    )}
+
+                    {(error.includes('Origin') || error.includes('origins') || error.includes('redirect_uri')) && (
+                      <div className="gf-origin-fix-box">
+                        <div className="gf-origin-text">
+                          <span>Your Active Domain Origin:</span>
+                          <code>{typeof window !== 'undefined' ? window.location.origin : ''}</code>
+                        </div>
+                        <div className="gf-origin-btns">
+                          <button
+                            type="button"
+                            className="gf-secondary-action-btn"
+                            onClick={handleCopyOrigin}
+                          >
+                            {copiedOrigin ? '✓ Copied Origin!' : '📋 Copy Origin URL'}
+                          </button>
+                          <a
+                            href="https://console.cloud.google.com/apis/credentials"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="gf-secondary-action-btn"
+                          >
+                            🔗 Open GCP Credentials Console
+                          </a>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="gf-fallback-action-row">
+                      <button
+                        type="button"
+                        className="gf-btn-switch-script"
+                        onClick={() => setActiveTab('script')}
+                      >
+                        📋 Switch to Google Apps Script
+                      </button>
+
+                      <button
+                        type="button"
+                        className="gf-btn-retry-popup"
+                        onClick={handleStartApiExport}
+                      >
+                        🔄 Retry Export
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="gf-error-tip">
-                    💡 <strong>Pro-Tip:</strong> If your school or organization restricts Google Cloud API permissions, switch to the <strong>Google Apps Script tab</strong> above — it runs 100% inside Google's infrastructure with zero setup required!
+                    💡 <strong>Tip:</strong> If you don't have a Google Cloud Client ID, click <strong>"Switch to Google Apps Script"</strong> above — it creates your form directly without needing Cloud Console configuration.
                   </div>
                 </div>
               )}
-
-              {/* Security Disclosure & Token Management (Fixes Issue #14 & #15) */}
-              <div className="gf-security-badge">
-                <div className="gf-security-text">
-                  <span className="gf-security-icon">🔒</span>
-                  <span>
-                    <strong>Privacy &amp; Security:</strong> TestMaker requests the standard Google Forms scope only to generate this specific quiz file in your Drive. We never read or modify your existing forms or files.
-                  </span>
-                </div>
-                <div className="gf-revoke-action">
-                  <button
-                    type="button"
-                    className="gf-revoke-link"
-                    onClick={handleRevokeToken}
-                    disabled={isRevokingToken}
-                    title="Sign out and revoke Google Forms token on shared computers"
-                  >
-                    {isRevokingToken ? 'Disconnecting...' : revokedNotice ? '✓ Disconnected' : 'Sign out / Revoke Access'}
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 
-          {/* TAB 2: Google Apps Script (Zero Setup) */}
+          {/* TAB 2: Google Apps Script */}
           {activeTab === 'script' && (
             <div>
               <div className="gf-script-steps">

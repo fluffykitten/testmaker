@@ -810,7 +810,7 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       </button>
                     </div>
                     <div style={{ marginTop: '8px', fontSize: '0.7rem', color: 'var(--color-text-tertiary)', borderTop: '1px dashed rgba(99, 102, 241, 0.2)', paddingTop: '6px' }}>
-                      🛡️ <strong>Note on deployed sites:</strong> If you see <em>"Failed to load Google Identity Services SDK"</em>, ensure ad-blockers (e.g. uBlock Origin, AdGuard) or Brave Shields are not blocking Google's authentication script.
+                      🛡️ <strong>Ad-Blocker &amp; Brave Compatible:</strong> If script blockers (uBlock Origin, AdGuard, Brave Shields) block Google's client SDK, TestMaker automatically falls back to secure direct OAuth popups.
                     </div>
                   </div>
                 </div>
