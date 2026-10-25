@@ -109,19 +109,26 @@ const FONT_SIZE_PX: Record<FontSize, string> = {
  * Loads user settings from localStorage or returns defaults
  */
 export function getSavedSettings(): AppSettings {
+  const DEFAULT_CLIENT_ID = '369298482584-mk30jqplfvlc70th4b5qom7n0he53ogs.apps.googleusercontent.com';
   const envGoogleClientId =
     (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) ||
     (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) ||
-    undefined;
+    DEFAULT_CLIENT_ID;
 
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      // Auto-migrate from deprecated test client ID if cached in user's localStorage
+      const localId =
+        !parsed.googleDriveClientId || parsed.googleDriveClientId.startsWith('601968506903')
+          ? envGoogleClientId
+          : parsed.googleDriveClientId;
+
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
-        googleDriveClientId: parsed.googleDriveClientId || envGoogleClientId,
+        googleDriveClientId: localId,
       };
     }
   } catch (e) {
@@ -294,12 +301,8 @@ export async function syncGoogleDriveClientIdToCloud(clientId: string): Promise<
  * Loads Google Drive Client ID from local storage or cloud app_config if available
  */
 export async function loadAndSyncGoogleDriveClientId(): Promise<string> {
+  const DEFAULT_CLIENT_ID = '369298482584-mk30jqplfvlc70th4b5qom7n0he53ogs.apps.googleusercontent.com';
   const current = getSavedSettings();
-  if (current.googleDriveClientId && current.googleDriveClientId.trim()) {
-    // Keep cloud in sync
-    syncGoogleDriveClientIdToCloud(current.googleDriveClientId).catch(() => {});
-    return current.googleDriveClientId;
-  }
 
   try {
     const { data, error } = (await (supabase.from('app_config' as any) as any)
@@ -310,14 +313,27 @@ export async function loadAndSyncGoogleDriveClientId(): Promise<string> {
     if (!error && data?.value) {
       const parsed = JSON.parse(data.value);
       if (typeof parsed === 'string' && parsed.trim()) {
-        const updated = { ...current, googleDriveClientId: parsed.trim() };
-        saveSettings(updated);
-        return parsed.trim();
+        const cloudId = parsed.trim();
+        if (current.googleDriveClientId !== cloudId) {
+          const updated = { ...current, googleDriveClientId: cloudId };
+          saveSettings(updated);
+        }
+        return cloudId;
       }
     }
   } catch (err) {
     console.warn('Could not fetch Google Drive Client ID from cloud:', err);
   }
 
-  return current.googleDriveClientId || '';
+  // Fallback to local storage or default
+  if (current.googleDriveClientId && current.googleDriveClientId.trim() && !current.googleDriveClientId.startsWith('601968506903')) {
+    syncGoogleDriveClientIdToCloud(current.googleDriveClientId).catch(() => {});
+    return current.googleDriveClientId;
+  }
+
+  const fallback = (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) || DEFAULT_CLIENT_ID;
+  const updated = { ...current, googleDriveClientId: fallback };
+  saveSettings(updated);
+  syncGoogleDriveClientIdToCloud(fallback).catch(() => {});
+  return fallback;
 }
