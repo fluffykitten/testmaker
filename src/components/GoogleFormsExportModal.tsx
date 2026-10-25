@@ -412,7 +412,7 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
       let errMsg: string = err?.message || 'Unknown error occurred.';
 
       if (errMsg === 'popup_closed_by_user') {
-        errMsg = 'The Google sign-in popup was closed before authorization completed.';
+        errMsg = `Google sign-in popup was closed before authorization completed. If Google displayed 'Error 400: redirect_uri_mismatch', please add ${window.location.origin} to 'Authorized redirect URIs' in Google Cloud Console.`;
       } else if (errMsg === 'access_denied') {
         errMsg = 'Google account permission was denied. Please accept the permission request to allow TestMaker to create the quiz.';
       } else if (errMsg.includes('origin_mismatch') || errMsg.includes('redirect_uri_mismatch')) {

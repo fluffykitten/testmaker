@@ -22,7 +22,7 @@ export class GoogleAuthBlockedError extends Error {
  * Dynamically loads the Google Identity Services client script if not already present,
  * with fast polling, dead-script cleanup, and error detection.
  */
-export function loadGsiScript(timeoutMs = 1500): Promise<void> {
+export function loadGsiScript(timeoutMs = 8000): Promise<void> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') return resolve();
     if ((window as any).google?.accounts?.oauth2) return resolve();

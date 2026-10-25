@@ -13,6 +13,7 @@ import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
 import { SchoolDoodlesBackground } from '../components/SchoolDoodlesBackground';
+import { APP_VERSION, DEVELOPER_NAME, DEVELOPER_EMAIL } from '../config/version';
 import '../components/PinGate.css';
 import './PortalLandingPage.css';
 
@@ -756,7 +757,13 @@ export function PortalLandingPage({
         {/* Footer */}
         <footer className="portal-minimal-footer">
           <div className="portal-footer-copy">
-            <span>contact dev <a href="mailto:fluffykitten.dev@gmail.com" className="portal-footer-link">fluffykitten.dev@gmail.com</a></span>
+            <span>
+              Created by{' '}
+              <a href={`mailto:${DEVELOPER_EMAIL}`} className="portal-footer-link">
+                {DEVELOPER_NAME}
+              </a>{' '}
+              | All Rights Reserved | {APP_VERSION}
+            </span>
           </div>
         </footer>
       </div>

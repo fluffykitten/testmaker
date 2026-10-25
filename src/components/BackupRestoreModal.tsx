@@ -259,7 +259,11 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       setDriveActionNotice('Connected to Google Drive!');
       setTimeout(() => setDriveActionNotice(null), 3000);
     } catch (err: any) {
-      setDriveActionNotice(`Google login error: ${err?.message || 'Unknown'}`);
+      let msg = err?.message || 'Unknown';
+      if (msg === 'popup_closed_by_user') {
+        msg = `Google sign-in popup closed before authorization. If Google displayed 'Error 400: redirect_uri_mismatch', please add ${window.location.origin} to 'Authorized redirect URIs' in Google Cloud Console.`;
+      }
+      setDriveActionNotice(`Google login error: ${msg}`);
     } finally {
       setIsLoadingDrive(false);
     }
