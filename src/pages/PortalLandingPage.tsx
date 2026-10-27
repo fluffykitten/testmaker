@@ -8,6 +8,10 @@ import {
   type SubmissionOutboxItem,
 } from '../services/quizSubmissionService';
 import { StudentResultModal } from '../components/StudentResultModal';
+import { GameProfileStudioModal } from '../components/game/GameProfileStudioModal';
+import { GameAvatarRenderer } from '../components/game/GameAvatarRenderer';
+import { getActiveGameProfile } from '../services/gameProfileService';
+import type { GameProfile } from '../types/database';
 import { prefetchAccessPin } from '../components/PinGate';
 import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
@@ -338,6 +342,10 @@ export function PortalLandingPage({
   const [resultError, setResultError] = useState('');
   const [showResultsForm, setShowResultsForm] = useState(false);
 
+  // Creative Mode Game Studio State
+  const [isGameStudioOpen, setIsGameStudioOpen] = useState(false);
+  const [activeGameProfile, setActiveGameProfileState] = useState<GameProfile | null>(() => getActiveGameProfile());
+
   // Result Modal State
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [activeResultLookup, setActiveResultLookup] = useState<{ quizCode: string; candidateId: string; pin: string }>({
@@ -417,9 +425,17 @@ export function PortalLandingPage({
     window.addEventListener('online', handleOnline);
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
 
+    const handleGameProfileUpdate = () => {
+      setActiveGameProfileState(getActiveGameProfile());
+    };
+    window.addEventListener('game_profile_changed', handleGameProfileUpdate);
+    window.addEventListener('game_profile_updated', handleGameProfileUpdate);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
+      window.removeEventListener('game_profile_changed', handleGameProfileUpdate);
+      window.removeEventListener('game_profile_updated', handleGameProfileUpdate);
     };
   }, [handleFlushPendingOutbox, refreshPendingOutbox]);
 
@@ -737,6 +753,39 @@ export function PortalLandingPage({
               </form>
             )}
           </div>
+
+          {/* Tertiary: Creative Mode Hub & Avatar Studio */}
+          <div className="portal-results-card portal-creative-card" style={{ marginTop: '12px' }}>
+            <button
+              type="button"
+              className="portal-results-toggle-btn"
+              onClick={() => setIsGameStudioOpen(true)}
+              aria-label="Open Creative Mode Hub & Avatar Studio"
+            >
+              <div className="portal-results-header">
+                <div className="portal-results-icon-wrap" style={{ background: 'rgba(138, 191, 68, 0.15)', color: '#8abf44' }}>
+                  {activeGameProfile ? (
+                    <GameAvatarRenderer avatar={activeGameProfile.avatar} size={28} showAura={false} />
+                  ) : (
+                    <span style={{ fontSize: '1.2rem' }}>🎨</span>
+                  )}
+                </div>
+                <div>
+                  <h3 className="portal-results-title">
+                    {activeGameProfile ? `${activeGameProfile.handle} • Lv. ${activeGameProfile.level}` : 'Creative Mode Hub & Avatar Studio'}
+                  </h3>
+                  <p className="portal-results-desc">
+                    {activeGameProfile
+                      ? `🪙 ${activeGameProfile.coins} Coins • Wardrobe cosmetics, avatar studio & topic mastery`
+                      : 'Customize your 6-layer avatar, view subject mastery, and open coin shop'}
+                  </p>
+                </div>
+              </div>
+              <div className="portal-results-action-pill" style={{ borderColor: '#8abf44', color: '#65a30d' }}>
+                <span>{activeGameProfile ? 'Open Studio 🎮' : 'Customize Avatar 🎨'}</span>
+              </div>
+            </button>
+          </div>
         </div>
 
         {/* ─── Decoy Teacher Portal (Honeypot) ─── */}
@@ -775,6 +824,15 @@ export function PortalLandingPage({
         candidateIdentifier={activeResultLookup.candidateId}
         pin={activeResultLookup.pin}
         onClose={() => setIsResultModalOpen(false)}
+      />
+
+      {/* Creative Mode Student Profile & Avatar Studio */}
+      <GameProfileStudioModal
+        isOpen={isGameStudioOpen}
+        onClose={() => {
+          setIsGameStudioOpen(false);
+          setActiveGameProfileState(getActiveGameProfile());
+        }}
       />
     </div>
   );

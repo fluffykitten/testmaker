@@ -337,6 +337,127 @@
   color: #fb7185;
 }
 
+.teacher-label-optional {
+  font-size: 0.75rem;
+  font-weight: normal;
+  color: var(--color-text-tertiary, #94a3b8);
+  margin-left: 4px;
+}
+
+/* ─── Onboarding Welcome Banner ───────────────────────────────────────────── */
+
+.teacher-onboarding-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(36, 68, 140, 0.07);
+  border: 1px solid rgba(36, 68, 140, 0.2);
+  margin-bottom: 16px;
+  color: var(--color-text-primary, #0f172a);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.teacher-onboarding-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.teacher-onboarding-banner strong {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #24448c;
+  margin-bottom: 2px;
+}
+
+.teacher-onboarding-banner p {
+  margin: 0;
+  color: var(--color-text-secondary, #475569);
+}
+
+:root.dark .teacher-onboarding-banner {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.25);
+}
+
+:root.dark .teacher-onboarding-banner strong {
+  color: #93c5fd;
+}
+
+:root.dark .teacher-onboarding-banner p {
+  color: #94a3b8;
+}
+
+/* ─── Cohort Multi-Select Buttons ─────────────────────────────────────────── */
+
+.teacher-cohort-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.teacher-cohort-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  background: var(--color-surface, #f8fafc);
+  color: var(--color-text-secondary, #475569);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 140ms ease;
+  user-select: none;
+}
+
+.teacher-cohort-btn:hover {
+  border-color: #24448c;
+  color: var(--color-text-primary, #0f172a);
+  background: #ffffff;
+}
+
+.teacher-cohort-btn--selected {
+  border-color: #24448c !important;
+  background: #24448c !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 4px rgba(36, 68, 140, 0.2);
+}
+
+.teacher-cohort-btn--selected:hover {
+  background: #1b3570 !important;
+  border-color: #1b3570 !important;
+}
+
+.teacher-cohort-check {
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+:root.dark .teacher-cohort-btn {
+  background: var(--color-surface, #0f172a);
+  border-color: var(--color-border, #334155);
+  color: #94a3b8;
+}
+
+:root.dark .teacher-cohort-btn:hover {
+  background: #1e293b;
+  color: #f1f5f9;
+}
+
+:root.dark .teacher-cohort-btn--selected {
+  background: #3b82f6 !important;
+  border-color: #3b82f6 !important;
+  color: #ffffff !important;
+}
+
 .teacher-form-actions {
   display: flex;
   justify-content: flex-end;

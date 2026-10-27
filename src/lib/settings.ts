@@ -15,6 +15,7 @@ export interface AppSettings {
   defaultEnableMultiMonitor?: boolean;    // Multi-monitor detection shield (default: disabled)
   autoLockMinutes?: number;              // Inactivity auto-lock in minutes (default: 15, 0 = disabled)
   classes: string[]; // Configured list of school classes / cohorts for formal exams
+  subjects?: string[]; // Configured list of school subjects / departments
   googleDriveClientId?: string;
   autoBackupEnabled?: boolean;
   autoBackupFrequency?: 'on_paper_upload' | 'daily' | 'weekly';
@@ -41,6 +42,20 @@ export const DEFAULT_CLASSES: string[] = [
   '12-C',
 ];
 
+export const DEFAULT_SUBJECTS: string[] = [
+  'Chemistry',
+  'Physics',
+  'Biology',
+  'Mathematics',
+  'English',
+  'Geography',
+  'Economics',
+  'Sociology',
+  'PAI',
+  'Arabic',
+  'Bahasa Indonesia',
+];
+
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   accent: 'indigo',
@@ -51,6 +66,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultEnableMultiMonitor: false,
   autoLockMinutes: 15,
   classes: DEFAULT_CLASSES,
+  subjects: DEFAULT_SUBJECTS,
   autoBackupEnabled: false,
   autoBackupFrequency: 'on_paper_upload',
   storageProvider: 'cloudflare_r2',
@@ -111,8 +127,8 @@ const FONT_SIZE_PX: Record<FontSize, string> = {
 export function getSavedSettings(): AppSettings {
   const DEFAULT_CLIENT_ID = '369298482584-mk30jqplfvlc70th4b5qom7n0he53ogs.apps.googleusercontent.com';
   const envGoogleClientId =
-    (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) ||
-    (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) ||
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_DRIVE_CLIENT_ID) ||
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID) ||
     DEFAULT_CLIENT_ID;
 
   try {
@@ -276,6 +292,92 @@ export async function loadAndSyncSchoolClasses(): Promise<string[]> {
 }
 
 /**
+ * Retrieves configured school subjects from settings
+ */
+export function getSchoolSubjects(): string[] {
+  const settings = getSavedSettings();
+  if (Array.isArray(settings.subjects) && settings.subjects.length > 0) {
+    return settings.subjects;
+  }
+  return DEFAULT_SUBJECTS;
+}
+
+/**
+ * Saves configured school subjects to local settings and syncs to Supabase cloud app_config
+ */
+export function saveSchoolSubjects(subjects: string[]): void {
+  const cleanSubjects = Array.from(
+    new Set(
+      subjects
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    subjects: cleanSubjects.length > 0 ? cleanSubjects : DEFAULT_SUBJECTS,
+  };
+  saveSettings(updated);
+  syncSchoolSubjectsToCloud(updated.subjects || DEFAULT_SUBJECTS).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('school_subjects_updated', { detail: { subjects: updated.subjects } }));
+  }
+}
+
+/**
+ * Syncs school subjects to Supabase app_config store
+ */
+export async function syncSchoolSubjectsToCloud(subjects: string[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'school_subjects',
+      value: JSON.stringify(subjects),
+    });
+    if (error) {
+      console.warn('School subjects cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Failed to sync school subjects to Supabase cloud:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads school subjects from Supabase cloud app_config and syncs locally
+ */
+export async function loadAndSyncSchoolSubjects(): Promise<string[]> {
+  const localSubjects = getSchoolSubjects();
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'school_subjects')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const cleanCloud = parsed.map(String).filter(Boolean);
+        const current = getSavedSettings();
+        if (JSON.stringify(current.subjects) !== JSON.stringify(cleanCloud)) {
+          const updated = { ...current, subjects: cleanCloud };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        }
+        return cleanCloud;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch school subjects from cloud, using local cache:', err);
+  }
+
+  return localSubjects;
+}
+
+/**
  * Syncs Google Drive Client ID to Supabase app_config store
  */
 export async function syncGoogleDriveClientIdToCloud(clientId: string): Promise<boolean> {
@@ -331,7 +433,9 @@ export async function loadAndSyncGoogleDriveClientId(): Promise<string> {
     return current.googleDriveClientId;
   }
 
-  const fallback = (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID as string) || DEFAULT_CLIENT_ID;
+  const fallback =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_DRIVE_CLIENT_ID) ||
+    DEFAULT_CLIENT_ID;
   const updated = { ...current, googleDriveClientId: fallback };
   saveSettings(updated);
   syncGoogleDriveClientIdToCloud(fallback).catch(() => {});

@@ -1,0 +1,838 @@
+/* ─── Creative Mode Hub & Avatar Studio Modal Styles ──────────────────────── */
+
+.game-studio-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1100;
+  animation: fadeIn 150ms ease-out;
+}
+
+.game-studio-card {
+  width: 100%;
+  max-width: 780px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 14px;
+  box-shadow: 0 25px 35px -5px rgba(0, 0, 0, 0.2), 0 10px 15px -5px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  animation: slideInUp 180ms ease-out;
+}
+
+:root.dark .game-studio-card {
+  background: var(--color-surface-elevated, #1e293b);
+  border-color: var(--color-border, #334155);
+}
+
+.game-studio-header {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  background: var(--color-surface, #f8fafc);
+}
+
+:root.dark .game-studio-header {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-studio-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.game-studio-icon {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+
+.game-studio-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  margin: 0;
+}
+
+.game-studio-sub {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 2px 0 0;
+}
+
+.game-studio-close-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.25rem;
+  color: var(--color-text-secondary, #64748b);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.game-studio-close-btn:hover {
+  background: var(--color-surface-sunken, #e2e8f0);
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* ─── Auth Gate (Login / Register) ────────────────────────────────────────── */
+
+.game-studio-auth-pane {
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.game-studio-auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  padding-bottom: 8px;
+}
+
+:root.dark .game-studio-auth-tabs {
+  border-color: var(--color-border, #334155);
+}
+
+.game-studio-auth-tab {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #64748b);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.game-studio-auth-tab.active {
+  background: rgba(36, 68, 140, 0.08);
+  color: #24448c;
+}
+
+:root.dark .game-studio-auth-tab.active {
+  background: rgba(96, 165, 250, 0.12);
+  color: #93c5fd;
+}
+
+.game-studio-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 480px;
+}
+
+.game-studio-form-desc {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.game-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.game-input-row {
+  display: flex;
+  gap: 12px;
+}
+
+.game-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-input,
+.game-select {
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+  font-size: 0.875rem;
+  font-family: inherit;
+}
+
+:root.dark .game-input,
+:root.dark .game-select {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-input--pin {
+  width: 140px;
+  text-align: center;
+  letter-spacing: 0.25em;
+  font-family: monospace;
+  font-size: 1.1rem;
+}
+
+.game-primary-btn {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 8px;
+  border: none;
+  background: #24448c;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 140ms ease;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.game-primary-btn:hover:not(:disabled) {
+  background: #1b3570;
+}
+
+.game-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.game-studio-error-banner {
+  padding: 10px 14px;
+  border-radius: 7px;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #e11d48;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+:root.dark .game-studio-error-banner {
+  background: rgba(225, 29, 72, 0.15);
+  border-color: rgba(225, 29, 72, 0.3);
+  color: #fb7185;
+}
+
+.game-studio-success-banner {
+  padding: 10px 14px;
+  border-radius: 7px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #16a34a;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+/* ─── Identity Ribbon (Top Bar When Logged In) ────────────────────────────── */
+
+.game-identity-ribbon {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--color-surface-sunken, #f1f5f9);
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+:root.dark .game-identity-ribbon {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-identity-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.game-identity-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.game-identity-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.game-identity-handle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-identity-level-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #24448c;
+  color: #ffffff;
+}
+
+.game-identity-cohort-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+:root.dark .game-identity-cohort-badge {
+  background: #334155;
+  color: #cbd5e1;
+}
+
+.game-identity-realname {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.game-xp-bar-wrap {
+  width: 180px;
+  height: 8px;
+  background: #cbd5e1;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+  position: relative;
+}
+
+:root.dark .game-xp-bar-wrap {
+  background: #334155;
+}
+
+.game-xp-bar-fill {
+  height: 100%;
+  background: #8abf44;
+  border-radius: 4px;
+  transition: width 200ms ease;
+}
+
+.game-xp-text {
+  font-size: 0.625rem;
+  color: var(--color-text-secondary, #64748b);
+  margin-top: 2px;
+  display: block;
+}
+
+.game-identity-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.game-coin-purse {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 20px;
+}
+
+:root.dark .game-coin-purse {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.game-coin-icon {
+  font-size: 1rem;
+}
+
+.game-coin-amount {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: #92400e;
+}
+
+:root.dark .game-coin-amount {
+  color: #fbbf24;
+}
+
+.game-coin-label {
+  font-size: 0.75rem;
+  color: #b45309;
+}
+
+:root.dark .game-coin-label {
+  color: #fcd34d;
+}
+
+.game-logout-btn {
+  background: transparent;
+  border: 1px solid var(--color-border, #cbd5e1);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.game-logout-btn:hover {
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* ─── Navigation Tabs ─────────────────────────────────────────────────────── */
+
+.game-nav-tabs {
+  display: flex;
+  background: var(--color-surface, #ffffff);
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  padding: 0 16px;
+  gap: 8px;
+}
+
+:root.dark .game-nav-tabs {
+  background: var(--color-surface-elevated, #1e293b);
+  border-color: var(--color-border, #334155);
+}
+
+.game-nav-tab {
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-secondary, #64748b);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.game-nav-tab:hover {
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-nav-tab.active {
+  color: #24448c;
+  border-bottom-color: #24448c;
+}
+
+:root.dark .game-nav-tab.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+}
+
+.game-tab-pane {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ─── Tab 1: Avatar Studio Layout ─────────────────────────────────────────── */
+
+.game-avatar-studio-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 640px) {
+  .game-avatar-studio-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.game-avatar-preview-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--color-surface-sunken, #f8fafc);
+  border: 1px solid var(--color-border, #e2e8f0);
+}
+
+:root.dark .game-avatar-preview-box {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-avatar-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.game-reaction-controls {
+  width: 100%;
+}
+
+.game-reaction-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  display: block;
+  margin-bottom: 6px;
+}
+
+.game-reaction-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.game-reaction-btn {
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+:root.dark .game-reaction-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+.game-reaction-btn.active {
+  background: #24448c;
+  color: #ffffff;
+  border-color: #24448c;
+}
+
+:root.dark .game-reaction-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.game-wardrobe-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.game-wardrobe-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.game-wardrobe-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.game-skin-row {
+  display: flex;
+  gap: 10px;
+}
+
+.game-skin-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.game-skin-btn.selected {
+  border-color: #24448c;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 2px rgba(36, 68, 140, 0.2);
+}
+
+:root.dark .game-skin-btn.selected {
+  border-color: #60a5fa;
+}
+
+.game-item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.game-item-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border, #e2e8f0);
+  background: var(--color-surface, #ffffff);
+  text-align: left;
+  cursor: pointer;
+  min-height: 52px;
+  transition: all 140ms ease;
+}
+
+:root.dark .game-item-card {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-item-card:hover {
+  border-color: #24448c;
+  transform: translateY(-1px);
+}
+
+.game-item-card.equipped {
+  border-color: #24448c;
+  background: rgba(36, 68, 140, 0.06);
+}
+
+:root.dark .game-item-card.equipped {
+  border-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.game-item-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-item-status {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #24448c;
+  margin-top: 4px;
+}
+
+:root.dark .game-item-status {
+  color: #93c5fd;
+}
+
+/* ─── Tab 2: Topic Mastery ────────────────────────────────────────────────── */
+
+.game-mastery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.game-pane-heading {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  margin: 0;
+}
+
+.game-pane-sub {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 2px 0 0;
+}
+
+.game-mastery-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.game-kpi-box {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--color-surface-sunken, #f8fafc);
+  border: 1px solid var(--color-border, #e2e8f0);
+  display: flex;
+  flex-direction: column;
+}
+
+:root.dark .game-kpi-box {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-kpi-val {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-kpi-lbl {
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary, #64748b);
+  margin-top: 2px;
+}
+
+.game-topic-bars-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.game-topic-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.game-topic-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+}
+
+.game-topic-name {
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.game-topic-score {
+  font-weight: 700;
+}
+
+.game-topic-bar-bg {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+:root.dark .game-topic-bar-bg {
+  background: #334155;
+}
+
+.game-topic-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 200ms ease;
+}
+
+.game-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  gap: 8px;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.game-empty-icon {
+  font-size: 2.25rem;
+}
+
+/* ─── Tab 3: Match History ────────────────────────────────────────────────── */
+
+.game-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-history-card {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #e2e8f0);
+  background: var(--color-surface, #ffffff);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:root.dark .game-history-card {
+  background: var(--color-surface-sunken, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.game-history-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.game-history-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+  display: block;
+}
+
+.game-history-subject {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.game-history-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.game-history-score-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.game-history-acc-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.game-history-missed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border, #f1f5f9);
+}
+
+:root.dark .game-history-missed {
+  border-color: #334155;
+}
+
+.game-history-missed-label {
+  font-size: 0.6875rem;
+  color: #e11d48;
+  font-weight: 600;
+}
+
+.game-history-missed-tag {
+  font-size: 0.6875rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #ffe4e6;
+  color: #9f1239;
+}

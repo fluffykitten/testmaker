@@ -165,6 +165,53 @@ export interface TeacherProfile {
   updated_at?: string;                        // ISO timestamp
 }
 
+// ─── Student Creative Mode Types ───────────────────────────────────────────────
+
+export interface GameAvatarConfig {
+  skin: string;
+  eyes: 'normal' | 'curious' | 'focused' | 'starry' | 'winking' | 'goggles';
+  hair: 'curly_brunette' | 'short_fade' | 'long_braids' | 'messy_scientist' | 'hijab_navy' | 'slick_back' | 'bald';
+  outfit: 'lab_coat' | 'school_blazer' | 'hazmat_suit' | 'hoodie_emerald' | 'tweed_vest' | 'alchemist_robe';
+  prop: 'erlenmeyer_flask' | 'test_tube_rack' | 'bunsen_burner' | 'molecule_ball' | 'periodic_chart' | 'gold_trophy';
+  aura: 'none' | 'chem_bubbles' | 'sparkles' | 'electric_plasma' | 'flame_glow' | 'quantum_orbit';
+}
+
+export interface TopicMasteryRecord {
+  correct: number;
+  total: number;
+  masteryPct: number;
+  lastPracticed: string;
+}
+
+export interface GameMatchHistoryItem {
+  matchId: string;
+  quizTitle: string;
+  subject: string;
+  timestamp: number;
+  score: number;
+  accuracy: number;
+  mode: 'classic' | 'team_battle' | 'raid_boss' | 'speed_blitz';
+  missedTopics?: string[];
+}
+
+export interface GameProfile {
+  id: string;
+  student_id?: string | null;
+  handle: string;
+  real_name?: string | null;
+  class: string;
+  pin_hash: string;
+  avatar: GameAvatarConfig;
+  coins: number;
+  xp: number;
+  level: number;
+  unlocked_items: string[];
+  topic_mastery: Record<string, Record<string, TopicMasteryRecord>>; // subject -> topic -> record
+  match_history: GameMatchHistoryItem[];
+  created_at: string;
+  updated_at?: string;
+}
+
 // ─── Extraction Pipeline Types ─────────────────────────────────────────────────
 
 export interface PaperMetadata {

@@ -16,7 +16,7 @@ export const DEFAULT_CHEMISTRY_PROFILE: TeacherProfile = {
   subject: 'Chemistry',
   subject_code: '0620',
   pin_hash: null, // PIN-free by default
-  default_classes: ['10-A', '11-A', '12-A'],
+  default_classes: ['Grade 10', 'Grade 11'],
   preferences: {
     autoEnablePeriodicTable: true,
     defaultCalculator: 'scientific',
@@ -77,9 +77,9 @@ export async function fetchTeacherProfiles(): Promise<TeacherProfile[]> {
         name: row.name,
         title: row.title || undefined,
         subject: row.subject || 'Chemistry',
-        subject_code: row.subject_code || '0620',
+        subject_code: row.subject_code || '',
         pin_hash: row.pin_hash || null,
-        default_classes: Array.isArray(row.default_classes) ? row.default_classes : ['10-A', '11-A'],
+        default_classes: Array.isArray(row.default_classes) ? row.default_classes : ['Grade 10', 'Grade 11'],
         preferences: (row.preferences as TeacherPreferences) || {
           autoEnablePeriodicTable: true,
           defaultCalculator: 'scientific',
@@ -144,7 +144,7 @@ export async function createTeacherProfile(
     name: string;
     title?: string;
     subject: string;
-    subject_code: string;
+    subject_code?: string;
     pin?: string;
     default_classes?: string[];
     preferences?: Partial<TeacherPreferences>;
@@ -163,11 +163,11 @@ export async function createTeacherProfile(
     name: payload.name.trim(),
     title: payload.title?.trim() || null,
     subject: payload.subject.trim() || 'Chemistry',
-    subject_code: payload.subject_code.trim() || '0620',
+    subject_code: payload.subject_code ? payload.subject_code.trim() : '',
     pin_hash: pinHash,
     default_classes: payload.default_classes && payload.default_classes.length > 0
       ? payload.default_classes
-      : ['10-A', '11-A'],
+      : ['Grade 10', 'Grade 11'],
     preferences: {
       autoEnablePeriodicTable: payload.preferences?.autoEnablePeriodicTable ?? true,
       defaultCalculator: payload.preferences?.defaultCalculator ?? 'scientific',

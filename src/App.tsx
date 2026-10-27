@@ -7,6 +7,7 @@ import {
   getSavedSettings,
   applySettings,
   loadAndSyncSchoolClasses,
+  loadAndSyncSchoolSubjects,
   loadAndSyncGoogleDriveClientId,
 } from './lib/settings';
 import { PortalLandingPage } from './pages/PortalLandingPage';
@@ -24,6 +25,7 @@ import { TeacherProfileProvider } from './contexts/TeacherProfileContext';
 import { TeacherProfileChip } from './components/TeacherProfileChip';
 import { TeacherProfileModal } from './components/TeacherProfileModal';
 import { TeacherProfileSettingsModal } from './components/TeacherProfileSettingsModal';
+import { useTeacherProfile } from './hooks/useTeacherProfile';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
@@ -119,6 +121,14 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTeacherProfileModalOpen, setIsTeacherProfileModalOpen] = useState(false);
   const [isTeacherSettingsModalOpen, setIsTeacherSettingsModalOpen] = useState(false);
+  const { activeProfile, isLoading: isTeacherProfileLoading } = useTeacherProfile();
+
+  // Prompt user to select or create a profile on first opening after entering teacher suite
+  useEffect(() => {
+    if (appMode === 'teacher' && !isTeacherProfileLoading && !activeProfile) {
+      setIsTeacherProfileModalOpen(true);
+    }
+  }, [appMode, isTeacherProfileLoading, activeProfile]);
 
   // Mobile lifecycle & hardware back-button integration
   useMobileLifecycle();
@@ -128,6 +138,7 @@ function App() {
     applySettings(getSavedSettings());
     initAutoBackupPeriodicScheduler();
     loadAndSyncSchoolClasses().catch(() => {});
+    loadAndSyncSchoolSubjects().catch(() => {});
     loadAndSyncGoogleDriveClientId().catch(() => {});
 
     // Proactively pre-warm Question Bank chunk and database cache in background

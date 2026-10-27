@@ -7,6 +7,18 @@ interface TeacherProfileSettingsModalProps {
   onClose: () => void;
 }
 
+const COHORT_OPTIONS = ['Grade 10', 'Grade 11', 'Grade 12'] as const;
+
+function parseCohortsToGrades(classes: string[]): string[] {
+  const grades = new Set<string>();
+  for (const c of classes) {
+    if (c.includes('10')) grades.add('Grade 10');
+    if (c.includes('11')) grades.add('Grade 11');
+    if (c.includes('12')) grades.add('Grade 12');
+  }
+  return grades.size > 0 ? Array.from(grades).sort() : ['Grade 10'];
+}
+
 export function TeacherProfileSettingsModal({
   isOpen,
   onClose,
@@ -15,7 +27,7 @@ export function TeacherProfileSettingsModal({
 
   const [name, setName] = useState('');
   const [title, setTitle] = useState('Dr.');
-  const [classes, setClasses] = useState('');
+  const [selectedCohorts, setSelectedCohorts] = useState<string[]>(['Grade 10', 'Grade 11']);
   const [autoPeriodicTable, setAutoPeriodicTable] = useState(true);
   const [defaultCalc, setDefaultCalc] = useState<'scientific' | 'basic'>('scientific');
 
@@ -32,7 +44,7 @@ export function TeacherProfileSettingsModal({
     if (activeProfile && isOpen) {
       setName(activeProfile.name);
       setTitle(activeProfile.title || 'Dr.');
-      setClasses(activeProfile.default_classes.join(', '));
+      setSelectedCohorts(parseCohortsToGrades(activeProfile.default_classes));
       setAutoPeriodicTable(activeProfile.preferences.autoEnablePeriodicTable ?? true);
       setDefaultCalc(activeProfile.preferences.defaultCalculator ?? 'scientific');
       setPinChangeMode(false);
@@ -55,6 +67,16 @@ export function TeacherProfileSettingsModal({
 
   if (!isOpen || !activeProfile) return null;
 
+  const toggleCohort = (grade: string) => {
+    setSelectedCohorts((prev) => {
+      if (prev.includes(grade)) {
+        const next = prev.filter((g) => g !== grade);
+        return next.length > 0 ? next : [grade];
+      }
+      return [...prev, grade].sort();
+    });
+  };
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!activeProfile) return;
@@ -71,11 +93,6 @@ export function TeacherProfileSettingsModal({
     setIsSaving(true);
     setErrorMsg('');
     try {
-      const classesArray = classes
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean);
-
       let pinUpdate: string | null | undefined = undefined;
       if (pinChangeMode) {
         pinUpdate = removePin ? null : newPin.trim();
@@ -84,7 +101,7 @@ export function TeacherProfileSettingsModal({
       await updateCurrentProfile({
         name: name.trim(),
         title: title.trim(),
-        default_classes: classesArray.length > 0 ? classesArray : activeProfile.default_classes,
+        default_classes: selectedCohorts.length > 0 ? selectedCohorts : ['Grade 10'],
         preferences: {
           ...activeProfile.preferences,
           autoEnablePeriodicTable: autoPeriodicTable,
@@ -147,6 +164,8 @@ export function TeacherProfileSettingsModal({
                   <option value="Mrs.">Mrs.</option>
                   <option value="Ibu">Ibu</option>
                   <option value="Pak">Pak</option>
+                  <option value="Ustadz">Ustadz</option>
+                  <option value="Ustadzah">Ustadzah</option>
                 </select>
               </div>
               <div className="teacher-field teacher-field--lg">
@@ -162,25 +181,37 @@ export function TeacherProfileSettingsModal({
               </div>
             </div>
 
+            {/* Multi-select Cohort: Grade 10, Grade 11, Grade 12 */}
             <div className="teacher-field">
-              <label htmlFor="settings-classes" className="teacher-label">Default Teaching Cohorts</label>
-              <input
-                id="settings-classes"
-                type="text"
-                placeholder="e.g. 10-A, 11-A, 12-A"
-                value={classes}
-                onChange={(e) => setClasses(e.target.value)}
-                className="teacher-text-input"
-              />
+              <label className="teacher-label">Default Teaching Cohorts (Multi-Select)</label>
+              <div className="teacher-cohort-buttons" role="group" aria-label="Select Teaching Cohorts">
+                {COHORT_OPTIONS.map((grade) => {
+                  const isSelected = selectedCohorts.includes(grade);
+                  return (
+                    <button
+                      key={grade}
+                      type="button"
+                      className={`teacher-cohort-btn ${isSelected ? 'teacher-cohort-btn--selected' : ''}`}
+                      onClick={() => toggleCohort(grade)}
+                      aria-pressed={isSelected}
+                    >
+                      <span className="teacher-cohort-check">{isSelected ? '✓' : '+'}</span>
+                      <span>{grade}</span>
+                    </button>
+                  );
+                })}
+              </div>
               <span className="teacher-field-hint">
-                These classes will be pre-selected when authoring exams or viewing student directories.
+                These grades will be pre-selected when authoring exams or viewing student directories.
               </span>
             </div>
           </div>
 
           {/* Subject Exam Tools Defaults */}
           <div className="teacher-settings-section">
-            <span className="teacher-settings-section-title">Subject Exam Defaults ({activeProfile.subject})</span>
+            <span className="teacher-settings-section-title">
+              Subject Exam Defaults ({activeProfile.subject}{activeProfile.subject_code ? ` ${activeProfile.subject_code}` : ''})
+            </span>
 
             <label className="teacher-checkbox-label">
               <input

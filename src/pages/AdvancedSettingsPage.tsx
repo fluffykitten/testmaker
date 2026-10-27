@@ -5,8 +5,12 @@ import {
   getSavedSettings,
   saveSettings,
   DEFAULT_CLASSES,
+  DEFAULT_SUBJECTS,
   saveSchoolClasses,
   loadAndSyncSchoolClasses,
+  getSchoolSubjects,
+  saveSchoolSubjects,
+  loadAndSyncSchoolSubjects,
   loadAndSyncGoogleDriveClientId,
   syncGoogleDriveClientIdToCloud,
 } from '../lib/settings';
@@ -69,7 +73,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
   const [roster, setRoster] = useState<RosterStudent[]>(() => getSchoolRoster());
   const [activeSection, setActiveSection] = useState<'roster' | 'security' | 'cloud'>('roster');
-  const [rosterSubTab, setRosterSubTab] = useState<'classes' | 'students'>('classes');
+  const [rosterSubTab, setRosterSubTab] = useState<'classes' | 'students' | 'subjects'>('classes');
+  const [subjects, setSubjects] = useState<string[]>(() => getSchoolSubjects());
+  const [newSubjectInput, setNewSubjectInput] = useState('');
   const [selectedRosterClass, setSelectedRosterClass] = useState<string>('ALL');
 
   // School Classes Inputs
@@ -120,6 +126,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       });
       loadAndSyncSchoolRoster().then((students) => {
         setRoster(students);
+      });
+      loadAndSyncSchoolSubjects().then((subjs) => {
+        setSubjects(subjs);
       });
       loadAndSyncGoogleDriveClientId().then((id) => {
         if (id) setGoogleClientIdInput(id);
@@ -219,6 +228,41 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     sessionStorage.removeItem(ADVANCED_SESSION_KEY);
     setIsUnlocked(false);
     setPinDigits(Array(PIN_LENGTH).fill(''));
+  };
+
+  // ─── School Subjects Handlers ────────────────────────────────────────────────
+  const handleAddSubject = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newSubjectInput.trim();
+    if (!trimmed) return;
+    if (subjects.map((s) => s.toLowerCase()).includes(trimmed.toLowerCase())) {
+      showNotice(`Subject "${trimmed}" already exists.`);
+      return;
+    }
+    const updated = [...subjects, trimmed];
+    setSubjects(updated);
+    saveSchoolSubjects(updated);
+    setNewSubjectInput('');
+    showNotice(`✓ Added "${trimmed}" to school subjects & synced to cloud`);
+  };
+
+  const handleRemoveSubject = (subjToRemove: string) => {
+    if (subjects.length <= 1) {
+      showNotice('At least one subject must remain configured.');
+      return;
+    }
+    const updated = subjects.filter((s) => s !== subjToRemove);
+    setSubjects(updated);
+    saveSchoolSubjects(updated);
+    showNotice(`✓ Removed "${subjToRemove}" from school subjects`);
+  };
+
+  const handleResetSubjects = () => {
+    if (window.confirm('Reset all academic subjects to ICM default list?')) {
+      setSubjects(DEFAULT_SUBJECTS);
+      saveSchoolSubjects(DEFAULT_SUBJECTS);
+      showNotice('✓ Reset subjects to school defaults');
+    }
   };
 
   // ─── School Classes Handlers ────────────────────────────────────────────────
@@ -544,7 +588,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
             onClick={() => setActiveSection('roster')}
           >
             🏫 School Classes & Student Directory
-            <span className="adv-tab-counter">{(settings.classes || DEFAULT_CLASSES).length} classes · {roster.length} students</span>
+            <span className="adv-tab-counter">{(settings.classes || DEFAULT_CLASSES).length} classes · {subjects.length} subjects · {roster.length} students</span>
           </button>
 
           <button
@@ -592,6 +636,13 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   onClick={() => setRosterSubTab('students')}
                 >
                   👨‍🎓 Student Directory & 4-Digit PINs ({roster.length})
+                </button>
+                <button
+                  type="button"
+                  className={`adv-subtab-btn ${rosterSubTab === 'subjects' ? 'adv-subtab-btn--active' : ''}`}
+                  onClick={() => setRosterSubTab('subjects')}
+                >
+                  📚 Primary Subjects ({subjects.length})
                 </button>
               </div>
             </div>
@@ -687,7 +738,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : rosterSubTab === 'students' ? (
               <div className="adv-students-pane">
                 {/* Students Toolbar */}
                 <div className="adv-students-toolbar">
@@ -864,6 +915,62 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     </div>
                   </div>
                 )}
+              </div>
+            ) : (
+              <div className="adv-subjects-pane" style={{ padding: '20px 0 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div>
+                    <h3 className="adv-subheading" style={{ margin: 0 }}>Academic Subjects & Departments ({subjects.length})</h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '0.8125rem', color: 'var(--color-text-secondary, #64748b)' }}>
+                      Manage available academic subjects for teacher workspaces, question filters, and Creative Mode.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={handleResetSubjects}
+                    title="Reset to default ICM subject list"
+                  >
+                    ↺ Reset to Defaults
+                  </button>
+                </div>
+
+                <div className="adv-class-chip-wrap">
+                  {subjects.map((subj) => (
+                    <span key={subj} className="adv-class-chip">
+                      <span className="adv-class-chip-tag">📚</span>
+                      <span className="adv-class-chip-name">{subj}</span>
+                      <button
+                        type="button"
+                        className="adv-class-chip-del"
+                        onClick={() => handleRemoveSubject(subj)}
+                        title={`Remove subject ${subj}`}
+                        aria-label={`Remove subject ${subj}`}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                {/* Add Subject Form */}
+                <form onSubmit={handleAddSubject} className="adv-add-class-form" style={{ marginTop: '20px' }}>
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Add new subject (e.g. Sociology, Art, Computer Science)..."
+                    value={newSubjectInput}
+                    onChange={(e) => setNewSubjectInput(e.target.value)}
+                    style={{ maxWidth: '380px' }}
+                  />
+                  <button
+                    type="submit"
+                    className="adv-btn-primary"
+                    disabled={!newSubjectInput.trim()}
+                  >
+                    + Add Subject
+                  </button>
+                </form>
               </div>
             )}
           </div>

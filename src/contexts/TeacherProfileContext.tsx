@@ -14,7 +14,6 @@ import {
   setActiveTeacherProfileId,
   verifyTeacherProfilePin,
   updateTeacherProfile,
-  DEFAULT_CHEMISTRY_PROFILE,
 } from '../services/teacherProfileService';
 
 export interface TeacherProfileContextValue {
@@ -50,19 +49,13 @@ export function TeacherProfileProvider({ children }: { children: ReactNode }) {
       setProfiles(list);
 
       const activeId = getActiveTeacherProfileId();
-      let matched = list.find((p) => p.id === activeId);
+      const matched = activeId ? list.find((p) => p.id === activeId) || null : null;
 
-      // If no valid active ID in storage, auto-select first profile (or default Chemistry)
-      if (!matched && list.length > 0) {
-        matched = list[0];
-        setActiveTeacherProfileId(matched.id);
-      }
-
-      setActiveProfile(matched || DEFAULT_CHEMISTRY_PROFILE);
+      setActiveProfile(matched);
       setShowAllSubjects(matched?.preferences?.showOtherSubjects ?? false);
     } catch (err) {
       console.warn('Error loading teacher profiles:', err);
-      setActiveProfile(DEFAULT_CHEMISTRY_PROFILE);
+      setActiveProfile(null);
     } finally {
       setIsLoading(false);
     }
@@ -163,9 +156,9 @@ export function TeacherProfileProvider({ children }: { children: ReactNode }) {
       }
 
       const activeSubj = activeProfile.subject.toLowerCase();
-      const activeCode = activeProfile.subject_code.toLowerCase();
+      const activeCode = (activeProfile.subject_code || '').toLowerCase().trim();
 
-      if (syllabusIdOrCode) {
+      if (activeCode && syllabusIdOrCode) {
         const normCode = syllabusIdOrCode.toLowerCase();
         if (normCode === activeCode || normCode.includes(activeCode)) {
           return true;
@@ -174,7 +167,7 @@ export function TeacherProfileProvider({ children }: { children: ReactNode }) {
 
       if (subjectOrText) {
         const normSubj = subjectOrText.toLowerCase();
-        if (normSubj.includes(activeSubj) || normSubj.includes(activeCode)) {
+        if (normSubj.includes(activeSubj) || (activeCode && normSubj.includes(activeCode))) {
           return true;
         }
         // Specific Chemistry terms

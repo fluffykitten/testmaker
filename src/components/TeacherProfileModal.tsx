@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTeacherProfile } from '../contexts/TeacherProfileContext';
 import { createTeacherProfile } from '../services/teacherProfileService';
+import { getSchoolSubjects, DEFAULT_SUBJECTS } from '../lib/settings';
 import type { TeacherProfile } from '../types/database';
 import './TeacherProfileModal.css';
 
@@ -9,8 +10,60 @@ interface TeacherProfileModalProps {
   onClose: () => void;
 }
 
+const COHORT_OPTIONS = ['Grade 10', 'Grade 11', 'Grade 12'] as const;
+
+const KNOWN_SYLLABUS_CODES: Record<string, string> = {
+  Chemistry: '0620',
+  Physics: '0625',
+  Biology: '0610',
+  Mathematics: '0580',
+  English: '0500',
+  Geography: '0460',
+  Economics: '0455',
+  Sociology: '0495',
+  PAI: '',
+  Arabic: '',
+  'Bahasa Indonesia': '',
+};
+
+function getSubjectIcon(subject: string): string {
+  const s = (subject || '').toLowerCase();
+  if (s.includes('chem')) return '🧪';
+  if (s.includes('phys')) return '⚡';
+  if (s.includes('bio')) return '🧬';
+  if (s.includes('math')) return '📐';
+  if (s.includes('eng')) return '📖';
+  if (s.includes('geo')) return '🌍';
+  if (s.includes('econ')) return '📈';
+  if (s.includes('socio')) return '⚖️';
+  if (s.includes('pai') || s.includes('islam')) return '🕌';
+  if (s.includes('arab')) return '📜';
+  if (s.includes('indonesia')) return '🇮🇩';
+  return '📚';
+}
+
 export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProps) {
   const { profiles, activeProfile, switchProfile, refreshProfiles } = useTeacherProfile();
+
+  // Dynamic school subjects from settings
+  const [availableSubjects, setAvailableSubjects] = useState<string[]>(() => {
+    const list = getSchoolSubjects();
+    return list.length > 0 ? list : DEFAULT_SUBJECTS;
+  });
+
+  // Listen for admin changes to subjects
+  useEffect(() => {
+    function handleSubjectsUpdated(e: Event) {
+      const customEvent = e as CustomEvent<{ subjects?: string[] }>;
+      if (customEvent.detail?.subjects) {
+        setAvailableSubjects(customEvent.detail.subjects);
+      } else {
+        setAvailableSubjects(getSchoolSubjects());
+      }
+    }
+    window.addEventListener('school_subjects_updated', handleSubjectsUpdated);
+    return () => window.removeEventListener('school_subjects_updated', handleSubjectsUpdated);
+  }, []);
 
   // Mode: 'list' | 'pin_prompt' | 'create'
   const [modalMode, setModalMode] = useState<'list' | 'pin_prompt' | 'create'>('list');
@@ -25,7 +78,7 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
   const [newTitle, setNewTitle] = useState('Dr.');
   const [newSubject, setNewSubject] = useState('Chemistry');
   const [newSubjectCode, setNewSubjectCode] = useState('0620');
-  const [newClasses, setNewClasses] = useState('10-A, 11-A');
+  const [selectedCohorts, setSelectedCohorts] = useState<string[]>(['Grade 10', 'Grade 11']);
   const [newPin, setNewPin] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
@@ -44,19 +97,29 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
       if (e.key === 'Escape' && isOpen) {
         if (modalMode !== 'list') {
           setModalMode('list');
-        } else {
+        } else if (activeProfile) {
           onClose();
         }
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, modalMode, onClose]);
+  }, [isOpen, modalMode, onClose, activeProfile]);
 
   if (!isOpen) return null;
 
+  const toggleCohort = (grade: string) => {
+    setSelectedCohorts((prev) => {
+      if (prev.includes(grade)) {
+        const next = prev.filter((g) => g !== grade);
+        return next.length > 0 ? next : [grade]; // keep at least 1 grade
+      }
+      return [...prev, grade].sort();
+    });
+  };
+
   async function handleSelectProfile(profile: TeacherProfile) {
-    if (profile.id === activeProfile?.id) {
+    if (activeProfile && profile.id === activeProfile.id) {
       onClose();
       return;
     }
@@ -106,17 +169,12 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
     setIsSubmitting(true);
     setCreateError('');
     try {
-      const classesArray = newClasses
-        .split(',')
-        .map((c) => c.trim())
-        .filter(Boolean);
-
       const created = await createTeacherProfile({
         name: newName.trim(),
         title: newTitle.trim(),
         subject: newSubject.trim(),
-        subject_code: newSubjectCode.trim(),
-        default_classes: classesArray.length > 0 ? classesArray : ['10-A', '11-A'],
+        subject_code: newSubjectCode.trim() || '',
+        default_classes: selectedCohorts.length > 0 ? selectedCohorts : ['Grade 10'],
         pin: newPin.trim() || undefined,
         preferences: {
           autoEnablePeriodicTable: newSubject.toLowerCase() === 'chemistry',
@@ -135,6 +193,8 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
     }
   }
 
+  const isFirstTimeOnboarding = !activeProfile;
+
   return (
     <div className="teacher-modal-overlay" role="dialog" aria-modal="true">
       <div className="teacher-modal-card">
@@ -142,24 +202,29 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
         <div className="teacher-modal-header">
           <div>
             <h2 className="teacher-modal-title">
-              {modalMode === 'list' && 'Select Teacher Profile'}
+              {modalMode === 'list' && (isFirstTimeOnboarding ? 'Welcome! Select Educator Profile' : 'Select Teacher Profile')}
               {modalMode === 'pin_prompt' && 'Enter 4-Digit Teacher PIN'}
               {modalMode === 'create' && 'Create Teacher Profile'}
             </h2>
             <p className="teacher-modal-subtitle">
-              {modalMode === 'list' && 'Pick your educator workspace to isolate tests and student data.'}
+              {modalMode === 'list' && (isFirstTimeOnboarding
+                ? 'Choose an available educator profile or create a new one to begin.'
+                : 'Pick your educator workspace to isolate tests and student data.')}
               {modalMode === 'pin_prompt' && `Protected profile: ${selectedTarget?.name}`}
-              {modalMode === 'create' && 'Set up your subject and default classes for this device.'}
+              {modalMode === 'create' && 'Set up your subject and cohort defaults for this device.'}
             </p>
           </div>
-          <button
-            type="button"
-            className="teacher-modal-close-btn"
-            onClick={onClose}
-            aria-label="Close modal"
-          >
-            ✕
-          </button>
+          {/* Only show close button if a profile is already active */}
+          {!isFirstTimeOnboarding && (
+            <button
+              type="button"
+              className="teacher-modal-close-btn"
+              onClick={onClose}
+              aria-label="Close modal"
+            >
+              ✕
+            </button>
+          )}
         </div>
 
         {/* Modal Content */}
@@ -167,17 +232,22 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
           {/* Mode 1: List Profiles */}
           {modalMode === 'list' && (
             <div className="teacher-list-view">
+              {isFirstTimeOnboarding && (
+                <div className="teacher-onboarding-banner">
+                  <span className="teacher-onboarding-icon" aria-hidden="true">👋</span>
+                  <div>
+                    <strong>Welcome to ICM Test Maker & Creative Mode</strong>
+                    <p>
+                      Please select an available teacher profile below, or create a brand new profile for your subject.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="teacher-cards-grid">
                 {profiles.map((p) => {
                   const isActive = p.id === activeProfile?.id;
-                  const icon =
-                    p.subject.toLowerCase() === 'chemistry'
-                      ? '🧪'
-                      : p.subject.toLowerCase() === 'physics'
-                      ? '⚡'
-                      : p.subject.toLowerCase() === 'biology'
-                      ? '🧬'
-                      : '📚';
+                  const icon = getSubjectIcon(p.subject);
 
                   return (
                     <button
@@ -194,10 +264,10 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
                           {p.pin_hash && <span className="teacher-card-pin-tag" title="Protected with 4-digit PIN">🔒 PIN</span>}
                         </div>
                         <span className="teacher-card-subject">
-                          {p.subject} ({p.subject_code})
+                          {p.subject}{p.subject_code ? ` (${p.subject_code})` : ''}
                         </span>
                         <span className="teacher-card-classes">
-                          Classes: {p.default_classes.join(', ')}
+                          Cohorts: {p.default_classes.join(', ')}
                         </span>
                       </div>
                     </button>
@@ -282,6 +352,8 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
                     <option value="Mrs.">Mrs.</option>
                     <option value="Ibu">Ibu</option>
                     <option value="Pak">Pak</option>
+                    <option value="Ustadz">Ustadz</option>
+                    <option value="Ustadzah">Ustadzah</option>
                   </select>
                 </div>
                 <div className="teacher-field teacher-field--lg">
@@ -307,30 +379,27 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
                     onChange={(e) => {
                       const val = e.target.value;
                       setNewSubject(val);
-                      if (val === 'Chemistry') setNewSubjectCode('0620');
-                      else if (val === 'Physics') setNewSubjectCode('0625');
-                      else if (val === 'Biology') setNewSubjectCode('0610');
-                      else if (val === 'Mathematics') setNewSubjectCode('0580');
-                      else if (val === 'English') setNewSubjectCode('0500');
+                      if (KNOWN_SYLLABUS_CODES[val] !== undefined) {
+                        setNewSubjectCode(KNOWN_SYLLABUS_CODES[val]);
+                      }
                     }}
                     className="teacher-select"
                   >
-                    <option value="Chemistry">Chemistry</option>
-                    <option value="Physics">Physics</option>
-                    <option value="Biology">Biology</option>
-                    <option value="Mathematics">Mathematics</option>
-                    <option value="English">English</option>
-                    <option value="Geography">Geography</option>
-                    <option value="Economics">Economics</option>
+                    {availableSubjects.map((subj) => (
+                      <option key={subj} value={subj}>
+                        {subj}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="teacher-field">
-                  <label htmlFor="teacher-subject-code" className="teacher-label">Syllabus Code *</label>
+                  <label htmlFor="teacher-subject-code" className="teacher-label">
+                    Syllabus Code <span className="teacher-label-optional">(Optional)</span>
+                  </label>
                   <input
                     id="teacher-subject-code"
                     type="text"
-                    required
-                    placeholder="e.g. 0620"
+                    placeholder="e.g. 0620 (Optional)"
                     value={newSubjectCode}
                     onChange={(e) => setNewSubjectCode(e.target.value)}
                     className="teacher-text-input"
@@ -338,20 +407,35 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
                 </div>
               </div>
 
+              {/* Multi-select Cohort: Grade 10, Grade 11, Grade 12 */}
               <div className="teacher-field">
-                <label htmlFor="teacher-classes" className="teacher-label">Default Teaching Cohorts (comma-separated)</label>
-                <input
-                  id="teacher-classes"
-                  type="text"
-                  placeholder="e.g. 10-A, 11-A, 12-B"
-                  value={newClasses}
-                  onChange={(e) => setNewClasses(e.target.value)}
-                  className="teacher-text-input"
-                />
+                <label className="teacher-label">Teaching Cohorts (Multi-Select)</label>
+                <div className="teacher-cohort-buttons" role="group" aria-label="Select Teaching Cohorts">
+                  {COHORT_OPTIONS.map((grade) => {
+                    const isSelected = selectedCohorts.includes(grade);
+                    return (
+                      <button
+                        key={grade}
+                        type="button"
+                        className={`teacher-cohort-btn ${isSelected ? 'teacher-cohort-btn--selected' : ''}`}
+                        onClick={() => toggleCohort(grade)}
+                        aria-pressed={isSelected}
+                      >
+                        <span className="teacher-cohort-check">{isSelected ? '✓' : '+'}</span>
+                        <span>{grade}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="teacher-field-hint">
+                  Select all grade levels you teach. Test filters and student rosters will adapt.
+                </span>
               </div>
 
               <div className="teacher-field">
-                <label htmlFor="teacher-pin" className="teacher-label">Optional 4-Digit Security PIN (Leave blank for 1-click access)</label>
+                <label htmlFor="teacher-pin" className="teacher-label">
+                  Optional 4-Digit Security PIN <span className="teacher-label-optional">(Leave blank for 1-click access)</span>
+                </label>
                 <input
                   id="teacher-pin"
                   type="password"

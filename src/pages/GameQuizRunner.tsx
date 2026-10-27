@@ -45,6 +45,9 @@ import {
   type RTGameEndMessage,
 } from '../types/gameTypes';
 import { ExamMathText } from '../components/ExamMathText';
+import { getActiveGameProfile, awardGameMatchRewards } from '../services/gameProfileService';
+import { GameAvatarRenderer } from '../components/game/GameAvatarRenderer';
+import type { GameProfile } from '../types/database';
 import './GameQuizRunner.css';
 
 interface GameQuizRunnerProps {
@@ -121,7 +124,8 @@ export function GameQuizRunner({
 
   // Player Profile
   const [playerId] = useState(() => savedSess?.playerId || `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`);
-  const [nickname, setNickname] = useState(() => savedSess?.nickname || generateNickname());
+  const [studentProfile] = useState<GameProfile | null>(() => getActiveGameProfile());
+  const [nickname, setNickname] = useState(() => savedSess?.nickname || studentProfile?.handle || generateNickname());
   const [avatarEmoji, setAvatarEmoji] = useState(() => savedSess?.avatarEmoji || AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)]);
 
   // Game Engine State
@@ -332,6 +336,7 @@ export function GameQuizRunner({
           if (myEntry) setMyRank(myEntry.rank);
           setPhase('final_results');
           playVictoryFanfare();
+          recordMatchRewards(history, score);
         },
       });
     } else {
@@ -340,6 +345,49 @@ export function GameQuizRunner({
       startSoloQuestion(0);
     }
   };
+
+  const recordMatchRewards = useCallback((finalHistory: QuestionResultRecord[], finalScore: number) => {
+    const activeStudent = getActiveGameProfile();
+    if (!activeStudent) return;
+
+    const correctCount = finalHistory.filter((h) => h.isCorrect).length;
+    const totalCount = finalHistory.length;
+    const accuracy = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
+    const earnedCoins = correctCount * 10 + (longestStreak >= 3 ? 15 : 0);
+    const earnedXp = Math.round(finalScore / 10);
+
+    const topicResults = finalHistory.map((h, i) => {
+      const item = playableItems[i];
+      return {
+        topic: item?.rawQuestion?.topic || 'General Topic',
+        correct: h.isCorrect,
+      };
+    });
+
+    const missedTopics = Array.from(
+      new Set(
+        finalHistory
+          .filter((h) => !h.isCorrect)
+          .map((_, i) => playableItems[i]?.rawQuestion?.topic || 'General Topic')
+      )
+    );
+
+    awardGameMatchRewards(activeStudent.id, {
+      coins: earnedCoins,
+      xp: earnedXp,
+      subject: initialHeaderConfig?.subject || 'Chemistry',
+      topicResults,
+      summary: {
+        matchId: `m_${Date.now()}`,
+        quizTitle: title || 'Creative Mode Sprint',
+        subject: initialHeaderConfig?.subject || 'Chemistry',
+        score: finalScore,
+        accuracy,
+        mode: isLiveMultiplayer ? 'team_battle' : 'classic',
+        missedTopics,
+      },
+    }).catch((err) => console.warn('Failed to record game rewards:', err));
+  }, [longestStreak, playableItems, initialHeaderConfig, title, isLiveMultiplayer]);
 
   // ─── 3. Solo Game Loop ──────────────────────────────────────────────────────
   const startSoloQuestion = (qIdx: number) => {
@@ -451,6 +499,7 @@ export function GameQuizRunner({
     } else {
       setPhase('final_results');
       playVictoryFanfare();
+      recordMatchRewards(history, score);
     }
   };
 
@@ -659,7 +708,11 @@ export function GameQuizRunner({
       {/* ─── Topbar HUD ──────────────────────────────────────────────────────── */}
       <header className="gq-topbar">
         <div className="gq-topbar-profile">
-          <span className="gq-player-avatar">{avatarEmoji}</span>
+          {studentProfile ? (
+            <GameAvatarRenderer avatar={studentProfile.avatar} reaction={lastFeedback ? (lastFeedback.isCorrect ? 'happy' : 'wrong') : 'neutral'} size={34} showAura={false} />
+          ) : (
+            <span className="gq-player-avatar">{avatarEmoji}</span>
+          )}
           <div className="gq-player-info">
             <strong className="gq-player-name">{nickname}</strong>
             <span className="gq-quiz-title-tag">{title}</span>
@@ -706,6 +759,20 @@ export function GameQuizRunner({
               <h1 className="gq-game-title">{title}</h1>
               <p className="gq-game-sub">{questions.length} MCQ Questions • Points & Streaks</p>
             </div>
+
+            {studentProfile && (
+              <div className="gq-signed-in-profile-banner" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', borderRadius: '10px', background: 'rgba(36, 68, 140, 0.08)', border: '1px solid rgba(36, 68, 140, 0.2)', marginBottom: '16px' }}>
+                <GameAvatarRenderer avatar={studentProfile.avatar} size={46} showAura={false} />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#24448c' }}>
+                    {studentProfile.handle} <span style={{ fontSize: '0.6875rem', fontWeight: 700, background: '#24448c', color: '#fff', padding: '2px 6px', borderRadius: '4px' }}>Lv. {studentProfile.level}</span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '2px' }}>
+                    Cohort: {studentProfile.class} • 🪙 {studentProfile.coins} Coins
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Avatar Selector */}
             <div className="gq-avatar-section">

@@ -36,16 +36,39 @@ export function TeacherProfileChip({
     };
   }, [isOpen]);
 
-  if (!activeProfile) return null;
+  if (!activeProfile) {
+    return (
+      <div className="teacher-chip-wrapper">
+        <button
+          type="button"
+          className="teacher-chip-btn"
+          onClick={onOpenSwitchModal}
+          title="Click to select or create your educator profile"
+          style={{ borderColor: '#24448c', background: 'rgba(36, 68, 140, 0.05)' }}
+        >
+          <span className="teacher-chip-icon" aria-hidden="true">👤</span>
+          <div className="teacher-chip-meta">
+            <span className="teacher-chip-name" style={{ color: '#24448c' }}>Select Profile</span>
+            <span className="teacher-chip-subject">No workspace active</span>
+          </div>
+        </button>
+      </div>
+    );
+  }
 
+  const s = activeProfile.subject.toLowerCase();
   const subjectIcon =
-    activeProfile.subject.toLowerCase() === 'chemistry'
-      ? '🧪'
-      : activeProfile.subject.toLowerCase() === 'physics'
-      ? '⚡'
-      : activeProfile.subject.toLowerCase() === 'biology'
-      ? '🧬'
-      : '📚';
+    s.includes('chem') ? '🧪' :
+    s.includes('phys') ? '⚡' :
+    s.includes('bio') ? '🧬' :
+    s.includes('math') ? '📐' :
+    s.includes('eng') ? '📖' :
+    s.includes('geo') ? '🌍' :
+    s.includes('econ') ? '📈' :
+    s.includes('socio') ? '⚖️' :
+    (s.includes('pai') || s.includes('islam')) ? '🕌' :
+    s.includes('arab') ? '📜' :
+    s.includes('indonesia') ? '🇮🇩' : '📚';
 
   return (
     <div className="teacher-chip-wrapper" ref={dropdownRef}>
