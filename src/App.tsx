@@ -19,6 +19,7 @@ import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from './assets/logoConstants';
 import { prewarmQuestionBankData } from './services/questionBankService';
+import { APP_VERSION } from './config/version';
 import { TeacherProfileProvider } from './contexts/TeacherProfileContext';
 import { TeacherProfileChip } from './components/TeacherProfileChip';
 import { TeacherProfileModal } from './components/TeacherProfileModal';
@@ -585,7 +586,7 @@ function App() {
               <div className="footer-details">
                 <div className="footer-brand-title">ICM Exam Platform</div>
                 <div className="footer-brand-desc">
-                  Insan Cendekia Madani • Cambridge International School
+                  Insan Cendekia Madani • Cambridge International School • {APP_VERSION}
                 </div>
               </div>
             </div>

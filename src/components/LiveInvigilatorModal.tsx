@@ -21,7 +21,7 @@ export type ProctorSortOption = 'class_seat' | 'status' | 'name' | 'progress' | 
 export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz, onClose }) => {
   const [students, setStudents] = useState<Record<string, ProctorStudentState>>({});
   const [logEvents, setLogEvents] = useState<ProctorLogEvent[]>([]);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'locked' | 'warnings' | 'active' | 'submitted'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'exceeded' | 'locked' | 'warnings' | 'active' | 'submitted'>('all');
   const [activeClassFilter, setActiveClassFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<ProctorSortOption>('class_seat');
   const [searchQuery, setSearchQuery] = useState('');
@@ -196,8 +196,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
     let multiMonitor = 0;
     let submitted = 0;
     let offline = 0;
+    let exceeded = 0;
 
     studentList.forEach((s) => {
+      const isExceeded = s.exceededMaxViolations || (quiz.maxViolations && quiz.maxViolations > 0 && s.violationsCount >= quiz.maxViolations);
+      if (isExceeded) exceeded++;
       if (s.status === 'locked') locked++;
       else if (s.status === 'warning') warnings++;
       else if (s.status === 'active') active++;
@@ -215,13 +218,18 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
       multiMonitor,
       submitted,
       offline,
+      exceeded,
     };
-  }, [studentList]);
+  }, [studentList, quiz.maxViolations]);
 
   // ─── 4. Filtered & Sorted Students ─────────────────────────────────────────
   const filteredStudents = useMemo(() => {
     const list = studentList.filter((s) => {
       // Filter by Status Tab
+      if (activeFilter === 'exceeded') {
+        const isExceeded = s.exceededMaxViolations || (quiz.maxViolations && quiz.maxViolations > 0 && s.violationsCount >= quiz.maxViolations);
+        if (!isExceeded) return false;
+      }
       if (activeFilter === 'locked' && s.status !== 'locked') return false;
       if (activeFilter === 'warnings' && s.status !== 'warning' && !s.multiMonitorDetected && s.violationsCount === 0) return false;
       if (activeFilter === 'active' && s.status !== 'active') return false;
@@ -400,6 +408,35 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
     ]);
   }, []);
 
+  const handlePardon = useCallback((studentId: string, name: string) => {
+    sendProctorCommand(studentId, 'pardon');
+    setStudents((prev) => {
+      if (!prev[studentId]) return prev;
+      return {
+        ...prev,
+        [studentId]: {
+          ...prev[studentId],
+          status: 'active',
+          violationsCount: 0,
+          exceededMaxViolations: false,
+          lockReason: undefined,
+          lastViolation: undefined,
+        },
+      };
+    });
+    setLogEvents((prev) => [
+      {
+        id: `evt-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        studentName: name,
+        type: 'pardon',
+        detail: `Security violations strikes cleared and candidate pardoned by invigilator`,
+        severity: 'info',
+      },
+      ...prev,
+    ]);
+  }, []);
+
   const handleBroadcastAnnouncement = (e: React.FormEvent) => {
     e.preventDefault();
     if (!announcementText.trim()) return;
@@ -517,6 +554,12 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
             <span className="lip-stat-label">⚠️ Warnings</span>
             <span className="lip-stat-val">{stats.warnings}</span>
           </div>
+          {stats.exceeded > 0 && (
+            <div className="lip-stat-card lip-stat-card--locked" style={{ borderColor: '#ef4444' }}>
+              <span className="lip-stat-label">🚨 Exceeded Limit</span>
+              <span className="lip-stat-val" style={{ color: '#ef4444' }}>{stats.exceeded}</span>
+            </div>
+          )}
           {stats.multiMonitor > 0 && (
             <div className="lip-stat-card lip-stat-card--multimonitor">
               <span className="lip-stat-label">🟣 Multi-Screen</span>
@@ -539,6 +582,15 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
             >
               All ({studentList.length})
             </button>
+            {stats.exceeded > 0 && (
+              <button
+                type="button"
+                className={`lip-tab lip-tab-btn--exceeded ${activeFilter === 'exceeded' ? 'lip-tab--active' : ''}`}
+                onClick={() => setActiveFilter('exceeded')}
+              >
+                🚨 Exceeded Limit ({stats.exceeded})
+              </button>
+            )}
             <button
               type="button"
               className={`lip-tab ${activeFilter === 'locked' ? 'lip-tab--active' : ''}`}
@@ -690,11 +742,12 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
                   const progressPct =
                     s.totalQuestions > 0 ? Math.round((s.answeredCount / s.totalQuestions) * 100) : 0;
                   const isLocked = s.status === 'locked';
+                  const isExceeded = s.exceededMaxViolations || (quiz.maxViolations && quiz.maxViolations > 0 && s.violationsCount >= quiz.maxViolations);
 
                   return (
                     <div
                       key={s.studentId}
-                      className={`lip-student-card ${isLocked ? 'lip-student-card--locked' : ''} ${s.status === 'warning' ? 'lip-student-card--warning' : ''}`}
+                      className={`lip-student-card ${isExceeded ? 'lip-student-card--exceeded' : ''} ${isLocked ? 'lip-student-card--locked' : ''} ${s.status === 'warning' ? 'lip-student-card--warning' : ''}`}
                     >
                       {/* Card Header */}
                       <div className="lip-card-header">
@@ -712,6 +765,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
                           </div>
                         </div>
                         <div className="lip-card-badge-wrap">
+                          {isExceeded && (
+                            <span className="lip-badge-exceeded-limit" title="Candidate exceeded maximum security notices">
+                              🚨 LIMIT EXCEEDED ({s.violationsCount}/{s.maxViolations || quiz.maxViolations || 'Max'})
+                            </span>
+                          )}
                           {getStatusBadge(s.status, s.multiMonitorDetected)}
                         </div>
                       </div>
@@ -803,6 +861,16 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({ quiz
                             title="Add +5 minutes accommodation to candidate"
                           >
                             ⏱️ +5m
+                          </button>
+                        )}
+                        {s.violationsCount > 0 && (
+                          <button
+                            type="button"
+                            className="lip-card-btn lip-card-btn--pardon"
+                            onClick={() => handlePardon(s.studentId, s.studentName)}
+                            title="Pardon strikes and reset violation counters"
+                          >
+                            🛡️ Pardon
                           </button>
                         )}
                         {s.status !== 'submitted' && (

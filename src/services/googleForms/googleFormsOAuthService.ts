@@ -2,8 +2,14 @@
 // Handles Google Identity Services (GIS) token acquisition, in-memory caching,
 // silent renewal, and secure session revocation.
 
-import { loadGsiScript } from '../googleDriveService';
+import {
+  loadGsiScript,
+  requestTokenViaDirectPopup,
+  GSI_ERROR_HINT,
+} from '../googleAuthShared';
 import { FORMS_BODY_SCOPE } from './googleFormsTypes';
+
+export { loadGsiScript, requestTokenViaDirectPopup, GSI_ERROR_HINT };
 
 interface CachedToken {
   accessToken: string;
@@ -56,7 +62,7 @@ export async function revokeGoogleFormsToken(customToken?: string): Promise<bool
   if (!tokenToRevoke) return true;
 
   try {
-    await loadGsiScript();
+    await loadGsiScript().catch(() => {});
     if ((window as any).google?.accounts?.oauth2?.revoke) {
       await new Promise<void>((resolve) => {
         (window as any).google.accounts.oauth2.revoke(tokenToRevoke, () => {
@@ -65,6 +71,12 @@ export async function revokeGoogleFormsToken(customToken?: string): Promise<bool
       });
       return true;
     }
+    // Fallback: revoke via Google revoke endpoint
+    await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${encodeURIComponent(tokenToRevoke)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    }).catch(() => {});
+    return true;
   } catch (err) {
     console.warn('[GoogleFormsOAuth] Revocation error:', err);
   }
@@ -73,7 +85,8 @@ export async function revokeGoogleFormsToken(customToken?: string): Promise<bool
 
 /**
  * Requests a Google OAuth access token specifically with scope https://www.googleapis.com/auth/forms.body.
- * Fixes Issue #1 (uses silent auth when possible) & Issue #3 (utilizes memory cache).
+ * Supports silent memory cache, standard GIS SDK, and automatic Direct Popup fallback
+ * when ad-blockers (uBlock Origin, Brave Shields, AdGuard, Privacy Badger) block GIS.
  */
 export async function requestGoogleFormsToken(clientId: string, forceConsent = false): Promise<string> {
   // 1. Check in-memory cache first
@@ -84,59 +97,64 @@ export async function requestGoogleFormsToken(clientId: string, forceConsent = f
     }
   }
 
-  await loadGsiScript();
-
-  if (!(window as any).google?.accounts?.oauth2) {
-    throw new Error('Google Identity Services SDK is not available. Please check your internet connection.');
-  }
-
-  const fetchToken = (promptMode: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      try {
-        const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
-          client_id: clientId,
-          scope: FORMS_BODY_SCOPE,
-          callback: (resp: any) => {
-            if (resp.access_token) {
-              const expiresIn = Number(resp.expires_in) || 3599;
-              setCachedFormsToken(clientId, resp.access_token, expiresIn);
-              resolve(resp.access_token);
-            } else {
-              const errMsg = typeof resp.error === 'string'
-                ? resp.error
-                : (resp.error?.message || resp.error_description || 'Google Forms authorization was cancelled or denied.');
-              reject(new Error(errMsg));
-            }
-          },
-          error_callback: (err: any) => {
-            const errMsg = typeof err === 'string'
-              ? err
-              : (err?.message || 'Google Forms authentication popup was closed or encountered an error.');
-            reject(new Error(errMsg));
-          },
-        });
-
-        const reqOptions = promptMode ? { prompt: promptMode } : {};
-        tokenClient.requestAccessToken(reqOptions);
-      } catch (err: any) {
-        reject(new Error(err?.message || 'Failed to initialize Google login popup.'));
-      }
-    });
-  };
-
-  if (forceConsent) {
-    return fetchToken('consent');
-  }
-
-  // Attempt without forcing consent first for repeat users
+  // 2. Try standard Google Identity Services (GIS) SDK first
+  let useGsi = false;
   try {
-    return await fetchToken('');
-  } catch (initialErr: any) {
-    const msg = initialErr?.message || '';
-    // If popup was cancelled or failed due to needing user interaction, fallback to consent prompt
-    if (msg.includes('consent') || msg.includes('interaction') || msg.includes('access_denied') || msg.includes('popup_closed')) {
-      return fetchToken('consent');
+    await loadGsiScript();
+    if ((window as any).google?.accounts?.oauth2) {
+      useGsi = true;
     }
-    throw initialErr;
+  } catch (err) {
+    console.warn('[GoogleFormsOAuth] GIS script load failed or blocked by ad-blocker. Falling back to direct popup flow:', err);
+    useGsi = false;
   }
+
+  if (useGsi) {
+    try {
+      const token = await new Promise<string>((resolve, reject) => {
+        try {
+          const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+            client_id: clientId,
+            scope: FORMS_BODY_SCOPE,
+            callback: (resp: any) => {
+              if (resp.access_token) {
+                const expiresIn = Number(resp.expires_in) || 3599;
+                setCachedFormsToken(clientId, resp.access_token, expiresIn);
+                resolve(resp.access_token);
+              } else {
+                const errMsg = typeof resp.error === 'string'
+                  ? resp.error
+                  : (resp.error?.message || resp.error_description || 'Google Forms authorization was cancelled or denied.');
+                reject(new Error(errMsg));
+              }
+            },
+            error_callback: (err: any) => {
+              const errMsg = typeof err === 'string'
+                ? err
+                : (err?.message || 'Google Forms authentication popup was closed or encountered an error.');
+              reject(new Error(errMsg));
+            },
+          });
+
+          const reqOptions = forceConsent ? { prompt: 'consent' } : {};
+          tokenClient.requestAccessToken(reqOptions);
+        } catch (err: any) {
+          reject(new Error(err?.message || 'Failed to initialize Google login popup.'));
+        }
+      });
+      return token;
+    } catch (gsiErr: any) {
+      const msg = gsiErr?.message || '';
+      if (msg === 'popup_closed_by_user') {
+        throw gsiErr;
+      }
+      console.warn('[GoogleFormsOAuth] GIS token request failed, attempting direct OAuth popup fallback:', gsiErr);
+    }
+  }
+
+  // 3. Fallback: Direct OAuth 2.0 Web Popup (Immune to ad-blockers & Brave Shields)
+  const popupResult = await requestTokenViaDirectPopup(clientId, FORMS_BODY_SCOPE, forceConsent);
+  setCachedFormsToken(clientId, popupResult.accessToken, popupResult.expiresIn);
+  return popupResult.accessToken;
 }
+

@@ -12,6 +12,7 @@ import {
   normalizePaper4SubQuestions,
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
+  stripDuplicateSubIdPrefix,
   cleanQuotesAndTemperatures,
   type SubjectDomain,
 } from './gemini';
@@ -533,6 +534,87 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
   });
 }
 
+/**
+ * Ensures Practical Exam Questions (Cambridge Paper 5 & 6) do not have Question 2 (Qualitative Analysis on solid A)
+ * mistakenly grouped into Question 1 (Calorimetry / Thermochemistry).
+ */
+export function separatePracticalQuestions(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  const result: ExtractedQuestion[] = [];
+
+  for (const q of questions) {
+    if (!q.sub_questions || q.sub_questions.length <= 2) {
+      result.push(q);
+      continue;
+    }
+
+    const qNum = String(q.question_number).trim();
+    // Only check Question 1 if it has sub-questions switching to solid A / qualitative analysis
+    if (qNum === '1') {
+      let splitIdx = -1;
+      for (let i = 1; i < q.sub_questions.length; i++) {
+        const sq = q.sub_questions[i];
+        const text = sq.question_text || '';
+        const isQ2Start =
+          /tests on solid|solution [A-Z] in a test-tube|portion of solution [A-Z]|solid [A-Z]\./i.test(text) &&
+          !/magnesium|temperature|thermometer|burette/i.test(text);
+        if (isQ2Start) {
+          splitIdx = i;
+          break;
+        }
+      }
+
+      if (splitIdx > 0) {
+        const q1Subs = q.sub_questions.slice(0, splitIdx);
+        const q2Subs = q.sub_questions.slice(splitIdx);
+
+        const q1Marks = q1Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
+        const q2Marks = q2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
+
+        result.push({
+          ...q,
+          sub_questions: q1Subs,
+          total_marks: q1Marks || q.total_marks,
+        });
+
+        // Check if Question 2 already exists in the list
+        const existingQ2Idx = questions.findIndex((item) => String(item.question_number).trim() === '2');
+        if (existingQ2Idx >= 0) {
+          const existingQ2 = questions[existingQ2Idx];
+          const combinedSubs = [...q2Subs, ...(existingQ2.sub_questions || [])];
+          const uniqueSubMap = new Map<string, SubQuestion>();
+          combinedSubs.forEach((s) => {
+            const k = (s.sub_id || '').replace(/[().\s]/g, '').toLowerCase();
+            if (!uniqueSubMap.has(k)) uniqueSubMap.set(k, s);
+          });
+          const mergedQ2Subs = Array.from(uniqueSubMap.values());
+          questions[existingQ2Idx] = {
+            ...existingQ2,
+            sub_questions: mergedQ2Subs,
+            total_marks: mergedQ2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0),
+          };
+        } else {
+          result.push({
+            ...q,
+            question_number: '2',
+            parent_question_id: 'Q2',
+            question_text:
+              'You are provided with one solid: solid A. Do the following tests on solid A. Record all of your observations at each stage.',
+            sub_questions: q2Subs,
+            total_marks: q2Marks || 15,
+            topic: 'Qualitative Analysis',
+            sub_topic: 'Identification of ions and gases',
+          });
+        }
+        continue;
+      }
+    }
+
+    result.push(q);
+  }
+
+  return result;
+}
+
 // ─── Full Pipeline Orchestrator (Zero Storage Uploads during Preview) ─────────
 
 /**
@@ -677,31 +759,58 @@ export async function runExtractionPipeline(
               mergedSubMap.set(k, sq);
             });
 
+            // Check if adjustedQ is a later-page continuation that placed a diagram at the parent level
+            // while none of its sub-questions claimed it yet:
+            const anyAdjustedSubHasDiagram = (adjustedQ.sub_questions || []).some(
+              (s) => s.has_diagram || (Array.isArray(s.bounding_box) && s.bounding_box.length >= 4)
+            );
+            let assignedContinuationDiagram = false;
+
             (adjustedQ.sub_questions || []).forEach((sq) => {
               const k = normSubKey(sq.sub_id) || sq.sub_id;
               const prev = mergedSubMap.get(k);
               if (!prev) {
-                // If existing question already has a diagram and this continuation sub-question has its own diagram,
-                // attach the diagram specifically to this sub-question!
+                // Only promote adjustedQ's parent diagram to the FIRST new sub-question if adjustedQ is on a later page
+                // and none of adjustedQ's sub-questions already claimed the diagram.
+                const promoteContinuationDiagram =
+                  !assignedContinuationDiagram &&
+                  !anyAdjustedSubHasDiagram &&
+                  Boolean(adjustedQ.has_diagram && adjustedQ.bounding_box) &&
+                  (adjustedQ.page_number || 1) > (existing.page_number || 1);
+
+                if (promoteContinuationDiagram) {
+                  assignedContinuationDiagram = true;
+                }
+
                 mergedSubMap.set(k, {
                   ...sq,
-                  has_diagram: sq.has_diagram || (adjustedQ.has_diagram && !existing.has_diagram ? true : false),
-                  diagram_source: sq.diagram_source || (adjustedQ.diagram_source && !existing.diagram_source ? adjustedQ.diagram_source : null),
-                  bounding_box: sq.bounding_box || (adjustedQ.bounding_box && !existing.bounding_box ? adjustedQ.bounding_box : null),
+                  page_number: sq.page_number || adjustedQ.page_number,
+                  has_diagram: Boolean(sq.has_diagram || promoteContinuationDiagram),
+                  diagram_source: sq.diagram_source || (promoteContinuationDiagram ? adjustedQ.diagram_source || 'qp' : null),
+                  resource_ref: sq.resource_ref || (promoteContinuationDiagram ? adjustedQ.resource_ref : null),
+                  bounding_box: sq.bounding_box || (promoteContinuationDiagram ? adjustedQ.bounding_box : null),
                 });
               } else {
-                // Keep the more complete version of the sub-question text
+                // Keep the more complete version of the sub-question text and preserve exact diagram page_number
+                const sqHasNewDiagram = !prev.has_diagram && Boolean(sq.has_diagram);
                 mergedSubMap.set(k, {
                   ...prev,
+                  page_number: sqHasNewDiagram ? (sq.page_number || prev.page_number) : (prev.page_number || sq.page_number),
                   question_text:
                     sq.question_text && sq.question_text.length > (prev.question_text?.length || 0)
                       ? sq.question_text
                       : prev.question_text,
                   marks: sq.marks || prev.marks,
-                  mark_scheme: sq.mark_scheme || prev.mark_scheme,
+                  mark_scheme:
+                    sq.mark_scheme && sq.mark_scheme.length > (prev.mark_scheme?.length || 0)
+                      ? sq.mark_scheme
+                      : prev.mark_scheme,
                   options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
+                  data_tables: prev.data_tables && prev.data_tables.length > 0 ? prev.data_tables : sq.data_tables,
                   has_diagram: prev.has_diagram || sq.has_diagram,
                   diagram_source: prev.diagram_source || sq.diagram_source,
+                  resource_ref: prev.resource_ref || sq.resource_ref,
+                  diagram_type: prev.diagram_type || sq.diagram_type,
                   bounding_box: prev.bounding_box || sq.bounding_box,
                 });
               }
@@ -722,30 +831,60 @@ export async function runExtractionPipeline(
               (adjustedQ.sub_questions && adjustedQ.sub_questions.length > 0) &&
               !adjustedQ.sub_questions.some((s) => normSubKey(s.sub_id) === 'a' || normSubKey(s.sub_id).startsWith('a'));
 
-            const chosenQuestionText =
-              isAdjustedContinuation && existing.question_text
-                ? existing.question_text
-                : existing.question_text && existing.question_text.length >= (adjustedQ.question_text?.length || 0)
-                ? existing.question_text
-                : (adjustedQ.question_text || existing.question_text);
+            const existingLen = (existing.question_text || '').trim().length;
+            const adjustedLen = (adjustedQ.question_text || '').trim().length;
+
+            let chosenQuestionText = existing.question_text || '';
+            if (adjustedLen > existingLen) {
+              // If adjusted text contains experimental procedures, or is substantially more complete
+              if (
+                !isAdjustedContinuation ||
+                adjustedQ.question_text?.toLowerCase().includes('experiment') ||
+                adjustedLen > existingLen + 150
+              ) {
+                chosenQuestionText = adjustedQ.question_text || existing.question_text || '';
+              }
+            } else if (!chosenQuestionText && adjustedQ.question_text) {
+              chosenQuestionText = adjustedQ.question_text;
+            }
+
+            // Merge data_tables across chunks without duplicating by id
+            const combinedTables = [...(existing.data_tables || []), ...(adjustedQ.data_tables || [])];
+            const uniqueTablesMap = new Map<string, any>();
+            combinedTables.forEach((t, idx) => {
+              const key = (t?.id || t?.title || `tbl_${idx}`).toLowerCase().trim();
+              if (!uniqueTablesMap.has(key)) uniqueTablesMap.set(key, t);
+            });
+            const mergedDataTables = uniqueTablesMap.size > 0 ? Array.from(uniqueTablesMap.values()) : undefined;
+
+            // Only adopt adjustedQ's parent diagram onto existing if existing had no diagram, adjustedQ's diagram was NOT
+            // already promoted to a continuation sub-question, and adjustedQ is on the same page as existing:
+            const adoptAdjustedParentDiagram =
+              !existing.has_diagram &&
+              Boolean(adjustedQ.has_diagram) &&
+              !assignedContinuationDiagram &&
+              !anyAdjustedSubHasDiagram &&
+              (adjustedQ.page_number === existing.page_number || !existing.page_number);
 
             questionMap.set(qNumClean, {
               ...existing,
+              page_number: adoptAdjustedParentDiagram ? (adjustedQ.page_number || existing.page_number) : existing.page_number,
               question_text: chosenQuestionText,
               options:
                 adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
                   ? adjustedQ.options
                   : existing.options,
+              data_tables: mergedDataTables,
               mark_scheme:
                 adjustedQ.mark_scheme && Object.keys(adjustedQ.mark_scheme).length > 0
                   ? adjustedQ.mark_scheme
                   : existing.mark_scheme,
-              total_marks: Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0, totalSubMarks),
+              total_marks: totalSubMarks > 0 ? totalSubMarks : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0),
               sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
-              has_diagram: existing.has_diagram || adjustedQ.has_diagram,
-              diagram_source: existing.diagram_source || adjustedQ.diagram_source,
-              resource_ref: existing.resource_ref || adjustedQ.resource_ref,
-              bounding_box: existing.bounding_box || adjustedQ.bounding_box,
+              has_diagram: existing.has_diagram || adoptAdjustedParentDiagram,
+              diagram_source: existing.diagram_source || (adoptAdjustedParentDiagram ? adjustedQ.diagram_source : null),
+              resource_ref: existing.resource_ref || (adoptAdjustedParentDiagram ? adjustedQ.resource_ref : null),
+              bounding_box: existing.bounding_box || (adoptAdjustedParentDiagram ? adjustedQ.bounding_box : null),
             });
           }
         });
@@ -782,7 +921,8 @@ export async function runExtractionPipeline(
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(stitchedQuestions);
-      const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(propagated));
+      const separated = separatePracticalQuestions(propagated);
+      const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(separated));
       const finalizedQuestions = normalized.map((q) => ({
         ...q,
         question_text: stripDuplicateSubQuestionsFromStem(
@@ -791,7 +931,10 @@ export async function runExtractionPipeline(
         ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
-          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+          question_text: stripDuplicateSubIdPrefix(
+            sq.sub_id,
+            stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+          ),
         })),
       }));
 
@@ -860,8 +1003,9 @@ export async function runExtractionPipeline(
       }
 
       const stitched = stitchPassagesToQuestions(result.questions, verifiedPassages);
+      const separated = separatePracticalQuestions(stitched);
       result.questions = normalizePaper4SubQuestions(
-        normalizeQuestionStyles(propagateReadingPassages(stitched))
+        normalizeQuestionStyles(propagateReadingPassages(separated))
       ).map((q) => ({
         ...q,
         question_text: stripDuplicateSubQuestionsFromStem(
@@ -870,7 +1014,10 @@ export async function runExtractionPipeline(
         ),
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
-          question_text: stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options),
+          question_text: stripDuplicateSubIdPrefix(
+            sq.sub_id,
+            stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+          ),
         })),
       }));
       result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;

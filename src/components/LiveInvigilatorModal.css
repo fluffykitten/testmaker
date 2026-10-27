@@ -846,3 +846,56 @@
   border-color: #334155;
   color: #f8fafc;
 }
+
+/* ─── Feature 1: Exceeded Violations Limit Cockpit Alerts ─── */
+.lip-student-card--exceeded {
+  border: 2px solid #ef4444 !important;
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.45) !important;
+  animation: lipPulseExceeded 1.6s infinite ease-in-out !important;
+}
+
+@keyframes lipPulseExceeded {
+  0% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
+    border-color: #ef4444;
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(239, 68, 68, 0.7);
+    border-color: #dc2626;
+  }
+  100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
+    border-color: #ef4444;
+  }
+}
+
+.lip-badge-exceeded-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  margin-left: 6px;
+}
+
+.lip-tab-btn--exceeded {
+  color: #ef4444 !important;
+  font-weight: 700 !important;
+}
+
+.lip-card-btn--pardon {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #10b981 !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+}
+
+.lip-card-btn--pardon:hover {
+  background: #10b981 !important;
+  color: #ffffff !important;
+}

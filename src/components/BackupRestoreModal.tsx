@@ -14,6 +14,7 @@ import {
   type RestoreResult,
 } from '../services/restoreService';
 import {
+  loadGsiScript,
   requestGoogleDriveTokenDetails,
   GoogleDriveAuthExpiredError,
   listGoogleDriveBackups,
@@ -97,6 +98,7 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
   // Load estimate stats & sync client ID when opening
   useEffect(() => {
     if (isOpen) {
+      loadGsiScript().catch(() => {});
       getBackupEstimate().then((est) => setStats(est));
       setGdriveToken(getSessionDriveToken());
       loadAndSyncGoogleDriveClientId().then((id) => {
@@ -257,7 +259,11 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       setDriveActionNotice('Connected to Google Drive!');
       setTimeout(() => setDriveActionNotice(null), 3000);
     } catch (err: any) {
-      setDriveActionNotice(`Google login error: ${err?.message || 'Unknown'}`);
+      let msg = err?.message || 'Unknown';
+      if (msg === 'popup_closed_by_user') {
+        msg = `Google sign-in popup closed before authorization. If Google displayed 'Error 400: redirect_uri_mismatch', please add ${window.location.origin} to 'Authorized redirect URIs' in Google Cloud Console.`;
+      }
+      setDriveActionNotice(`Google login error: ${msg}`);
     } finally {
       setIsLoadingDrive(false);
     }
@@ -777,7 +783,7 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                     <strong style={{ color: 'var(--color-text-primary)', display: 'block', marginBottom: '4px' }}>
                       ⚙️ Required Google Cloud Origin Setup:
                     </strong>
-                    To prevent <em>"Error 401: invalid_client / no registered origin"</em>, add your current URL under <strong>Authorized JavaScript origins</strong> in Google Cloud Console:
+                    To prevent <em>"Error 401: invalid_client / no registered origin"</em>, add your current URL under <strong>Authorized JavaScript origins</strong> in Google Cloud Console (strictly without trailing slash):
                     <div style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -806,6 +812,9 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       >
                         Copy Origin
                       </button>
+                    </div>
+                    <div style={{ marginTop: '8px', fontSize: '0.7rem', color: 'var(--color-text-tertiary)', borderTop: '1px dashed rgba(99, 102, 241, 0.2)', paddingTop: '6px' }}>
+                      🛡️ <strong>Ad-Blocker &amp; Brave Compatible:</strong> If script blockers (uBlock Origin, AdGuard, Brave Shields) block Google's client SDK, TestMaker automatically falls back to secure direct OAuth popups.
                     </div>
                   </div>
                 </div>

@@ -44,46 +44,17 @@ export interface GoogleDriveTokenResult {
   expiresAt: number; // timestamp in ms
 }
 
-const GIS_SCRIPT_URL = 'https://accounts.google.com/gsi/client';
+import {
+  loadGsiScript,
+  requestTokenViaDirectPopup,
+  GIS_SCRIPT_URL,
+  GSI_ERROR_HINT,
+} from './googleAuthShared';
+
+export { loadGsiScript, requestTokenViaDirectPopup, GIS_SCRIPT_URL, GSI_ERROR_HINT };
+
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const BACKUP_FOLDER_NAME = 'TestMaker Backups';
-
-/**
- * Dynamically loads the Google Identity Services client script if not already present,
- * with polling fallback to eliminate script-listener race conditions.
- */
-export function loadGsiScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') return resolve();
-    if (window.google?.accounts?.oauth2) return resolve();
-
-    const existing = document.querySelector(`script[src="${GIS_SCRIPT_URL}"]`);
-    if (existing) {
-      if (window.google?.accounts?.oauth2) return resolve();
-
-      existing.addEventListener('load', () => resolve());
-      existing.addEventListener('error', (e) => reject(e));
-
-      // Guard against race if load event already fired before attaching listener
-      const pollTimer = setInterval(() => {
-        if (window.google?.accounts?.oauth2) {
-          clearInterval(pollTimer);
-          resolve();
-        }
-      }, 50);
-      setTimeout(() => clearInterval(pollTimer), 3000);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = GIS_SCRIPT_URL;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load Google Identity Services SDK.'));
-    document.head.appendChild(script);
-  });
-}
 
 /**
  * Requests a Google Drive OAuth access token using Google Identity Services popup,
@@ -95,40 +66,63 @@ export async function requestGoogleDriveToken(clientId: string): Promise<string>
 }
 
 export async function requestGoogleDriveTokenDetails(clientId: string): Promise<GoogleDriveTokenResult> {
-  await loadGsiScript();
-
-  if (!window.google?.accounts?.oauth2) {
-    throw new Error('Google Identity Services SDK is not available.');
+  let useGsi = false;
+  try {
+    await loadGsiScript();
+    if (window.google?.accounts?.oauth2) {
+      useGsi = true;
+    }
+  } catch (err) {
+    console.warn('[GoogleDrive] GIS script unavailable or blocked by ad-blocker, falling back to direct popup:', err);
+    useGsi = false;
   }
 
-  return new Promise((resolve, reject) => {
+  if (useGsi) {
     try {
-      const tokenClient = window.google!.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: DRIVE_FILE_SCOPE,
-        callback: (resp: any) => {
-          if (resp.access_token) {
-            const expiresIn = resp.expires_in ? Number(resp.expires_in) : 3600;
-            const expiresAt = Date.now() + expiresIn * 1000;
-            resolve({
-              accessToken: resp.access_token,
-              expiresIn,
-              expiresAt,
-            });
-          } else {
-            reject(new Error(resp.error?.message || 'Google Drive authentication was cancelled.'));
-          }
-        },
-        error_callback: (err: any) => {
-          reject(new Error(err?.message || 'Google authentication error.'));
-        },
-      });
+      return await new Promise<GoogleDriveTokenResult>((resolve, reject) => {
+        try {
+          const tokenClient = window.google!.accounts.oauth2.initTokenClient({
+            client_id: clientId,
+            scope: DRIVE_FILE_SCOPE,
+            callback: (resp: any) => {
+              if (resp.access_token) {
+                const expiresIn = resp.expires_in ? Number(resp.expires_in) : 3600;
+                const expiresAt = Date.now() + expiresIn * 1000;
+                resolve({
+                  accessToken: resp.access_token,
+                  expiresIn,
+                  expiresAt,
+                });
+              } else {
+                reject(new Error(resp.error?.message || 'Google Drive authentication was cancelled.'));
+              }
+            },
+            error_callback: (err: any) => {
+              reject(new Error(err?.message || 'Google authentication error.'));
+            },
+          });
 
-      tokenClient.requestAccessToken({ prompt: 'consent' });
-    } catch (err: any) {
-      reject(new Error(err?.message || 'Failed to initialize Google login.'));
+          tokenClient.requestAccessToken({ prompt: 'consent' });
+        } catch (err: any) {
+          reject(new Error(err?.message || 'Failed to initialize Google login.'));
+        }
+      });
+    } catch (gsiErr: any) {
+      const msg = gsiErr?.message || '';
+      if (msg === 'popup_closed_by_user') {
+        throw gsiErr;
+      }
+      console.warn('[GoogleDrive] GIS token client failed, attempting direct popup:', gsiErr);
     }
-  });
+  }
+
+  // Fallback: Direct Popup (Immune to ad-blockers and Brave Shields)
+  const popupRes = await requestTokenViaDirectPopup(clientId, DRIVE_FILE_SCOPE, true);
+  return {
+    accessToken: popupRes.accessToken,
+    expiresIn: popupRes.expiresIn,
+    expiresAt: Date.now() + popupRes.expiresIn * 1000,
+  };
 }
 
 /**

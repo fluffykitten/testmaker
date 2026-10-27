@@ -24,6 +24,53 @@ const UNICODE_SUBSCRIPT_MAP: Record<string, string> = {
   '⁺': '+', '⁻': '-',
 };
 
+// ─── Arabic Language Normalization & Mapping ──────────────────────────────────
+
+export const EASTERN_ARABIC_DIGIT_MAP: Record<string, string> = {
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+  '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+};
+
+export const ARABIC_OPTION_TO_INDEX: Record<string, number> = {
+  'أ': 0, 'ا': 0, 'إ': 0, 'آ': 0,
+  'ب': 1,
+  'ج': 2,
+  'د': 3,
+  'هـ': 4, 'ه': 4,
+  'و': 5,
+};
+
+export const ARABIC_OPTION_LETTERS = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];
+
+/**
+ * Checks if a string contains Arabic Unicode characters
+ */
+export function isArabicText(str: string): boolean {
+  if (!str) return false;
+  return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+}
+
+/**
+ * Normalizes Arabic text by converting Eastern digits, stripping tashkeel/diacritics,
+ * and normalizing Alef, Taa Marbuta, and Alif Maqsura variants for resilient academic grading.
+ */
+export function normalizeArabicText(input: string): string {
+  if (!input) return '';
+  let str = input.trim();
+  // 1. Convert Eastern Arabic numerals (٠-٩) to standard ASCII numerals (0-9)
+  str = str.replace(/[٠-٩]/g, (ch) => EASTERN_ARABIC_DIGIT_MAP[ch] || ch);
+  // 2. Remove Arabic diacritics / tashkeel (fathah, dammah, kasrah, sukun, shaddah, tanween, dagger alif, etc.)
+  str = str.replace(/[\u064B-\u065F\u0670\u0617-\u061A]/g, '');
+  // 3. Normalize Alef forms (أ, إ, آ, ٱ -> ا)
+  str = str.replace(/[أإآٱ]/g, 'ا');
+  // 4. Normalize Taa Marbuta (ة -> ه)
+  str = str.replace(/ة/g, 'ه');
+  // 5. Normalize Alif Maqsura (ى -> ي)
+  str = str.replace(/ى/g, 'ي');
+  return str;
+}
+
+
 /**
  * Normalizes chemical formulas by removing LaTeX formatting, whitespace, state symbols, and converting unicode subscripts
  */
@@ -137,8 +184,10 @@ const UNIT_NORMALIZATION_MAP: Record<string, string> = {
 
 export function parseNumericWithUnit(raw: string): ParsedNumeric | null {
   if (!raw) return null;
+  // Convert Eastern Arabic numerals (٠-٩) to standard ASCII (0-9)
   let str = raw
     .trim()
+    .replace(/[٠-٩]/g, (ch) => EASTERN_ARABIC_DIGIT_MAP[ch] || ch)
     .replace(/[\$\{\}]/g, '') // strip LaTeX math delimiters and curly braces
     .replace(/\\,/g, '')      // strip LaTeX thin space (e.g. 100\,000 -> 100000)
     .replace(/,/g, '')        // strip thousands commas
@@ -236,23 +285,26 @@ export function getLevenshteinDistance(a: string, b: string): number {
 export function isKeywordMatch(studentAnswer: string, acceptableKeywords: string[]): boolean {
   if (!studentAnswer || !acceptableKeywords || acceptableKeywords.length === 0) return false;
 
-  const cleanStudent = studentAnswer
-    .toLowerCase()
-    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, '')
-    .trim();
-
-  for (const keyword of acceptableKeywords) {
-    const cleanKey = keyword
+  const isAr = isArabicText(studentAnswer) || acceptableKeywords.some(isArabicText);
+  const prep = (s: string) => {
+    let res = isAr ? normalizeArabicText(s) : s;
+    return res
       .toLowerCase()
       .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, '')
       .trim();
+  };
+
+  const cleanStudent = prep(studentAnswer);
+
+  for (const keyword of acceptableKeywords) {
+    const cleanKey = prep(keyword);
 
     // Exact match
     if (cleanStudent === cleanKey) return true;
 
     // Contains key phrase
     if (cleanStudent.includes(cleanKey) || cleanKey.includes(cleanStudent)) {
-      if (cleanStudent.length >= 3 && cleanKey.length >= 3) return true;
+      if (cleanStudent.length >= 2 && cleanKey.length >= 2) return true;
     }
 
     // Levenshtein typo tolerance for words >= 5 characters
@@ -277,11 +329,13 @@ interface MarkSchemeTargetPoint {
 }
 
 export const AFFIRMATIVE_SYNONYMS = new Set([
-  'benar', 'true', 'b', 't', 'ya', 'yes', 'sesuai', 'setuju', 'agree', 'fakta', 'tepat', 'betul'
+  'benar', 'true', 'b', 't', 'ya', 'yes', 'sesuai', 'setuju', 'agree', 'fakta', 'tepat', 'betul',
+  'صحيح', 'صواب', 'نعم', 'صح', 'حق'
 ]);
 
 export const NEGATIVE_SYNONYMS = new Set([
-  'salah', 'false', 's', 'f', 'tidak', 'no', 'tidak sesuai', 'tidak setuju', 'disagree', 'opini', 'tidak tepat'
+  'salah', 'false', 's', 'f', 'tidak', 'no', 'tidak sesuai', 'tidak setuju', 'disagree', 'opini', 'tidak tepat',
+  'خطأ', 'خطا', 'لا', 'غير صحيح', 'باطل'
 ]);
 
 /**
@@ -367,8 +421,13 @@ export function splitPair(pair: string): { rawLabel: string; rawVal: string } | 
  * chemical formulas, numbers, and keyword matches.
  */
 export function areValuesEquivalent(studentVal: string, expectedVal: string): boolean {
-  const s = studentVal.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  const e = expectedVal.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!studentVal || !expectedVal) return false;
+  const isAr = isArabicText(studentVal) || isArabicText(expectedVal);
+  const normS = isAr ? normalizeArabicText(studentVal) : studentVal;
+  const normE = isAr ? normalizeArabicText(expectedVal) : expectedVal;
+
+  const s = normS.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const e = normE.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
   if (!s || !e) return false;
   if (s === e) return true;
   if (AFFIRMATIVE_SYNONYMS.has(s) && AFFIRMATIVE_SYNONYMS.has(e)) return true;
@@ -814,9 +873,14 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
       if (!isNaN(num) && num >= 0 && num < options.length) {
         return num;
       }
-      const str = String(directProp).trim().toUpperCase();
-      if (str.length === 1 && str >= 'A' && str <= 'Z') {
-        const idx = str.charCodeAt(0) - 65;
+      const str = String(directProp).trim();
+      const upperStr = str.toUpperCase();
+      if (upperStr.length === 1 && upperStr >= 'A' && upperStr <= 'Z') {
+        const idx = upperStr.charCodeAt(0) - 65;
+        if (idx < options.length) return idx;
+      }
+      if (ARABIC_OPTION_TO_INDEX[str] !== undefined) {
+        const idx = ARABIC_OPTION_TO_INDEX[str];
         if (idx < options.length) return idx;
       }
     }
@@ -850,7 +914,7 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
     }
   }
 
-  // 3. Match letter (A-Z) from mark scheme strings
+  // 3. Match letter (A-Z or Arabic أ, ب, ج, د, هـ) from mark scheme strings
   for (const cand of candidates) {
     if (!cand) continue;
     const clean = String(cand).trim();
@@ -862,6 +926,15 @@ export function resolveMcqCorrectOptionIndex(question: Question, subIndex?: numb
       const idx = letter.charCodeAt(0) - 65;
       if (idx >= 0 && idx < options.length) {
         return idx;
+      }
+    }
+
+    // Match Arabic option letter patterns like "أ", "الخيار أ", "الجواب: ب", "(ج)", "د [1]"
+    const arMatch = clean.match(/(?:^|[\s\[\(]|الخيار\s*|الإجابة\s*[:\s]*|الجواب\s*[:\s]*)([أإآابجددهـ])(?:[\s\]\)\.:,-]*\[\d+\]|[\s\]\)\.:,-]|$)/u);
+    if (arMatch && arMatch[1]) {
+      const arIdx = ARABIC_OPTION_TO_INDEX[arMatch[1]];
+      if (arIdx !== undefined && arIdx < options.length) {
+        return arIdx;
       }
     }
   }
@@ -1195,21 +1268,36 @@ export function gradeDeterministicAnswer(
 
       if (!isNaN(userNum) && Number.isInteger(userNum) && userNum >= 0 && userNum < options.length) {
         studentOptionIdx = userNum;
+      } else if (ARABIC_OPTION_TO_INDEX[rawAnswerStr] !== undefined) {
+        studentOptionIdx = ARABIC_OPTION_TO_INDEX[rawAnswerStr];
       } else {
         // Check single letter, e.g. "C", "c", "(C)", "[C]", "C."
         const singleMatch = rawAnswerStr.match(/^[[(]?\s*([A-Za-z])\s*[\]).:]?$/);
+        const singleArMatch = rawAnswerStr.match(/^[[(]?\s*([أإآابجددهـ])\s*[\]).:]?$/u);
         if (singleMatch) {
           studentOptionIdx = singleMatch[1].toUpperCase().charCodeAt(0) - 65;
+        } else if (singleArMatch && ARABIC_OPTION_TO_INDEX[singleArMatch[1]] !== undefined) {
+          studentOptionIdx = ARABIC_OPTION_TO_INDEX[singleArMatch[1]];
         } else {
-          // Check "Option C", "Choice C", "C - text", "C: text"
+          // Check "Option C", "Choice C", "C - text", "C: text", or "الخيار أ"
           const prefixMatch = rawAnswerStr.match(/^(?:Option|Choice)?\s*[:\-]?\s*([A-Za-z])\b/i);
+          const prefixArMatch = rawAnswerStr.match(/^(?:الخيار|الإجابة)?\s*[:\-]?\s*([أإآابجددهـ])\b/u);
           if (prefixMatch) {
             studentOptionIdx = prefixMatch[1].toUpperCase().charCodeAt(0) - 65;
+          } else if (prefixArMatch && ARABIC_OPTION_TO_INDEX[prefixArMatch[1]] !== undefined) {
+            studentOptionIdx = ARABIC_OPTION_TO_INDEX[prefixArMatch[1]];
           } else {
             // Check if student answer matches any option text directly
-            const cleanAns = rawAnswerStr.toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
+            const isAr = isArabicText(rawAnswerStr);
+            const cleanAns = isAr
+              ? normalizeArabicText(rawAnswerStr).replace(/^[[(]?[أإآابجددهـ][\]).:\s-]+/u, '').trim()
+              : rawAnswerStr.toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
+
             for (let oIdx = 0; oIdx < options.length; oIdx++) {
-              const cleanOpt = String(options[oIdx]).toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
+              const optStr = String(options[oIdx]);
+              const cleanOpt = isAr
+                ? normalizeArabicText(optStr).replace(/^[[(]?[أإآابجددهـ][\]).:\s-]+/u, '').trim()
+                : optStr.toLowerCase().replace(/^[[(]?[a-z][\]).:\s-]+/i, '').trim();
               if (cleanAns && cleanOpt && (cleanAns === cleanOpt || cleanOpt.includes(cleanAns) || cleanAns.includes(cleanOpt))) {
                 studentOptionIdx = oIdx;
                 break;

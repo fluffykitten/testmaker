@@ -202,23 +202,15 @@
   font-weight: 700;
 }
 
-/* API View */
 .gf-api-intro {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .gf-api-intro h4 {
   font-size: 1.05rem;
   font-weight: 700;
   color: #0f172a;
-  margin: 0 0 0.4rem;
-}
-
-.gf-api-intro p {
-  font-size: 0.88rem;
-  color: #64748b;
   margin: 0;
-  line-height: 1.5;
 }
 
 /* Action button */
@@ -440,6 +432,121 @@
 .gf-error-action-btn:hover {
   background: #dc2626;
   color: #ffffff;
+}
+
+.gf-error-actions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.gf-origin-fix-box {
+  background: #ffffff;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.gf-origin-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: #7f1d1d;
+  flex-wrap: wrap;
+}
+
+.gf-origin-text code {
+  font-family: monospace;
+  font-size: 0.84rem;
+  font-weight: 700;
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+}
+
+.gf-origin-btns {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.gf-secondary-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.gf-secondary-action-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.gf-fallback-action-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+.gf-btn-switch-script {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 1.15rem;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 9px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.25);
+  transition: all 0.15s ease;
+}
+
+.gf-btn-switch-script:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+}
+
+.gf-btn-retry-popup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 1.15rem;
+  background: #6366f1;
+  color: #ffffff;
+  border: none;
+  border-radius: 9px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+  transition: all 0.15s ease;
+}
+
+.gf-btn-retry-popup:hover {
+  background: #4f46e5;
+  transform: translateY(-1px);
 }
 
 /* Apps Script Tab */
@@ -770,48 +877,6 @@
   font-size: 1.15rem;
 }
 
-/* ─── Security Badge & Revocation (Fix #14 & #15) ───────────────────────────── */
-.gf-security-badge {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 0.65rem 0.95rem;
-  margin-top: 1.25rem;
-  font-size: 0.78rem;
-  color: #64748b;
-  gap: 0.75rem;
-}
-
-.gf-security-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  line-height: 1.4;
-}
-
-.gf-security-icon {
-  font-size: 0.95rem;
-  color: #059669;
-}
-
-.gf-revoke-link {
-  background: transparent;
-  border: none;
-  color: #dc2626;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: underline;
-  padding: 0.2rem 0.4rem;
-  white-space: nowrap;
-}
-
-.gf-revoke-link:hover {
-  color: #b91c1c;
-}
 
 .gf-error-tip {
   margin-top: 0.65rem;

@@ -1,7 +1,6 @@
-/* ─── ICM Exam Platform: Minimalist Landing Page Styles ─────────────────── */
+/* ─── ICM Exam Platform: Student-Focused Portal Landing Page ─────────────── */
 
 :root {
-  /* Official Insan Cendekia Madani (ICM) Brand Colors */
   --icm-green: #8abf44;
   --icm-green-hover: #659228;
   --icm-green-text: #537a1f;
@@ -17,21 +16,22 @@
   --icm-blue-border-hover: #b0c3e4;
 }
 
+/* ─── Root Layout ─── */
 .portal-root {
   min-height: 100vh;
   width: 100%;
-  background: #ffffff;
+  background: linear-gradient(175deg, #ffffff 0%, #f8faf5 45%, #f1f7e8 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding: 48px 24px 64px;
+  padding: 40px 24px 48px;
   position: relative;
   color: #0f172a;
   overflow-x: hidden;
 }
 
-/* ─── Ambient Subtle Touch of ICM Green & Blue ─── */
+/* ─── Ambient Glows ─── */
 .portal-glow {
   position: fixed;
   pointer-events: none;
@@ -41,12 +41,12 @@
 }
 
 .portal-glow--1 {
-  width: 550px;
-  height: 550px;
-  top: -220px;
+  width: 600px;
+  height: 600px;
+  top: -250px;
   left: 50%;
   transform: translateX(-50%);
-  background: radial-gradient(circle, rgba(138, 191, 68, 0.05) 0%, rgba(138, 191, 68, 0) 70%);
+  background: radial-gradient(circle, rgba(138, 191, 68, 0.06) 0%, rgba(138, 191, 68, 0) 70%);
 }
 
 .portal-glow--2 {
@@ -57,7 +57,7 @@
   background: radial-gradient(circle, rgba(36, 68, 140, 0.04) 0%, rgba(36, 68, 140, 0) 70%);
 }
 
-/* ─── School Academic Doodles Layer ─── */
+/* ─── School Doodles (inherited from existing component) ─── */
 .portal-doodles-layer {
   position: absolute;
   top: 0;
@@ -78,48 +78,30 @@
 }
 
 @keyframes doodle-float-slow {
-  0%, 100% {
-    transform: translateY(0) rotate(0deg);
-  }
-  50% {
-    transform: translateY(-8px) rotate(1.5deg);
-  }
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-8px) rotate(1.5deg); }
 }
 
 @keyframes doodle-float-reverse {
-  0%, 100% {
-    transform: translateY(0) rotate(0deg);
-  }
-  50% {
-    transform: translateY(7px) rotate(-1.5deg);
-  }
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(7px) rotate(-1.5deg); }
 }
 
-.portal-doodle--float-1 {
-  animation: doodle-float-slow 11s ease-in-out infinite;
-}
-
-.portal-doodle--float-2 {
-  animation: doodle-float-reverse 13s ease-in-out infinite;
-}
+.portal-doodle--float-1 { animation: doodle-float-slow 11s ease-in-out infinite; }
+.portal-doodle--float-2 { animation: doodle-float-reverse 13s ease-in-out infinite; }
 
 @media (max-width: 1024px) {
-  .portal-doodle {
-    opacity: 0.12;
-    transform: scale(0.85);
-  }
+  .portal-doodle { opacity: 0.12; transform: scale(0.85); }
 }
 
 @media (max-width: 640px) {
-  .portal-doodle {
-    opacity: 0.09;
-    transform: scale(0.7);
-  }
+  .portal-doodle { opacity: 0.09; transform: scale(0.7); }
 }
 
+/* ─── Content Container ─── */
 .portal-content {
   width: 100%;
-  max-width: 980px;
+  max-width: 720px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -127,8 +109,8 @@
   z-index: 10;
 }
 
-/* ─── Minimalist Header ─── */
-.portal-brand-header {
+/* ─── Hero Header ─── */
+.portal-hero {
   text-align: center;
   margin-bottom: 36px;
   display: flex;
@@ -167,6 +149,8 @@
   max-width: 220px;
   object-fit: contain;
   display: block;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .portal-logo-divider {
@@ -175,20 +159,28 @@
   background: #e2e8f0;
 }
 
-.portal-title {
-  font-size: clamp(2rem, 4vw, 2.6rem);
+.portal-hero-title {
+  font-size: clamp(2rem, 4.5vw, 2.75rem);
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.03em;
-  margin: 0;
-  line-height: 1.2;
+  margin: 0 0 8px;
+  line-height: 1.15;
 }
 
-.portal-title-accent {
+.portal-hero-accent {
   color: var(--icm-green-text);
 }
 
-/* ─── Pending Outbox Sync Banner ─── */
+.portal-hero-tagline {
+  font-size: 0.9375rem;
+  color: #64748b;
+  font-weight: 500;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+/* ─── Pending Outbox Banner ─── */
 .portal-outbox-banner {
   width: 100%;
   background: #fffbeb;
@@ -210,9 +202,7 @@
   text-align: left;
 }
 
-.portal-outbox-icon {
-  font-size: 1.3rem;
-}
+.portal-outbox-icon { font-size: 1.3rem; }
 
 .portal-outbox-info strong {
   display: block;
@@ -249,9 +239,7 @@
   transition: background 0.15s ease;
 }
 
-.portal-btn-sync:hover {
-  background: #50751e;
-}
+.portal-btn-sync:hover { background: #50751e; }
 
 .portal-btn-backup {
   background: #ffffff;
@@ -264,193 +252,120 @@
   cursor: pointer;
 }
 
-/* ─── Cards Grid (Student vs Teacher Split) ─── */
-.portal-cards-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
+/* ─── Main Section (Exam Entry + Results) ─── */
+.portal-main-section {
   width: 100%;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
-@media (max-width: 780px) {
-  .portal-cards-grid {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
-}
-
-.portal-card {
+/* ─── Exam Code Entry Card ─── */
+.portal-exam-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 16px;
-  padding: 32px 28px 28px;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
-}
-
-.portal-card:hover {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.03);
-}
-
-/* ─── Student Card: ICM Green ─── */
-.portal-card--student {
+  padding: 28px 28px 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   border-top: 4px solid var(--icm-green);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-.portal-card--student:hover {
-  border-color: var(--icm-green-border-hover);
-  border-top-color: var(--icm-green);
+.portal-exam-card:hover {
+  box-shadow: 0 6px 24px rgba(138, 191, 68, 0.1);
 }
 
-/* ─── Teacher Card: ICM Blue ─── */
-.portal-card--teacher {
-  border-top: 4px solid var(--icm-blue);
-  cursor: pointer;
-}
-
-.portal-card--teacher:hover {
-  border-color: var(--icm-blue-border-hover);
-  border-top-color: var(--icm-blue);
-  transform: translateY(-2px);
-}
-
-.portal-card-header {
+.portal-exam-card-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.portal-card-tag {
-  font-size: 0.6875rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  padding: 3px 8px;
-  border-radius: 4px;
-}
-
-/* Student Tag: ICM Green */
-.portal-card-tag--student {
-  background: var(--icm-green-bg);
-  color: var(--icm-green-text);
-  border: 1px solid var(--icm-green-border);
-}
-
-/* Teacher Tag: ICM Blue */
-.portal-card-tag--teacher {
-  background: var(--icm-blue-bg);
-  color: var(--icm-blue-text);
-  border: 1px solid var(--icm-blue-border);
-}
-
-.portal-card-title {
-  font-size: 1.35rem;
-  font-weight: 700;
-  color: #0f172a;
-  margin: 0 0 16px;
-  letter-spacing: -0.015em;
-}
-
-.portal-card-description {
-  font-size: 0.875rem;
-  color: #64748b;
-  line-height: 1.5;
-  margin: 0 0 24px;
-}
-
-/* ─── Student Mode Tabs ─── */
-.portal-mode-tabs {
-  display: flex;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 3px;
+  gap: 14px;
   margin-bottom: 20px;
 }
 
-.portal-mode-tab {
-  flex: 1;
-  padding: 6px 12px;
-  border: none;
-  background: transparent;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #64748b;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.portal-mode-tab:hover {
-  color: #0f172a;
-}
-
-.portal-mode-tab--active {
-  background: #ffffff;
-  color: var(--icm-green-text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+.portal-exam-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--icm-green-bg);
   border: 1px solid var(--icm-green-border);
-}
-
-/* ─── Form Inputs ─── */
-.portal-form {
   display: flex;
-  flex-direction: column;
-  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  color: var(--icm-green-text);
+  flex-shrink: 0;
 }
 
-.portal-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.portal-label {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #334155;
-}
-
-.portal-input-container {
-  position: relative;
-}
-
-.portal-input {
-  width: 100%;
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 1px solid #cbd5e1;
-  font-size: 0.9375rem;
+.portal-exam-card-title {
+  font-size: 1.25rem;
+  font-weight: 700;
   color: #0f172a;
+  margin: 0;
+  letter-spacing: -0.015em;
+}
+
+.portal-exam-card-sub {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin: 2px 0 0;
+}
+
+.portal-exam-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.portal-code-input-wrap {
+  display: flex;
+  gap: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1.5px solid #cbd5e1;
   background: #ffffff;
-  outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.portal-input:focus {
+.portal-code-input-wrap:focus-within {
   border-color: var(--icm-green);
-  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.18);
+  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.15);
 }
 
-.portal-input--code {
+.portal-code-input {
+  flex: 1;
+  padding: 13px 16px;
+  border: none;
+  font-size: 1.0625rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+  color: #0f172a;
+  background: transparent;
+  outline: none;
+  min-width: 0;
 }
 
-.portal-input--pin {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.portal-code-input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.portal-code-submit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 13px 20px;
+  background: var(--icm-green-hover);
+  color: #ffffff;
+  border: none;
+  font-size: 0.9375rem;
   font-weight: 700;
-  letter-spacing: 0.15em;
-  max-width: 140px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  white-space: nowrap;
 }
 
-.portal-field-hint {
-  font-size: 0.75rem;
-  color: #64748b;
+.portal-code-submit:hover {
+  background: #50751e;
 }
 
 .portal-error-msg {
@@ -459,49 +374,10 @@
   font-weight: 500;
 }
 
-/* ─── Action Buttons ─── */
-.portal-action-btn {
-  width: 100%;
-  padding: 11px 18px;
-  border-radius: 8px;
-  border: none;
-  font-size: 0.9375rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-/* Student Action: ICM Green */
-.portal-action-btn--student {
-  background: var(--icm-green-hover);
-  color: #ffffff;
-}
-
-.portal-action-btn--student:hover {
-  background: #50751e;
-  box-shadow: 0 2px 10px rgba(101, 146, 40, 0.28);
-}
-
-/* Teacher Action: ICM Blue */
-.portal-action-btn--teacher {
-  background: var(--icm-blue);
-  color: #ffffff;
-}
-
-.portal-card--teacher:hover .portal-action-btn--teacher,
-.portal-action-btn--teacher:hover {
-  background: var(--icm-blue-hover);
-  box-shadow: 0 2px 10px rgba(36, 68, 140, 0.28);
-}
-
-/* ─── Receipts List ─── */
+/* ─── Receipts ─── */
 .portal-receipts-section {
-  margin-top: 10px;
-  padding-top: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
   border-top: 1px solid #f1f5f9;
 }
 
@@ -552,15 +428,224 @@
   color: #94a3b8;
 }
 
-.portal-teacher-btn-wrapper {
-  margin-top: auto;
+/* ─── Results Card (Collapsible) ─── */
+.portal-results-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
 }
 
-/* ─── Minimalist Institutional Footer ─── */
+.portal-results-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+  border-color: #cbd5e1;
+}
+
+.portal-results-toggle-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+}
+
+.portal-results-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.portal-results-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.portal-results-toggle-btn:hover .portal-results-icon-wrap {
+  background: var(--icm-blue-bg);
+  color: var(--icm-blue);
+}
+
+.portal-results-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.portal-results-desc {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin: 3px 0 0;
+}
+
+.portal-results-action-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--icm-blue-text);
+  background: var(--icm-blue-bg);
+  border: 1px solid var(--icm-blue-border);
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.portal-results-toggle-btn:hover .portal-results-action-pill {
+  background: var(--icm-blue);
+  color: #ffffff;
+  border-color: var(--icm-blue);
+}
+
+.portal-results-chevron {
+  transition: transform 0.2s ease;
+}
+
+.portal-results-chevron.open {
+  transform: rotate(180deg);
+}
+
+.portal-results-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.portal-results-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+@media (max-width: 640px) {
+  .portal-results-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.portal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.portal-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.portal-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  font-size: 0.875rem;
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.portal-input:focus {
+  border-color: var(--icm-green);
+  box-shadow: 0 0 0 3px rgba(138, 191, 68, 0.18);
+}
+
+.portal-input--code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.portal-input--pin {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  max-width: 100px;
+}
+
+.portal-field-hint {
+  font-size: 0.6875rem;
+  color: #94a3b8;
+}
+
+.portal-results-submit {
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--icm-green-border);
+  background: var(--icm-green-bg);
+  color: var(--icm-green-text);
+  font-size: 0.875rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.portal-results-submit:hover {
+  background: var(--icm-green-border);
+  border-color: var(--icm-green-border-hover);
+  color: var(--icm-green-hover);
+}
+
+/* ─── Decoy Teacher Portal (Honeypot) ─── */
+.portal-teacher-decoy {
+  margin-top: 32px;
+  display: flex;
+  justify-content: center;
+}
+
+.portal-teacher-decoy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--icm-blue-border);
+  background: var(--icm-blue-bg);
+  color: var(--icm-blue-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.portal-teacher-decoy-btn:hover {
+  background: var(--icm-blue);
+  color: #ffffff;
+  border-color: var(--icm-blue);
+  box-shadow: 0 3px 12px rgba(36, 68, 140, 0.2);
+}
+
+/* ─── Footer ─── */
 .portal-minimal-footer {
   text-align: center;
-  margin-top: 48px;
-  padding-top: 24px;
+  margin-top: 40px;
+  padding-top: 20px;
   border-top: 1px solid #f1f5f9;
   width: 100%;
 }
@@ -586,4 +671,42 @@
 .portal-footer-link:hover {
   color: var(--icm-green-hover);
   text-decoration: underline;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 640px) {
+  .portal-root {
+    padding: 28px 16px 40px;
+  }
+
+  .portal-hero-title {
+    font-size: 1.75rem;
+  }
+
+  .portal-exam-card {
+    padding: 22px 20px 20px;
+  }
+
+  .portal-code-input-wrap {
+    flex-direction: column;
+    border-radius: 10px;
+  }
+
+  .portal-code-submit {
+    justify-content: center;
+    padding: 12px 16px;
+  }
+
+  .portal-results-card {
+    padding: 18px 18px 16px;
+  }
+
+  .portal-brand-logos {
+    padding: 8px 18px;
+    gap: 16px;
+  }
+
+  .portal-logo-img {
+    height: 38px;
+  }
 }

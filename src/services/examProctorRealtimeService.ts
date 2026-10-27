@@ -32,9 +32,11 @@ export interface ProctorStudentState {
   deviceOS?: string;
   lastHeartbeat: number;       // Unix timestamp (ms)
   recentViolations?: ProctorViolationSummary[];
+  exceededMaxViolations?: boolean;
+  maxViolations?: number;
 }
 
-export type ProctorCommandType = 'unlock' | 'add_time' | 'force_submit' | 'announcement';
+export type ProctorCommandType = 'unlock' | 'add_time' | 'force_submit' | 'announcement' | 'pardon';
 
 export interface ProctorCommand {
   id: string;
@@ -61,7 +63,9 @@ export interface ProctorLogEvent {
     | 'unlocked'
     | 'time_extended'
     | 'submitted'
-    | 'announcement';
+    | 'announcement'
+    | 'pardon'
+    | 'exceeded_limit';
   detail: string;
   severity: 'info' | 'warning' | 'critical';
 }

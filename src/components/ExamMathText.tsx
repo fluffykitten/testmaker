@@ -563,9 +563,13 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
     }
   }
   if (currentBlock) blocks.push(currentBlock);
+  const isArabic = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(normalized);
 
   return (
-    <div className={`exam-math-wrapper ${className}`}>
+    <div
+      className={`exam-math-wrapper ${isArabic ? 'exam-math-arabic' : ''} ${className || ''}`}
+      dir={isArabic ? 'rtl' : 'auto'}
+    >
       {blocks.map((block, bIdx) => {
         if (block.type === 'table') {
           // Check if this is a genuine markdown table (must have a separator row or all lines starting with pipe and at least 2 rows)
@@ -574,7 +578,7 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
           if (!hasSep && (!allPipeStart || block.lines.length < 2)) {
             // Not a real table (e.g. math with absolute values |x| or conditional probability P(A|B)), render as text
             return (
-              <div key={bIdx} className="exam-text-block">
+              <div key={bIdx} className={`exam-text-block ${isArabic ? 'exam-text-arabic' : ''}`} dir={isArabic ? 'rtl' : 'auto'}>
                 {block.lines.map((line, li) => (
                   <React.Fragment key={li}>
                     {renderMathSnippet(line)}
