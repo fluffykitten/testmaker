@@ -11,6 +11,7 @@ import {
 import { fetchQuestionsByIds } from '../services/quizCodeService';
 import type { Question, Syllabus } from '../types/database';
 import { QuestionFilters } from '../components/QuestionFilters';
+import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import { QuestionCard } from '../components/QuestionCard';
 import { QuestionDetailModal } from '../components/QuestionDetailModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
@@ -56,6 +57,7 @@ export function QuestionBankPage({
   onNavigateToBuilder,
 }: QuestionBankPageProps) {
   const [questions, setQuestions] = useState<Question[]>([]);
+  const { activeProfile, showAllSubjects } = useTeacherProfile();
   const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
   const [topics, setTopics] = useState<{ topic: string; subTopics: string[] }[]>([]);
 
@@ -122,7 +124,7 @@ export function QuestionBankPage({
         console.error('Error loading syllabuses:', err);
         return [] as Syllabus[];
       }),
-      fetchTopics(filters.syllabusId).catch((err) => {
+      fetchTopics().catch((err) => {
         console.error('Error loading topics for subject/syllabus:', err);
         return [] as { topic: string; subTopics: string[] }[];
       }),
@@ -137,6 +139,22 @@ export function QuestionBankPage({
       isMounted = false;
     };
   }, []);
+
+  // Sync Question Bank syllabus filter with active teacher profile & subject isolation
+  useEffect(() => {
+    if (showAllSubjects) {
+      setFilters((f) => (f.syllabusId ? { ...f, syllabusId: undefined, page: 1 } : f));
+    } else if (activeProfile && syllabuses.length > 0) {
+      const match = syllabuses.find(
+        (s) =>
+          s.subject_code === activeProfile.subject_code ||
+          s.subject_name.toLowerCase().includes(activeProfile.subject.toLowerCase())
+      );
+      if (match && filters.syllabusId !== match.id) {
+        setFilters((f) => ({ ...f, syllabusId: match.id, page: 1 }));
+      }
+    }
+  }, [activeProfile, showAllSubjects, syllabuses, filters.syllabusId]);
 
   // Update topics whenever the selected syllabus/subject filter changes
   const isFirstRender = useRef(true);

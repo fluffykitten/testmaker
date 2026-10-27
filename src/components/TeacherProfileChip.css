@@ -1,0 +1,198 @@
+/* ─── Teacher Profile Chip Styles ─────────────────────────────────────────── */
+
+.teacher-chip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.teacher-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #e2e8f0);
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+  cursor: pointer;
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+:root.dark .teacher-chip-btn {
+  background: var(--color-surface-elevated, #1e293b);
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-chip-btn:hover {
+  border-color: #24448c;
+  background: rgba(36, 68, 140, 0.04);
+}
+
+:root.dark .teacher-chip-btn:hover {
+  border-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.teacher-chip-btn--locked {
+  border-color: #f59e0b;
+}
+
+.teacher-chip-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.teacher-chip-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  line-height: 1.15;
+}
+
+.teacher-chip-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.teacher-chip-subject {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #24448c;
+}
+
+:root.dark .teacher-chip-subject {
+  color: #93c5fd;
+}
+
+.teacher-chip-chevron {
+  color: var(--color-text-secondary, #64748b);
+  transition: transform 180ms ease;
+  margin-left: 2px;
+}
+
+.teacher-chip-chevron--open {
+  transform: rotate(180deg);
+}
+
+/* ─── Dropdown Menu ───────────────────────────────────────────────────────── */
+
+.teacher-chip-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 260px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 10px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+  padding: 6px;
+  z-index: 100;
+  animation: fadeIn 150ms ease-out;
+}
+
+:root.dark .teacher-chip-dropdown {
+  background: var(--color-surface-elevated, #1e293b);
+  border-color: var(--color-border, #334155);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+}
+
+.teacher-chip-dropdown-header {
+  padding: 8px 10px 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.teacher-chip-dropdown-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.teacher-chip-dropdown-classes {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #537a1f;
+  background: #f5f9ed;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #dbeaba;
+}
+
+:root.dark .teacher-chip-dropdown-classes {
+  background: rgba(138, 191, 68, 0.15);
+  color: #a3e635;
+  border-color: rgba(138, 191, 68, 0.3);
+}
+
+.teacher-chip-dropdown-divider {
+  height: 1px;
+  background: var(--color-border, #e2e8f0);
+  margin: 4px 0;
+}
+
+:root.dark .teacher-chip-dropdown-divider {
+  background: var(--color-border, #334155);
+}
+
+.teacher-chip-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary, #0f172a);
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.teacher-chip-menu-item:hover {
+  background: var(--color-surface-sunken, #f1f5f9);
+}
+
+:root.dark .teacher-chip-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.teacher-chip-menu-item--lock:hover {
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.teacher-chip-menu-icon {
+  font-size: 1rem;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.teacher-chip-menu-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.teacher-chip-menu-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.teacher-chip-menu-desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary, #64748b);
+  line-height: 1.2;
+  margin-top: 2px;
+}

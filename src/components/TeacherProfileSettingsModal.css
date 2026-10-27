@@ -1,0 +1,205 @@
+/* ─── Teacher Profile Settings Modal Styles ───────────────────────────────── */
+
+.teacher-settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+  animation: fadeIn 150ms ease-out;
+}
+
+.teacher-settings-card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 12px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  animation: slideInUp 180ms ease-out;
+}
+
+:root.dark .teacher-settings-card {
+  background: var(--color-surface-elevated, #1e293b);
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-settings-header {
+  padding: 20px 24px 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+}
+
+:root.dark .teacher-settings-header {
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-settings-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  margin: 0;
+}
+
+.teacher-settings-subtitle {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 4px 0 0;
+}
+
+.teacher-settings-close-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  color: var(--color-text-secondary, #64748b);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.teacher-settings-close-btn:hover {
+  color: var(--color-text-primary, #0f172a);
+  background: var(--color-surface-sunken, #f1f5f9);
+}
+
+.teacher-settings-form {
+  padding: 20px 24px;
+  max-height: 75vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.teacher-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.teacher-settings-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #24448c;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+}
+
+:root.dark .teacher-settings-section-title {
+  color: #93c5fd;
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.teacher-checkbox {
+  margin-top: 3px;
+  cursor: pointer;
+}
+
+.teacher-checkbox-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+  display: block;
+}
+
+.teacher-checkbox-desc {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+  display: block;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+
+.teacher-field-hint {
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary, #64748b);
+  margin-top: 2px;
+}
+
+.teacher-pin-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--color-surface-sunken, #f1f5f9);
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #e2e8f0);
+}
+
+:root.dark .teacher-pin-status-row {
+  background: var(--color-surface, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-pin-status {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.teacher-change-pin-btn {
+  background: transparent;
+  border: none;
+  color: #24448c;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+:root.dark .teacher-change-pin-btn {
+  color: #60a5fa;
+}
+
+.teacher-pin-edit-box {
+  padding: 12px;
+  background: var(--color-surface-sunken, #f1f5f9);
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #e2e8f0);
+}
+
+:root.dark .teacher-pin-edit-box {
+  background: var(--color-surface, #0f172a);
+  border-color: var(--color-border, #334155);
+}
+
+.teacher-text-input--pin {
+  width: 120px;
+  text-align: center;
+  letter-spacing: 0.3em;
+  font-family: monospace;
+}
+
+.teacher-settings-error {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #e11d48;
+  font-size: 0.8125rem;
+}
+
+.teacher-settings-success {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #16a34a;
+  font-size: 0.8125rem;
+}

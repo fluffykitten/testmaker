@@ -14,6 +14,7 @@ import { GoogleFormsExportModal } from '../components/GoogleFormsExportModal';
 import { ExamVariantModal } from '../components/ExamVariantModal';
 import type { Question, CustomTest } from '../types/database';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
+import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import './SavedTestsPage.css';
 
 interface SavedTestsPageProps {
@@ -59,7 +60,22 @@ export function SavedTestsPage({
   // ─── Two-Level Architecture State ───────────────────────────────────────────
   // Level 1: activeSubjectView === null (Show Subject Cards Hub)
   // Level 2: activeSubjectView === 'all' | '<SubjectName>' (Show Clean Exam List)
-  const [activeSubjectView, setActiveSubjectView] = useState<string | null>(null);
+  const { activeProfile, showAllSubjects } = useTeacherProfile();
+  const [activeSubjectView, setActiveSubjectView] = useState<string | null>(() => {
+    if (!showAllSubjects && activeProfile) {
+      return activeProfile.subject;
+    }
+    return null;
+  });
+
+  // Sync active subject view with teacher profile & isolation preference
+  useEffect(() => {
+    if (!showAllSubjects && activeProfile) {
+      setActiveSubjectView(activeProfile.subject);
+    } else if (showAllSubjects && activeSubjectView !== null) {
+      setActiveSubjectView('all');
+    }
+  }, [activeProfile, showAllSubjects, activeSubjectView]);
 
   // Level 2 Controls
   const [activeTopicFilter, setActiveTopicFilter] = useState<string>('all');

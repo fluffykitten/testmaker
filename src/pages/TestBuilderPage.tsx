@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Question, Syllabus } from '../types/database';
+import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import {
   saveCustomTest,
   updateCustomTest,
@@ -232,6 +233,8 @@ export function TestBuilderPage({
     }
   }, [initialTestId]);
 
+  const { activeProfile } = useTeacherProfile();
+
   // Exam Header Settings with session persistence
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig>(() => {
     if (initialHeaderConfig) {
@@ -244,12 +247,17 @@ export function TestBuilderPage({
       // ignore
     }
     const initialDetected = inferSubjectFromQuestions(initialQuestions);
+    const resolvedSubject = initialDetected.subject && initialDetected.subject !== 'General'
+      ? initialDetected.subject
+      : activeProfile?.subject || 'Chemistry';
+    const resolvedCode = initialDetected.subjectCode || activeProfile?.subject_code || '0620';
+
     return {
       title: initialDetected.defaultTitle,
       schoolName: '',
-      subject: initialDetected.subject,
-      subjectCode: initialDetected.subjectCode,
-      durationMinutes: 45,
+      subject: resolvedSubject,
+      subjectCode: resolvedCode,
+      durationMinutes: activeProfile?.preferences?.defaultExamDurationMinutes || 45,
       instructions: initialDetected.instructions,
       additionalMaterials: initialDetected.additionalMaterials,
     };

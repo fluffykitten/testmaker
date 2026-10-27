@@ -19,6 +19,10 @@ import { useMobileLifecycle } from './hooks/useMobileLifecycle';
 import { initAutoBackupPeriodicScheduler } from './services/autoBackupService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from './assets/logoConstants';
 import { prewarmQuestionBankData } from './services/questionBankService';
+import { TeacherProfileProvider } from './contexts/TeacherProfileContext';
+import { TeacherProfileChip } from './components/TeacherProfileChip';
+import { TeacherProfileModal } from './components/TeacherProfileModal';
+import { TeacherProfileSettingsModal } from './components/TeacherProfileSettingsModal';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
@@ -112,6 +116,8 @@ function App() {
   });
   const [tutorialRestartSignal, setTutorialRestartSignal] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTeacherProfileModalOpen, setIsTeacherProfileModalOpen] = useState(false);
+  const [isTeacherSettingsModalOpen, setIsTeacherSettingsModalOpen] = useState(false);
 
   // Mobile lifecycle & hardware back-button integration
   useMobileLifecycle();
@@ -343,6 +349,16 @@ function App() {
           }}
         />
 
+        {/* ─── Teacher Profile Modals ────────────────────────────────────────── */}
+        <TeacherProfileModal
+          isOpen={isTeacherProfileModalOpen}
+          onClose={() => setIsTeacherProfileModalOpen(false)}
+        />
+        <TeacherProfileSettingsModal
+          isOpen={isTeacherSettingsModalOpen}
+          onClose={() => setIsTeacherSettingsModalOpen(false)}
+        />
+
         {/* ─── Navigation ─────────────────────────────────────────────────────── */}
         <nav className="navbar">
           <div className="navbar-inner">
@@ -438,6 +454,11 @@ function App() {
               </button>
 
               <div className="nav-divider" />
+
+              <TeacherProfileChip
+                onOpenSwitchModal={() => setIsTeacherProfileModalOpen(true)}
+                onOpenSettingsModal={() => setIsTeacherSettingsModalOpen(true)}
+              />
 
               <button
                 type="button"
@@ -1026,7 +1047,15 @@ function StudentQuizDispatcher({
   );
 }
 
-export default App;
+export function AppWrapper() {
+  return (
+    <TeacherProfileProvider>
+      <App />
+    </TeacherProfileProvider>
+  );
+}
+
+export default AppWrapper;
 
 
 

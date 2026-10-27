@@ -145,6 +145,26 @@ export interface AppConfig {
   value: string;
 }
 
+export interface TeacherPreferences {
+  autoEnablePeriodicTable?: boolean;          // Auto-enable Cambridge Periodic Table drawer for exams
+  defaultCalculator?: 'scientific' | 'basic'; // Default student calculator
+  showOtherSubjects?: boolean;                // Toggle to show other subjects in test/question lists
+  defaultExamDurationMinutes?: number;       // Default exam timer
+}
+
+export interface TeacherProfile {
+  id: string;                                 // UUID
+  name: string;                               // e.g. "Dr. Budi Santoso"
+  title?: string | null;                      // e.g. "Dr.", "Mr.", "Ibu"
+  subject: string;                            // e.g. "Chemistry"
+  subject_code: string;                       // e.g. "0620"
+  pin_hash?: string | null;                   // SHA-256 hashed 4-digit PIN (null if PIN-free)
+  default_classes: string[];                  // e.g. ["10-A", "11-A"]
+  preferences: TeacherPreferences;
+  created_at: string;                         // ISO timestamp
+  updated_at?: string;                        // ISO timestamp
+}
+
 // ─── Extraction Pipeline Types ─────────────────────────────────────────────────
 
 export interface PaperMetadata {

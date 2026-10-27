@@ -27,6 +27,7 @@ import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { getSavedSettings } from '../lib/settings';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
+import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import './QuizManagerPage.css';
 
 interface QuizManagerPageProps {
@@ -68,7 +69,22 @@ export function QuizManagerPage({
   // ─── Two-Level Architecture State ───────────────────────────────────────────
   // Level 1: activeSubjectView === null (Show Subject Cards Hub)
   // Level 2: activeSubjectView === 'all' | '<SubjectName>' (Show Clean Exam List)
-  const [activeSubjectView, setActiveSubjectView] = useState<string | null>(null);
+  const { activeProfile, showAllSubjects } = useTeacherProfile();
+  const [activeSubjectView, setActiveSubjectView] = useState<string | null>(() => {
+    if (!showAllSubjects && activeProfile) {
+      return activeProfile.subject;
+    }
+    return null;
+  });
+
+  // Sync active subject view with teacher profile & isolation preference
+  useEffect(() => {
+    if (!showAllSubjects && activeProfile) {
+      setActiveSubjectView(activeProfile.subject);
+    } else if (showAllSubjects && activeSubjectView !== null) {
+      setActiveSubjectView('all');
+    }
+  }, [activeProfile, showAllSubjects, activeSubjectView]);
 
   // Level 2 Controls
   const [searchQuery, setSearchQuery] = useState('');

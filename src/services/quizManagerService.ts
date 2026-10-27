@@ -549,7 +549,7 @@ export function createDraftFromTest(
     // Student Exam Reference Tools Suite (off by default)
     allowCalculator: existing?.allowCalculator ?? false,
     calculatorType: existing?.calculatorType || 'scientific',
-    allowPeriodicTable: existing?.allowPeriodicTable ?? false,
+    allowPeriodicTable: existing?.allowPeriodicTable ?? (resolvedSubject.toLowerCase().includes('chem') ? true : false),
     allowScratchpad: existing?.allowScratchpad ?? false,
     allowFormulaSheet: existing?.allowFormulaSheet ?? false,
     attachments: existing?.attachments ? [...existing.attachments] : [],
