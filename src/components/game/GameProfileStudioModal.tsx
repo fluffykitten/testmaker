@@ -5,9 +5,10 @@ import {
   loginGameProfile,
   registerGameProfile,
   updateGameAvatar,
+  updateStudentClass,
   DEFAULT_AVATAR,
 } from '../../services/gameProfileService';
-import { getSchoolSubjects, DEFAULT_SUBJECTS } from '../../lib/settings';
+import { getSchoolSubjects, DEFAULT_SUBJECTS, getSchoolClasses, DEFAULT_CLASSES } from '../../lib/settings';
 import { GameAvatarRenderer } from './GameAvatarRenderer';
 import type { GameProfile, GameAvatarConfig } from '../../types/database';
 import './GameProfileStudioModal.css';
@@ -62,7 +63,7 @@ const AURAS = [
   { id: 'quantum_orbit', label: 'Quantum Electron Orbit', cost: 50 },
 ] as const;
 
-const COHORT_OPTIONS = ['Grade 10', 'Grade 11', 'Grade 12'];
+
 
 export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioModalProps) {
   const [profile, setProfile] = useState<GameProfile | null>(() => getActiveGameProfile());
@@ -75,7 +76,31 @@ export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioMod
   const [handleInput, setHandleInput] = useState('');
   const [pinInput, setPinInput] = useState('');
   const [realNameInput, setRealNameInput] = useState('');
-  const [selectedCohort, setSelectedCohort] = useState('Grade 10');
+  // Dynamic school classes / cohorts from admin configuration
+  const [availableClasses, setAvailableClasses] = useState<string[]>(() => {
+    const list = getSchoolClasses();
+    return list.length > 0 ? list : DEFAULT_CLASSES;
+  });
+  const [selectedCohort, setSelectedCohort] = useState<string>(() => {
+    const list = getSchoolClasses();
+    return list.length > 0 ? list[0] : (DEFAULT_CLASSES[0] || '10-A');
+  });
+  const [isEditingClass, setIsEditingClass] = useState(false);
+  const [isUpdatingClass, setIsUpdatingClass] = useState(false);
+  const [classSuccessMsg, setClassSuccessMsg] = useState('');
+
+  useEffect(() => {
+    function handleClassesUpdated(e: Event) {
+      const customEvent = e as CustomEvent<{ classes?: string[] }>;
+      const updated = customEvent.detail?.classes || getSchoolClasses();
+      if (updated && updated.length > 0) {
+        setAvailableClasses(updated);
+        setSelectedCohort((prev) => (updated.includes(prev) ? prev : updated[0]));
+      }
+    }
+    window.addEventListener('school_classes_updated', handleClassesUpdated);
+    return () => window.removeEventListener('school_classes_updated', handleClassesUpdated);
+  }, []);
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -167,6 +192,28 @@ export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioMod
       setAuthError(err?.message || 'Registration failed. Try a different handle.');
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleClassChange(newClass: string) {
+    if (!profile) return;
+    const clean = newClass.trim();
+    if (!clean || clean === profile.class) {
+      setIsEditingClass(false);
+      return;
+    }
+    setIsUpdatingClass(true);
+    setAuthError('');
+    try {
+      const updated = await updateStudentClass(profile.id, clean);
+      setProfile(updated);
+      setClassSuccessMsg(`✓ Cohort class updated to ${clean}`);
+      setTimeout(() => setClassSuccessMsg(''), 2500);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to update cohort class.');
+    } finally {
+      setIsUpdatingClass(false);
+      setIsEditingClass(false);
     }
   }
 
@@ -332,13 +379,13 @@ export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioMod
                     />
                   </div>
                   <div className="game-field">
-                    <label className="game-label">Teaching Cohort *</label>
+                    <label className="game-label">Cohort Class *</label>
                     <select
                       value={selectedCohort}
                       onChange={(e) => setSelectedCohort(e.target.value)}
                       className="game-select"
                     >
-                      {COHORT_OPTIONS.map((c) => (
+                      {availableClasses.map((c) => (
                         <option key={c} value={c}>{c}</option>
                       ))}
                     </select>
@@ -380,7 +427,42 @@ export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioMod
                   <div className="game-identity-title-row">
                     <span className="game-identity-handle">{profile.handle}</span>
                     <span className="game-identity-level-badge">Lv. {profile.level}</span>
-                    <span className="game-identity-cohort-badge">{profile.class}</span>
+                    
+                    {/* Interactive Cohort Class Switcher */}
+                    {isEditingClass ? (
+                      <div className="game-identity-cohort-editor" role="group" aria-label="Change Cohort Class">
+                        <select
+                          value={profile.class}
+                          onChange={(e) => handleClassChange(e.target.value)}
+                          className="game-identity-cohort-select"
+                          disabled={isUpdatingClass}
+                          autoFocus
+                        >
+                          {availableClasses.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="game-identity-cohort-cancel-btn"
+                          onClick={() => setIsEditingClass(false)}
+                          title="Cancel"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="game-identity-cohort-badge game-identity-cohort-badge--actionable"
+                        onClick={() => setIsEditingClass(true)}
+                        title="Click to change your cohort class"
+                        aria-label={`Current cohort: ${profile.class}. Click to change.`}
+                      >
+                        <span>{profile.class}</span>
+                        <span className="game-cohort-edit-icon" aria-hidden="true">✏️</span>
+                      </button>
+                    )}
                   </div>
                   {profile.real_name && (
                     <span className="game-identity-realname">Student: {profile.real_name}</span>
@@ -435,6 +517,7 @@ export function GameProfileStudioModal({ isOpen, onClose }: GameProfileStudioMod
 
             {authError && <div className="game-studio-error-banner">{authError}</div>}
             {avatarSuccessMsg && <div className="game-studio-success-banner">{avatarSuccessMsg}</div>}
+            {classSuccessMsg && <div className="game-studio-success-banner">{classSuccessMsg}</div>}
 
             {/* ─── TAB 1: AVATAR STUDIO & WARDROBE ─── */}
             {activeTab === 'avatar' && (

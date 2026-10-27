@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
-import type { Question, Syllabus, QuestionStyle, QuestionDifficulty, SubQuestion } from '../types/database';
+import { normalizeQuestionStyle, type Question, type Syllabus, type QuestionStyle, type QuestionDifficulty, type SubQuestion } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { updateQuestion, createQuestion, fetchSyllabuses } from '../services/questionBankService';
 import { DiagramCropModal } from './DiagramCropModal';
@@ -225,7 +225,6 @@ export function QuestionEditorModal({
       setYear(Number(question.year) || new Date().getFullYear());
       setSeries(question.series || 'May/June');
       setPaperNumber(question.paper_number !== undefined && question.paper_number !== null ? question.paper_number : '1');
-      setQuestionStyle(question.question_style || 'Structured');
       setDifficulty(question.difficulty || 'Medium');
       setTotalMarks(Number(question.marks) || 1);
       setDiagramUrl(question.diagram_url || '');
@@ -242,13 +241,16 @@ export function QuestionEditorModal({
       setQuestionText(typeof question.question_text === 'string' ? question.question_text : (question.question_text ? JSON.stringify(question.question_text) : ''));
 
       // Safe MCQ options parsing
+      let initialOptions: string[] = [];
       if (Array.isArray(question.options)) {
-        setOptions(question.options.map((opt) => typeof opt === 'string' ? opt : JSON.stringify(opt)));
+        initialOptions = question.options.map((opt) => typeof opt === 'string' ? opt : JSON.stringify(opt));
       } else if (typeof question.options === 'string') {
-        setOptions((question.options as string).split('\n').filter(Boolean));
-      } else {
-        setOptions([]);
+        initialOptions = (question.options as string).split('\n').filter(Boolean);
       }
+      setOptions(initialOptions);
+
+      const resolvedStyle = normalizeQuestionStyle(question.question_style, initialOptions);
+      setQuestionStyle(resolvedStyle);
 
       // Sanitize sub-questions to ensure all fields are safe strings/numbers
       const rawSubs = Array.isArray(question.sub_questions) ? question.sub_questions : [];
@@ -782,11 +784,34 @@ export function QuestionEditorModal({
         }
       : null;
 
-    const isMcq = questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select';
-    const cleanOptions = isMcq
-      ? options.map((opt) => (typeof opt === 'string' ? opt.trim() : '')).filter(Boolean)
-      : [];
-    const finalSubQuestions = isMcq || questionStyle === 'Calculation' || questionStyle === 'Short Answer'
+    const effectiveStyle = normalizeQuestionStyle(questionStyle, options);
+    const isMcq = effectiveStyle === 'Multiple Choice' || effectiveStyle === 'Multiple Select';
+
+    // Clean user options from current state
+    const cleanUserOptions = options
+      .map((opt) => (typeof opt === 'string' ? opt.trim() : ''))
+      .filter(Boolean);
+
+    // Safeguard choices from ever disappearing unexpectedly:
+    // If it's an MCQ style or we have choices, preserve cleanUserOptions.
+    // If modal options became empty but original question had options AND user did not switch to Calculation or Short Answer, preserve original options!
+    let cleanOptions: string[] = [];
+    if (isMcq || cleanUserOptions.length >= 2) {
+      cleanOptions = cleanUserOptions;
+    } else if (effectiveStyle === 'Calculation' || effectiveStyle === 'Short Answer') {
+      cleanOptions = [];
+    } else if (cleanUserOptions.length > 0) {
+      cleanOptions = cleanUserOptions;
+    } else if (Array.isArray(question?.options) && question.options.length > 0) {
+      cleanOptions = question.options.map((opt) => typeof opt === 'string' ? opt.trim() : '').filter(Boolean);
+    }
+
+    // Determine final style to save: if 2+ options exist and style wasn't Multiple Select, ensure it's Multiple Choice
+    const finalQuestionStyle: QuestionStyle = (cleanOptions.length >= 2 && effectiveStyle !== 'Multiple Select')
+      ? 'Multiple Choice'
+      : effectiveStyle;
+
+    const finalSubQuestions = (finalQuestionStyle === 'Multiple Choice' || finalQuestionStyle === 'Multiple Select' || finalQuestionStyle === 'Calculation' || finalQuestionStyle === 'Short Answer')
       ? []
       : subQuestions;
 
@@ -800,7 +825,7 @@ export function QuestionEditorModal({
       question_number: questionNumber || '1',
       parent_question_id: null,
       question_text: questionText,
-      question_style: questionStyle,
+      question_style: finalQuestionStyle,
       topic: topic.trim() || 'General',
       sub_topic: subTopic.trim() || null,
       difficulty: difficulty,
@@ -913,7 +938,11 @@ export function QuestionEditorModal({
             onClick={() => setActiveTab('subquestions')}
           >
             🧩 Sub-Questions & Options
-            {subQuestions.length > 0 && <span className="q-editor-tab-count">{subQuestions.length}</span>}
+            {options.length > 0 ? (
+              <span className="q-editor-tab-count">{options.length}</span>
+            ) : subQuestions.length > 0 ? (
+              <span className="q-editor-tab-count">{subQuestions.length}</span>
+            ) : null}
           </button>
           <button
             type="button"
@@ -1393,7 +1422,7 @@ export function QuestionEditorModal({
               </div>
 
               {/* Multiple Choice / Multiple Select Options Editor */}
-              {(questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select') && (
+              {(questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select' || options.length > 0) && (
                 <div className="q-editor-options-section">
                   <div className="q-editor-subhead-row">
                     <h4 className="q-editor-subhead">Choices & Options ({options.length})</h4>
@@ -1437,7 +1466,7 @@ export function QuestionEditorModal({
               )}
 
               {/* Structured Sub-Questions Editor */}
-              {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && (
+              {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && options.length === 0 && (
                 <div className="q-editor-subs-section">
                   <div className="q-editor-subhead-row">
                     <div className="q-editor-subhead-left">

@@ -185,7 +185,7 @@ export async function registerGameProfile(payload: {
     id: newId,
     handle: cleanHandle,
     real_name: payload.realName?.trim() || null,
-    class: payload.studentClass.trim() || 'Grade 10',
+    class: payload.studentClass.trim() || '10-A',
     pin_hash: pinHash,
     avatar,
     coins: 50,
@@ -389,6 +389,59 @@ export async function awardGameMatchRewards(
   setActiveGameProfile(localUpdated);
 
   return localUpdated;
+}
+
+/**
+ * Updates a student's cohort class.
+ */
+export async function updateStudentClass(
+  profileId: string,
+  newClass: string
+): Promise<GameProfile> {
+  const cleanClass = (newClass || '').trim();
+  if (!cleanClass) {
+    throw new Error('Class/cohort name is required');
+  }
+
+  const current = getActiveGameProfile();
+  const baseProfile =
+    current && current.id === profileId
+      ? current
+      : getCachedGameProfiles().find((p) => p.id === profileId);
+
+  if (!baseProfile) {
+    throw new Error('Profile not found');
+  }
+
+  const updatedProfile: GameProfile = {
+    ...baseProfile,
+    class: cleanClass,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    await (supabase.from('game_profiles' as any) as any)
+      .update({
+        class: updatedProfile.class,
+        updated_at: updatedProfile.updated_at,
+      })
+      .eq('id', profileId);
+  } catch (err) {
+    console.warn('Supabase update failed for student class, updating locally:', err);
+  }
+
+  const cached = getCachedGameProfiles();
+  const updatedList = cached.map((p) => (p.id === profileId ? updatedProfile : p));
+  saveCachedGameProfiles(updatedList);
+  setActiveGameProfile(updatedProfile);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('game_profile_updated', { detail: { profile: updatedProfile } })
+    );
+  }
+
+  return updatedProfile;
 }
 
 /**

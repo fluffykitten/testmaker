@@ -8,7 +8,7 @@ interface PdfUploadProps {
     questionPaper: File,
     markScheme: File | null,
     insertFile: File | null,
-    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; tags?: string }
+    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; isSaveMyExams?: boolean; tags?: string }
   ) => void;
   isProcessing: boolean;
 }
@@ -22,6 +22,7 @@ interface PdfUploadProps {
 export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [domain, setDomain] = useState<SubjectDomain>('stem');
   const [isIgcse, setIsIgcse] = useState<boolean>(true);
+  const [isSaveMyExams, setIsSaveMyExams] = useState<boolean>(false);
   const [tags, setTags] = useState<string>('');
 
   const [qpDragOver, setQpDragOver] = useState(false);
@@ -111,6 +112,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       includeGuidance,
       domain,
       isIgcse,
+      isSaveMyExams: domain === 'stem' ? isSaveMyExams : false,
       tags: tags.trim() || undefined,
     });
   };
@@ -470,6 +472,28 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                     <span className="upload-slider" />
                   </div>
                 </label>
+
+                {/* Save My Exams / PMA Toggle (STEM domain) */}
+                {domain === 'stem' && (
+                  <label className="upload-toggle-card" htmlFor="save-my-exams-toggle">
+                    <div className="upload-toggle-text">
+                      <span className="upload-toggle-name">Save My Exams / PMA</span>
+                      <span className="upload-toggle-hint">
+                        Multi-tier sections (Easy, Medium, Hard), 1-mark MCQs & table choices
+                      </span>
+                    </div>
+                    <div className="upload-switch">
+                      <input
+                        type="checkbox"
+                        id="save-my-exams-toggle"
+                        checked={isSaveMyExams}
+                        onChange={(e) => setIsSaveMyExams(e.target.checked)}
+                        className="upload-switch-input"
+                      />
+                      <span className="upload-slider" />
+                    </div>
+                  </label>
+                )}
 
                 {/* Examiner Guidance Toggle */}
                 <label className="upload-toggle-card" htmlFor="guidance-toggle">

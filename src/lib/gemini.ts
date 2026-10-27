@@ -2,7 +2,7 @@
 // Sends PDF pages to Google's multimodal AI for structured question extraction.
 // Features dynamic model discovery, auto-fallback, and retry.
 
-import type { ExtractionResult, ExtractedQuestion, Question, SubQuestion, QuestionStyle } from '../types/database';
+import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion, type QuestionStyle } from '../types/database';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
 import { getSavedSettings } from './settings';
@@ -17,7 +17,17 @@ import { getSavedSettings } from './settings';
 export function getGeminiApiKeys(): string[] {
   const keys: string[] = [];
 
-  const rawList = import.meta.env.VITE_GEMINI_API_KEYS;
+  const getEnv = (key: string): string | undefined => {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      return import.meta.env[key];
+    }
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      return process.env[key];
+    }
+    return undefined;
+  };
+
+  const rawList = getEnv('VITE_GEMINI_API_KEYS');
   if (typeof rawList === 'string') {
     rawList
       .split(/[,;\s]+/)
@@ -26,24 +36,22 @@ export function getGeminiApiKeys(): string[] {
       .forEach((k) => keys.push(k));
   }
 
-  const primary = import.meta.env.VITE_GEMINI_API_KEY;
+  const primary = getEnv('VITE_GEMINI_API_KEY');
   if (typeof primary === 'string' && primary.trim().length > 5 && !primary.includes('your-gemini-api-key')) {
     keys.push(primary.trim());
   }
 
-  const secondary = import.meta.env.VITE_GEMINI_API_KEY_2;
+  const secondary = getEnv('VITE_GEMINI_API_KEY_2');
   if (typeof secondary === 'string' && secondary.trim().length > 5 && !secondary.includes('your-gemini-api-key')) {
     keys.push(secondary.trim());
   }
 
-  const tertiary = import.meta.env.VITE_GEMINI_API_KEY_3;
+  const tertiary = getEnv('VITE_GEMINI_API_KEY_3');
   if (typeof tertiary === 'string' && tertiary.trim().length > 5 && !tertiary.includes('your-gemini-api-key')) {
     keys.push(tertiary.trim());
   }
 
-  // Deduplicate preserving order
-  const uniqueKeys = Array.from(new Set(keys));
-  return uniqueKeys;
+  return Array.from(new Set(keys));
 }
 
 /**
@@ -559,6 +567,176 @@ ${!isIgcse ? `13. NON-IGCSE & INDONESIAN TKA / UTBK / AKM / NATIONAL STEM EXAMS 
       - NEVER wrap the entire "question_text" string in redundant outer quotation marks.
 ` : ''}
 `;
+}
+
+/**
+ * Builds the specialized Save My Exams & PMA (Physics & Maths Tutor) STEM extraction prompt.
+ * Tailored specifically for multi-tier difficulty packs (Easy, Medium, Hard) where each section
+ * restarts numbering from 1. Guarantees unique prefixing ("Easy - 1", "Medium - 1", "Hard - 1"),
+ * sets estimated_difficulty ('Easy' | 'Medium' | 'Hard'), captures 4-option MCQs (including
+ * table-based options with tick/cross and choice_grid diagrams), and preserves internal numbered premise statements.
+ */
+export function getSaveMyExamsStemExtractionPrompt(
+  includeGuidance: boolean = true,
+  targetSection?: 'Easy' | 'Medium' | 'Hard',
+  topicHint?: string
+): string {
+  const guidanceSchemaSnippet = includeGuidance
+    ? `,
+      "guidance": [
+        "Examiner tip: recall characteristic covalent vs ionic bonding properties",
+        "Key chemical/physical principle tested"
+      ],
+      "common_misconceptions": [
+        "Common mistake: confusing melting point trends with intermolecular forces"
+      ]`
+    : '';
+
+  const sectionInstruction = targetSection
+    ? `TARGET SECTION: ${targetSection.toUpperCase()} QUESTIONS
+You are extracting questions exclusively from the "${targetSection} Questions" section.
+- Every question in this chunk belongs to the "${targetSection} Questions" section.
+- Questions in this section are numbered 1, 2, 3...
+- CRITICAL: Format "question_number" as "${targetSection} - 1", "${targetSection} - 2", "${targetSection} - 3", etc.
+- Set "estimated_difficulty": "${targetSection}".`
+    : `DOCUMENT STRUCTURE (MULTI-TIER DIFFICULTY SECTIONS):
+This Save My Exams / PMA paper is divided into 3 distinct difficulty sections:
+1. "Easy Questions" (starts from question 1)
+2. "Medium Questions" (starts from question 1)
+3. "Hard Questions" (starts from question 1)
+
+CRITICAL QUESTION NUMBERING & COLLISION PREVENTION:
+Because each section restarts question numbering from 1, you MUST prefix the question number with the section name:
+- Easy Questions: "question_number": "Easy - 1", "Easy - 2", "Easy - 3"...
+- Medium Questions: "question_number": "Medium - 1", "Medium - 2", "Medium - 3"...
+- Hard Questions: "question_number": "Hard - 1", "Hard - 2", "Hard - 3"...
+Set "estimated_difficulty" accordingly: "Easy", "Medium", or "Hard".`;
+
+  return `You are an expert STEM educational assessment parser specializing in Save My Exams & Physics and Maths Tutor (PMA / PMT) Multiple Choice topic question packs.
+Analyze the attached PDF pages.
+
+${sectionInstruction}
+
+TOPIC & SUB-TOPICS:
+${topicHint ? `- Document Topic: "${topicHint}". Set "topic": "${topicHint}" for all questions.` : '- Extract the main topic title from Page 1 (e.g. "Simple Molecules & Covalent Bonds", "Giant Structures", "Ions & Ionic Bonds") and assign it as "topic" for every question.'}
+- Extract any sub-topics (e.g. "Covalent Bonds / Molecules & Compounds") and assign as "sub_topic".
+
+CRITICAL QUESTION FORMAT & MARKING RULES:
+1. ALL QUESTIONS ARE MULTIPLE CHOICE (MCQs):
+   - Every question in this assessment pack is a Multiple Choice Question.
+   - Set "question_style": "Multiple Choice".
+   - Set "total_marks": 1 (each question is worth exactly 1 mark).
+   - Set "sub_questions": [] (ALWAYS an empty array — these are standalone MCQs, NOT multi-part theory questions).
+   - Populate the "options" array with all 4 choices: ["A. ...", "B. ...", "C. ...", "D. ..."].
+
+2. PREMISE NUMBERED LISTS (1, 2, 3, 4) VS QUESTION NUMBERS (CRITICAL):
+   - Many questions include numbered statements, compounds, or reactions in the premise, for example:
+     "1 Which of the following compounds are formed by covalent bonding?
+        1 Potassium fluoride
+        2 Propane
+        3 Carbon dioxide
+        4 Lithium bromide
+      A. 2 and 3
+      B. 2 and 4
+      C. 1, 2 and 3
+      D. 1 and 4"
+   - DO NOT confuse the numbered items 1, 2, 3, 4 with question numbers or sub-questions!
+   - Transcribe all numbered items (1, 2, 3, 4) verbatim inside "question_text" (as a Markdown list or table).
+   - Place ONLY the lettered choices (A, B, C, D) in the "options" array.
+
+3. TABULAR OPTION MCQs (ROWS LABELED A, B, C, D):
+   - Many questions present a multi-column comparison table where rows are labeled A, B, C, and D (e.g. low melting point / high boiling point with ✓ and ✗; or melting point / conductivity table):
+     * Transcribe the complete Markdown table inside "question_text".
+     * In the "options" array, build a self-contained summary for each choice A, B, C, D combining column headers and row values:
+       e.g. ["A. low melting point: ✓ | high boiling point: ✓", "B. low melting point: ✗ | high boiling point: ✓", "C. low melting point: ✗ | high boiling point: ✗", "D. low melting point: ✓ | high boiling point: ✗"]
+
+4. CROSS-PAGE QUESTION & TABLE CONTINUATIONS:
+   - A question stem may appear at the bottom of page N and its table or options appear on page N+1 (e.g. Question 6 prompt on page 3, with table on page 4).
+   - You MUST merge the prompt and its table/options into a SINGLE question. NEVER drop the table or treat page N+1 as an orphan question.
+
+5. DIAGRAMS & CHOICE GRIDS:
+   - If the question stem has a diagram (e.g. electron shells of P and Q, atomic configurations of W, X, Y, Z, ethene structure, KCl lattice):
+     * Set "has_diagram": true, "diagram_type": "apparatus", "diagram_source": "qp", "page_number": <exact page>, "bounding_box": [ymin, xmin, ymax, xmax] (0-1000 scale).
+   - If options A, B, C, D are 4 visual diagrams (e.g. dot-and-cross diagrams of $CO_2$ or molecular diagrams):
+     * Set "has_diagram": true, "diagram_type": "choice_grid", "diagram_source": "qp", "bounding_box": [ymin, xmin, ymax, xmax] encompassing all 4 diagram options together.
+     * In "options", provide descriptive labels for each option.
+
+6. EXTENDED ONLY QUESTIONS:
+   - Some questions have an "Extended Only" header printed above the question number. You may include "[Extended Only]" at the top of "question_text".
+
+7. SOLUTIONS & MARK SCHEME:
+   - In "mark_scheme", provide the correct option letter in "acceptable_answers" (e.g. ["B"]) and the rationale in "marking_points".
+
+Output strictly valid JSON matching this exact schema:
+
+{
+  "paper_metadata": {
+    "subject": "Chemistry",
+    "subject_code": "0620",
+    "year": 2026,
+    "series": "Save My Exams",
+    "paper_number": "MCQ",
+    "has_insert_booklet": false
+  },
+  "questions": [
+    {
+      "question_number": "Easy - 1",
+      "parent_question_id": "Easy - 1",
+      "page_number": 1,
+      "year": 2026,
+      "series": "Save My Exams",
+      "paper_number": "MCQ",
+      "question_text": "Which of the following compounds are formed by covalent bonding?\n\n1 Potassium fluoride\n2 Propane\n3 Carbon dioxide\n4 Lithium bromide",
+      "question_style": "Multiple Choice",
+      "total_marks": 1,
+      "estimated_difficulty": "Easy",
+      "topic": "${topicHint || 'Simple Molecules & Covalent Bonds'}",
+      "sub_topic": "Covalent Bonds / Molecules & Compounds",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. 2 and 3",
+        "B. 2 and 4",
+        "C. 1, 2 and 3",
+        "D. 1 and 4"
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["Propane and carbon dioxide are formed by covalent bonding between non-metals [1]"],
+        "acceptable_answers": ["A"]${guidanceSchemaSnippet}
+      }
+    },
+    {
+      "question_number": "Easy - 2",
+      "parent_question_id": "Easy - 2",
+      "page_number": 1,
+      "year": 2026,
+      "series": "Save My Exams",
+      "paper_number": "MCQ",
+      "question_text": "Which row correctly describes a simple covalent compound?\n\n| Row | low melting point | high boiling point |\n|---|---|---|\n| A | ✓ | ✓ |\n| B | ✗ | ✓ |\n| C | ✗ | ✗ |\n| D | ✓ | ✗ |",
+      "question_style": "Multiple Choice",
+      "total_marks": 1,
+      "estimated_difficulty": "Easy",
+      "topic": "${topicHint || 'Simple Molecules & Covalent Bonds'}",
+      "sub_topic": "Properties of Simple Molecular Compounds",
+      "has_diagram": false,
+      "diagram_source": null,
+      "bounding_box": null,
+      "options": [
+        "A. low melting point: ✓ | high boiling point: ✓",
+        "B. low melting point: ✗ | high boiling point: ✓",
+        "C. low melting point: ✗ | high boiling point: ✗",
+        "D. low melting point: ✓ | high boiling point: ✗"
+      ],
+      "sub_questions": [],
+      "mark_scheme": {
+        "marking_points": ["Simple covalent compounds have low melting points and low boiling points due to weak intermolecular forces [1]"],
+        "acceptable_answers": ["D"]${guidanceSchemaSnippet}
+      }
+    }
+  ]
+}`;
 }
 
 /**
@@ -1291,8 +1469,14 @@ export function getExtractionPrompt(
   domain: SubjectDomain = 'stem',
   hasInsert: boolean = false,
   extractResourceCatalog: boolean = true,
-  isIgcse: boolean = true
+  isIgcse: boolean = true,
+  isSaveMyExams: boolean = false,
+  targetSection?: 'Easy' | 'Medium' | 'Hard',
+  topicHint?: string
 ): string {
+  if (isSaveMyExams && domain === 'stem') {
+    return getSaveMyExamsStemExtractionPrompt(includeGuidance, targetSection, topicHint);
+  }
   if (domain === 'languages') {
     return getLanguageExtractionPrompt(includeGuidance, isIgcse);
   }
@@ -2253,6 +2437,9 @@ export interface ExtractionOptions {
   apiKey?: string;
   extractResourceCatalog?: boolean;
   isIgcse?: boolean;
+  isSaveMyExams?: boolean;
+  targetSection?: 'Easy' | 'Medium' | 'Hard';
+  topicHint?: string;
 }
 
 /**
@@ -2283,13 +2470,16 @@ export async function extractQuestionsFromPdf(
     domain,
     hasInsert,
     options.extractResourceCatalog !== false,
-    isIgcse
+    isIgcse,
+    Boolean(options.isSaveMyExams),
+    options.targetSection,
+    options.topicHint
   );
 
   onProgress?.('Discovering available Gemini models…');
 
   // If user configured a specific model, try it first
-  const userConfiguredModel = import.meta.env.VITE_GEMINI_MODEL;
+  const userConfiguredModel = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODEL) || (typeof process !== 'undefined' && process.env?.VITE_GEMINI_MODEL);
   const discoveredModels = await discoverAvailableModels(activeKey);
 
   const candidateModels = Array.from(
@@ -2392,6 +2582,7 @@ export async function extractQuestionsFromPdf(
       ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(q.question_text || '')),
       rawOptions
     );
+    const normalizedStyle = normalizeQuestionStyle(q.question_style, rawOptions);
 
     const normalizedSubs = Array.isArray(q.sub_questions)
       ? q.sub_questions.map((sq) => {
@@ -2441,6 +2632,7 @@ export async function extractQuestionsFromPdf(
 
     return {
       ...q,
+      question_style: normalizedStyle,
       has_diagram: parentHasDiagram,
       bounding_box: parentBoundingBox,
       diagram_source: q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : parentHasDiagram ? 'qp' : null),

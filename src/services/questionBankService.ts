@@ -38,7 +38,10 @@ export interface QuestionQueryResult {
   totalPages: number;
 }
 
-// ─── High-Performance In-Memory Query & Metadata Caches ────────────────────────
+// ─── High-Performance In-Memory & Persistent Query Caches ───────────────────
+const SYLLABUSES_STORAGE_KEY = 'testmaker_qb_syllabuses_v1';
+const FACETS_STORAGE_KEY_PREFIX = 'testmaker_qb_facets_v1_';
+
 let syllabusesCache: { data: Syllabus[]; timestamp: number } | null = null;
 const topicsCache = new Map<string, { data: { topic: string; subTopics: string[] }[]; timestamp: number }>();
 const paperTypesCache = new Map<string, { data: PaperTypesSummary; timestamp: number }>();
@@ -46,11 +49,84 @@ const questionsQueryCache = new Map<string, { data: QuestionQueryResult; timesta
 
 // In-flight promise deduplication to prevent redundant concurrent queries
 let inFlightSyllabuses: Promise<Syllabus[]> | null = null;
-const inFlightTopics = new Map<string, Promise<{ topic: string; subTopics: string[] }[]>>();
-const inFlightPaperTypes = new Map<string, Promise<PaperTypesSummary>>();
+const inFlightFacets = new Map<
+  string,
+  Promise<{ topics: { topic: string; subTopics: string[] }[]; paperTypes: PaperTypesSummary }>
+>();
 const inFlightQuestions = new Map<string, Promise<QuestionQueryResult>>();
 
-const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+// Hydrate syllabuses cache synchronously from localStorage if available
+if (typeof window !== 'undefined') {
+  try {
+    const rawSyl = localStorage.getItem(SYLLABUSES_STORAGE_KEY);
+    if (rawSyl) {
+      const parsed = JSON.parse(rawSyl);
+      if (parsed && Array.isArray(parsed.data)) {
+        syllabusesCache = parsed;
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Synchronously returns cached syllabuses if available (prevents mount waterfalls)
+ */
+export function getCachedSyllabuses(): Syllabus[] {
+  return syllabusesCache ? syllabusesCache.data : [];
+}
+
+/**
+ * Synchronously returns cached topics for a syllabus if available
+ */
+export function getCachedTopics(syllabusId?: string): { topic: string; subTopics: string[] }[] {
+  const cacheKey = syllabusId || '__all__';
+  const mem = topicsCache.get(cacheKey);
+  if (mem) return mem.data;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(FACETS_STORAGE_KEY_PREFIX + cacheKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.topics) {
+          topicsCache.set(cacheKey, { data: parsed.topics, timestamp: parsed.timestamp || 0 });
+          if (parsed?.paperTypes) {
+            paperTypesCache.set(cacheKey, { data: parsed.paperTypes, timestamp: parsed.timestamp || 0 });
+          }
+          return parsed.topics;
+        }
+      }
+    } catch {}
+  }
+  return [];
+}
+
+/**
+ * Synchronously returns cached paper types for a syllabus if available
+ */
+export function getCachedPaperTypes(syllabusId?: string): PaperTypesSummary {
+  const cacheKey = syllabusId || '__all__';
+  const mem = paperTypesCache.get(cacheKey);
+  if (mem) return mem.data;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(FACETS_STORAGE_KEY_PREFIX + cacheKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.paperTypes) {
+          paperTypesCache.set(cacheKey, { data: parsed.paperTypes, timestamp: parsed.timestamp || 0 });
+          if (parsed?.topics) {
+            topicsCache.set(cacheKey, { data: parsed.topics, timestamp: parsed.timestamp || 0 });
+          }
+          return parsed.paperTypes;
+        }
+      }
+    } catch {}
+  }
+  return { seriesOptions: [], paperNumberOptions: [] };
+}
 
 export function clearQuestionBankCache(): void {
   syllabusesCache = null;
@@ -58,9 +134,18 @@ export function clearQuestionBankCache(): void {
   paperTypesCache.clear();
   questionsQueryCache.clear();
   inFlightSyllabuses = null;
-  inFlightTopics.clear();
-  inFlightPaperTypes.clear();
+  inFlightFacets.clear();
   inFlightQuestions.clear();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(SYLLABUSES_STORAGE_KEY);
+      Object.keys(localStorage).forEach((k) => {
+        if (k.startsWith(FACETS_STORAGE_KEY_PREFIX)) {
+          localStorage.removeItem(k);
+        }
+      });
+    } catch {}
+  }
 }
 
 if (typeof window !== 'undefined') {
@@ -70,7 +155,7 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Fetches all available syllabuses/subjects (cached in memory with deduplication)
+ * Fetches all available syllabuses/subjects (cached in memory & localStorage with SWR deduplication)
  */
 export async function fetchSyllabuses(): Promise<Syllabus[]> {
   if (syllabusesCache && Date.now() - syllabusesCache.timestamp < CACHE_TTL_MS) {
@@ -80,7 +165,7 @@ export async function fetchSyllabuses(): Promise<Syllabus[]> {
     return inFlightSyllabuses;
   }
 
-  inFlightSyllabuses = (async () => {
+  const refreshPromise = (async () => {
     try {
       const { data, error } = await supabase
         .from('syllabuses')
@@ -93,14 +178,27 @@ export async function fetchSyllabuses(): Promise<Syllabus[]> {
       }
 
       const result = data as Syllabus[];
-      syllabusesCache = { data: result, timestamp: Date.now() };
+      const entry = { data: result, timestamp: Date.now() };
+      syllabusesCache = entry;
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(SYLLABUSES_STORAGE_KEY, JSON.stringify(entry));
+        } catch {}
+      }
       return result;
     } finally {
       inFlightSyllabuses = null;
     }
   })();
 
-  return inFlightSyllabuses;
+  inFlightSyllabuses = refreshPromise;
+
+  // Stale-while-revalidate: if we already have cached syllabuses, return immediately while refreshing
+  if (syllabusesCache && syllabusesCache.data.length > 0) {
+    return syllabusesCache.data;
+  }
+
+  return refreshPromise;
 }
 
 /**
@@ -165,25 +263,48 @@ export function inferTopicFromContent(text?: string, subTopic?: string): string 
 }
 
 /**
- * Fetches distinct topics for a given syllabus (or all syllabuses) with lightweight query (cached & deduplicated)
+ * Unified lightweight facets fetcher that retrieves BOTH topics and paperTypes in a single query
+ * and persists aggregated facets in localStorage for instant Stale-While-Revalidate loading.
  */
-export async function fetchTopics(syllabusId?: string): Promise<{ topic: string; subTopics: string[] }[]> {
+async function fetchQuestionFacets(
+  syllabusId?: string
+): Promise<{ topics: { topic: string; subTopics: string[] }[]; paperTypes: PaperTypesSummary }> {
   const cacheKey = syllabusId || '__all__';
-  const cached = topicsCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.data;
+  const now = Date.now();
+  const cachedTopics = topicsCache.get(cacheKey);
+  const cachedPapers = paperTypesCache.get(cacheKey);
+
+  if (
+    cachedTopics &&
+    cachedPapers &&
+    now - cachedTopics.timestamp < CACHE_TTL_MS &&
+    now - cachedPapers.timestamp < CACHE_TTL_MS
+  ) {
+    return { topics: cachedTopics.data, paperTypes: cachedPapers.data };
   }
-  const inFlight = inFlightTopics.get(cacheKey);
+
+  // Hydrate from localStorage if memory cache is empty
+  if (!cachedTopics || !cachedPapers) {
+    getCachedTopics(syllabusId);
+    getCachedPaperTypes(syllabusId);
+  }
+
+  const inFlight = inFlightFacets.get(cacheKey);
   if (inFlight) {
+    const memT = topicsCache.get(cacheKey);
+    const memP = paperTypesCache.get(cacheKey);
+    if (memT && memP && memT.data.length > 0) {
+      return { topics: memT.data, paperTypes: memP.data };
+    }
     return inFlight;
   }
 
-  const promise = (async () => {
+  const refreshPromise = (async () => {
     try {
-      // Lightweight payload: Avoid fetching heavy question_text across all questions
       let query = supabase
         .from('questions')
-        .select('topic, sub_topic, syllabus_id');
+        .select('topic, sub_topic, series, paper_number, syllabus_id')
+        .range(0, 2999);
 
       if (syllabusId) {
         query = query.eq('syllabus_id', syllabusId);
@@ -191,21 +312,28 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
 
       let { data, error } = await query;
 
-      // Fallback: If syllabusId filter yielded no results, fetch all questions to avoid empty topic lists
+      // Fallback: If syllabusId filter yielded no results, fetch across all syllabuses
       if ((!data || data.length === 0) && syllabusId) {
-        const fallbackRes = await supabase.from('questions').select('topic, sub_topic, syllabus_id');
+        const fallbackRes = await supabase
+          .from('questions')
+          .select('topic, sub_topic, series, paper_number, syllabus_id')
+          .range(0, 2999);
         if (fallbackRes.data && fallbackRes.data.length > 0) {
           data = fallbackRes.data;
         }
       }
 
       if (error || !data) {
-        console.error('Failed to fetch topics:', error);
-        return cached ? cached.data : [];
+        console.error('Failed to fetch question facets:', error);
+        return {
+          topics: topicsCache.get(cacheKey)?.data || [],
+          paperTypes: paperTypesCache.get(cacheKey)?.data || { seriesOptions: [], paperNumberOptions: [] },
+        };
       }
 
-      // Aggregate topics and distinct sub-topics
       const topicMap = new Map<string, Set<string>>();
+      const seriesMap = new Map<string, number>();
+      const paperNumMap = new Map<string, number>();
 
       data.forEach((row: any) => {
         let rawTopic = row.topic?.trim() || '';
@@ -222,71 +350,7 @@ export async function fetchTopics(syllabusId?: string): Promise<{ topic: string;
             topicMap.get(cleanTopic)!.add(row.sub_topic.trim());
           }
         }
-      });
 
-      const result = Array.from(topicMap.entries())
-        .map(([topic, subTopicsSet]) => ({
-          topic,
-          subTopics: Array.from(subTopicsSet).sort(),
-        }))
-        .sort((a, b) => a.topic.localeCompare(b.topic));
-
-      topicsCache.set(cacheKey, { data: result, timestamp: Date.now() });
-      return result;
-    } finally {
-      inFlightTopics.delete(cacheKey);
-    }
-  })();
-
-  inFlightTopics.set(cacheKey, promise);
-  return promise;
-}
-
-/**
- * Fetches distinct paper types (exam series and paper numbers) from questions in the database (cached)
- */
-export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSummary> {
-  const cacheKey = syllabusId || '__all__';
-  const cached = paperTypesCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.data;
-  }
-  const inFlight = inFlightPaperTypes.get(cacheKey);
-  if (inFlight) {
-    return inFlight;
-  }
-
-  const promise = (async () => {
-    try {
-      let query = supabase
-        .from('questions')
-        .select('series, paper_number, syllabus_id');
-
-      if (syllabusId) {
-        query = query.eq('syllabus_id', syllabusId);
-      }
-
-      let { data, error } = await query;
-
-      // Fallback: If syllabusId filter yielded no results, fetch all questions to ensure options are available
-      if ((!data || data.length === 0) && syllabusId) {
-        const fallbackRes = await supabase
-          .from('questions')
-          .select('series, paper_number, syllabus_id');
-        if (fallbackRes.data && fallbackRes.data.length > 0) {
-          data = fallbackRes.data;
-        }
-      }
-
-      if (error || !data) {
-        console.error('Failed to fetch paper types:', error);
-        return cached ? cached.data : { seriesOptions: [], paperNumberOptions: [] };
-      }
-
-      const seriesMap = new Map<string, number>();
-      const paperNumMap = new Map<string, number>();
-
-      data.forEach((row: any) => {
         if (row.series && typeof row.series === 'string' && row.series.trim()) {
           const s = row.series.trim();
           seriesMap.set(s, (seriesMap.get(s) || 0) + 1);
@@ -298,6 +362,13 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
           }
         }
       });
+
+      const topics = Array.from(topicMap.entries())
+        .map(([topic, subTopicsSet]) => ({
+          topic,
+          subTopics: Array.from(subTopicsSet).sort(),
+        }))
+        .sort((a, b) => a.topic.localeCompare(b.topic));
 
       const seriesOptions = Array.from(seriesMap.entries())
         .map(([series, count]) => ({
@@ -325,16 +396,52 @@ export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSu
           return a.label.localeCompare(b.label);
         });
 
-      const result = { seriesOptions, paperNumberOptions };
-      paperTypesCache.set(cacheKey, { data: result, timestamp: Date.now() });
-      return result;
+      const paperTypes: PaperTypesSummary = { seriesOptions, paperNumberOptions };
+      const ts = Date.now();
+      topicsCache.set(cacheKey, { data: topics, timestamp: ts });
+      paperTypesCache.set(cacheKey, { data: paperTypes, timestamp: ts });
+
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            FACETS_STORAGE_KEY_PREFIX + cacheKey,
+            JSON.stringify({ topics, paperTypes, timestamp: ts })
+          );
+        } catch {}
+      }
+
+      return { topics, paperTypes };
     } finally {
-      inFlightPaperTypes.delete(cacheKey);
+      inFlightFacets.delete(cacheKey);
     }
   })();
 
-  inFlightPaperTypes.set(cacheKey, promise);
-  return promise;
+  inFlightFacets.set(cacheKey, refreshPromise);
+
+  // Stale-while-revalidate: return cached facets immediately if present while refreshing in background
+  const staleTopics = topicsCache.get(cacheKey);
+  const stalePapers = paperTypesCache.get(cacheKey);
+  if (staleTopics && stalePapers && staleTopics.data.length > 0) {
+    return { topics: staleTopics.data, paperTypes: stalePapers.data };
+  }
+
+  return refreshPromise;
+}
+
+/**
+ * Fetches distinct topics for a given syllabus (or all syllabuses) with unified facet query
+ */
+export async function fetchTopics(syllabusId?: string): Promise<{ topic: string; subTopics: string[] }[]> {
+  const facets = await fetchQuestionFacets(syllabusId);
+  return facets.topics;
+}
+
+/**
+ * Fetches distinct paper types (exam series and paper numbers) from questions in the database (cached)
+ */
+export async function fetchPaperTypes(syllabusId?: string): Promise<PaperTypesSummary> {
+  const facets = await fetchQuestionFacets(syllabusId);
+  return facets.paperTypes;
 }
 
 export interface SubjectTopicSummary {
@@ -441,6 +548,29 @@ export function compareQuestionNumbers(
   if (!strA && !strB) return 0;
   if (!strA) return 1;
   if (!strB) return -1;
+
+  // Handle section difficulty prefixes for multi-tier assessments (e.g. Save My Exams / PMA: Easy -> Medium -> Hard)
+  const getDifficultyWeight = (str: string): number => {
+    const s = str.toLowerCase();
+    if (s.startsWith('easy') || s.startsWith('e-') || s.startsWith('e ') || /^e\d+/i.test(s)) return 100;
+    if (s.startsWith('medium') || s.startsWith('med') || s.startsWith('m-') || s.startsWith('m ') || /^m\d+/i.test(s)) return 200;
+    if (s.startsWith('hard') || s.startsWith('h-') || s.startsWith('h ') || /^h\d+/i.test(s)) return 300;
+    return 0;
+  };
+
+  const weightA = getDifficultyWeight(strA);
+  const weightB = getDifficultyWeight(strB);
+
+  if (weightA > 0 && weightB > 0 && weightA !== weightB) {
+    return weightA - weightB;
+  }
+
+  if (weightA > 0 && weightB > 0 && weightA === weightB) {
+    const cleanA = strA.replace(/^(?:easy|medium|med|hard|[emh])\s*[-:_]?\s*(?:q|question)?\s*/i, '');
+    const cleanB = strB.replace(/^(?:easy|medium|med|hard|[emh])\s*[-:_]?\s*(?:q|question)?\s*/i, '');
+    return cleanA.localeCompare(cleanB, undefined, { numeric: true, sensitivity: 'base' });
+  }
+
   return strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
 }
 
@@ -542,21 +672,42 @@ function getNormalizedCacheKey(params: QuestionFilterParams): string {
 }
 
 /**
- * Silently prefetches and caches the next page of questions in the background
+ * Synchronously returns cached question query result if available
+ */
+export function getCachedQuestionsQuery(params: QuestionFilterParams): QuestionQueryResult | null {
+  const cacheKey = getNormalizedCacheKey(params);
+  const cached = questionsQueryCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+  return null;
+}
+
+/**
+ * Silently prefetches and caches the next page of questions in the background after main UI settles
  */
 export function prefetchNextQuestionsPage(currentParams: QuestionFilterParams): void {
   const currentPage = currentParams.page || 1;
   const nextParams = { ...currentParams, page: currentPage + 1 };
   const nextKey = getNormalizedCacheKey(nextParams);
-  if (!questionsQueryCache.has(nextKey)) {
-    fetchQuestions(nextParams).catch(() => {
-      // Silent catch for background prefetch
-    });
+  if (questionsQueryCache.has(nextKey) || inFlightQuestions.has(nextKey)) {
+    return;
   }
+  if (prefetchTimeoutId) {
+    clearTimeout(prefetchTimeoutId);
+  }
+  prefetchTimeoutId = setTimeout(() => {
+    prefetchTimeoutId = null;
+    if (!questionsQueryCache.has(nextKey) && !inFlightQuestions.has(nextKey)) {
+      fetchQuestions(nextParams).catch(() => {
+        // Silent catch for background prefetch
+      });
+    }
+  }, 500);
 }
 
 /**
- * Dynamic multi-filter question query with full dataset natural sorting and pagination
+ * Dynamic multi-filter question query with server-side sorting and pagination
  */
 export async function fetchQuestions(
   params: QuestionFilterParams = {}
@@ -591,7 +742,7 @@ export async function fetchQuestions(
         pageSize = 12,
       } = params;
 
-      // Build the base filtered query
+      // Build the base filtered query with server-side ordering
       const buildFilteredQuery = () => {
         let q = supabase
           .from('questions')
@@ -723,7 +874,6 @@ export async function fetchQuestions(
               tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
             );
             if (matchedTagIds.length === 0) {
-              // If no questions match this explicit tag, return null so empty state renders
               return null;
             }
             q = q.in('id', matchedTagIds);
@@ -762,6 +912,51 @@ export async function fetchQuestions(
           }
         }
 
+        // Server-side ordering using indexed / numeric columns
+        switch (sortBy) {
+          case 'question_number_asc':
+            q = q
+              .order('question_number_numeric', { ascending: true, nullsFirst: false })
+              .order('question_number', { ascending: true })
+              .order('year', { ascending: false, nullsFirst: false });
+            break;
+          case 'question_number_desc':
+            q = q
+              .order('question_number_numeric', { ascending: false, nullsFirst: false })
+              .order('question_number', { ascending: false })
+              .order('year', { ascending: false, nullsFirst: false });
+            break;
+          case 'marks_desc':
+            q = q
+              .order('marks', { ascending: false, nullsFirst: false })
+              .order('question_number_numeric', { ascending: true, nullsFirst: false })
+              .order('question_number', { ascending: true });
+            break;
+          case 'marks_asc':
+            q = q
+              .order('marks', { ascending: true, nullsFirst: false })
+              .order('question_number_numeric', { ascending: true, nullsFirst: false })
+              .order('question_number', { ascending: true });
+            break;
+          case 'difficulty':
+            q = q
+              .order('difficulty', { ascending: true, nullsFirst: false })
+              .order('question_number_numeric', { ascending: true, nullsFirst: false })
+              .order('question_number', { ascending: true });
+            break;
+          case 'created_at':
+            q = q.order('created_at', { ascending: false, nullsFirst: false });
+            break;
+          case 'year_desc':
+          default:
+            q = q
+              .order('year', { ascending: false, nullsFirst: false })
+              .order('paper_number', { ascending: true, nullsFirst: false })
+              .order('question_number_numeric', { ascending: true, nullsFirst: false })
+              .order('question_number', { ascending: true });
+            break;
+        }
+
         return q;
       };
 
@@ -770,51 +965,60 @@ export async function fetchQuestions(
         return { questions: [], totalCount: 0, page: 1, totalPages: 1 };
       }
 
-      // Fetch initial batch (up to 1,000 questions)
-      const { data, error, count } = await initialQuery.range(0, 999);
+      const requestedPage = Math.max(1, page);
+      const from = (requestedPage - 1) * pageSize;
+      const to = from + pageSize - 1;
+
+      // When filtering by a specific topic or sorting by difficulty, fetch up to 60 rows if small
+      // so multi-tier questions (Easy -> Medium -> Hard) sort naturally across pages.
+      // For general browsing across hundreds/thousands of questions, fetch ONLY the requested page slice!
+      const useSmallPackSort = Boolean(topic || sortBy === 'difficulty') && requestedPage === 1;
+      const fetchEnd = useSmallPackSort ? Math.max(to, 59) : to;
+
+      const { data, error, count } = await initialQuery.range(from, fetchEnd);
 
       if (error) {
         console.error('Failed to fetch questions:', error);
         return {
           questions: [],
           totalCount: 0,
-          page,
+          page: requestedPage,
           totalPages: 1,
         };
       }
 
-      const rawQuestions: any[] = Array.isArray(data) ? [...data] : [];
+      const rawQuestions: any[] = Array.isArray(data) ? data : [];
       const totalCount = count ?? rawQuestions.length;
-
-      // If total matching records exceed 1,000, fetch remaining batches in parallel
-      if (totalCount > 1000) {
-        const batchPromises = [];
-        for (let offset = 1000; offset < totalCount && offset < 5000; offset += 1000) {
-          const batchQuery = buildFilteredQuery();
-          if (batchQuery) {
-            batchPromises.push(batchQuery.range(offset, Math.min(offset + 999, totalCount - 1)));
-          }
-        }
-        const batchResults = await Promise.all(batchPromises);
-        for (const res of batchResults) {
-          if (res.data && Array.isArray(res.data)) {
-            rawQuestions.push(...res.data);
-          }
-        }
-      }
-
-      // Normalize all fetched questions
-      const normalizedQuestions: Question[] = rawQuestions.map(normalizeQuestionRecord);
-
-      // Apply complete natural sorting across the ENTIRE result set
-      const sortedQuestions = sortQuestionsList(normalizedQuestions, sortBy);
-
-      // Paginate from the perfectly sorted master list
       const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-      const safePage = Math.min(Math.max(1, page), totalPages);
-      const from = (safePage - 1) * pageSize;
-      const to = from + pageSize;
-      const pageQuestions = sortedQuestions.slice(from, to);
+      const safePage = Math.min(requestedPage, totalPages);
+
+      let pageQuestions: Question[];
+
+      if (useSmallPackSort && rawQuestions.length > pageSize && totalCount <= 60) {
+        // Sort the entire small topic pack in memory and populate cache for all its pages
+        const allNormalized = rawQuestions.map(normalizeQuestionRecord);
+        const allSorted = sortQuestionsList(allNormalized, sortBy);
+        const now = Date.now();
+        for (let p = 1; p <= totalPages; p++) {
+          const pFrom = (p - 1) * pageSize;
+          const pSlice = allSorted.slice(pFrom, pFrom + pageSize);
+          const pKey = getNormalizedCacheKey({ ...params, page: p });
+          questionsQueryCache.set(pKey, {
+            data: {
+              questions: pSlice,
+              totalCount,
+              page: p,
+              totalPages,
+            },
+            timestamp: now,
+          });
+        }
+        pageQuestions = allSorted.slice(0, pageSize);
+      } else {
+        const slicedRaw = rawQuestions.slice(0, pageSize);
+        const normalizedQuestions = slicedRaw.map(normalizeQuestionRecord);
+        pageQuestions = sortQuestionsList(normalizedQuestions, sortBy);
+      }
 
       const queryResult: QuestionQueryResult = {
         questions: pageQuestions,
@@ -843,12 +1047,14 @@ export async function fetchQuestions(
 /**
  * Proactively prefetches initial question bank data in the background (idle/hover)
  */
-export function prewarmQuestionBankData(pageSize = 12): void {
+export function prewarmQuestionBankData(pageSize = 12, syllabusId?: string): void {
   try {
-    fetchSyllabuses().catch(() => {});
-    fetchTopics().catch(() => {});
-    fetchPaperTypes().catch(() => {});
-    fetchQuestions({ sortBy: 'year_desc', page: 1, pageSize }).catch(() => {});
+    fetchSyllabuses()
+      .then(() => {
+        fetchQuestionFacets(syllabusId).catch(() => {});
+        fetchQuestions({ syllabusId, sortBy: 'year_desc', page: 1, pageSize }).catch(() => {});
+      })
+      .catch(() => {});
   } catch {}
 }
 

@@ -2,14 +2,19 @@ import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-// Configure pdf.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+// Configure pdf.js worker in browser
+if (typeof window !== 'undefined' && pdfjsWorker) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+}
 
 export interface PdfChunk {
   chunkIndex: number;
   startPage: number; // 1-indexed
   endPage: number;   // 1-indexed
   pdfBase64: string;
+  targetSection?: 'Easy' | 'Medium' | 'Hard';
+  topicHint?: string;
+  expectedCount?: number;
 }
 
 export interface InDocumentAnswerKeySplit {
@@ -38,8 +43,11 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
  * Converts a File, Uint8Array, or ArrayBuffer to a Uint8Array
  */
 async function toUint8Array(fileOrBytes: File | Uint8Array | ArrayBuffer): Promise<Uint8Array> {
-  if (fileOrBytes instanceof Uint8Array) return fileOrBytes;
-  if (fileOrBytes instanceof ArrayBuffer) return new Uint8Array(fileOrBytes);
+  if (fileOrBytes instanceof Uint8Array) {
+    const freshBuf = fileOrBytes.buffer.slice(fileOrBytes.byteOffset, fileOrBytes.byteOffset + fileOrBytes.byteLength);
+    return new Uint8Array(freshBuf);
+  }
+  if (fileOrBytes instanceof ArrayBuffer) return new Uint8Array(fileOrBytes.slice(0));
   const buf = await fileOrBytes.arrayBuffer();
   return new Uint8Array(buf);
 }
@@ -54,7 +62,7 @@ export async function detectAndSplitInDocumentAnswerKey(
 ): Promise<InDocumentAnswerKeySplit> {
   try {
     const rawBytes = await toUint8Array(fileOrBytes);
-    const pdfJsDoc = await pdfjsLib.getDocument({ data: rawBytes }).promise;
+    const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
     const totalPages = pdfJsDoc.numPages;
 
     if (totalPages <= 2) {
@@ -160,7 +168,7 @@ export async function detectAndSplitInDocumentAnswerKey(
 async function detectEffectiveQuestionPageCount(rawBytes: Uint8Array, fallbackTotal: number): Promise<number> {
   if (fallbackTotal <= 2) return fallbackTotal;
   try {
-    const pdfJsDoc = await pdfjsLib.getDocument({ data: rawBytes.slice(0) }).promise;
+    const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
     let effectiveEnd = pdfJsDoc.numPages;
 
     for (let p = pdfJsDoc.numPages; p >= 2; p--) {
@@ -295,4 +303,209 @@ export async function splitPdfForParallelExtraction(
       return [];
     }
   }
+}
+
+export interface SaveMyExamsSection {
+  name: 'Easy' | 'Medium' | 'Hard';
+  startPage: number;
+  endPage: number;
+  expectedCount?: number;
+}
+
+export interface SaveMyExamsMeta {
+  isSaveMyExams: boolean;
+  topic?: string;
+  subTopics?: string;
+  numPages: number;
+  effectiveEndPage: number;
+  easyExpected?: number;
+  medExpected?: number;
+  hardExpected?: number;
+  totalExpected?: number;
+  sections: SaveMyExamsSection[];
+}
+
+/**
+ * Detects Save My Exams / PMA topic question structure:
+ * - Cover page with Topic, Subtopics, and Difficulty Question Count breakdown
+ * - Distinct sections: "Easy Questions", "Medium Questions", "Hard Questions"
+ */
+export async function detectSaveMyExamsMetadata(
+  fileOrBytes: File | Uint8Array | ArrayBuffer
+): Promise<SaveMyExamsMeta> {
+  const rawBytes = await toUint8Array(fileOrBytes);
+  const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
+  const numPages = pdfJsDoc.numPages;
+
+  if (numPages <= 1) {
+    return { isSaveMyExams: false, numPages, effectiveEndPage: numPages, sections: [] };
+  }
+
+  // 1. Inspect Page 1 Cover
+  const page1 = await pdfJsDoc.getPage(1);
+  const textContent1 = await page1.getTextContent();
+  const page1Text = textContent1.items.map((it: any) => it.str || '').join(' ');
+
+  const isSaveMyExams =
+    /save\s*my\s*exams/i.test(page1Text) ||
+    /savemyexams\.com/i.test(page1Text) ||
+    (/easy\s*\(\s*\d+\s*questions?\s*\)/i.test(page1Text) &&
+      /medium\s*\(\s*\d+\s*questions?\s*\)/i.test(page1Text));
+
+  if (!isSaveMyExams) {
+    return { isSaveMyExams: false, numPages, effectiveEndPage: numPages, sections: [] };
+  }
+
+  // Extract Topic from Page 1
+  let topic = '';
+  let subTopics = '';
+  const mcMatch = page1Text.match(
+    /Multiple\s*Choice\s*Questions\s*(.*?)(?:Easy\s*\(|\/\s*\d+|\bCIE\b|\bIGCSE\b)/i
+  );
+  if (mcMatch && mcMatch[1]) {
+    const rawTopic = mcMatch[1].trim();
+    const parts = rawTopic
+      .split(/\s{2,}|\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      topic = parts[0];
+      if (parts.length > 1) subTopics = parts.slice(1).join(' / ');
+    }
+  }
+
+  // Extract expected counts
+  const easyCountMatch = page1Text.match(/Easy\s*\(\s*(\d+)\s*questions?\s*\)/i);
+  const medCountMatch = page1Text.match(/Medium\s*\(\s*(\d+)\s*questions?\s*\)/i);
+  const hardCountMatch = page1Text.match(/Hard\s*\(\s*(\d+)\s*questions?\s*\)/i);
+  const totalCountMatch = page1Text.match(/(\d+)\s*questions/i);
+
+  const easyExpected = easyCountMatch ? parseInt(easyCountMatch[1], 10) : undefined;
+  const medExpected = medCountMatch ? parseInt(medCountMatch[1], 10) : undefined;
+  const hardExpected = hardCountMatch ? parseInt(hardCountMatch[1], 10) : undefined;
+  const totalExpected = totalCountMatch ? parseInt(totalCountMatch[1], 10) : undefined;
+
+  // 2. Scan section start pages
+  let easyStartPage = 2;
+  let mediumStartPage: number | null = null;
+  let hardStartPage: number | null = null;
+
+  for (let p = 2; p <= numPages; p++) {
+    const page = await pdfJsDoc.getPage(p);
+    const content = await page.getTextContent();
+    const txt = content.items.map((it: any) => it.str || '').join(' ');
+
+    if (/easy\s+questions/i.test(txt) && !easyStartPage) {
+      easyStartPage = p;
+    } else if (/medium\s+questions/i.test(txt)) {
+      mediumStartPage = p;
+    } else if (/hard\s+questions/i.test(txt)) {
+      hardStartPage = p;
+    }
+  }
+
+  // Exclude trailing blank / copyright-only pages
+  let effectiveEndPage = numPages;
+  for (let p = numPages; p >= (hardStartPage || 2); p--) {
+    const page = await pdfJsDoc.getPage(p);
+    const content = await page.getTextContent();
+    const txt = content.items.map((it: any) => it.str || '').join(' ');
+    const hasQuestions =
+      /\(\s*\d+\s*marks?\s*\)|\bquestions?\b|Extended Only|[A-D]\.\s+/i.test(txt);
+    if (!hasQuestions && txt.length < 200) {
+      effectiveEndPage = p - 1;
+    } else {
+      break;
+    }
+  }
+
+  const sections: SaveMyExamsSection[] = [];
+  if (mediumStartPage && hardStartPage) {
+    sections.push({
+      name: 'Easy',
+      startPage: 1, // Include Page 1 cover with Easy so metadata is available
+      endPage: mediumStartPage - 1,
+      expectedCount: easyExpected,
+    });
+    sections.push({
+      name: 'Medium',
+      startPage: mediumStartPage,
+      endPage: hardStartPage - 1,
+      expectedCount: medExpected,
+    });
+    sections.push({
+      name: 'Hard',
+      startPage: hardStartPage,
+      endPage: effectiveEndPage,
+      expectedCount: hardExpected,
+    });
+  }
+
+  return {
+    isSaveMyExams: true,
+    numPages,
+    effectiveEndPage,
+    topic: topic || 'Topic Questions',
+    subTopics,
+    easyExpected,
+    medExpected,
+    hardExpected,
+    totalExpected,
+    sections,
+  };
+}
+
+/**
+ * Checks if a PDF document is a Save My Exams / PMA topic assessment pack.
+ */
+export async function isSaveMyExamsDocument(
+  fileOrBytes: File | Uint8Array | ArrayBuffer
+): Promise<boolean> {
+  try {
+    const meta = await detectSaveMyExamsMetadata(fileOrBytes);
+    return meta.isSaveMyExams && meta.sections.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Splits a Save My Exams / PMA PDF document strictly along section boundaries (Easy, Medium, Hard).
+ * Each chunk maps 1-to-1 to a difficulty tier, preventing duplicate "Question 1" collisions across sections.
+ */
+export async function splitSaveMyExamsPdfBySections(
+  fileOrBytes: File | Uint8Array | ArrayBuffer
+): Promise<{ chunks: PdfChunk[]; meta: SaveMyExamsMeta }> {
+  const rawBytes = await toUint8Array(fileOrBytes);
+  const meta = await detectSaveMyExamsMetadata(rawBytes);
+
+  if (!meta.isSaveMyExams || meta.sections.length === 0) {
+    const fallbackChunks = await splitPdfForParallelExtraction(rawBytes);
+    return { chunks: fallbackChunks, meta };
+  }
+
+  const doc = await PDFDocument.load(rawBytes);
+  const chunks: PdfChunk[] = [];
+
+  for (let idx = 0; idx < meta.sections.length; idx++) {
+    const sec = meta.sections[idx];
+    const chunkDoc = await PDFDocument.create();
+    const count = sec.endPage - sec.startPage + 1;
+    const pageIndices = Array.from({ length: count }, (_, i) => sec.startPage - 1 + i);
+    const copiedPages = await chunkDoc.copyPages(doc, pageIndices);
+    copiedPages.forEach((p) => chunkDoc.addPage(p));
+
+    const chunkBytes = await chunkDoc.save();
+    chunks.push({
+      chunkIndex: idx,
+      startPage: sec.startPage,
+      endPage: sec.endPage,
+      pdfBase64: uint8ArrayToBase64(chunkBytes),
+      targetSection: sec.name,
+      topicHint: meta.topic,
+      expectedCount: sec.expectedCount,
+    });
+  }
+
+  return { chunks, meta };
 }

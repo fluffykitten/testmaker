@@ -4,6 +4,7 @@ import {
   registerGameProfile,
   loginGameProfile,
   updateGameAvatar,
+  updateStudentClass,
   awardGameMatchRewards,
   getActiveGameProfile,
   setActiveGameProfile,
@@ -56,11 +57,11 @@ async function runTests() {
     handle: 'QuantumChemist',
     pin: '2026',
     realName: 'Fauzi Rahman',
-    studentClass: 'Grade 10',
+    studentClass: '10-A',
   });
 
   assert.strictEqual(student.handle, 'QuantumChemist');
-  assert.strictEqual(student.class, 'Grade 10');
+  assert.strictEqual(student.class, '10-A');
   assert.strictEqual(student.coins, 50, 'Student must receive 50 starter coins');
   assert.strictEqual(student.level, 1);
   assert.strictEqual(student.xp, 0);
@@ -137,6 +138,23 @@ async function runTests() {
   assert.strictEqual(matchRewards.match_history.length, 1);
   assert.strictEqual(matchRewards.match_history[0].matchId, 'm_chem_01');
   console.log('✓ Topic mastery partitioned into Chemistry, XP leveled up to 3, and match recorded in history.');
+
+  // Test 6: Student Cohort Class Update
+  console.log('\nTest 6: Student Cohort Class Update');
+  assert.strictEqual(student.class, '10-A');
+  const updatedStudentClass = await updateStudentClass(student.id, '11-B');
+  assert.strictEqual(updatedStudentClass.class, '11-B', 'Class should be updated to 11-B');
+  assert.strictEqual(getActiveGameProfile()?.class, '11-B', 'Active game profile in storage must reflect new class');
+
+  // Verify empty class rejection
+  let errorThrown = false;
+  try {
+    await updateStudentClass(student.id, '');
+  } catch {
+    errorThrown = true;
+  }
+  assert.strictEqual(errorThrown, true, 'Empty class name must be rejected');
+  console.log('✓ Student can change cohort class, storage syncs, and validation rejects empty names.');
 
   console.log('\n🎉 ALL PHASE 2 CREATIVE GAME PROFILE TESTS PASSED (100% COVERAGE)!');
 }

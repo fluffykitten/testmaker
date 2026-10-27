@@ -3,10 +3,12 @@ import {
   type QuestionFilterParams,
   type PaperTypesSummary,
   fetchPaperTypes,
+  getCachedPaperTypes,
 } from '../services/questionBankService';
 import type { Syllabus, QuestionDifficulty, QuestionStyle } from '../types/database';
 import { getBookmarkedQuestionIds } from '../services/questionBookmarkService';
 import { getDistinctCustomTags } from '../services/questionTagService';
+import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import './QuestionFilters.css';
 
 interface QuestionFiltersProps {
@@ -24,13 +26,22 @@ export function QuestionFilters({
   topics,
   totalResults,
 }: QuestionFiltersProps) {
+  const { activeProfile } = useTeacherProfile();
   const [searchInput, setSearchInput] = useState(filters.searchQuery || '');
   const [bookmarkCount, setBookmarkCount] = useState(() => getBookmarkedQuestionIds().size);
   const [customTags, setCustomTags] = useState(() => getDistinctCustomTags());
-  const [paperTypes, setPaperTypes] = useState<PaperTypesSummary>({
-    seriesOptions: [],
-    paperNumberOptions: [],
-  });
+  const [paperTypes, setPaperTypes] = useState<PaperTypesSummary>(() =>
+    getCachedPaperTypes(filters.syllabusId)
+  );
+
+  const mySyllabusMatch = activeProfile
+    ? syllabuses.find(
+        (s) =>
+          (activeProfile.subject_code && s.subject_code?.toLowerCase() === activeProfile.subject_code.toLowerCase()) ||
+          s.subject_name.toLowerCase().includes(activeProfile.subject.toLowerCase()) ||
+          activeProfile.subject.toLowerCase().includes(s.subject_name.toLowerCase())
+      )
+    : undefined;
 
   useEffect(() => {
     const handleBookmarkUpdate = () => {
@@ -373,7 +384,41 @@ export function QuestionFilters({
 
       {/* Subject / Syllabus Selector */}
       <div className="filter-group">
-        <label className="filter-label" htmlFor="syllabus-select">Subject & Syllabus</label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <label className="filter-label" htmlFor="syllabus-select">
+            Subject & Syllabus
+          </label>
+          {mySyllabusMatch && filters.syllabusId !== mySyllabusMatch.id && (
+            <button
+              type="button"
+              className="filter-clear-link"
+              onClick={() =>
+                onFilterChange({
+                  ...filters,
+                  syllabusId: mySyllabusMatch.id,
+                  topic: undefined,
+                  subTopic: undefined,
+                  paperType: undefined,
+                  paperNumber: undefined,
+                  series: undefined,
+                  page: 1,
+                })
+              }
+              title={`Switch back to my profile subject (${activeProfile?.subject})`}
+              style={{
+                fontSize: '0.75rem',
+                color: 'var(--color-primary-500, #6366f1)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '0 2px',
+                fontWeight: 600,
+              }}
+            >
+              ↺ My Subject
+            </button>
+          )}
+        </div>
         <select
           id="syllabus-select"
           className="filter-select"
@@ -381,11 +426,14 @@ export function QuestionFilters({
           onChange={handleSyllabusChange}
         >
           <option value="">All Subjects</option>
-          {syllabuses.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.subject_name} ({s.subject_code})
-            </option>
-          ))}
+          {syllabuses.map((s) => {
+            const isMySubject = mySyllabusMatch?.id === s.id;
+            return (
+              <option key={s.id} value={s.id}>
+                {s.subject_name} ({s.subject_code}){isMySubject ? ' • My Subject' : ''}
+              </option>
+            );
+          })}
         </select>
       </div>
 

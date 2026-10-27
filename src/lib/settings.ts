@@ -237,6 +237,9 @@ export function saveSchoolClasses(classes: string[]): void {
   saveSettings(updated);
   // Async cloud sync in background
   syncSchoolClassesToCloud(updated.classes).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('school_classes_updated', { detail: { classes: updated.classes } }));
+  }
 }
 
 /**
@@ -280,6 +283,9 @@ export async function loadAndSyncSchoolClasses(): Promise<string[]> {
         if (JSON.stringify(current.classes) !== JSON.stringify(cleanCloud)) {
           const updated = { ...current, classes: cleanCloud };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('school_classes_updated', { detail: { classes: cleanCloud } }));
+          }
         }
         return cleanCloud;
       }

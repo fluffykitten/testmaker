@@ -139,10 +139,17 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
       qpFile: File,
       msFile: File | null,
       insertFile: File | null,
-      options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; tags?: string } = {
+      options: {
+        includeGuidance: boolean;
+        domain: SubjectDomain;
+        isIgcse: boolean;
+        isSaveMyExams?: boolean;
+        tags?: string;
+      } = {
         includeGuidance: true,
         domain: 'stem',
         isIgcse: true,
+        isSaveMyExams: false,
       }
     ) => {
       setSavedCount(null);

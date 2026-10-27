@@ -13,6 +13,46 @@ export type QuestionStyle =
   | 'Short Answer'
   | 'Fill in the Blank';
 
+/**
+ * Normalizes any question style string to a canonical QuestionStyle enum value.
+ * Handles snake_case ('multiple_choice'), lowercase ('multiple choice'), abbreviations ('mcq'),
+ * and infers 'Multiple Choice' if 2 or more options are provided even if style was unassigned or 'Structured'.
+ */
+export function normalizeQuestionStyle(
+  style?: string | null,
+  options?: unknown[] | null
+): QuestionStyle {
+  const s = (style || '').trim().toLowerCase().replace(/[_\-\s]+/g, ' ');
+
+  if (s === 'multiple select' || s === 'multi select' || s === 'multiselect') {
+    return 'Multiple Select';
+  }
+  if (s === 'multiple choice' || s === 'mcq' || s === 'choice' || s === 'multiplechoice') {
+    return 'Multiple Choice';
+  }
+  if (s === 'calculation' || s === 'calc') {
+    return 'Calculation';
+  }
+  if (s === 'short answer' || s === 'shortanswer') {
+    return 'Short Answer';
+  }
+  if (s === 'fill in the blank' || s === 'fill in blank' || s === 'cloze') {
+    return 'Fill in the Blank';
+  }
+
+  // If options array has at least 2 valid items and style wasn't an explicit non-MCQ type (calc/short answer/fill in blank),
+  // then it is an MCQ.
+  if (Array.isArray(options) && options.filter(Boolean).length >= 2) {
+    return 'Multiple Choice';
+  }
+
+  if (s === 'structured') {
+    return 'Structured';
+  }
+
+  return 'Structured';
+}
+
 // ─── JSONB Sub-Structures ──────────────────────────────────────────────────────
 
 export interface MarkScheme {

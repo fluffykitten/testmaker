@@ -6,6 +6,9 @@ import {
   deleteQuestion,
   deleteQuestions,
   prefetchNextQuestionsPage,
+  getCachedSyllabuses,
+  getCachedTopics,
+  getCachedQuestionsQuery,
   type QuestionFilterParams,
 } from '../services/questionBankService';
 import { fetchQuestionsByIds } from '../services/quizCodeService';
@@ -56,20 +59,52 @@ export function QuestionBankPage({
   onNavigateToUpload,
   onNavigateToBuilder,
 }: QuestionBankPageProps) {
-  const [questions, setQuestions] = useState<Question[]>([]);
   const { activeProfile, showAllSubjects } = useTeacherProfile();
-  const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
-  const [topics, setTopics] = useState<{ topic: string; subTopics: string[] }[]>([]);
+  const [syllabuses, setSyllabuses] = useState<Syllabus[]>(() => getCachedSyllabuses());
 
-  const [filters, setFilters] = useState<QuestionFilterParams>(() => ({
-    sortBy: 'year_desc',
-    page: 1,
-    pageSize: getSavedPageSize(),
-  }));
+  // Helper to match active teacher profile to a syllabus in a list
+  const findMatchingSyllabusId = useCallback(
+    (profile: typeof activeProfile, sylList: Syllabus[]): string | undefined => {
+      if (!profile || sylList.length === 0) return undefined;
+      const match = sylList.find(
+        (s) =>
+          (profile.subject_code && s.subject_code?.toLowerCase() === profile.subject_code.toLowerCase()) ||
+          s.subject_name.toLowerCase().includes(profile.subject.toLowerCase()) ||
+          profile.subject.toLowerCase().includes(s.subject_name.toLowerCase())
+      );
+      return match?.id;
+    },
+    []
+  );
 
-  const [totalCount, setTotalCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
-  const [isLoading, setIsLoading] = useState(true);
+  // Track profile switching and explicit user manual filter selection
+  const lastProfileIdRef = useRef<string | undefined>(activeProfile?.id);
+  const userOverrodeSyllabusRef = useRef(false);
+  const lastShowAllSubjectsRef = useRef<boolean>(showAllSubjects);
+
+  const [filters, setFilters] = useState<QuestionFilterParams>(() => {
+    const cachedSyls = getCachedSyllabuses();
+    let initialSyllabusId: string | undefined;
+    if (!showAllSubjects && activeProfile && cachedSyls.length > 0) {
+      initialSyllabusId = findMatchingSyllabusId(activeProfile, cachedSyls);
+    }
+    return {
+      syllabusId: initialSyllabusId,
+      sortBy: 'year_desc',
+      page: 1,
+      pageSize: getSavedPageSize(),
+    };
+  });
+
+  const [topics, setTopics] = useState<{ topic: string; subTopics: string[] }[]>(() =>
+    getCachedTopics(filters.syllabusId)
+  );
+
+  const initialCachedResult = getCachedQuestionsQuery(filters);
+  const [questions, setQuestions] = useState<Question[]>(() => initialCachedResult?.questions || []);
+  const [totalCount, setTotalCount] = useState(() => initialCachedResult?.totalCount || 0);
+  const [totalPages, setTotalPages] = useState(() => initialCachedResult?.totalPages || 1);
+  const [isLoading, setIsLoading] = useState(() => !initialCachedResult);
   const [error, setError] = useState<string | null>(null);
 
   const [selectedDetailQuestion, setSelectedDetailQuestion] = useState<Question | null>(null);
@@ -116,51 +151,60 @@ export function QuestionBankPage({
   const [exportQuestions, setExportQuestions] = useState<Question[]>([]);
   const [isExportLoading, setIsExportLoading] = useState(false);
 
-  // Load syllabuses and initial topics concurrently on mount (no waterfall)
+  // Load syllabuses on mount
   useEffect(() => {
     let isMounted = true;
-    Promise.all([
-      fetchSyllabuses().catch((err) => {
-        console.error('Error loading syllabuses:', err);
-        return [] as Syllabus[];
-      }),
-      fetchTopics().catch((err) => {
-        console.error('Error loading topics for subject/syllabus:', err);
-        return [] as { topic: string; subTopics: string[] }[];
-      }),
-    ]).then(([sList, tList]) => {
-      if (isMounted) {
+    fetchSyllabuses()
+      .then((sList) => {
+        if (!isMounted) return;
         setSyllabuses(sList);
-        setTopics(tList);
-      }
-    });
+        // Default to active teacher profile's subject on initial load if user hasn't explicitly overridden
+        if (!userOverrodeSyllabusRef.current && !showAllSubjects && activeProfile && !filters.syllabusId) {
+          const matchId = findMatchingSyllabusId(activeProfile, sList);
+          if (matchId) {
+            setFilters((f) => ({ ...f, syllabusId: matchId, page: 1 }));
+          }
+        }
+      })
+      .catch((err) => {
+        console.error('Error loading syllabuses:', err);
+      });
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [activeProfile, showAllSubjects, findMatchingSyllabusId, filters.syllabusId]);
 
-  // Sync Question Bank syllabus filter with active teacher profile & subject isolation
+  // When active teacher profile switches, update default to the new profile's subject
   useEffect(() => {
-    if (showAllSubjects) {
-      setFilters((f) => (f.syllabusId ? { ...f, syllabusId: undefined, page: 1 } : f));
-    } else if (activeProfile && syllabuses.length > 0) {
-      const match = syllabuses.find(
-        (s) =>
-          s.subject_code === activeProfile.subject_code ||
-          s.subject_name.toLowerCase().includes(activeProfile.subject.toLowerCase())
-      );
-      if (match && filters.syllabusId !== match.id) {
-        setFilters((f) => ({ ...f, syllabusId: match.id, page: 1 }));
+    if (activeProfile?.id !== lastProfileIdRef.current) {
+      lastProfileIdRef.current = activeProfile?.id;
+      userOverrodeSyllabusRef.current = false;
+      if (!showAllSubjects && activeProfile && syllabuses.length > 0) {
+        const matchId = findMatchingSyllabusId(activeProfile, syllabuses);
+        setFilters((f) => ({ ...f, syllabusId: matchId, page: 1 }));
       }
     }
-  }, [activeProfile, showAllSubjects, syllabuses, filters.syllabusId]);
+  }, [activeProfile, showAllSubjects, syllabuses, findMatchingSyllabusId]);
 
-  // Update topics whenever the selected syllabus/subject filter changes
-  const isFirstRender = useRef(true);
+  // When "Show All Subjects" toggle changes from top profile chip
   useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
+    if (showAllSubjects !== lastShowAllSubjectsRef.current) {
+      lastShowAllSubjectsRef.current = showAllSubjects;
+      userOverrodeSyllabusRef.current = false;
+      if (showAllSubjects) {
+        setFilters((f) => ({ ...f, syllabusId: undefined, page: 1 }));
+      } else if (activeProfile && syllabuses.length > 0) {
+        const matchId = findMatchingSyllabusId(activeProfile, syllabuses);
+        setFilters((f) => ({ ...f, syllabusId: matchId, page: 1 }));
+      }
+    }
+  }, [showAllSubjects, activeProfile, syllabuses, findMatchingSyllabusId]);
+
+  // Update topics whenever the selected syllabus/subject filter is ready or changes
+  useEffect(() => {
+    // Only pause on cold start if waiting for syllabuses to apply initial profile default
+    if (!showAllSubjects && activeProfile && syllabuses.length === 0 && !filters.syllabusId && !userOverrodeSyllabusRef.current) {
       return;
     }
     let isMounted = true;
@@ -178,10 +222,27 @@ export function QuestionBankPage({
     return () => {
       isMounted = false;
     };
-  }, [filters.syllabusId]);
+  }, [filters.syllabusId, showAllSubjects, activeProfile, syllabuses.length]);
 
   // Fetch questions whenever filters change
   const loadQuestions = useCallback(async () => {
+    // Only pause on cold start if waiting for syllabuses to apply initial profile default
+    if (!showAllSubjects && activeProfile && syllabuses.length === 0 && !filters.syllabusId && !userOverrodeSyllabusRef.current) {
+      return;
+    }
+
+    const cached = getCachedQuestionsQuery(filters);
+    if (cached) {
+      setQuestions(cached.questions);
+      setTotalCount(cached.totalCount);
+      setTotalPages(cached.totalPages);
+      setIsLoading(false);
+      if (cached.page < cached.totalPages) {
+        prefetchNextQuestionsPage(filters);
+      }
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -200,7 +261,7 @@ export function QuestionBankPage({
     } finally {
       setIsLoading(false);
     }
-  }, [filters]);
+  }, [filters, showAllSubjects, activeProfile, syllabuses.length]);
 
   useEffect(() => {
     loadQuestions();
@@ -421,7 +482,12 @@ export function QuestionBankPage({
           <div className={`bank-sidebar ${showMobileFilters ? 'bank-sidebar--open' : ''}`}>
             <QuestionFilters
               filters={filters}
-              onFilterChange={(newFilters) => setFilters(newFilters)}
+              onFilterChange={(newFilters) => {
+                if (newFilters.syllabusId !== filters.syllabusId) {
+                  userOverrodeSyllabusRef.current = true;
+                }
+                setFilters(newFilters);
+              }}
               syllabuses={syllabuses}
               topics={topics}
               totalResults={totalCount}

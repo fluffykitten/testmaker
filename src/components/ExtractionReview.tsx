@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import type { ExtractionResult, ExtractedQuestion, SubQuestion, PaperMetadata, ExtractedPassage } from '../types/database';
+import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type SubQuestion, type PaperMetadata, type ExtractedPassage } from '../types/database';
 import { type DiagramCropItem } from '../lib/diagramCropper';
 import { ExamMathText } from './ExamMathText';
 import { QuestionEditorModal } from './QuestionEditorModal';
@@ -47,17 +47,21 @@ interface CropTarget {
 function cleanExtractedQuestions(qs: ExtractedQuestion[], passages?: ExtractedPassage[]): ExtractedQuestion[] {
   const stitched = stitchPassagesToQuestions(qs || [], passages);
   const propagated = propagateReadingPassages(stitched);
-  return propagated.map((q) => ({
-    ...q,
-    question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
-    sub_questions: (q.sub_questions || []).map((sq) => ({
-      ...sq,
-      question_text: stripDuplicateSubIdPrefix(
-        sq.sub_id,
-        stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
-      ),
-    })),
-  }));
+  return propagated.map((q) => {
+    const normStyle = normalizeQuestionStyle(q.question_style, q.options);
+    return {
+      ...q,
+      question_style: normStyle,
+      question_text: stripDuplicateOptionsFromStem(q.question_text, q.options),
+      sub_questions: (q.sub_questions || []).map((sq) => ({
+        ...sq,
+        question_text: stripDuplicateSubIdPrefix(
+          sq.sub_id,
+          stripDuplicateOptionsFromStem(sq.question_text, sq.options || q.options)
+        ),
+      })),
+    };
+  });
 }
 
 export function ExtractionReview({
@@ -311,7 +315,7 @@ export function ExtractionReview({
       series: parentQ.series || paperMetadata?.series,
       paper_number: parentQ.paper_number || paperMetadata?.paper_number,
       question_text: selfContainedText,
-      question_style: parentQ.question_style,
+      question_style: normalizeQuestionStyle(parentQ.question_style, sub.options),
       total_marks: subMarks,
       estimated_difficulty: parentQ.estimated_difficulty,
       topic: parentQ.topic,
@@ -745,7 +749,7 @@ export function ExtractionReview({
                   {isFastEditMode ? (
                     <select
                       className="review-inline-select"
-                      value={q.question_style || 'Structured'}
+                      value={normalizeQuestionStyle(q.question_style, q.options)}
                       onChange={(e) => handleUpdateQuestionField(idx, 'question_style', e.target.value)}
                     >
                       <option value="Structured">Structured</option>
@@ -756,7 +760,7 @@ export function ExtractionReview({
                       <option value="Fill in the Blank">Fill in the Blank</option>
                     </select>
                   ) : (
-                    <span className="review-badge badge--style">{q.question_style}</span>
+                    <span className="review-badge badge--style">{normalizeQuestionStyle(q.question_style, q.options)}</span>
                   )}
                 </div>
 
@@ -1147,7 +1151,27 @@ export function ExtractionReview({
                 <div className="review-options">
                   {q.options.map((opt, oi) => (
                     <div key={oi} className="review-option">
-                      <ExamMathText content={opt} />
+                      {isFastEditMode ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
+                          <span style={{ fontWeight: 600, minWidth: '22px', color: 'var(--text-muted)' }}>
+                            {String.fromCharCode(65 + oi)}.
+                          </span>
+                          <input
+                            type="text"
+                            className="review-inline-topic-input"
+                            style={{ flex: 1, padding: '4px 8px', fontSize: '0.88rem' }}
+                            value={opt}
+                            onChange={(e) => {
+                              const newOpts = [...(q.options || [])];
+                              newOpts[oi] = e.target.value;
+                              handleUpdateQuestionField(idx, 'options', newOpts);
+                            }}
+                            placeholder={`Option ${String.fromCharCode(65 + oi)}`}
+                          />
+                        </div>
+                      ) : (
+                        <ExamMathText content={opt} />
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1273,6 +1297,8 @@ export function ExtractionReview({
           diagramUrls.get(curQ.question_number.replace(/^Q/i, '')) ||
           null;
 
+        const effectiveInitialStyle = normalizeQuestionStyle(curQ.question_style, curQ.options);
+
         return (
           <QuestionEditorModal
             isOpen={true}
@@ -1286,13 +1312,13 @@ export function ExtractionReview({
               question_number: curQ.question_number || '1',
               parent_question_id: curQ.parent_question_id || null,
               question_text: curQ.question_text || '',
-              question_style: curQ.question_style || 'Structured',
+              question_style: effectiveInitialStyle,
               topic: curQ.topic || 'General',
               sub_topic: curQ.sub_topic || null,
               difficulty: curQ.estimated_difficulty || 'Medium',
               marks: Number(curQ.total_marks) || 1,
               diagram_url: diagramUrl,
-              options: curQ.options || null,
+              options: curQ.options && curQ.options.length > 0 ? curQ.options : null,
               sub_questions: curQ.sub_questions || [],
               mark_scheme: curQ.mark_scheme || null,
             }}
@@ -1300,16 +1326,29 @@ export function ExtractionReview({
             onSave={(saved) => {
               if (editingIdx !== null && questions[editingIdx]) {
                 const updatedList = [...questions];
+                const originalQ = updatedList[editingIdx];
+
+                // Defensive options preservation:
+                // If saved.options is non-empty, use it.
+                // If saved.options is null/empty but original had options AND style didn't switch to Calculation/Short Answer, keep original options!
+                const preservedOptions = (saved.options && saved.options.length > 0)
+                  ? saved.options
+                  : (originalQ.options && originalQ.options.length > 0 && saved.question_style !== 'Calculation' && saved.question_style !== 'Short Answer')
+                  ? originalQ.options
+                  : null;
+
+                const resolvedSavedStyle = normalizeQuestionStyle(saved.question_style, preservedOptions);
+
                 updatedList[editingIdx] = {
-                  ...updatedList[editingIdx],
+                  ...originalQ,
                   question_text: saved.question_text,
                   question_number: saved.question_number,
                   topic: saved.topic,
                   sub_topic: saved.sub_topic,
                   estimated_difficulty: saved.difficulty || 'Medium',
                   total_marks: saved.marks,
-                  question_style: saved.question_style || 'Structured',
-                  options: saved.options || null,
+                  question_style: resolvedSavedStyle,
+                  options: preservedOptions,
                   sub_questions: saved.sub_questions && saved.sub_questions.length > 0 ? saved.sub_questions : undefined,
                   mark_scheme: saved.mark_scheme as any,
                 };

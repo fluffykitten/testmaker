@@ -16,7 +16,14 @@ import {
   cleanQuotesAndTemperatures,
   type SubjectDomain,
 } from './gemini';
-import { splitPdfForParallelExtraction, detectAndSplitInDocumentAnswerKey } from './pdfChunker';
+import {
+  splitPdfForParallelExtraction,
+  detectAndSplitInDocumentAnswerKey,
+  isSaveMyExamsDocument,
+  splitSaveMyExamsPdfBySections,
+  type SaveMyExamsMeta,
+  type PdfChunk,
+} from './pdfChunker';
 import {
   cropDiagramsLocally,
   uploadDiagramsToStorage,
@@ -58,6 +65,8 @@ export interface ExtractionPipelineOptions {
   includeGuidance?: boolean;
   domain?: SubjectDomain;
   isIgcse?: boolean;
+  isSaveMyExams?: boolean;
+  tags?: string;
 }
 
 // ─── Step 2: Resolve or create syllabus ────────────────────────────────────────
@@ -665,7 +674,27 @@ export async function runExtractionPipeline(
       }
     }
 
-    const chunks = await splitPdfForParallelExtraction(bytesToChunk, 8);
+    const isSaveMyExams =
+      Boolean(options.isSaveMyExams) ||
+      (options.domain === 'stem' && (await isSaveMyExamsDocument(bytesToChunk)));
+
+    let chunks: PdfChunk[];
+    let smeMeta: SaveMyExamsMeta | undefined;
+
+    if (isSaveMyExams) {
+      const smeSplit = await splitSaveMyExamsPdfBySections(bytesToChunk);
+      chunks = smeSplit.chunks;
+      smeMeta = smeSplit.meta;
+      onStateChange({
+        stage: 'extracting',
+        message: `Detected Save My Exams assessment pack (${smeMeta.topic || 'STEM'} • ${smeMeta.sections.length} difficulty tiers: ${smeMeta.sections.map((s: any) => s.name).join(', ')} • ${smeMeta.totalExpected ? `${smeMeta.totalExpected} questions` : 'MCQs'})…`,
+        progress: 25,
+        result: null,
+        error: null,
+      });
+    } else {
+      chunks = await splitPdfForParallelExtraction(bytesToChunk, 8);
+    }
 
     let result: ExtractionResult;
 
@@ -687,6 +716,7 @@ export async function runExtractionPipeline(
         chunks.map((chunk, idx) => {
           const assignedKey = getApiKeyForChunk(idx);
           const keyLabel = isMultiKey ? `Key ${(idx % apiKeys.length) + 1}` : `Part ${idx + 1}/${chunks.length}`;
+          const sectionLabel = chunk.targetSection ? `[${chunk.targetSection} Questions • Pages ${chunk.startPage}–${chunk.endPage}]` : `[Pages ${chunk.startPage}–${chunk.endPage}]`;
 
           return extractQuestionsFromPdf(
             chunk.pdfBase64,
@@ -695,7 +725,7 @@ export async function runExtractionPipeline(
             (status) => {
               onStateChange({
                 stage: 'extracting',
-                message: `[${keyLabel} • Pages ${chunk.startPage}–${chunk.endPage}]: ${status}`,
+                message: `[${keyLabel} • ${sectionLabel}]: ${status}`,
                 progress: 35 + Math.round(((idx + 1) / chunks.length) * 35),
                 result: null,
                 error: null,
@@ -708,6 +738,9 @@ export async function runExtractionPipeline(
               apiKey: assignedKey,
               extractResourceCatalog: idx === 0,
               isIgcse: options.isIgcse !== false,
+              isSaveMyExams,
+              targetSection: chunk.targetSection,
+              topicHint: chunk.topicHint || smeMeta?.topic,
             }
           );
         })
@@ -733,7 +766,13 @@ export async function runExtractionPipeline(
       chunkResults.forEach((cr, cIdx) => {
         const chunkOffset = chunks[cIdx].startPage - 1;
         cr.questions.forEach((q) => {
-          const qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
+          let qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
+          if (isSaveMyExams) {
+            const sec = chunks[cIdx].targetSection || q.estimated_difficulty || 'Easy';
+            if (!/^(?:easy|medium|hard)\s*[-:]/i.test(qNumClean)) {
+              qNumClean = `${sec} - ${qNumClean}`;
+            }
+          }
           const adjustedQ: ExtractedQuestion = {
             ...q,
             question_number: qNumClean,
@@ -962,8 +1001,8 @@ export async function runExtractionPipeline(
               ? (options.isIgcse !== false ? '0460' : 'GEO')
               : (options.isIgcse !== false ? '0620' : 'CHEM'),
           year: new Date().getFullYear(),
-          series: options.isIgcse !== false ? 'Exam' : 'General',
-          paper_number: 1,
+          series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
+          paper_number: isSaveMyExams ? 'MCQ' : 1,
           has_insert_booklet: Boolean(insertFile),
         },
         questions: finalizedQuestions,
@@ -990,6 +1029,9 @@ export async function runExtractionPipeline(
           domain: options.domain || 'stem',
           hasInsertBooklet: Boolean(insertFile),
           isIgcse: options.isIgcse !== false,
+          isSaveMyExams,
+          targetSection: chunks[0]?.targetSection,
+          topicHint: chunks[0]?.topicHint || smeMeta?.topic,
         }
       );
       let verifiedPassages = result.passages || [];

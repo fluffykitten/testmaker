@@ -16,7 +16,7 @@ export const DEFAULT_CHEMISTRY_PROFILE: TeacherProfile = {
   subject: 'Chemistry',
   subject_code: '0620',
   pin_hash: null, // PIN-free by default
-  default_classes: ['Grade 10', 'Grade 11'],
+  default_classes: ['10-A', '10-B', '11-A'],
   preferences: {
     autoEnablePeriodicTable: true,
     defaultCalculator: 'scientific',

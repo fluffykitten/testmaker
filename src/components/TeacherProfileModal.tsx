@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTeacherProfile } from '../contexts/TeacherProfileContext';
 import { createTeacherProfile } from '../services/teacherProfileService';
-import { getSchoolSubjects, DEFAULT_SUBJECTS } from '../lib/settings';
+import { getSchoolSubjects, DEFAULT_SUBJECTS, getSchoolClasses, DEFAULT_CLASSES } from '../lib/settings';
 import type { TeacherProfile } from '../types/database';
 import './TeacherProfileModal.css';
 
@@ -10,7 +10,7 @@ interface TeacherProfileModalProps {
   onClose: () => void;
 }
 
-const COHORT_OPTIONS = ['Grade 10', 'Grade 11', 'Grade 12'] as const;
+
 
 const KNOWN_SYLLABUS_CODES: Record<string, string> = {
   Chemistry: '0620',
@@ -45,11 +45,31 @@ function getSubjectIcon(subject: string): string {
 export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProps) {
   const { profiles, activeProfile, switchProfile, refreshProfiles } = useTeacherProfile();
 
-  // Dynamic school subjects from settings
+    // Dynamic school subjects from settings
   const [availableSubjects, setAvailableSubjects] = useState<string[]>(() => {
     const list = getSchoolSubjects();
     return list.length > 0 ? list : DEFAULT_SUBJECTS;
   });
+
+  // Dynamic school classes / cohorts from admin configuration
+  const [availableClasses, setAvailableClasses] = useState<string[]>(() => {
+    const list = getSchoolClasses();
+    return list.length > 0 ? list : DEFAULT_CLASSES;
+  });
+
+  // Listen for admin changes to classes
+  useEffect(() => {
+    function handleClassesUpdated(e: Event) {
+      const customEvent = e as CustomEvent<{ classes?: string[] }>;
+      if (customEvent.detail?.classes) {
+        setAvailableClasses(customEvent.detail.classes);
+      } else {
+        setAvailableClasses(getSchoolClasses());
+      }
+    }
+    window.addEventListener('school_classes_updated', handleClassesUpdated);
+    return () => window.removeEventListener('school_classes_updated', handleClassesUpdated);
+  }, []);
 
   // Listen for admin changes to subjects
   useEffect(() => {
@@ -78,7 +98,10 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
   const [newTitle, setNewTitle] = useState('Dr.');
   const [newSubject, setNewSubject] = useState('Chemistry');
   const [newSubjectCode, setNewSubjectCode] = useState('0620');
-  const [selectedCohorts, setSelectedCohorts] = useState<string[]>(['Grade 10', 'Grade 11']);
+  const [selectedCohorts, setSelectedCohorts] = useState<string[]>(() => {
+    const list = getSchoolClasses();
+    return list.length > 0 ? [list[0]] : DEFAULT_CLASSES.slice(0, 2);
+  });
   const [newPin, setNewPin] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
@@ -174,7 +197,7 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
         title: newTitle.trim(),
         subject: newSubject.trim(),
         subject_code: newSubjectCode.trim() || '',
-        default_classes: selectedCohorts.length > 0 ? selectedCohorts : ['Grade 10'],
+        default_classes: selectedCohorts.length > 0 ? selectedCohorts : [availableClasses[0] || '10-A'],
         pin: newPin.trim() || undefined,
         preferences: {
           autoEnablePeriodicTable: newSubject.toLowerCase() === 'chemistry',
@@ -407,28 +430,28 @@ export function TeacherProfileModal({ isOpen, onClose }: TeacherProfileModalProp
                 </div>
               </div>
 
-              {/* Multi-select Cohort: Grade 10, Grade 11, Grade 12 */}
+              {/* Multi-select Cohort: Dynamic school classes from Admin configuration */}
               <div className="teacher-field">
-                <label className="teacher-label">Teaching Cohorts (Multi-Select)</label>
+                <label className="teacher-label">Teaching Cohorts / Classes (Multi-Select)</label>
                 <div className="teacher-cohort-buttons" role="group" aria-label="Select Teaching Cohorts">
-                  {COHORT_OPTIONS.map((grade) => {
-                    const isSelected = selectedCohorts.includes(grade);
+                  {availableClasses.map((cls) => {
+                    const isSelected = selectedCohorts.includes(cls);
                     return (
                       <button
-                        key={grade}
+                        key={cls}
                         type="button"
                         className={`teacher-cohort-btn ${isSelected ? 'teacher-cohort-btn--selected' : ''}`}
-                        onClick={() => toggleCohort(grade)}
+                        onClick={() => toggleCohort(cls)}
                         aria-pressed={isSelected}
                       >
                         <span className="teacher-cohort-check">{isSelected ? '✓' : '+'}</span>
-                        <span>{grade}</span>
+                        <span>{cls}</span>
                       </button>
                     );
                   })}
                 </div>
                 <span className="teacher-field-hint">
-                  Select all grade levels you teach. Test filters and student rosters will adapt.
+                  Select all classes you teach. Test filters and student rosters will adapt.
                 </span>
               </div>
 
