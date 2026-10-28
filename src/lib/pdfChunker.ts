@@ -15,6 +15,8 @@ export interface PdfChunk {
   targetSection?: 'Easy' | 'Medium' | 'Hard';
   topicHint?: string;
   expectedCount?: number;
+  expectedMarks?: number;
+  packType?: SaveMyExamsPackType;
 }
 
 export interface InDocumentAnswerKeySplit {
@@ -305,29 +307,38 @@ export async function splitPdfForParallelExtraction(
   }
 }
 
+export type SaveMyExamsPackType = 'mcq' | 'theory';
+
 export interface SaveMyExamsSection {
   name: 'Easy' | 'Medium' | 'Hard';
   startPage: number;
   endPage: number;
   expectedCount?: number;
+  expectedMarks?: number;
 }
 
 export interface SaveMyExamsMeta {
   isSaveMyExams: boolean;
+  packType?: SaveMyExamsPackType;
   topic?: string;
   subTopics?: string;
   numPages: number;
   effectiveEndPage: number;
   easyExpected?: number;
+  easyMarks?: number;
   medExpected?: number;
+  medMarks?: number;
   hardExpected?: number;
+  hardMarks?: number;
   totalExpected?: number;
+  totalMarks?: number;
   sections: SaveMyExamsSection[];
 }
 
 /**
  * Detects Save My Exams / PMA topic question structure:
  * - Cover page with Topic, Subtopics, and Difficulty Question Count breakdown
+ * - Supports both Multiple Choice Questions (MCQs) and Theory / Structured Question packs
  * - Distinct sections: "Easy Questions", "Medium Questions", "Hard Questions"
  */
 export async function detectSaveMyExamsMetadata(
@@ -344,7 +355,8 @@ export async function detectSaveMyExamsMetadata(
   // 1. Inspect Page 1 Cover
   const page1 = await pdfJsDoc.getPage(1);
   const textContent1 = await page1.getTextContent();
-  const page1Text = textContent1.items.map((it: any) => it.str || '').join(' ');
+  const strings1 = textContent1.items.map((it: any) => (it.str || '').trim()).filter(Boolean);
+  const page1Text = strings1.join(' ');
 
   const isSaveMyExams =
     /save\s*my\s*exams/i.test(page1Text) ||
@@ -356,34 +368,66 @@ export async function detectSaveMyExamsMetadata(
     return { isSaveMyExams: false, numPages, effectiveEndPage: numPages, sections: [] };
   }
 
-  // Extract Topic from Page 1
+  // Detect pack type: 'theory' vs 'mcq'
+  const isTheory = /Theory\s*Questions/i.test(page1Text);
+  const isMcq = /Multiple\s*Choice\s*Questions/i.test(page1Text);
+  const packType: SaveMyExamsPackType = isTheory ? 'theory' : isMcq ? 'mcq' : 'mcq';
+
+  // Extract Topic & Subtopics from Page 1
   let topic = '';
   let subTopics = '';
-  const mcMatch = page1Text.match(
-    /Multiple\s*Choice\s*Questions\s*(.*?)(?:Easy\s*\(|\/\s*\d+|\bCIE\b|\bIGCSE\b)/i
+
+  const headerIdx = strings1.findIndex((s: string) =>
+    /^(?:Theory\s*Questions|Multiple\s*Choice\s*Questions)$/i.test(s)
   );
-  if (mcMatch && mcMatch[1]) {
-    const rawTopic = mcMatch[1].trim();
-    const parts = rawTopic
-      .split(/\s{2,}|\n/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (parts.length > 0) {
-      topic = parts[0];
-      if (parts.length > 1) subTopics = parts.slice(1).join(' / ');
+  const easyIdx = strings1.findIndex(
+    (s: string, idx: number) => idx > headerIdx && /^Easy$/i.test(s)
+  );
+
+  if (headerIdx !== -1 && easyIdx !== -1 && easyIdx > headerIdx) {
+    const middle = strings1.slice(headerIdx + 1, easyIdx);
+    const slashIdx = middle.findIndex((s: string) => s.includes('/'));
+    if (slashIdx !== -1) {
+      topic = middle.slice(0, slashIdx).join(' ');
+      subTopics = middle.slice(slashIdx).join(' ');
+    } else {
+      topic = middle.join(' ');
     }
   }
 
-  // Extract expected counts
-  const easyCountMatch = page1Text.match(/Easy\s*\(\s*(\d+)\s*questions?\s*\)/i);
-  const medCountMatch = page1Text.match(/Medium\s*\(\s*(\d+)\s*questions?\s*\)/i);
-  const hardCountMatch = page1Text.match(/Hard\s*\(\s*(\d+)\s*questions?\s*\)/i);
-  const totalCountMatch = page1Text.match(/(\d+)\s*questions/i);
+  // Fallback regex if array slice didn't find clear boundaries
+  if (!topic) {
+    const topicMatch = page1Text.match(
+      /(?:Multiple\s*Choice\s*Questions|Theory\s*Questions)\s+(.*?)(?:Easy\s*\(|\/\s*\d+|\bCIE\b|\bIGCSE\b)/i
+    );
+    if (topicMatch && topicMatch[1]) {
+      const raw = topicMatch[1].trim();
+      const parts = raw.split(/\s{2,}|\n/).map((s) => s.trim()).filter(Boolean);
+      if (parts.length > 0) {
+        topic = parts[0];
+        if (parts.length > 1) subTopics = parts.slice(1).join(' / ');
+      }
+    }
+  }
 
-  const easyExpected = easyCountMatch ? parseInt(easyCountMatch[1], 10) : undefined;
-  const medExpected = medCountMatch ? parseInt(medCountMatch[1], 10) : undefined;
-  const hardExpected = hardCountMatch ? parseInt(hardCountMatch[1], 10) : undefined;
+  // Extract expected counts and marks
+  const easyMatch = page1Text.match(/Easy\s*\(\s*(\d+)\s*questions?\s*\)(?:\s*\/\s*(\d+))?/i);
+  const medMatch = page1Text.match(/Medium\s*\(\s*(\d+)\s*questions?\s*\)(?:\s*\/\s*(\d+))?/i);
+  const hardMatch = page1Text.match(/Hard\s*\(\s*(\d+)\s*questions?\s*\)(?:\s*\/\s*(\d+))?/i);
+  const totalCountMatch = page1Text.match(/(\d+)\s*questions/i);
+  const totalMarksMatch = page1Text.match(/Total\s*Marks\s*\/\s*(\d+)/i);
+
+  const easyExpected = easyMatch ? parseInt(easyMatch[1], 10) : undefined;
+  const easyMarks = easyMatch && easyMatch[2] ? parseInt(easyMatch[2], 10) : undefined;
+
+  const medExpected = medMatch ? parseInt(medMatch[1], 10) : undefined;
+  const medMarks = medMatch && medMatch[2] ? parseInt(medMatch[2], 10) : undefined;
+
+  const hardExpected = hardMatch ? parseInt(hardMatch[1], 10) : undefined;
+  const hardMarks = hardMatch && hardMatch[2] ? parseInt(hardMatch[2], 10) : undefined;
+
   const totalExpected = totalCountMatch ? parseInt(totalCountMatch[1], 10) : undefined;
+  const totalMarks = totalMarksMatch ? parseInt(totalMarksMatch[1], 10) : undefined;
 
   // 2. Scan section start pages
   let easyStartPage = 2;
@@ -426,31 +470,39 @@ export async function detectSaveMyExamsMetadata(
       startPage: 1, // Include Page 1 cover with Easy so metadata is available
       endPage: mediumStartPage - 1,
       expectedCount: easyExpected,
+      expectedMarks: easyMarks,
     });
     sections.push({
       name: 'Medium',
       startPage: mediumStartPage,
       endPage: hardStartPage - 1,
       expectedCount: medExpected,
+      expectedMarks: medMarks,
     });
     sections.push({
       name: 'Hard',
       startPage: hardStartPage,
       endPage: effectiveEndPage,
       expectedCount: hardExpected,
+      expectedMarks: hardMarks,
     });
   }
 
   return {
     isSaveMyExams: true,
+    packType,
     numPages,
     effectiveEndPage,
     topic: topic || 'Topic Questions',
     subTopics,
     easyExpected,
+    easyMarks,
     medExpected,
+    medMarks,
     hardExpected,
+    hardMarks,
     totalExpected,
+    totalMarks,
     sections,
   };
 }
@@ -504,6 +556,8 @@ export async function splitSaveMyExamsPdfBySections(
       targetSection: sec.name,
       topicHint: meta.topic,
       expectedCount: sec.expectedCount,
+      expectedMarks: sec.expectedMarks,
+      packType: meta.packType,
     });
   }
 

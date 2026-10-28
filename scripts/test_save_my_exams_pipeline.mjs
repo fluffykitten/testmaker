@@ -130,7 +130,7 @@ async function runTests() {
     console.log(`   - ${q.question_number} [${q.estimated_difficulty}]: "${q.question_text.slice(0, 50).replace(/\n/g, ' ')}..." (Options: ${q.options?.length || 0})`);
     assert(q.question_number.startsWith('Easy -'), `Question number must start with "Easy -", got: ${q.question_number}`);
     assert.strictEqual(q.estimated_difficulty, 'Easy');
-    assert.strictEqual(q.question_style, 'multiple_choice');
+    assert(['Multiple Choice', 'multiple_choice'].includes(q.question_style), `Expected Multiple Choice style, got: ${q.question_style}`);
     assert.strictEqual(q.total_marks, 1);
     assert(Array.isArray(q.options) && q.options.length === 4, `Must have 4 options, got: ${q.options?.length}`);
   });

@@ -479,7 +479,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                     <div className="upload-toggle-text">
                       <span className="upload-toggle-name">Save My Exams / PMA</span>
                       <span className="upload-toggle-hint">
-                        Multi-tier sections (Easy, Medium, Hard), 1-mark MCQs & table choices
+                        Multi-tier sections (Easy, Medium, Hard) — supports both MCQs & Theory question packs
                       </span>
                     </div>
                     <div className="upload-switch">

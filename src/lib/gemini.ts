@@ -740,6 +740,209 @@ Output strictly valid JSON matching this exact schema:
 }
 
 /**
+ * Builds the specialized Save My Exams & PMA Theory / Structured question extraction prompt.
+ * Tailored specifically for multi-tier difficulty packs (Easy, Medium, Hard) containing open-ended,
+ * multi-part structured questions (e.g. Cambridge IGCSE Chemistry, Physics, Biology Theory Papers).
+ * Guarantees unique prefixing ("Easy - 1", "Medium - 1", "Hard - 1"),
+ * sets estimated_difficulty ('Easy' | 'Medium' | 'Hard'), captures full sub-question hierarchies
+ * with sub-part marks [1], [2], [3], [4], page-accurate diagrams (dot-and-cross, lattice, apparatus),
+ * chemical reaction equations, electron tables, and structured mark schemes.
+ */
+export function getSaveMyExamsTheoryExtractionPrompt(
+  includeGuidance: boolean = true,
+  targetSection?: 'Easy' | 'Medium' | 'Hard',
+  topicHint?: string
+): string {
+  const guidanceSchemaSnippet = includeGuidance
+    ? `,
+      "guidance": [
+        "Examiner tip: recall characteristic covalent vs ionic bonding properties",
+        "Key chemical/physical principle tested"
+      ],
+      "common_misconceptions": [
+        "Common mistake: confusing melting point trends with intermolecular forces"
+      ]`
+    : '';
+
+  const subGuidanceSnippet = includeGuidance
+    ? `,
+          "guidance": [
+            "Examiner tip: check that electrons are transferred from metal to non-metal"
+          ],
+          "common_misconceptions": [
+            "Students frequently forget to write ionic charges outside brackets"
+          ]`
+    : '';
+
+  const sectionInstruction = targetSection
+    ? `TARGET SECTION: ${targetSection.toUpperCase()} QUESTIONS
+You are extracting structured questions exclusively from the "${targetSection} Questions" section of this Save My Exams Theory assessment pack.
+- Every question in this chunk belongs to the "${targetSection} Questions" section.
+- Questions in this section are numbered 1, 2, 3...
+- CRITICAL COMPLETENESS REQUIREMENT: You MUST extract EVERY SINGLE question in this section (Questions 1 through the end of this section). DO NOT stop after Question 1! Extract all questions on all pages of this chunk into the "questions" array.
+- CRITICAL: Format "question_number" as "${targetSection} - 1", "${targetSection} - 2", "${targetSection} - 3", etc.
+- Set "estimated_difficulty": "${targetSection}".`
+    : `DOCUMENT STRUCTURE (MULTI-TIER DIFFICULTY SECTIONS):
+This Save My Exams / PMA paper is divided into 3 distinct difficulty sections:
+1. "Easy Questions" (starts from question 1)
+2. "Medium Questions" (starts from question 1)
+3. "Hard Questions" (starts from question 1)
+
+CRITICAL QUESTION NUMBERING & COLLISION PREVENTION:
+Because each section restarts question numbering from 1, you MUST prefix the question number with the section name:
+- Easy Questions: "question_number": "Easy - 1", "Easy - 2", "Easy - 3"...
+- Medium Questions: "question_number": "Medium - 1", "Medium - 2", "Medium - 3"...
+- Hard Questions: "question_number": "Hard - 1", "Hard - 2", "Hard - 3"...
+Set "estimated_difficulty" accordingly: "Easy", "Medium", or "Hard".`;
+
+  return `You are an expert STEM educational assessment parser specializing in Save My Exams & Physics and Maths Tutor (PMA / PMT) Theory / Structured topic question packs (e.g. Cambridge IGCSE Chemistry, Physics, Biology Theory Papers).
+Analyze the attached PDF pages.
+
+${sectionInstruction}
+
+TOPIC & SUB-TOPICS:
+${topicHint ? `- Document Topic: "${topicHint}". Set "topic": "${topicHint}" for all questions.` : '- Extract the main topic title from Page 1 (e.g. "Ions & Ionic Bonds") and assign it as "topic" for every question.'}
+- Extract any sub-topics (e.g. "Properties of Ionic Compounds" or "Ionic Bonds & Lattice Structure") and assign as "sub_topic".
+
+CRITICAL QUESTION FORMAT & MARKING RULES (STRUCTURED THEORY):
+1. QUESTION STYLE & SUB-QUESTIONS HIERARCHY:
+   - These are OPEN-ENDED / STRUCTURED THEORY questions (NOT multiple choice).
+   - Set "question_style": "Structured".
+   - Set "options": [] (ALWAYS an empty array).
+   - Each top-level question contains sub-parts: (a), (b), (c), (d), (i), (ii), etc.
+   - ALWAYS place all sub-parts in the "sub_questions" array of the parent question!
+   - DO NOT split sub-parts (a), (b), (c) into separate top-level questions! They MUST be grouped under their parent question container (e.g. "Easy - 1", "Medium - 2").
+   - "total_marks": Sum of all sub-question marks for this question (must equal the sum of marks of its sub-parts).
+
+2. INTRODUCTORY SCENARIOS, TABLES & PARENT STEM:
+   - The opening context, introductory apparatus description, overarching chemical reaction, or stimulus data table belongs in parent "question_text".
+   - When section (a), (b), or (c) begins with an introductory statement before (i), (ii) (e.g. "(b) Elements C and F can form an ionic compound." before "(i) Draw a diagram..."), prepend that introductory statement to its first sub-part ("(b)(i)") or include it in that sub-part's "question_text" so every sub-question is self-contained.
+   - Any data tables (e.g. table of electron configurations, table of melting/boiling points, proton/neutron/electron table) MUST be transcribed verbatim into clean Markdown tables in "question_text".
+
+3. PRESERVE STRUCTURED RESPONSE PROMPTS & EQUATIONS:
+   - Preserve all dotted answer lines "..........", unit suffixes ("g", "cm³", "°C", "mol / dm³", "%"), and structured answer prompts in "question_text":
+     * Incomplete equations: "........Rb + ........H2O -> ................ + ................"
+     * Multi-field prompts: "start colour: .............\\nend colour: ............."
+     * Step-by-step calculation prompts:
+       "number of moles of HCl used = ............................\\nnumber of moles of SrCl2.6H2O which could be formed = ............................\\ntheoretical yield of SrCl2.6H2O = ............................g\\npercentage yield = ............................%"
+
+4. DIAGRAMS, ELECTRON SHELLS & LATTICE STRUCTURES:
+   - If a question or sub-question includes an apparatus, dot-and-cross diagram, electron shells, molecular model, or 3D crystal lattice:
+     * Set "has_diagram": true
+     * Set "diagram_type": "apparatus" (or "graph" if a plotted line/curve)
+     * Set "diagram_source": "qp"
+     * Set "page_number": <exact 1-indexed page number of the chunk where diagram appears>
+     * Set "bounding_box": [ymin, xmin, ymax, xmax] (0-1000 scale tightly enclosing the diagram)
+   - If the student is asked to "Complete the dot-and-cross diagram in Fig 1.1", set "has_diagram": true on that sub-question and provide the bounding box of the template drawing.
+
+5. EXTENDED ONLY BADGES:
+   - When a question or sub-part has "Extended Only" or "Separate: Chemistry and Extended Only" printed above it:
+     * Prepend "[Extended Only]" or "[Separate: Chemistry and Extended Only]" at the beginning of "question_text".
+
+6. MARK SCHEMES:
+   - For every sub-question, provide a clear, rigorous mark scheme in "mark_scheme" indicating acceptable chemical terms, equations, reasoning, and mark breakdown (e.g. "[1]", "[2]").
+
+7. MULTI-PAGE STRADDLING QUESTIONS & CONTINUATIONS (CRITICAL):
+   - Structured questions in Save My Exams packs regularly span across 2 pages (e.g. Question 2 across Pages 3 & 4; Question 3 across Pages 5 & 6; Question 4 across Pages 7 & 8; Question 6 across Pages 10 & 11).
+   - Main question containers start with bold numbers: "1 (a)", "2 (a)", "3 (a)", "4 (a)", "5 (a)", "6 (a)".
+   - If a page starts with a continuation sub-part like "(b)", "(c)", or "(d)" without a new main number heading (e.g. Page 8 starting with "(b) Extended Only"):
+     * It belongs to the preceding parent question (e.g. Question 4)!
+     * NEVER treat a continuation sub-part on a subsequent page as a separate top-level question. Add it to the parent question's "sub_questions" array!
+     * Make sure ALL 6 questions (Questions 1 through 6) are extracted completely!
+
+CRITICAL FORMAT REQUIREMENT:
+Output a SINGLE JSON object (do NOT wrap the top-level object in an array []).
+The root object MUST contain "paper_metadata" and "questions" (containing ALL questions extracted from this chunk):
+
+{
+  "paper_metadata": {
+    "subject": "Chemistry",
+    "subject_code": "0620",
+    "year": 2026,
+    "series": "Save My Exams",
+    "paper_number": "Theory",
+    "has_insert_booklet": false
+  },
+  "questions": [
+    {
+      "question_number": "Easy - 1",
+      "parent_question_id": "Easy - 1",
+      "page_number": 2,
+      "year": 2026,
+      "series": "Save My Exams",
+      "paper_number": "Theory",
+      "question_text": "[Extended Only]\\nThe diagrams below show the electron arrangement in two compounds.",
+      "question_style": "Structured",
+      "total_marks": 5,
+      "estimated_difficulty": "${targetSection || 'Easy'}",
+      "topic": "${topicHint || 'Ions & Ionic Bonds'}",
+      "sub_topic": "Properties of Ionic Compounds",
+      "has_diagram": true,
+      "diagram_type": "apparatus",
+      "diagram_source": "qp",
+      "bounding_box": [170, 290, 310, 780],
+      "options": [],
+      "sub_questions": [
+        {
+          "sub_id": "(a)",
+          "page_number": 2,
+          "question_text": "In a water molecule, each hydrogen atom is bonded to the oxygen atom by sharing a pair of electrons.\\n\\nWhy does an oxygen atom share two pairs of electrons rather than just one pair?",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
+          "mark_scheme": "To gain a full outer shell / noble gas configuration of 8 electrons [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(b)",
+          "page_number": 2,
+          "question_text": "Describe how a potassium atom becomes a potassium ion.",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
+          "mark_scheme": "Loses one electron [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(c)",
+          "page_number": 2,
+          "question_text": "Why is there a bond between the ions in potassium chloride?",
+          "marks": 1,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
+          "mark_scheme": "Electrostatic attraction between oppositely charged ions (positive potassium ion and negative chloride ion) [1]"${subGuidanceSnippet}
+        },
+        {
+          "sub_id": "(d)",
+          "page_number": 2,
+          "question_text": "[Extended Only]\\nSolid potassium chloride is a poor conductor of electricity. When dissolved in water it is a good conductor. Explain",
+          "marks": 2,
+          "has_diagram": false,
+          "diagram_source": null,
+          "resource_ref": null,
+          "bounding_box": null,
+          "mark_scheme": "In solid potassium chloride, ions are fixed in position in the lattice / cannot move [1]. When dissolved in water, ions are free to move / mobile charge carriers [1]"${subGuidanceSnippet}
+        }
+      ],
+      "mark_scheme": {
+        "marking_points": [
+          "(a) Full outer shell / 8 outer electrons [1]",
+          "(b) Loses 1 electron [1]",
+          "(c) Attraction between oppositely charged ions [1]",
+          "(d) Solid: ions fixed; Solution: ions mobile / free to move [2]"
+        ],
+        "acceptable_answers": []${guidanceSchemaSnippet}
+      }
+    }
+  ]
+}`;
+}
+
+/**
  * Builds the specialized Humanities & Social Sciences (Geography, History, Economics, Env Mgmt, English) prompt.
  * Enforces cross-referencing of Insert / Resource Booklets, mapping "Fig. 1.1 in the Insert", "Photograph A", "Table 2.1",
  * and generating a structured insert_resources catalog.
@@ -1472,9 +1675,13 @@ export function getExtractionPrompt(
   isIgcse: boolean = true,
   isSaveMyExams: boolean = false,
   targetSection?: 'Easy' | 'Medium' | 'Hard',
-  topicHint?: string
+  topicHint?: string,
+  saveMyExamsPackType?: 'mcq' | 'theory'
 ): string {
   if (isSaveMyExams && domain === 'stem') {
+    if (saveMyExamsPackType === 'theory') {
+      return getSaveMyExamsTheoryExtractionPrompt(includeGuidance, targetSection, topicHint);
+    }
     return getSaveMyExamsStemExtractionPrompt(includeGuidance, targetSection, topicHint);
   }
   if (domain === 'languages') {
@@ -2438,6 +2645,7 @@ export interface ExtractionOptions {
   extractResourceCatalog?: boolean;
   isIgcse?: boolean;
   isSaveMyExams?: boolean;
+  saveMyExamsPackType?: 'mcq' | 'theory';
   targetSection?: 'Easy' | 'Medium' | 'Hard';
   topicHint?: string;
 }
@@ -2473,7 +2681,8 @@ export async function extractQuestionsFromPdf(
     isIgcse,
     Boolean(options.isSaveMyExams),
     options.targetSection,
-    options.topicHint
+    options.topicHint,
+    options.saveMyExamsPackType
   );
 
   onProgress?.('Discovering available Gemini models…');
@@ -2537,11 +2746,27 @@ export async function extractQuestionsFromPdf(
     throw new Error('Gemini returned an empty response. The PDF may be unreadable or too large.');
   }
 
-  const parsed: ExtractionResult = parseRobustJson<ExtractionResult>(extractedText);
+  let rawParsed: any = parseRobustJson<any>(extractedText);
 
-  if (!parsed.paper_metadata || !Array.isArray(parsed.questions)) {
+  // If LLM wrapped root in an array: [{ paper_metadata, questions: [...] }]
+  if (Array.isArray(rawParsed)) {
+    if (rawParsed.length === 1 && rawParsed[0]?.paper_metadata) {
+      rawParsed = rawParsed[0];
+    } else if (rawParsed.some((p: any) => p?.paper_metadata || Array.isArray(p?.questions))) {
+      const mainMeta = rawParsed.find((p: any) => p?.paper_metadata)?.paper_metadata || rawParsed[0]?.paper_metadata;
+      const allQs = rawParsed.flatMap((p: any) => (Array.isArray(p?.questions) ? p.questions : p?.question_number ? [p] : []));
+      rawParsed = { paper_metadata: mainMeta, questions: allQs };
+    }
+  }
+
+  if (!rawParsed || !rawParsed.paper_metadata || !Array.isArray(rawParsed.questions)) {
+    console.error('Failed parsed object:', rawParsed);
+    console.error('Raw extracted text (first 1000 chars):', extractedText?.slice(0, 1000));
+    console.error('Raw extracted text (last 500 chars):', extractedText?.slice(-500));
     throw new Error('Response missing required paper_metadata or questions array.');
   }
+
+  const parsed: ExtractionResult = rawParsed as ExtractionResult;
 
   if (Array.isArray(parsed.passages)) {
     parsed.passages = parsed.passages.map((p) => ({

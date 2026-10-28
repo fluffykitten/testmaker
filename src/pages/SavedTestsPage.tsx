@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   fetchCustomTestsWithMetadata,
   fetchCustomTestWithQuestions,
@@ -68,14 +68,24 @@ export function SavedTestsPage({
     return null;
   });
 
-  // Sync active subject view with teacher profile & isolation preference
+  const prevProfileIdRef = useRef<string | undefined>(activeProfile?.id);
+  const prevShowAllRef = useRef<boolean>(showAllSubjects);
+
+  // Sync active subject view ONLY when teacher profile or showAllSubjects setting actually changes
   useEffect(() => {
+    const profileChanged = prevProfileIdRef.current !== activeProfile?.id;
+    const showAllChanged = prevShowAllRef.current !== showAllSubjects;
+
+    prevProfileIdRef.current = activeProfile?.id;
+    prevShowAllRef.current = showAllSubjects;
+
     if (!showAllSubjects && activeProfile) {
-      setActiveSubjectView(activeProfile.subject);
-    } else if (showAllSubjects && activeSubjectView !== null) {
-      setActiveSubjectView('all');
+      // Profile isolation is active: default to teacher's subject when profile or isolation setting changes
+      if (profileChanged || showAllChanged) {
+        setActiveSubjectView(activeProfile.subject);
+      }
     }
-  }, [activeProfile, showAllSubjects, activeSubjectView]);
+  }, [activeProfile, showAllSubjects]);
 
   // Level 2 Controls
   const [activeTopicFilter, setActiveTopicFilter] = useState<string>('all');
@@ -355,9 +365,19 @@ export function SavedTestsPage({
   // ─── Filtered Data for Drill-Down (Level 2) ────────────────────────────────
   const subjectFilteredTests = useMemo(() => {
     if (!activeSubjectView || activeSubjectView === 'all') return tests;
-    return tests.filter(
-      (t) => t.subjects.includes(activeSubjectView) || t.primarySubject === activeSubjectView
-    );
+    const targetSub = activeSubjectView.toLowerCase().trim();
+    const targetMeta = getSubjectMetadata(activeSubjectView);
+
+    return tests.filter((t) => {
+      const matchPrimary = (t.primarySubject || '').toLowerCase().trim() === targetSub;
+      const matchSubjects = (t.subjects || []).some(
+        (s) => s.toLowerCase().trim() === targetSub
+      );
+      const testMeta = getSubjectMetadata(t.primarySubject || (t.subjects?.[0] ?? ''));
+      const matchMeta = targetMeta.id !== 'general' && testMeta.id === targetMeta.id;
+
+      return matchPrimary || matchSubjects || matchMeta;
+    });
   }, [tests, activeSubjectView]);
 
   // Topics available strictly within current subject drill-down
@@ -694,6 +714,30 @@ export function SavedTestsPage({
               </div>
 
               <div className="saved-breadcrumb-right">
+                {subjectSummaries.length > 1 && (
+                  <div className="saved-subject-select-wrap">
+                    <select
+                      className="saved-sort-select"
+                      value={activeSubjectView || 'all'}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setActiveSubjectView(val === 'hub' ? null : val);
+                        setActiveTopicFilter('all');
+                        setSearchQuery('');
+                      }}
+                      title="Switch department or view"
+                    >
+                      <option value="hub">🏛️ All Departments (Hub)</option>
+                      <option value="all">📚 All Exams ({tests.length})</option>
+                      {subjectSummaries.map((s) => (
+                        <option key={s.subjectName} value={s.subjectName}>
+                          {s.subjectName} ({s.examCount})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   className="saved-btn saved-btn--primary saved-btn--sm"
@@ -948,7 +992,17 @@ export function SavedTestsPage({
                                     </div>
 
                                     <div className="saved-exam-meta-row">
-                                      <span className="saved-exam-subject-tag" style={{ color: subMeta.color }}>
+                                      <span
+                                        className="saved-exam-subject-tag"
+                                        style={{ color: subMeta.color, cursor: 'pointer' }}
+                                        title={`Filter to ${testSub}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveSubjectView(testSub);
+                                          setActiveTopicFilter('all');
+                                          setSearchQuery('');
+                                        }}
+                                      >
                                         {testSub}
                                       </span>
 

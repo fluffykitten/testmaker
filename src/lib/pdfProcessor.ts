@@ -687,7 +687,7 @@ export async function runExtractionPipeline(
       smeMeta = smeSplit.meta;
       onStateChange({
         stage: 'extracting',
-        message: `Detected Save My Exams assessment pack (${smeMeta.topic || 'STEM'} • ${smeMeta.sections.length} difficulty tiers: ${smeMeta.sections.map((s: any) => s.name).join(', ')} • ${smeMeta.totalExpected ? `${smeMeta.totalExpected} questions` : 'MCQs'})…`,
+        message: `Detected Save My Exams ${smeMeta.packType === 'theory' ? 'Theory / Structured' : 'MCQ'} assessment pack (${smeMeta.topic || 'STEM'} • ${smeMeta.sections.length} difficulty tiers: ${smeMeta.sections.map((s: any) => s.name).join(', ')} • ${smeMeta.totalExpected ? `${smeMeta.totalExpected} questions` : ''}${smeMeta.totalMarks ? ` / ${smeMeta.totalMarks} marks` : ''})…`,
         progress: 25,
         result: null,
         error: null,
@@ -739,6 +739,7 @@ export async function runExtractionPipeline(
               extractResourceCatalog: idx === 0,
               isIgcse: options.isIgcse !== false,
               isSaveMyExams,
+              saveMyExamsPackType: chunk.packType || smeMeta?.packType || 'theory',
               targetSection: chunk.targetSection,
               topicHint: chunk.topicHint || smeMeta?.topic,
             }
@@ -1002,7 +1003,7 @@ export async function runExtractionPipeline(
               : (options.isIgcse !== false ? '0620' : 'CHEM'),
           year: new Date().getFullYear(),
           series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
-          paper_number: isSaveMyExams ? 'MCQ' : 1,
+          paper_number: isSaveMyExams ? (smeMeta?.packType === 'theory' ? 'Theory' : 'MCQ') : 1,
           has_insert_booklet: Boolean(insertFile),
         },
         questions: finalizedQuestions,
@@ -1030,6 +1031,7 @@ export async function runExtractionPipeline(
           hasInsertBooklet: Boolean(insertFile),
           isIgcse: options.isIgcse !== false,
           isSaveMyExams,
+          saveMyExamsPackType: chunks[0]?.packType || smeMeta?.packType || 'theory',
           targetSection: chunks[0]?.targetSection,
           topicHint: chunks[0]?.topicHint || smeMeta?.topic,
         }

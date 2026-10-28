@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
@@ -77,14 +77,23 @@ export function QuizManagerPage({
     return null;
   });
 
-  // Sync active subject view with teacher profile & isolation preference
+  const prevProfileIdRef = useRef<string | undefined>(activeProfile?.id);
+  const prevShowAllRef = useRef<boolean>(showAllSubjects);
+
+  // Sync active subject view ONLY when teacher profile or showAllSubjects setting actually changes
   useEffect(() => {
+    const profileChanged = prevProfileIdRef.current !== activeProfile?.id;
+    const showAllChanged = prevShowAllRef.current !== showAllSubjects;
+
+    prevProfileIdRef.current = activeProfile?.id;
+    prevShowAllRef.current = showAllSubjects;
+
     if (!showAllSubjects && activeProfile) {
-      setActiveSubjectView(activeProfile.subject);
-    } else if (showAllSubjects && activeSubjectView !== null) {
-      setActiveSubjectView('all');
+      if (profileChanged || showAllChanged) {
+        setActiveSubjectView(activeProfile.subject);
+      }
     }
-  }, [activeProfile, showAllSubjects, activeSubjectView]);
+  }, [activeProfile, showAllSubjects]);
 
   // Level 2 Controls
   const [searchQuery, setSearchQuery] = useState('');
@@ -254,9 +263,15 @@ export function QuizManagerPage({
   // ─── 3. Filtered Quizzes for Level 2 Drill-Down ─────────────────────────────
   const subjectFilteredQuizzes = useMemo(() => {
     if (!activeSubjectView || activeSubjectView === 'all') return quizzes;
-    return quizzes.filter(
-      (q) => (q.subject || 'General').toLowerCase() === activeSubjectView.toLowerCase()
-    );
+    const targetSub = activeSubjectView.toLowerCase().trim();
+    const targetMeta = getSubjectMetadata(activeSubjectView);
+
+    return quizzes.filter((q) => {
+      const quizSub = (q.subject || 'General').toLowerCase().trim();
+      if (quizSub === targetSub) return true;
+      const quizMeta = getSubjectMetadata(q.subject || 'General');
+      return targetMeta.id !== 'general' && quizMeta.id === targetMeta.id;
+    });
   }, [quizzes, activeSubjectView]);
 
   const finalFilteredQuizzes = useMemo(() => {
