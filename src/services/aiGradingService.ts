@@ -357,13 +357,66 @@ export function generateDeterministicStudentImprovementPlan(
   const weaknesses: string[] = [];
   const improvementSteps: string[] = [];
 
+  // Analyze MCQ vs Structured/Essay performance
+  const qResults = Array.isArray(submission.questionResults) ? submission.questionResults : [];
+  let mcqEarned = 0;
+  let mcqMax = 0;
+  let structEarned = 0;
+  let structMax = 0;
+  const weakStructuredNums: string[] = [];
+
+  qResults.forEach((qr: any, idx: number) => {
+    const qNum = qr.questionNumber || idx + 1;
+    const isStructured = Boolean(
+      (qr.subQuestionResults && qr.subQuestionResults.length > 0) ||
+        ((!qr.options || qr.options.length === 0) && qr.gradingMethod !== 'mcq')
+    );
+    const max = Number(qr.maxMarks) || 1;
+    const earned =
+      qr.subQuestionResults && qr.subQuestionResults.length > 0
+        ? Math.min(max, qr.subQuestionResults.reduce((s: number, sub: any) => s + (Number(sub.earnedMarks) || 0), 0))
+        : Number(qr.earnedMarks) || 0;
+
+    if (isStructured) {
+      structMax += max;
+      structEarned += earned;
+      if (earned < max * 0.5) {
+        weakStructuredNums.push(`Q${qNum}`);
+      }
+    } else {
+      mcqMax += max;
+      mcqEarned += earned;
+    }
+  });
+
+  if (mcqMax > 0) {
+    const mcqPct = Math.round((mcqEarned / mcqMax) * 100);
+    if (mcqPct >= 75) {
+      strengths.push(`High accuracy on Objective / Multiple-Choice questions (${mcqEarned}/${mcqMax} marks, ${mcqPct}%).`);
+    } else if (mcqPct < 55) {
+      weaknesses.push(`Multiple-choice concept recognition needs reinforcement (${mcqEarned}/${mcqMax} marks, ${mcqPct}%).`);
+    }
+  }
+
+  if (structMax > 0) {
+    const structPct = Math.round((structEarned / structMax) * 100);
+    if (structPct >= 75) {
+      strengths.push(`Strong written precision on Structured / Essay questions (${structEarned}/${structMax} marks, ${structPct}%).`);
+    } else if (structPct < 60) {
+      const qRef = weakStructuredNums.length > 0 ? ` (${weakStructuredNums.slice(0, 5).join(', ')})` : '';
+      weaknesses.push(`Structured / Essay responses require deeper mark-scheme terminology (${structEarned}/${structMax} marks, ${structPct}%${qRef}).`);
+      improvementSteps.push(`Practice writing full scientific explanations using exact mark-scheme keywords for structured questions${qRef}.`);
+    }
+  }
+
   if (submission.topicBreakdown) {
-    Object.entries(submission.topicBreakdown).forEach(([topic, data]: [string, any]) => {
+    Object.entries(submission.topicBreakdown).forEach(([rawTopic, data]: [string, any]) => {
+      const topic = rawTopic.replace(/\blonic\b/g, 'Ionic');
       if (data.percentage >= 75) {
-        strengths.push(`Strong mastery in ${topic} (${Math.round(data.percentage)}% score).`);
+        strengths.push(`Strong mastery in ${topic} (${data.earnedMarks}/${data.totalMarks} marks, ${Math.round(data.percentage)}%).`);
       } else if (data.percentage < 60) {
-        weaknesses.push(`Encountered difficulty in ${topic} (${data.earnedMarks}/${data.totalMarks} marks).`);
-        improvementSteps.push(`Review core definitions, formulas, and diagrams for ${topic}.`);
+        weaknesses.push(`Encountered difficulty in ${topic} (${data.earnedMarks}/${data.totalMarks} marks, ${Math.round(data.percentage)}%).`);
+        improvementSteps.push(`Review core definitions, chemical equations, and worked examples for ${topic}.`);
       }
     });
   }

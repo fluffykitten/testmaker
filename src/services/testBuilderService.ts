@@ -4,7 +4,7 @@
 
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
-import { inferTopicFromContent } from './questionBankService';
+import { inferTopicFromContent, normalizeQuestionRecord } from './questionBankService';
 
 export interface ExamHeaderConfig {
   title: string;
@@ -83,14 +83,83 @@ export function getLocalTests(): CustomTest[] {
   }
 }
 
+function compactTestOverrides(test: CustomTest): CustomTest {
+  if (!test.header_config?.questionOverrides) return test;
+  const compactedOverrides: Record<string, Question> = {};
+  for (const [qid, q] of Object.entries(test.header_config.questionOverrides)) {
+    if (!q) continue;
+    const copy: any = { ...q };
+    if (copy.svg_content && copy.diagram_url && String(copy.diagram_url).startsWith('data:image/svg')) {
+      delete copy.svg_content;
+    }
+    compactedOverrides[qid] = copy;
+  }
+  return {
+    ...test,
+    header_config: {
+      ...test.header_config,
+      questionOverrides: compactedOverrides,
+    },
+  };
+}
+
 function saveLocalTest(test: CustomTest) {
+  const existing = getLocalTests();
+  const otherTests = existing.filter((t) => t.id !== test.id);
   try {
-    const existing = getLocalTests();
-    const updated = [test, ...existing.filter((t) => t.id !== test.id)];
+    const updated = [test, ...otherTests];
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
   } catch (err) {
-    console.warn('Failed to save to localStorage:', err);
+    try {
+      // Fallback 1: compact redundant SVG strings in overrides across all stored tests
+      const compacted = [
+        compactTestOverrides(test),
+        ...otherTests.slice(0, 30).map((t, idx) => (idx < 10 ? compactTestOverrides(t) : { ...t, header_config: t.header_config ? { ...t.header_config, questionOverrides: undefined } : undefined })),
+      ];
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(compacted));
+    } catch (retryErr) {
+      console.warn('Failed to save to localStorage:', retryErr || err);
+    }
   }
+}
+
+async function saveCloudTestHeaderConfig(testId: string, headerConfig?: ExamHeaderConfig): Promise<void> {
+  if (!testId || !headerConfig) return;
+  try {
+    const compacted = compactTestOverrides({
+      id: testId,
+      title: headerConfig.title || '',
+      total_marks: 0,
+      question_ids: [],
+      created_at: '',
+      header_config: headerConfig,
+    }).header_config;
+    await (supabase.from('app_config' as any) as any).upsert(
+      {
+        key: `custom_test_header_${testId}`,
+        value: JSON.stringify(compacted),
+      },
+      { onConflict: 'key' }
+    );
+  } catch (err) {
+    console.warn('Could not sync test header_config to app_config:', err);
+  }
+}
+
+async function fetchCloudTestHeaderConfig(testId: string): Promise<ExamHeaderConfig | undefined> {
+  if (!testId) return undefined;
+  try {
+    const { data, error } = await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', `custom_test_header_${testId}`)
+      .maybeSingle();
+    if (!error && data?.value) {
+      return JSON.parse(data.value) as ExamHeaderConfig;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 function removeLocalTest(id: string) {
@@ -188,6 +257,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
     if (!error && data) {
       const saved = { ...(data as CustomTest), header_config: payload.headerConfig || (data as any).header_config };
       saveLocalTest(saved);
+      await saveCloudTestHeaderConfig(saved.id, payload.headerConfig);
       if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
       return saved;
     }
@@ -209,6 +279,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
       if (!retryError && retryData) {
         const saved = { ...(retryData as CustomTest), header_config: payload.headerConfig };
         saveLocalTest(saved);
+        await saveCloudTestHeaderConfig(saved.id, payload.headerConfig);
         if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
         return saved;
       }
@@ -219,6 +290,7 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
 
   // Fallback to local storage
   saveLocalTest(localRecord);
+  await saveCloudTestHeaderConfig(localRecord.id, payload.headerConfig);
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
   return localRecord;
 }
@@ -257,6 +329,7 @@ export async function updateCustomTest(
       if (!error && data) {
         const saved = { ...(data as CustomTest), header_config: payload.headerConfig || (data as any).header_config };
         saveLocalTest(saved);
+        await saveCloudTestHeaderConfig(saved.id, payload.headerConfig);
         clearCustomTestsCache();
         if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
         return saved;
@@ -276,6 +349,7 @@ export async function updateCustomTest(
         if (!retryError && retryData) {
           const saved = { ...(retryData as CustomTest), header_config: payload.headerConfig };
           saveLocalTest(saved);
+          await saveCloudTestHeaderConfig(saved.id, payload.headerConfig);
           clearCustomTestsCache();
           if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
           return saved;
@@ -287,6 +361,7 @@ export async function updateCustomTest(
   }
 
   saveLocalTest(updatedRecord);
+  await saveCloudTestHeaderConfig(updatedRecord.id, payload.headerConfig);
   clearCustomTestsCache();
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
   return updatedRecord;
@@ -372,10 +447,22 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
         if (!mergedMap.has(t.id)) {
           mergedMap.set(t.id, t);
         } else {
-          // Preserve local header_config if cloud record is missing it
+          // Preserve local header_config and questionOverrides if cloud record is missing them
           const existing = mergedMap.get(t.id)!;
           if (!existing.header_config && t.header_config) {
             mergedMap.set(t.id, { ...existing, header_config: t.header_config });
+          } else if (existing.header_config && t.header_config) {
+            mergedMap.set(t.id, {
+              ...existing,
+              header_config: {
+                ...existing.header_config,
+                ...t.header_config,
+                questionOverrides: {
+                  ...(existing.header_config.questionOverrides || {}),
+                  ...(t.header_config.questionOverrides || {}),
+                },
+              },
+            });
           }
         }
       });
@@ -589,6 +676,26 @@ export async function fetchCustomTestWithQuestions(
   }
 
   if (!test) return null;
+
+  // Recover cloud-synced header_config (including questionOverrides) if missing locally
+  if (!test.header_config || !test.header_config.questionOverrides) {
+    const cloudHeader = await fetchCloudTestHeaderConfig(testId);
+    if (cloudHeader) {
+      test = {
+        ...test,
+        header_config: {
+          ...cloudHeader,
+          ...(test.header_config || {}),
+          questionOverrides: {
+            ...(cloudHeader.questionOverrides || {}),
+            ...(test.header_config?.questionOverrides || {}),
+          },
+        },
+      };
+      saveLocalTest(test);
+    }
+  }
+
   const questionIds = test.question_ids || [];
 
   if (questionIds.length === 0) {
@@ -615,7 +722,10 @@ export async function fetchCustomTestWithQuestions(
 
     results.forEach(({ data: qData, error: qError }) => {
       if (!qError && qData && Array.isArray(qData)) {
-        (qData as Question[]).forEach((q) => questionsMap.set(q.id, q));
+        (qData as Question[]).forEach((q) => {
+          const normalized = normalizeQuestionRecord(q);
+          questionsMap.set(normalized.id, normalized);
+        });
       } else if (qError) {
         console.warn('Batch fetch test questions error:', qError.message);
       }
@@ -630,11 +740,11 @@ export async function fetchCustomTestWithQuestions(
   
   questionIds.forEach((qid) => {
     const override = overrides[qid];
+    const found = questionsMap.get(qid);
     if (override) {
-      orderedQuestions.push(override as Question);
-    } else {
-      const found = questionsMap.get(qid);
-      if (found) orderedQuestions.push(found);
+      orderedQuestions.push(normalizeQuestionRecord({ ...(found || {}), ...override }));
+    } else if (found) {
+      orderedQuestions.push(found);
     }
   });
 
@@ -670,6 +780,14 @@ export async function deleteCustomTest(testId: string): Promise<boolean> {
     } catch (err) {
       console.warn('Supabase delete custom_tests exception:', err);
     }
+  }
+
+  try {
+    await (supabase.from('app_config' as any) as any)
+      .delete()
+      .eq('key', `custom_test_header_${cleanId}`);
+  } catch {
+    // ignore
   }
 
   // 4. Also clean up any associated published interactive quiz (both local & cloud)

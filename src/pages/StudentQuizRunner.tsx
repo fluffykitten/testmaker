@@ -229,12 +229,34 @@ function getWordCount(text: string): { words: number; chars: number } {
   return { words, chars: trimmed.length };
 }
 
+function hasValidStudentResponse(val: string | number | undefined): boolean {
+  if (val === undefined || val === null) return false;
+  if (typeof val === 'number') return !isNaN(val);
+  const str = String(val).trim();
+  if (!str) return false;
+  if (str.startsWith('{') && str.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(str);
+      if (parsed && typeof parsed === 'object') {
+        return Object.values(parsed).some((v) => String(v ?? '').trim().length > 0);
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return true;
+}
+
 interface QuestionParts {
   passageText: string | null;
   promptText: string;
 }
 
-function splitPassageAndPrompt(text: string, options?: string[] | null): QuestionParts {
+function splitPassageAndPrompt(
+  text: string,
+  options?: string[] | null,
+  opts?: { allowParagraphHeuristic?: boolean }
+): QuestionParts {
   if (!text) return { passageText: null, promptText: '' };
   const clean = cleanQuestionStem(text, options);
 
@@ -243,8 +265,13 @@ function splitPassageAndPrompt(text: string, options?: string[] | null): Questio
     return { passageText: null, promptText: clean };
   }
 
-  // 1. Explicit Header Split (e.g. ### Text 1 / ### Passage / etc.)
-  const headerMatch = clean.match(/^([\s\S]*?(?:###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i);
+  // 1. Explicit Header Split (e.g. ### Text 1 / ### Passage / ### Wacana / ### Bacaan)
+  // For STEM/Chemistry exams (!allowParagraphHeuristic), only split if an explicit Reading Passage / Wacana header is used
+  const explicitHeaderRegex = opts?.allowParagraphHeuristic
+    ? /^([\s\S]*?(?:###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i
+    : /^([\s\S]*?(?:###\s*(?:Reading\s+Passage|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i;
+
+  const headerMatch = clean.match(explicitHeaderRegex);
   if (headerMatch && headerMatch[1] && headerMatch[2]) {
     return {
       passageText: headerMatch[1].trim(),
@@ -252,21 +279,25 @@ function splitPassageAndPrompt(text: string, options?: string[] | null): Questio
     };
   }
 
-  // 2. Paragraph Split for multi-paragraph questions (> 220 chars)
-  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  if (paragraphs.length >= 2) {
-    const lastP = paragraphs[paragraphs.length - 1];
-    const isPrompt =
-      lastP.includes('?') ||
-      /^(?:which|what|how|why|where|when|who|explain|calculate|state|describe|determine|identify|suggest|compare|evaluate|discuss|complete|select|choose|berdasarkan|mengapa|apakah|bagaimana|jelaskan|hitunglah|carilah)/i.test(lastP) ||
-      lastP.length < 200;
+  // 2. Paragraph Split Heuristic: ONLY enabled for language/reading comprehension exams without sub-questions.
+  // Never split multi-paragraph STEM/Chemistry stems (which contain equations, data tables, or experimental setups).
+  if (opts?.allowParagraphHeuristic) {
+    const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length >= 2) {
+      const lastP = paragraphs[paragraphs.length - 1];
+      const precedingText = paragraphs.slice(0, -1).join('\n\n');
+      const hasMathOrTable = precedingText.includes('$$') || /^\s*\|.*\|/m.test(precedingText);
+      const isPrompt =
+        lastP.includes('?') ||
+        /^(?:which|what|how|why|where|when|who|explain|state|describe|determine|identify|suggest|compare|evaluate|discuss|complete|select|choose|berdasarkan|mengapa|apakah|bagaimana|jelaskan)/i.test(lastP) ||
+        lastP.length < 200;
 
-    if (isPrompt) {
-      const passage = paragraphs.slice(0, -1).join('\n\n');
-      return {
-        passageText: passage,
-        promptText: lastP,
-      };
+      if (isPrompt && precedingText.length >= 220 && !hasMathOrTable) {
+        return {
+          passageText: precedingText,
+          promptText: lastP,
+        };
+      }
     }
   }
 
@@ -382,9 +413,9 @@ export function StudentQuizRunner({
   // Grading, Verification & AI Evaluation State
   const [isGrading, setIsGrading] = useState<boolean>(false);
   const [gradingProgressText, setGradingProgressText] = useState<string>('');
-  const [completedSubmission, setCompletedSubmission] = useState<StudentSubmission | null>(null);
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'offline_failed'>('idle');
-  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+  const [completedSubmission, setCompletedSubmission] = useState<StudentSubmission | null>(() => savedExam?.completedSubmission || null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'offline_failed'>(() => savedExam?.syncStatus || 'idle');
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(() => savedExam?.syncErrorMessage || null);
   const [hasCopiedToken, setHasCopiedToken] = useState<boolean>(false);
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
   const [resolvedQuizCode, setResolvedQuizCode] = useState<string>(() => (testIdOrCode || 'EXAM').toUpperCase());
@@ -509,14 +540,14 @@ export function StudentQuizRunner({
           totalItems++;
           const subKey = `${qIdx}_${sIdx}`;
           const val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
-          if (val !== undefined && String(val).trim().length > 0) {
+          if (hasValidStudentResponse(val)) {
             answeredItems++;
           }
         }
       } else {
         totalItems++;
         const val = answers[qIdx];
-        if (val !== undefined && String(val).trim().length > 0) {
+        if (hasValidStudentResponse(val)) {
           answeredItems++;
         }
       }
@@ -528,6 +559,26 @@ export function StudentQuizRunner({
       unansweredItems: Math.max(0, totalItems - answeredItems),
     };
   }, [questions, answers]);
+
+  const isQuestionAnswered = useCallback(
+    (qIdx: number): boolean => {
+      const q = questions[qIdx];
+      if (!q) return false;
+      const isMcq =
+        q.question_style === 'Multiple Choice' ||
+        q.question_style === 'Multiple Select' ||
+        Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
+      if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
+        return q.sub_questions.some((_, sIdx) => {
+          const subKey = `${qIdx}_${sIdx}`;
+          const val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          return hasValidStudentResponse(val);
+        });
+      }
+      return hasValidStudentResponse(answers[qIdx]);
+    },
+    [questions, answers]
+  );
 
   // ─── 1. Load Quiz by Code or ID ─────────────────────────────────────────────
   useEffect(() => {
@@ -1338,7 +1389,12 @@ export function StudentQuizRunner({
           let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
           const subResults: any[] = [];
 
-          if (q.sub_questions && q.sub_questions.length > 0) {
+          const isMcq =
+            q.question_style === 'Multiple Choice' ||
+            q.question_style === 'Multiple Select' ||
+            (q.options && q.options.length > 0 && q.question_style !== 'Structured');
+
+          if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
             for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
               const sq = q.sub_questions[sIdx];
@@ -1488,6 +1544,7 @@ export function StudentQuizRunner({
         setSyncErrorMessage(err?.message || 'Network error occurred during submission.');
         setIsSubmitted(true);
       } finally {
+        isSubmittingRef.current = false;
         setIsGrading(false);
       }
       return;
@@ -1694,9 +1751,34 @@ export function StudentQuizRunner({
       setSyncErrorMessage(err?.message || 'Grading evaluation error');
       setIsSubmitted(true);
     } finally {
+      isSubmittingRef.current = false;
       setIsGrading(false);
     }
-  }, [isSubmitted, isGrading, startTime, questions, answers, testIdOrCode, resolvedQuizCode, resolvedTestId, title, headerConfig, candidateName, candidateClass, candidateNumber, violations, sessionKey, studentPinInput]);
+  }, [
+    isSubmitted,
+    isGrading,
+    isExamMode,
+    startTime,
+    questions,
+    answers,
+    testIdOrCode,
+    resolvedQuizCode,
+    resolvedTestId,
+    resolvedPublishedId,
+    title,
+    headerConfig,
+    candidateName,
+    candidateClass,
+    candidateNumber,
+    violations,
+    sessionKey,
+    studentPinInput,
+    quizStats,
+    currentIndex,
+    timeLeft,
+    sessionHash,
+    buildExamForensics,
+  ]);
   submitExamRef.current = handleSubmitExam;
 
   const handleRetryCloudSync = useCallback(async () => {
@@ -1787,8 +1869,16 @@ export function StudentQuizRunner({
       // Teacher authorizes unlocking the exam session to resume answering
       setIsTeacherActionRunning(true);
       try {
+        isSubmittingRef.current = false;
         setIsSubmitted(false);
         setCompletedSubmission(null);
+        setSyncStatus('idle');
+        setSyncErrorMessage(null);
+        if (isExamMode && timeLeft <= 60) {
+          const graceSec = Math.max(timeLeft, 600);
+          setTimeLeft(graceSec);
+          setTargetEndTime(Date.now() + graceSec * 1000);
+        }
         setShowTeacherActionModal(false);
         setSecurityAlert('🔓 Exam unlocked by invigilator. Resuming examination session.');
         setTimeout(() => setSecurityAlert(null), 5000);
@@ -1816,6 +1906,8 @@ export function StudentQuizRunner({
     studentPinInput,
     candidateName,
     isTeacherActionRunning,
+    isExamMode,
+    timeLeft,
   ]);
 
   // Reactive auto-retry when student machine reconnects to internet
@@ -1833,7 +1925,7 @@ export function StudentQuizRunner({
 
   // Auto-persist exam state to localStorage (and sessionStorage fallback) across tab & browser reloads
   useEffect(() => {
-    if (hasStarted && !isSubmitted) {
+    if (hasStarted && (!isSubmitted || syncStatus === 'offline_failed')) {
       const payload = JSON.stringify({
         candidateName,
         candidateClass,
@@ -1848,6 +1940,9 @@ export function StudentQuizRunner({
         isExamMode,
         hasStarted,
         isSubmitted,
+        completedSubmission: syncStatus === 'offline_failed' ? completedSubmission : null,
+        syncStatus,
+        syncErrorMessage,
         timeLeft,
         securityEnabled,
         enableWatermark,
@@ -1886,6 +1981,9 @@ export function StudentQuizRunner({
     isExamMode,
     hasStarted,
     isSubmitted,
+    completedSubmission,
+    syncStatus,
+    syncErrorMessage,
     timeLeft,
     securityEnabled,
     enableWatermark,
@@ -1904,11 +2002,12 @@ export function StudentQuizRunner({
     if (!hasStarted || isSubmitted || isGrading) return;
     const identifier = studentPinInput || candidateName;
     if (!identifier || !resolvedQuizCode) return;
+    const effectiveDraftQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
 
     const performSync = () => {
       saveExamDraft({
         quizCode: resolvedQuizCode,
-        quizId: resolvedTestId,
+        quizId: effectiveDraftQuizId,
         studentName: candidateName,
         candidateNumber,
         candidateClass,
@@ -1936,7 +2035,9 @@ export function StudentQuizRunner({
     isSubmitted,
     isGrading,
     resolvedQuizCode,
+    resolvedPublishedId,
     resolvedTestId,
+    testIdOrCode,
     candidateName,
     candidateNumber,
     candidateClass,
@@ -2007,6 +2108,7 @@ export function StudentQuizRunner({
     if (!hasStarted || isSubmitted) return;
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isSubmittingRef.current || isGrading) return;
       e.preventDefault();
       e.returnValue = 'An assessment is currently in progress. Your answers remain saved locally, but your timer continues running.';
       return e.returnValue;
@@ -2031,7 +2133,7 @@ export function StudentQuizRunner({
         window.removeEventListener('beforeunload', handleBeforeUnload);
       };
     }
-  }, [hasStarted, isSubmitted]);
+  }, [hasStarted, isSubmitted, isGrading]);
 
   // Detect existing in-progress draft when candidate enters their info
   useEffect(() => {
@@ -2044,8 +2146,11 @@ export function StudentQuizRunner({
     }
 
     const timer = setTimeout(async () => {
-      const finalId = resolvedTestId || testIdOrCode || 'direct_quiz';
-      const draft = await fetchExamDraft(resolvedQuizCode, finalId, studentPinInput || candidateName);
+      const finalId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
+      let draft = await fetchExamDraft(resolvedQuizCode, finalId, studentPinInput || candidateName);
+      if (!draft && resolvedTestId && resolvedTestId !== finalId) {
+        draft = await fetchExamDraft(resolvedQuizCode, resolvedTestId, studentPinInput || candidateName);
+      }
       if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
         setDetectedDraft(draft);
       } else {
@@ -2054,11 +2159,13 @@ export function StudentQuizRunner({
     }, 600);
 
     return () => clearTimeout(timer);
-  }, [candidateName, studentPinInput, resolvedQuizCode, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
+  }, [candidateName, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleResumeDraft = async () => {
     if (!detectedDraft) return;
+    setLobbyError(null);
+    setStudentPinError(null);
 
     // Verify PIN before allowing candidate to resume a draft
     if (requireStudentPin) {
@@ -2084,6 +2191,28 @@ export function StudentQuizRunner({
       setIsCheckingAttempt(false);
     }
 
+    // Enforce Single Attempt policy before resuming draft
+    if (limitOneAttempt && resolvedQuizCode) {
+      setIsCheckingAttempt(true);
+      try {
+        const alreadySubmitted = await checkStudentAttemptSubmitted(
+          resolvedQuizCode,
+          candidateName,
+          candidateClass,
+          requireStudentPin ? studentPinInput.trim() : undefined
+        );
+        if (alreadySubmitted) {
+          setIsCheckingAttempt(false);
+          setDetectedDraft(null);
+          setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
+          return;
+        }
+      } catch (err) {
+        console.warn('Could not verify single attempt lock during draft resume:', err);
+      }
+      setIsCheckingAttempt(false);
+    }
+
     setAnswers(detectedDraft.answers || {});
     setCurrentIndex(detectedDraft.currentIndex || 0);
     if (detectedDraft.candidateClass) setCandidateClass(detectedDraft.candidateClass);
@@ -2097,7 +2226,11 @@ export function StudentQuizRunner({
       setLockTime(detectedDraft.lockTime || '');
     }
 
-    const remaining = Math.max(10, detectedDraft.timeLeftSeconds || examDurationSec);
+    const rawRemaining =
+      typeof detectedDraft.timeLeftSeconds === 'number' && detectedDraft.timeLeftSeconds > 0
+        ? detectedDraft.timeLeftSeconds
+        : examDurationSec;
+    const remaining = Math.max(60, rawRemaining);
     const now = Date.now();
     setStartTime(detectedDraft.startTime || now);
     setTargetEndTime(now + remaining * 1000);
@@ -2356,7 +2489,9 @@ export function StudentQuizRunner({
   }, [questions]);
 
   // Active Stimulus Passage detection for multi-question reading texts (e.g. Text 1 for Q1-Q4)
+  // Restricted to language exams so STEM/Chemistry questions never inherit reading passages across questions
   const activeStimulusPassage = useMemo(() => {
+    if (!isLanguageExam) return null;
     const currentQ = questions[currentIndex];
     if (!currentQ) return null;
     const currentText = currentQ.question_text || '';
@@ -2375,7 +2510,7 @@ export function StudentQuizRunner({
       }
     }
     return null;
-  }, [questions, currentIndex]);
+  }, [questions, currentIndex, isLanguageExam]);
 
   const handleScrollToQuestionStem = () => {
     if (questionTargetRef.current) {
@@ -2604,10 +2739,34 @@ export function StudentQuizRunner({
   const { passageText, promptText } = useMemo(() => {
     if (!currentQuestion) return { passageText: null, promptText: '' };
     const rawStem = currentTable ? currentTable.preTableText : currentQuestion.question_text || '';
-    return splitPassageAndPrompt(rawStem, currentQuestion.options);
-  }, [currentQuestion, currentTable]);
+    const hasSubQuestions = Boolean(currentQuestion.sub_questions && currentQuestion.sub_questions.length > 0);
+    return splitPassageAndPrompt(rawStem, currentQuestion.options, {
+      allowParagraphHeuristic: Boolean(isLanguageExam && !hasSubQuestions),
+    });
+  }, [currentQuestion, currentTable, isLanguageExam]);
 
   const activeReadingPassage = activeStimulusPassage || passageText;
+
+  const isCurrentMcq = Boolean(
+    currentQuestion &&
+      (currentQuestion.question_style === 'Multiple Choice' ||
+        currentQuestion.question_style === 'Multiple Select' ||
+        (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
+      currentQuestion.options &&
+      currentQuestion.options.length > 0
+  );
+
+  const hasCurrentSubQuestions = Boolean(
+    currentQuestion &&
+      currentQuestion.sub_questions &&
+      currentQuestion.sub_questions.length > 0 &&
+      !currentTable &&
+      !isCurrentMcq
+  );
+
+  const isCurrentInlineGap = Boolean(
+    !isCurrentMcq && !hasCurrentSubQuestions && !currentTable && hasInlineGaps(promptText)
+  );
 
   const currentTableSelections = useMemo(() => {
     const map: Record<string, string> = {};
@@ -2629,7 +2788,7 @@ export function StudentQuizRunner({
   }, [currentTable, answers, currentIndex]);
 
   const handleTableSelectCell = (rowLabel: string, colName: string) => {
-    if (isSubmitted || !currentTable) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0) || !currentTable) return;
     const nextMap = { ...currentTableSelections };
     if (nextMap[rowLabel] === colName) {
       delete nextMap[rowLabel];
@@ -4945,7 +5104,7 @@ export function StudentQuizRunner({
             {/* Question Stem & Interactive Target Area */}
             <div ref={questionTargetRef} className="sq-question-interactive-target">
               <div className="sq-q-stem">
-                {currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(promptText) ? (
+                {isCurrentInlineGap ? (
                   <InlineGapText
                     content={promptText}
                     values={(() => {
@@ -4959,6 +5118,7 @@ export function StudentQuizRunner({
                       return { 'gap_1': str, '1': str };
                     })()}
                     onGapChange={(gapId, val) => {
+                      if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
                       const raw = answers[currentIndex];
                       let currentMap: Record<string, string> = {};
                       if (typeof raw === 'string' && raw.startsWith('{')) {
@@ -4967,9 +5127,11 @@ export function StudentQuizRunner({
                         currentMap['gap_1'] = String(raw);
                       }
                       currentMap[gapId] = val;
+                      const nextSerialized = JSON.stringify(currentMap);
+                      recordAnswerChange(currentIndex, raw, nextSerialized);
                       setAnswers((prev) => ({
                         ...prev,
-                        [currentIndex]: JSON.stringify(currentMap),
+                        [currentIndex]: nextSerialized,
                       }));
                     }}
                   />
@@ -5123,6 +5285,7 @@ export function StudentQuizRunner({
                                 return { 'gap_1': str, '1': str };
                               })()}
                               onGapChange={(gapId, val) => {
+                                if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
                                 const raw = answers[subKey];
                                 let currentMap: Record<string, string> = {};
                                 if (typeof raw === 'string' && raw.startsWith('{')) {
@@ -5131,9 +5294,11 @@ export function StudentQuizRunner({
                                   currentMap['gap_1'] = String(raw);
                                 }
                                 currentMap[gapId] = val;
+                                const nextSerialized = JSON.stringify(currentMap);
+                                recordAnswerChange(currentIndex, raw, nextSerialized);
                                 setAnswers((prev) => ({
                                   ...prev,
-                                  [subKey]: JSON.stringify(currentMap),
+                                  [subKey]: nextSerialized,
                                 }));
                               }}
                             />
@@ -5353,7 +5518,7 @@ export function StudentQuizRunner({
                   </div>
                 )}
               </div>
-            ) : (currentQuestion?.question_style === 'Fill in the Blank' || hasInlineGaps(currentQuestion?.question_text || '')) ? null : (
+            ) : isCurrentInlineGap ? null : (
               /* 4. Structured Single Response Text Box */
               <div className="sq-structured-input-box">
                 <div className="sq-input-label-row">
@@ -5474,7 +5639,7 @@ export function StudentQuizRunner({
 
             <div className="sq-nav-matrix-grid">
               {questions.map((_, idx) => {
-                const isAnswered = answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`));
+                const isAnswered = isQuestionAnswered(idx);
                 const isCurrent = currentIndex === idx;
                 const isFlagged = flaggedIndices.has(idx);
 
@@ -6020,7 +6185,7 @@ export function StudentQuizRunner({
 
             <div className="sq-nav-matrix-grid" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
               {questions.map((_, idx) => {
-                const isAnswered = answers[idx] !== undefined || Object.keys(answers).some((k) => String(k).startsWith(`${idx}_`));
+                const isAnswered = isQuestionAnswered(idx);
                 const isCurrent = currentIndex === idx;
                 const isFlagged = flaggedIndices.has(idx);
 

@@ -3,9 +3,10 @@
 // 1. Overall Class Cohort Performance & Diagnostic Analysis Report
 // 2. Individual Candidate Performance, Sub-Question Script, & AI Marking Report
 
-import type { StudentSubmission } from './quizSubmissionService';
+import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissionService';
 import { formatProctorTimestamp, formatCandidateAnswer, formatSubmissionDateTime } from './quizSubmissionService';
 import { formatLatexForHtml } from './pdfExportService';
+import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { generateStudentImprovementPlan, generateDeterministicStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
 
 /**
@@ -229,14 +230,21 @@ export function exportClassQuizReportPdf(
   </style>
 </head>
 <body>
-  <div class="report-header">
-    <div class="report-title-box">
-      <h1>📊 Class Assessment Summary Report</h1>
-      <div class="report-subtitle">${quiz.title} • ${quiz.subject || 'General'} ${selectedClass !== 'all' ? `• Class Section: ${selectedClass}` : ''}</div>
+  <div class="report-header" style="align-items: center;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <img src="${DEFAULT_SCHOOL_LOGO}" alt="ICM Logo" style="height: 38px; max-width: 160px; object-fit: contain; display: block;" />
+      <div style="width: 1px; height: 32px; background: #cbd5e1;"></div>
+      <div class="report-title-box">
+        <h1>📊 Class Assessment Summary Report</h1>
+        <div class="report-subtitle">${quiz.title} • ${quiz.subject || 'General'} ${selectedClass !== 'all' ? `• Class Section: ${selectedClass}` : ''}</div>
+      </div>
     </div>
-    <div class="report-badge-box">
-      <div class="report-code-badge">CODE: ${quiz.quizCode}</div>
-      <div class="report-date">Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <img src="${DEFAULT_CAMBRIDGE_LOGO}" alt="Cambridge International School" style="height: 34px; max-width: 180px; object-fit: contain; display: block;" />
+      <div class="report-badge-box">
+        <div class="report-code-badge">CODE: ${quiz.quizCode}</div>
+        <div class="report-date">Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+      </div>
     </div>
   </div>
 
@@ -337,6 +345,174 @@ export interface ReportCardOptions {
   showMarkScheme?: boolean;
 }
 
+function normalizeTopicName(rawTopic?: string): string {
+  if (!rawTopic) return 'General';
+  return rawTopic.trim().replace(/\blonic\b/g, 'Ionic');
+}
+
+function truncateReportText(raw: string, maxLen: number): string {
+  const clean = raw.replace(/\s+/g, ' ').trim();
+  if (clean.length <= maxLen) return clean;
+  return clean.slice(0, maxLen - 1).trimEnd() + '…';
+}
+
+function extractConciseExpectedFromFeedback(feedback?: string): string {
+  if (!feedback) return '';
+  const clean = feedback.trim();
+  const expectedMatch = clean.match(/(?:Expected|Correct answer|Model answer|Key)\s*:\s*([\s\S]+)$/i);
+  if (expectedMatch && expectedMatch[1]) {
+    return expectedMatch[1].trim();
+  }
+  if (/^Marked by teacher|^Awaiting examiner|^No answer provided|^Saved for manual/i.test(clean)) {
+    return '';
+  }
+  return clean;
+}
+
+/**
+ * Formats a question's student answer and mark scheme for the 1-page report card table,
+ * properly handling multi-part essay/structured questions (subQuestionResults and rawAnswers).
+ */
+function formatReportCardQuestionRow(
+  qr: QuestionSubmissionResult,
+  qIdx: number,
+  submission: StudentSubmission
+): {
+  studentAnswerHtml: string;
+  markSchemeHtml: string;
+  earnedMarks: number;
+  maxMarks: number;
+  statusType: 'full' | 'partial' | 'zero';
+} {
+  const maxMarks = Number(qr.maxMarks) || 1;
+  const rawAnswers = submission.rawAnswers || {};
+  const hasSubResults = Boolean(qr.subQuestionResults && qr.subQuestionResults.length > 0);
+
+  // Check if rawAnswers has sub-question keys like "20_0", "20_1" when subQuestionResults is absent
+  const rawSubEntries: Array<{ sIdx: number; val: any }> = [];
+  if (!hasSubResults) {
+    Object.keys(rawAnswers).forEach((k) => {
+      const m = k.match(new RegExp(`^${qIdx}_(\\d+)$`));
+      if (m) {
+        rawSubEntries.push({ sIdx: parseInt(m[1], 10), val: rawAnswers[k] });
+      }
+    });
+    rawSubEntries.sort((a, b) => a.sIdx - b.sIdx);
+  }
+
+  // Case 1: Multi-part structured / essay question with subQuestionResults
+  if (hasSubResults && qr.subQuestionResults) {
+    const subAnswerLines: string[] = [];
+    const subSchemeLines: string[] = [];
+    let sumSubEarned = 0;
+
+    qr.subQuestionResults.forEach((sub, sIdx) => {
+      const cleanId = String(sub.subId || String.fromCharCode(97 + sIdx)).replace(/^\(+|\)+$/g, '');
+      const subMax = Number(sub.maxMarks) || 1;
+      const subEarned = Math.max(0, Math.min(subMax, Number(sub.earnedMarks) || 0));
+      sumSubEarned += subEarned;
+
+      const rawAns =
+        sub.studentAnswer !== undefined && String(sub.studentAnswer).trim() !== '' && String(sub.studentAnswer).trim() !== '(blank)'
+          ? sub.studentAnswer
+          : rawAnswers[`${qIdx}_${sIdx}`];
+
+      const hasAns = rawAns !== undefined && rawAns !== null && String(rawAns).trim() !== '' && String(rawAns).trim() !== '(blank)';
+      const ansText = hasAns
+        ? formatLatexForHtml(truncateReportText(formatCandidateAnswer(rawAns), 44))
+        : '<span class="sub-blank">—</span>';
+
+      const ptColor = subEarned >= subMax ? '#15803d' : subEarned > 0 ? '#b45309' : '#dc2626';
+      subAnswerLines.push(
+        `<div class="sub-line"><span class="sub-part-id">(${cleanId})</span> <span class="sub-ans-txt">${ansText}</span> <span class="sub-pt-pill" style="color:${ptColor};">[${subEarned}/${subMax}]</span></div>`
+      );
+
+      const expectedFromFb = extractConciseExpectedFromFeedback(sub.feedback);
+      if (expectedFromFb) {
+        subSchemeLines.push(
+          `<div class="sub-line"><span class="sub-part-id">(${cleanId})</span> <span>${formatLatexForHtml(truncateReportText(expectedFromFb, 48))}</span></div>`
+        );
+      }
+    });
+
+    const earnedMarks = Math.min(maxMarks, sumSubEarned);
+    const statusType: 'full' | 'partial' | 'zero' =
+      earnedMarks >= maxMarks ? 'full' : earnedMarks > 0 ? 'partial' : 'zero';
+
+    let markSchemeHtml = '';
+    if (subSchemeLines.length > 0) {
+      markSchemeHtml = subSchemeLines.join('');
+    } else if (qr.correctAnswer && qr.correctAnswer !== 'See marking criteria') {
+      markSchemeHtml = `<div class="ms-multi-txt">${formatLatexForHtml(truncateReportText(String(qr.correctAnswer), 95))}</div>`;
+    } else {
+      markSchemeHtml = '<span style="color:#64748b;font-style:italic;">Per-part rubric criteria</span>';
+    }
+
+    return {
+      studentAnswerHtml: subAnswerLines.join(''),
+      markSchemeHtml,
+      earnedMarks,
+      maxMarks,
+      statusType,
+    };
+  }
+
+  // Case 2: Multi-part answers present in rawAnswers even if subQuestionResults was not populated
+  if (rawSubEntries.length > 0) {
+    const subAnswerLines = rawSubEntries.map(({ sIdx, val }) => {
+      const cleanId = String.fromCharCode(97 + sIdx);
+      const hasAns = val !== undefined && val !== null && String(val).trim() !== '';
+      const ansText = hasAns
+        ? formatLatexForHtml(truncateReportText(formatCandidateAnswer(val), 44))
+        : '<span class="sub-blank">—</span>';
+      return `<div class="sub-line"><span class="sub-part-id">(${cleanId})</span> <span class="sub-ans-txt">${ansText}</span></div>`;
+    });
+    const earnedMarks = Math.max(0, Math.min(maxMarks, Number(qr.earnedMarks) || 0));
+    const statusType: 'full' | 'partial' | 'zero' =
+      earnedMarks >= maxMarks ? 'full' : earnedMarks > 0 ? 'partial' : 'zero';
+    const cAns =
+      qr.correctAnswer && qr.correctAnswer !== 'See marking criteria'
+        ? formatLatexForHtml(truncateReportText(String(qr.correctAnswer), 85))
+        : '<span style="color:#64748b;font-style:italic;">Per-part rubric criteria</span>';
+    return {
+      studentAnswerHtml: subAnswerLines.join(''),
+      markSchemeHtml: cAns,
+      earnedMarks,
+      maxMarks,
+      statusType,
+    };
+  }
+
+  // Case 3: Standalone Question (MCQ, Multiple-Select, Matching Table, or Single Structured)
+  const rawStandalone =
+    qr.studentAnswer !== undefined && String(qr.studentAnswer).trim() !== ''
+      ? qr.studentAnswer
+      : rawAnswers[qIdx];
+  const isMcq = Boolean((qr.options && qr.options.length > 0) || qr.gradingMethod === 'mcq');
+  const earnedMarks = Math.max(0, Math.min(maxMarks, Number(qr.earnedMarks) || 0));
+  const statusType: 'full' | 'partial' | 'zero' =
+    earnedMarks >= maxMarks ? 'full' : earnedMarks > 0 ? 'partial' : 'zero';
+
+  const formattedStudent = isMcq
+    ? formatCandidateAnswer(rawStandalone, qr.options, qr.gradingMethod, true)
+    : formatLatexForHtml(truncateReportText(formatCandidateAnswer(rawStandalone, qr.options, qr.gradingMethod, false), 65));
+
+  const rawCorrect = qr.correctAnswer || (statusType === 'full' ? rawStandalone : undefined);
+  const formattedCorrect = isMcq
+    ? formatCandidateAnswer(rawCorrect, qr.options, qr.gradingMethod, true)
+    : formatLatexForHtml(truncateReportText(formatCandidateAnswer(rawCorrect, qr.options, qr.gradingMethod, false), 65));
+
+  const ansColor = statusType === 'full' ? '#15803d' : statusType === 'partial' ? '#b45309' : '#dc2626';
+
+  return {
+    studentAnswerHtml: `<span style="font-weight: 600; color: ${ansColor};">${formattedStudent}</span>`,
+    markSchemeHtml: `<span>${formattedCorrect}</span>`,
+    earnedMarks,
+    maxMarks,
+    statusType,
+  };
+}
+
 /**
  * Helper to return shared CSS styles for 1-page student performance and improvement reports.
  */
@@ -344,7 +520,7 @@ function getReportCardStyles(): string {
   return `<style>
     @page {
       size: A4 portrait;
-      margin: 7mm 8mm 7mm 8mm;
+      margin: 6.5mm 7.5mm 6.5mm 7.5mm;
     }
     *, *::before, *::after {
       box-sizing: border-box;
@@ -357,8 +533,8 @@ function getReportCardStyles(): string {
       background: #ffffff;
       margin: 0;
       padding: 0;
-      font-size: 7.8pt;
-      line-height: 1.32;
+      font-size: 7.5pt;
+      line-height: 1.3;
     }
     .student-page {
       page-break-after: always;
@@ -371,135 +547,255 @@ function getReportCardStyles(): string {
       page-break-after: avoid;
       break-after: avoid;
     }
+    /* Institutional Dual-Logo Header Banner */
     .header-card {
-      border: 1.5px solid #0f172a;
+      border: 1.5px solid #1e293b;
+      border-top: 3.5px solid #24448C;
       border-radius: 6px;
-      padding: 6px 12px;
-      margin-bottom: 6px;
-      background: #f8fafc;
+      padding: 6px 10px;
+      margin-bottom: 5px;
+      background: #ffffff;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 10px;
+    }
+    .header-left-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .header-logo-icm {
+      height: 34px;
+      max-width: 145px;
+      object-fit: contain;
+      display: block;
+      flex-shrink: 0;
+    }
+    .header-divider {
+      width: 1px;
+      height: 28px;
+      background: #cbd5e1;
+      flex-shrink: 0;
     }
     .header-title-box h1 {
-      font-size: 11.5pt;
-      font-weight: 800;
-      color: #0f172a;
-      margin: 0 0 2px 0;
+      font-size: 10pt;
+      font-weight: 900;
+      color: #1b3570;
+      margin: 0 0 1px 0;
       text-transform: uppercase;
       letter-spacing: 0.3px;
     }
     .header-sub {
-      font-size: 7.8pt;
+      font-size: 7.4pt;
       color: #475569;
-      font-weight: 600;
+      font-weight: 700;
+    }
+    .header-right-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .header-logo-cambridge {
+      height: 30px;
+      max-width: 165px;
+      object-fit: contain;
+      display: block;
     }
     .score-grade-wrap {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 3px 7px;
     }
     .score-box {
       text-align: right;
     }
     .score-val {
-      font-size: 14pt;
-      font-weight: 800;
+      font-size: 12.5pt;
+      font-weight: 900;
       color: #0f172a;
       line-height: 1;
     }
     .score-lbl {
-      font-size: 6.8pt;
+      font-size: 6.2pt;
       color: #64748b;
-      font-weight: 700;
+      font-weight: 800;
       text-transform: uppercase;
       margin-top: 2px;
     }
     .grade-badge {
       color: #ffffff;
-      font-size: 15pt;
-      font-weight: 800;
-      padding: 4px 12px;
-      border-radius: 6px;
+      font-size: 13.5pt;
+      font-weight: 900;
+      padding: 4px 10px;
+      border-radius: 5px;
       line-height: 1;
     }
     .meta-bar {
       display: grid;
-      grid-template-columns: 2fr 1fr 1fr 1.3fr 1fr;
+      grid-template-columns: 2.1fr 1fr 0.9fr 1.25fr 0.95fr;
       gap: 6px;
       background: #f1f5f9;
       border: 1px solid #cbd5e1;
       border-radius: 4px;
-      padding: 4px 8px;
-      margin-bottom: 6px;
-      font-size: 7.2pt;
+      padding: 3.5px 8px;
+      margin-bottom: 5px;
+      font-size: 7pt;
     }
     .meta-item strong {
       display: block;
       color: #0f172a;
-      font-size: 7.8pt;
+      font-size: 7.5pt;
     }
     .meta-item span {
       color: #64748b;
+      font-weight: 600;
     }
     .main-grid {
       display: grid;
-      grid-template-columns: 1.12fr 0.88fr;
+      grid-template-columns: 1.18fr 0.82fr;
       gap: 6px;
+      align-items: start;
     }
     .panel {
       border: 1px solid #cbd5e1;
       border-radius: 5px;
-      padding: 5px 7px;
+      padding: 4.5px 6.5px;
       background: #ffffff;
     }
     .panel-heading {
-      font-size: 7.8pt;
+      font-size: 7.4pt;
       font-weight: 800;
-      color: #1e293b;
+      color: #1b3570;
       text-transform: uppercase;
       letter-spacing: 0.3px;
       margin: 0 0 4px 0;
-      padding-bottom: 3px;
-      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 2.5px;
+      border-bottom: 1.5px solid #e2e8f0;
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 4px;
     }
     .table-compact {
       width: 100%;
       border-collapse: collapse;
-      font-size: 7pt;
+      font-size: 6.6pt;
     }
     .table-compact th {
-      background: #f8fafc;
+      background: #f1f5f9;
       border: 1px solid #cbd5e1;
       padding: 2px 3px;
       text-align: left;
-      font-weight: 700;
-      color: #334155;
+      font-weight: 800;
+      color: #1e293b;
     }
     .table-compact td {
       border: 1px solid #e2e8f0;
-      padding: 1.8px 3px;
+      padding: 1.6px 3px;
+      vertical-align: top;
+    }
+    .sub-line {
+      line-height: 1.22;
+      margin-bottom: 1px;
+    }
+    .sub-line:last-child {
+      margin-bottom: 0;
+    }
+    .sub-part-id {
+      font-weight: 800;
+      color: #1e293b;
+    }
+    .sub-ans-txt {
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .sub-blank {
+      color: #94a3b8;
+      font-style: italic;
+    }
+    .sub-pt-pill {
+      font-size: 6pt;
+      font-weight: 800;
+      margin-left: 2px;
+    }
+    .ms-multi-txt {
+      font-size: 6.3pt;
+      line-height: 1.2;
+      color: #334155;
     }
     .status-correct {
-      color: #16a34a;
+      color: #15803d;
+      font-weight: 800;
+    }
+    .status-partial {
+      color: #b45309;
       font-weight: 800;
     }
     .status-incorrect {
       color: #dc2626;
       font-weight: 800;
     }
-    .topic-pill {
-      display: inline-flex;
-      align-items: center;
-      background: #f1f5f9;
-      border: 1px solid #e2e8f0;
+    /* Component Score Breakdown Strip */
+    .comp-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+      margin-bottom: 5px;
+    }
+    .comp-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
       border-radius: 4px;
-      padding: 1px 4px;
-      margin: 1px 2px 1px 0;
-      font-size: 6.8pt;
+      padding: 3.5px 6px;
+    }
+    .comp-card-lbl {
+      font-size: 6.2pt;
+      font-weight: 800;
+      text-transform: uppercase;
+      color: #64748b;
+      display: block;
+    }
+    .comp-card-val {
+      font-size: 8.5pt;
+      font-weight: 900;
+      color: #0f172a;
+    }
+    /* Topic Mastery Bars */
+    .topic-bar-item {
+      margin-bottom: 4px;
+    }
+    .topic-bar-item:last-child {
+      margin-bottom: 0;
+    }
+    .topic-bar-top {
+      display: flex;
+      justify-content: space-between;
+      font-size: 6.7pt;
+      margin-bottom: 1.5px;
+    }
+    .topic-bar-name {
+      font-weight: 700;
+      color: #1e293b;
+    }
+    .topic-bar-score {
+      font-weight: 800;
+    }
+    .topic-bar-track {
+      height: 5px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .topic-bar-fill {
+      height: 100%;
+      border-radius: 999px;
     }
     .plan-card {
       background: #ffffff;
@@ -507,6 +803,10 @@ function getReportCardStyles(): string {
       border-radius: 4px;
       padding: 4px 6px;
       margin-bottom: 4px;
+    }
+    .plan-card--summary {
+      border-left: 3px solid #24448C;
+      background: #f8fafc;
     }
     .plan-card--strengths {
       border-left: 3px solid #16a34a;
@@ -518,7 +818,7 @@ function getReportCardStyles(): string {
       border-left: 3px solid #2563eb;
     }
     .plan-card-title {
-      font-size: 7.2pt;
+      font-size: 7pt;
       font-weight: 800;
       text-transform: uppercase;
       margin: 0 0 2px 0;
@@ -529,49 +829,11 @@ function getReportCardStyles(): string {
     .plan-list {
       margin: 0;
       padding-left: 12px;
-      font-size: 6.9pt;
-      line-height: 1.28;
+      font-size: 6.7pt;
+      line-height: 1.26;
     }
     .plan-list li {
-      margin-bottom: 1px;
-    }
-    .encouragement-box {
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      border-left: 3px solid #7c3aed;
-      border-radius: 4px;
-      padding: 4px 6px;
-      font-size: 7pt;
-      color: #1e293b;
-      line-height: 1.28;
-      margin-bottom: 4px;
-    }
-    .encouragement-title {
-      font-weight: 800;
-      font-size: 7.2pt;
-      color: #701a75;
-      text-transform: uppercase;
-      margin-bottom: 2px;
-      display: flex;
-      align-items: center;
-      gap: 3px;
-    }
-    .mentor-note {
-      font-size: 6.8pt;
-      color: #475569;
-      font-style: italic;
-      margin-top: 2px;
-      padding-top: 2px;
-      border-top: 1px dashed #cbd5e1;
-    }
-    .sign-bar {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 4px;
-      padding-top: 3px;
-      border-top: 1px solid #cbd5e1;
-      font-size: 6.8pt;
-      color: #64748b;
+      margin-bottom: 1.5px;
     }
     /* Dynamic Mark Scheme Visibility */
     body.hide-mark-scheme .col-ms,
@@ -582,19 +844,19 @@ function getReportCardStyles(): string {
     body.hide-mark-scheme .table-compact td.col-qnum,
     .student-page.hide-mark-scheme .table-compact th.col-qnum,
     .student-page.hide-mark-scheme .table-compact td.col-qnum {
-      width: 10% !important;
+      width: 9% !important;
     }
     body.hide-mark-scheme .table-compact th.col-topic,
     body.hide-mark-scheme .table-compact td.col-topic,
     .student-page.hide-mark-scheme .table-compact th.col-topic,
     .student-page.hide-mark-scheme .table-compact td.col-topic {
-      width: 44% !important;
+      width: 34% !important;
     }
     body.hide-mark-scheme .table-compact th.col-answer,
     body.hide-mark-scheme .table-compact td.col-answer,
     .student-page.hide-mark-scheme .table-compact th.col-answer,
     .student-page.hide-mark-scheme .table-compact td.col-answer {
-      width: 32% !important;
+      width: 43% !important;
     }
     body.hide-mark-scheme .table-compact th.col-result,
     body.hide-mark-scheme .table-compact td.col-result,
@@ -625,7 +887,7 @@ function getReportCardStyles(): string {
         background: #ffffff;
         max-width: 210mm;
         margin: 0 auto 20px auto;
-        padding: 8mm;
+        padding: 7mm;
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
         border-radius: 6px;
       }
@@ -662,36 +924,91 @@ export function renderSingleStudentFeedbackReportHtml(
 ): string {
   const showMarkScheme = options?.showMarkScheme !== false;
   const { grade, color } = deriveGrade(submission.percentage);
+  const results = submission.questionResults || [];
 
-  const topicMastery: Array<{ topic: string; earned: number; total: number; pct: number }> = [];
-  if (submission.topicBreakdown) {
-    Object.entries(submission.topicBreakdown).forEach(([topic, d]) => {
-      topicMastery.push({ topic, earned: d.earnedMarks, total: d.totalMarks, pct: Math.round(d.percentage) });
+  // Normalize and merge topic breakdown (fixes OCR "lonic" vs "Ionic" duplicates)
+  const mergedTopics = new Map<string, { topic: string; earned: number; total: number }>();
+  if (results.length > 0) {
+    results.forEach((qr, idx) => {
+      const cleanTop = normalizeTopicName(qr.topic);
+      const key = cleanTop.toLowerCase();
+      const rowInfo = formatReportCardQuestionRow(qr, idx, submission);
+      const existing = mergedTopics.get(key) || { topic: cleanTop, earned: 0, total: 0 };
+      existing.earned += rowInfo.earnedMarks;
+      existing.total += rowInfo.maxMarks;
+      mergedTopics.set(key, existing);
+    });
+  } else if (submission.topicBreakdown) {
+    Object.entries(submission.topicBreakdown).forEach(([rawTop, d]) => {
+      const cleanTop = normalizeTopicName(rawTop);
+      const key = cleanTop.toLowerCase();
+      const existing = mergedTopics.get(key) || { topic: cleanTop, earned: 0, total: 0 };
+      existing.earned += d.earnedMarks;
+      existing.total += d.totalMarks;
+      mergedTopics.set(key, existing);
     });
   }
 
-  const results = submission.questionResults || [];
+  const topicMastery = Array.from(mergedTopics.values())
+    .map((t) => ({
+      ...t,
+      pct: t.total > 0 ? Math.round((t.earned / t.total) * 100) : 0,
+    }))
+    .sort((a, b) => b.pct - a.pct);
+
+  // Calculate MCQ vs Structured/Essay component scores
+  let mcqEarned = 0;
+  let mcqMax = 0;
+  let structEarned = 0;
+  let structMax = 0;
+
+  const formattedRows = results.map((qr, idx) => {
+    const rowData = formatReportCardQuestionRow(qr, idx, submission);
+    const isStructured = Boolean(
+      (qr.subQuestionResults && qr.subQuestionResults.length > 0) ||
+        ((!qr.options || qr.options.length === 0) && qr.gradingMethod !== 'mcq')
+    );
+    if (isStructured) {
+      structEarned += rowData.earnedMarks;
+      structMax += rowData.maxMarks;
+    } else {
+      mcqEarned += rowData.earnedMarks;
+      mcqMax += rowData.maxMarks;
+    }
+    return { qr, idx, rowData, isStructured };
+  });
+
+  const mcqPct = mcqMax > 0 ? Math.round((mcqEarned / mcqMax) * 100) : null;
+  const structPct = structMax > 0 ? Math.round((structEarned / structMax) * 100) : null;
 
   return `
   <div class="student-page ${showMarkScheme ? '' : 'hide-mark-scheme'}">
-    <!-- Header Card -->
+    <!-- Official Dual-Logo Header Banner (ICM Left • Report Title • Cambridge + Grade Right) -->
     <div class="header-card">
-      <div class="header-title-box">
-        <h1>🎓 Student Performance & Improvement Report</h1>
-        <div class="header-sub">
-          ${submission.quizTitle} • ${submission.subject || 'General Assessment'}
+      <div class="header-left-brand">
+        <img src="${DEFAULT_SCHOOL_LOGO}" alt="ICM School Logo" class="header-logo-icm" />
+        <div class="header-divider"></div>
+        <div class="header-title-box">
+          <h1>Student Performance & Diagnostic Report</h1>
+          <div class="header-sub">
+            ${submission.quizTitle} • ${submission.subject || 'Chemistry'}
+          </div>
         </div>
       </div>
-      <div class="score-grade-wrap">
-        <div class="score-box">
-          <div class="score-val">${submission.score} / ${submission.totalMarks}</div>
-          <div class="score-lbl">Total Score (${Math.round(submission.percentage)}%)</div>
+
+      <div class="header-right-brand">
+        <img src="${DEFAULT_CAMBRIDGE_LOGO}" alt="Cambridge International School" class="header-logo-cambridge" />
+        <div class="score-grade-wrap">
+          <div class="score-box">
+            <div class="score-val">${submission.score} / ${submission.totalMarks}</div>
+            <div class="score-lbl">Score (${Math.round(submission.percentage)}%)</div>
+          </div>
+          <div class="grade-badge" style="background: ${color};">${grade}</div>
         </div>
-        <div class="grade-badge" style="background: ${color};">${grade}</div>
       </div>
     </div>
 
-    <!-- Candidate Metadata -->
+    <!-- Candidate Metadata Bar -->
     <div class="meta-bar">
       <div class="meta-item">
         <span>Candidate Name:</span>
@@ -706,71 +1023,54 @@ export function renderSingleStudentFeedbackReportHtml(
         <strong style="font-family: monospace;">${submission.candidateNumber || '-'}</strong>
       </div>
       <div class="meta-item">
-        <span>Total Marks:</span>
+        <span>Total Marks Awarded:</span>
         <strong>${submission.score} / ${submission.totalMarks} (${Math.round(submission.percentage)}%)</strong>
       </div>
       <div class="meta-item">
-        <span>Date:</span>
+        <span>Examination Date:</span>
         <strong>${formatSubmissionDateTime(submission.submittedAt).split(',')[0]}</strong>
       </div>
     </div>
 
-    <!-- 2-Column Split: Left = Answer Matrix & Topics, Right = Improvement Plan & Encouragement -->
+    <!-- 2-Column Split: Left = Detailed Question & Sub-Question Matrix, Right = Topic Mastery + Diagnostic Plan -->
     <div class="main-grid">
-      <!-- Left Column: Student Answers & Topic Breakdown -->
+      <!-- Left Column: Full Question & Essay Sub-Part Responses -->
       <div>
-        <!-- Topic Mastery Strip -->
-        ${topicMastery.length > 0 ? `
-        <div class="panel" style="margin-bottom: 5px;">
-          <div class="panel-heading">🎯 Topic Mastery Summary</div>
-          <div>
-            ${topicMastery.map((tm) => `
-              <div class="topic-pill">
-                <span>${tm.topic}:</span>
-                <strong style="margin-left: 3px; color: ${tm.pct >= 75 ? '#16a34a' : tm.pct >= 50 ? '#2563eb' : '#dc2626'};">${tm.earned}/${tm.total} (${tm.pct}%)</strong>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-        ` : ''}
-
-        <!-- Detailed Question Matrix -->
         <div class="panel">
           <div class="panel-heading">
-            <span class="ms-heading-with-key">📝 Student Responses & Mark Scheme Key</span>
-            <span class="ms-heading-no-key" style="display: ${showMarkScheme ? 'none' : 'inline'};">📝 Student Responses Summary</span>
+            <span class="ms-heading-with-key">📝 Candidate Responses & Mark Scheme Key</span>
+            <span class="ms-heading-no-key" style="display: ${showMarkScheme ? 'none' : 'inline'};">📝 Candidate Responses Summary</span>
+            <span style="font-size: 6.4pt; color: #64748b; font-weight: 700; text-transform: none;">
+              ✓ Full • ◐ Partial • ✗ 0 Marks
+            </span>
           </div>
           <table class="table-compact">
             <thead>
               <tr>
-                <th class="col-qnum" style="width: 8%; text-align: center;">Q#</th>
-                <th class="col-topic" style="width: 30%;">Topic</th>
-                <th class="col-answer" style="width: 26%; text-align: center;">Your Answer</th>
-                <th class="col-ms" style="width: 24%; text-align: center;">Mark Scheme</th>
-                <th class="col-result" style="width: 12%; text-align: center;">Result</th>
+                <th class="col-qnum" style="width: 7%; text-align: center;">Q#</th>
+                <th class="col-topic" style="width: 24%;">Topic</th>
+                <th class="col-answer" style="width: 32%;">Candidate Answer</th>
+                <th class="col-ms" style="width: 26%;">Mark Scheme / Key</th>
+                <th class="col-result" style="width: 11%; text-align: center;">Marks</th>
               </tr>
             </thead>
             <tbody>
-              ${results.map((qr, idx) => {
+              ${formattedRows.map(({ qr, idx, rowData }) => {
     const qNum = qr.questionNumber || idx + 1;
-    const isCorrect = qr.isCorrect;
-    const sAns = formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, true);
-    const cAns = formatCandidateAnswer(
-      qr.correctAnswer || (isCorrect ? qr.studentAnswer : undefined),
-      qr.options,
-      qr.gradingMethod,
-      true
-    );
+    const { studentAnswerHtml, markSchemeHtml, earnedMarks, maxMarks, statusType } = rowData;
+    const statusClass =
+      statusType === 'full' ? 'status-correct' : statusType === 'partial' ? 'status-partial' : 'status-incorrect';
+    const statusSymbol = statusType === 'full' ? '✓' : statusType === 'partial' ? '◐' : '✗';
 
     return `
                   <tr>
-                    <td class="col-qnum" style="text-align: center; font-weight: 700;">Q${qNum}</td>
-                    <td class="col-topic">${qr.topic || 'General'}</td>
-                    <td class="col-answer" style="text-align: center;"><span style="font-weight: 600; color: ${isCorrect ? '#16a34a' : '#dc2626'};">${sAns}</span></td>
-                    <td class="col-ms" style="text-align: center; color: #475569;">${cAns}</td>
-                    <td class="col-result" style="text-align: center;">
-                      <span class="${isCorrect ? 'status-correct' : 'status-incorrect'}">${isCorrect ? '✓' : '✗'}</span>
-                      <span style="font-size: 6.2pt; color: #64748b;">(${qr.earnedMarks}/${qr.maxMarks})</span>
+                    <td class="col-qnum" style="text-align: center; font-weight: 800; color: #1e293b;">Q${qNum}</td>
+                    <td class="col-topic" style="color: #334155; font-weight: 600;">${normalizeTopicName(qr.topic)}</td>
+                    <td class="col-answer">${studentAnswerHtml}</td>
+                    <td class="col-ms" style="color: #334155;">${markSchemeHtml}</td>
+                    <td class="col-result" style="text-align: center; white-space: nowrap;">
+                      <span class="${statusClass}">${statusSymbol}</span>
+                      <span style="font-size: 6.2pt; font-weight: 700; color: #334155;">(${earnedMarks}/${maxMarks})</span>
                     </td>
                   </tr>
                 `;
@@ -780,28 +1080,72 @@ export function renderSingleStudentFeedbackReportHtml(
         </div>
       </div>
 
-      <!-- Right Column: Personalized Diagnostics & Action Plan + Encouragement -->
+      <!-- Right Column: Component Breakdown, Topic Mastery Bars, Diagnostic Plan & Signatures -->
       <div>
-        <div class="panel">
-          <div class="panel-heading">📋 Personalized Diagnostic & Improvement Plan</div>
-
-          <!-- Encouraging Words Box -->
-          <div class="encouragement-box">
-            <div class="encouragement-title">💖 Words of Encouragement</div>
-            <div>${plan.encouragingWords || 'Great effort on this assessment! Keep practicing and believing in your potential.'}</div>
-            ${plan.teacherSummary ? `<div class="mentor-note"><strong>Examiner Guidance:</strong> ${plan.teacherSummary}</div>` : ''}
+        <!-- Component & Topic Mastery Panel -->
+        <div class="panel" style="margin-bottom: 5px;">
+          <div class="panel-heading">
+            <span>🎯 Component & Topic Mastery Breakdown</span>
           </div>
+
+          ${mcqPct !== null && structPct !== null ? `
+          <div class="comp-strip">
+            <div class="comp-card">
+              <span class="comp-card-lbl">Section A • Objective (MCQ)</span>
+              <span class="comp-card-val" style="color: ${mcqPct >= 75 ? '#15803d' : mcqPct >= 50 ? '#1d4ed8' : '#dc2626'};">
+                ${mcqEarned} / ${mcqMax} (${mcqPct}%)
+              </span>
+            </div>
+            <div class="comp-card">
+              <span class="comp-card-lbl">Section B • Structured / Essay</span>
+              <span class="comp-card-val" style="color: ${structPct >= 75 ? '#15803d' : structPct >= 50 ? '#1d4ed8' : '#dc2626'};">
+                ${structEarned} / ${structMax} (${structPct}%)
+              </span>
+            </div>
+          </div>
+          ` : ''}
+
+          ${topicMastery.length > 0 ? `
+          <div>
+            ${topicMastery.map((tm) => {
+    const barColor = tm.pct >= 75 ? '#16a34a' : tm.pct >= 50 ? '#2563eb' : '#dc2626';
+    return `
+              <div class="topic-bar-item">
+                <div class="topic-bar-top">
+                  <span class="topic-bar-name">${tm.topic}</span>
+                  <span class="topic-bar-score" style="color: ${barColor};">${tm.earned}/${tm.total} (${tm.pct}%)</span>
+                </div>
+                <div class="topic-bar-track">
+                  <div class="topic-bar-fill" style="width: ${Math.min(100, Math.max(2, tm.pct))}%; background: ${barColor};"></div>
+                </div>
+              </div>
+            `;
+  }).join('')}
+          </div>
+          ` : ''}
+        </div>
+
+        <!-- Personalized Diagnostic & Improvement Plan (Academic & Evidence-Based) -->
+        <div class="panel">
+          <div class="panel-heading">📋 Examiner Diagnostic & Improvement Plan</div>
+
+          ${plan.teacherSummary ? `
+          <div class="plan-card plan-card--summary">
+            <div class="plan-card-title" style="color: #1b3570;">📌 Examiner Summary</div>
+            <div style="font-size: 6.7pt; color: #1e293b; line-height: 1.28;">${plan.teacherSummary}</div>
+          </div>
+          ` : ''}
 
           <!-- Strengths -->
           <div class="plan-card plan-card--strengths">
-            <div class="plan-card-title" style="color: #166534;">🌟 What Went Well</div>
+            <div class="plan-card-title" style="color: #166534;">🌟 Key Strengths Demonstrated</div>
             <ul class="plan-list" style="color: #14532d;">
-              ${plan.strengths.map((s) => `<li>${s}</li>`).join('')}
+              ${(plan.strengths || []).map((s) => `<li>${s}</li>`).join('')}
             </ul>
           </div>
 
           <!-- Areas for Focus -->
-          ${plan.weaknesses.length > 0 ? `
+          ${plan.weaknesses && plan.weaknesses.length > 0 ? `
           <div class="plan-card plan-card--weaknesses">
             <div class="plan-card-title" style="color: #991b1b;">⚠️ Priority Focus Areas</div>
             <ul class="plan-list" style="color: #7f1d1d;">
@@ -812,28 +1156,28 @@ export function renderSingleStudentFeedbackReportHtml(
 
           <!-- Targeted Next Steps -->
           <div class="plan-card plan-card--action">
-            <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Next Steps</div>
+            <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Revision Action Plan</div>
             <ul class="plan-list" style="color: #1e3a8a;">
-              ${plan.improvementSteps.map((step) => `<li>${step}</li>`).join('')}
+              ${(plan.improvementSteps || []).map((step) => `<li>${step}</li>`).join('')}
             </ul>
           </div>
 
           <!-- Signatures for Subject Teacher and Parents under Improvement Plan -->
-          <div style="margin-top: 6px; padding: 6px 8px; border: 1.5px solid #cbd5e1; border-radius: 5px; background: #ffffff;">
-            <div style="font-weight: 800; font-size: 7.2pt; text-transform: uppercase; margin-bottom: 5px; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+          <div style="margin-top: 5px; padding: 5px 7px; border: 1.5px solid #cbd5e1; border-radius: 5px; background: #ffffff;">
+            <div style="font-weight: 800; font-size: 7pt; text-transform: uppercase; margin-bottom: 4px; color: #0f172a; display: flex; align-items: center; gap: 4px;">
               ✍️ Review Signatures & Acknowledgment
             </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 6.8pt; color: #334155;">
-              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 6.6pt; color: #334155;">
+              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 42px; display: flex; flex-direction: column; justify-content: space-between;">
                 <span style="font-weight: 700; color: #0f172a;">Subject Teacher Signature:</span>
-                <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+                <div style="border-bottom: 1px solid #475569; margin-top: 16px;"></div>
               </div>
-              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 46px; display: flex; flex-direction: column; justify-content: space-between;">
+              <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 4px 6px; min-height: 42px; display: flex; flex-direction: column; justify-content: space-between;">
                 <span style="font-weight: 700; color: #0f172a;">Parent / Guardian Signature:</span>
-                <div style="border-bottom: 1px solid #475569; margin-top: 18px;"></div>
+                <div style="border-bottom: 1px solid #475569; margin-top: 16px;"></div>
               </div>
             </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 6.6pt; color: #64748b;">
+            <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 6.4pt; color: #64748b;">
               <div><strong>Date:</strong> ____________________</div>
               <div><strong>Student Acknowledgment:</strong> ____________________</div>
             </div>
@@ -1113,14 +1457,19 @@ export function exportIndividualStudentReportPdf(
     </div>
   </div>
 
-  <div class="cand-header-card">
-    <div>
-      <h1 style="font-size: 15pt; font-weight: 800; margin: 0 0 2px 0;">👤 ${submission.studentName}</h1>
-      <div style="font-size: 8.5pt; color: #475569; font-weight: 600;">
-        ${submission.quizTitle} • ${submission.subject || 'General'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
+  <div class="cand-header-card" style="align-items: center;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <img src="${DEFAULT_SCHOOL_LOGO}" alt="ICM Logo" style="height: 38px; max-width: 160px; object-fit: contain; display: block;" />
+      <div style="width: 1px; height: 34px; background: #cbd5e1;"></div>
+      <div>
+        <h1 style="font-size: 14pt; font-weight: 800; margin: 0 0 2px 0;">${submission.studentName}</h1>
+        <div style="font-size: 8.5pt; color: #475569; font-weight: 600;">
+          ${submission.quizTitle} • ${submission.subject || 'General'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
+        </div>
       </div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
+      <img src="${DEFAULT_CAMBRIDGE_LOGO}" alt="Cambridge International School" style="height: 32px; max-width: 170px; object-fit: contain; display: block;" />
       <div style="text-align: right;">
         <div style="font-size: 16pt; font-weight: 800;">${submission.score} / ${submission.totalMarks}</div>
         <div style="font-size: 7.5pt; color: #64748b; font-weight: 700; text-transform: uppercase;">Score (${Math.round(submission.percentage)}%)</div>
@@ -1183,13 +1532,18 @@ export function exportIndividualStudentReportPdf(
         <!-- Sub Questions Breakdown if available -->
         ${q.subQuestionResults && q.subQuestionResults.length > 0 ? `
           <div style="margin: 6px 0;">
-            ${q.subQuestionResults.map((sub) => {
+            ${q.subQuestionResults.map((sub, sIdx) => {
       const subCorrect = sub.isCorrect;
+      const cleanSubId = String(sub.subId || String.fromCharCode(97 + sIdx)).replace(/^\(+|\)+$/g, '');
+      const rawSubAns =
+        sub.studentAnswer !== undefined && String(sub.studentAnswer).trim() !== ''
+          ? sub.studentAnswer
+          : submission.rawAnswers?.[`${idx}_${sIdx}`];
       return `
                 <div class="sub-q-box">
                   <div class="sub-q-head">
-                    <span>Part (${sub.subId})</span>
-                    <span style="color: ${subCorrect ? '#16a34a' : '#dc2626'}; font-size: 8pt;">
+                    <span><strong>Part (${cleanSubId})</strong></span>
+                    <span style="color: ${subCorrect ? '#16a34a' : (Number(sub.earnedMarks) || 0) > 0 ? '#b45309' : '#dc2626'}; font-size: 8pt; font-weight: 700;">
                       ${sub.earnedMarks} / ${sub.maxMarks} mark${sub.maxMarks !== 1 ? 's' : ''}
                     </span>
                   </div>
@@ -1200,7 +1554,7 @@ export function exportIndividualStudentReportPdf(
                   ` : ''}
                   <div class="sub-ans-row">
                     <span style="color: #64748b;">Candidate Answer:</span>
-                    <strong style="color: #0f172a;">${formatLatexForHtml(formatCandidateAnswer(sub.studentAnswer))}</strong>
+                    <strong style="color: #0f172a;">${formatLatexForHtml(formatCandidateAnswer(rawSubAns))}</strong>
                   </div>
                   ${sub.feedback ? `
                     <div class="sub-feedback">

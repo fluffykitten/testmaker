@@ -196,15 +196,25 @@ export function TestBuilderPage({
   initialQuestions,
   initialHeaderConfig,
   initialTestId,
-  onClearLoadedState: _onClearLoadedState,
+  onClearLoadedState,
   onRemoveQuestion,
   onNavigateToBank,
   onUpdateQuestions,
   onLaunchTestRun,
   onLaunchGameRun,
 }: TestBuilderPageProps) {
-  const [questions, setQuestions] = useState<Question[]>(initialQuestions);
-  const [currentTestId, setCurrentTestId] = useState<string | null>(initialTestId || null);
+  const [questions, setQuestions] = useState<Question[]>(() => {
+    const overrides = initialHeaderConfig?.questionOverrides || {};
+    return initialQuestions.map((q) => (overrides[q.id] ? { ...q, ...overrides[q.id] } : q));
+  });
+  const [currentTestId, setCurrentTestId] = useState<string | null>(() => {
+    if (initialTestId) return initialTestId;
+    try {
+      return sessionStorage.getItem('testmaker_builder_current_test_id') || null;
+    } catch {
+      return null;
+    }
+  });
   const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -220,18 +230,6 @@ export function TestBuilderPage({
   useEffect(() => {
     fetchSyllabuses().then(setSyllabuses).catch(console.error);
   }, []);
-
-  // Sync questions if props change
-  useEffect(() => {
-    setQuestions(initialQuestions);
-  }, [initialQuestions]);
-
-  // Sync loaded test ID if props change
-  useEffect(() => {
-    if (initialTestId) {
-      setCurrentTestId(initialTestId);
-    }
-  }, [initialTestId]);
 
   const { activeProfile } = useTeacherProfile();
 
@@ -263,12 +261,38 @@ export function TestBuilderPage({
     };
   });
 
-  // Sync loaded header config if props change
+  // Sync questions if props change, always preserving any test-level questionOverrides
   useEffect(() => {
+    const overrides = headerConfig.questionOverrides || {};
+    setQuestions(
+      initialQuestions.map((q) => (overrides[q.id] ? { ...q, ...overrides[q.id] } : q))
+    );
+  }, [initialQuestions, headerConfig.questionOverrides]);
+
+  // Sync loaded test ID and header config if props change, then clear parent transient loader state
+  useEffect(() => {
+    if (initialTestId) {
+      setCurrentTestId(initialTestId);
+    }
     if (initialHeaderConfig) {
       setHeaderConfig(initialHeaderConfig);
     }
-  }, [initialHeaderConfig]);
+    if (initialTestId || initialHeaderConfig) {
+      onClearLoadedState?.();
+    }
+  }, [initialTestId, initialHeaderConfig, onClearLoadedState]);
+
+  useEffect(() => {
+    try {
+      if (currentTestId) {
+        sessionStorage.setItem('testmaker_builder_current_test_id', currentTestId);
+      } else {
+        sessionStorage.removeItem('testmaker_builder_current_test_id');
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentTestId]);
 
   // Dynamically auto-adapt subject when questions or syllabuses change
   useEffect(() => {
@@ -315,35 +339,29 @@ export function TestBuilderPage({
   // Re-ordering
   const handleMoveUp = (index: number) => {
     if (index === 0) return;
-    setQuestions((prev) => {
-      const next = [...prev];
-      const temp = next[index];
-      next[index] = next[index - 1];
-      next[index - 1] = temp;
-      onUpdateQuestions?.(next);
-      return next;
-    });
+    const next = [...questions];
+    const temp = next[index];
+    next[index] = next[index - 1];
+    next[index - 1] = temp;
+    setQuestions(next);
+    onUpdateQuestions?.(next);
   };
 
   const handleMoveDown = (index: number) => {
     if (index >= questions.length - 1) return;
-    setQuestions((prev) => {
-      const next = [...prev];
-      const temp = next[index];
-      next[index] = next[index + 1];
-      next[index + 1] = temp;
-      onUpdateQuestions?.(next);
-      return next;
-    });
+    const next = [...questions];
+    const temp = next[index];
+    next[index] = next[index + 1];
+    next[index + 1] = temp;
+    setQuestions(next);
+    onUpdateQuestions?.(next);
   };
 
   const handleRemove = (qid: string) => {
     onRemoveQuestion(qid);
-    setQuestions((prev) => {
-      const updated = prev.filter((q) => q.id !== qid);
-      onUpdateQuestions?.(updated);
-      return updated;
-    });
+    const updated = questions.filter((q) => q.id !== qid);
+    setQuestions(updated);
+    onUpdateQuestions?.(updated);
     
     // Clean up stale overrides
     setHeaderConfig((prev) => {
@@ -371,11 +389,9 @@ export function TestBuilderPage({
     try {
       const fetched = await fetchQuestionsByIds([qid]);
       if (fetched && fetched.length > 0) {
-        setQuestions((prev) => {
-          const updated = prev.map((q) => (q.id === qid ? fetched[0] : q));
-          onUpdateQuestions?.(updated);
-          return updated;
-        });
+        const updated = questions.map((q) => (q.id === qid ? fetched[0] : q));
+        setQuestions(updated);
+        onUpdateQuestions?.(updated);
         setSavedSuccessMsg(`Reverted question to original Question Bank version.`);
         setTimeout(() => setSavedSuccessMsg(null), 3000);
       }
@@ -390,21 +406,35 @@ export function TestBuilderPage({
     setIsSaving(true);
     setSavedSuccessMsg(null);
 
+    // Ensure current questions state and any active overrides are synchronized
+    const syncedOverrides = { ...(headerConfig.questionOverrides || {}) };
+    for (const q of questions) {
+      if (syncedOverrides[q.id]) {
+        syncedOverrides[q.id] = q;
+      }
+    }
+    const effectiveHeaderConfig: ExamHeaderConfig = {
+      ...headerConfig,
+      questionOverrides: Object.keys(syncedOverrides).length > 0 ? syncedOverrides : headerConfig.questionOverrides,
+    };
+
+    onUpdateQuestions?.(questions);
+
     try {
       if (currentTestId && !saveAsNew) {
         const saved = await updateCustomTest(currentTestId, {
-          title: headerConfig.title || 'Custom Exam Test',
+          title: effectiveHeaderConfig.title || 'Custom Exam Test',
           totalMarks,
           questionIds: questions.map((q) => q.id),
-          headerConfig,
+          headerConfig: effectiveHeaderConfig,
         });
         setSavedSuccessMsg(`Custom exam "${saved.title}" updated successfully! (ID: ${saved.id.slice(0, 8)})`);
       } else {
         const saved = await saveCustomTest({
-          title: headerConfig.title || 'Custom Exam Test',
+          title: effectiveHeaderConfig.title || 'Custom Exam Test',
           totalMarks,
           questionIds: questions.map((q) => q.id),
-          headerConfig,
+          headerConfig: effectiveHeaderConfig,
         });
         setCurrentTestId(saved.id);
         setSavedSuccessMsg(`Custom exam "${saved.title}" saved successfully! (ID: ${saved.id.slice(0, 8)})`);
@@ -581,11 +611,9 @@ export function TestBuilderPage({
                         onEdit={(target) => setEditingQuestion(target)}
                         onGenerateVariant={(target) => setVariantQuestion(target)}
                         onUpdateQuestion={(updated) => {
-                          setQuestions((prev) => {
-                            const next = prev.map((item) => (item.id === updated.id ? updated : item));
-                            onUpdateQuestions?.(next);
-                            return next;
-                          });
+                          const next = questions.map((item) => (item.id === updated.id ? updated : item));
+                          setQuestions(next);
+                          onUpdateQuestions?.(next);
                           setHeaderConfig((prev) => ({
                             ...prev,
                             questionOverrides: {
@@ -627,26 +655,22 @@ export function TestBuilderPage({
         question={variantQuestion}
         onClose={() => setVariantQuestion(null)}
         onAddToTest={(newVariant) => {
-          setQuestions((prev) => {
-            const exists = prev.some((q) => q.id === newVariant.id);
-            if (exists) return prev;
-            const updated = [...prev, newVariant];
+          const exists = questions.some((q) => q.id === newVariant.id);
+          if (!exists) {
+            const updated = [...questions, newVariant];
+            setQuestions(updated);
             onUpdateQuestions?.(updated);
-            return updated;
-          });
+          }
           setSavedSuccessMsg(`✨ Variant question ${newVariant.question_number} added to exam!`);
           setTimeout(() => setSavedSuccessMsg(null), 3000);
         }}
         onSaveToBank={(newVariant) => {
-          setQuestions((prev) => {
-            const exists = prev.some((q) => q.id === newVariant.id);
-            if (exists) {
-              const updated = prev.map((q) => (q.id === newVariant.id ? newVariant : q));
-              onUpdateQuestions?.(updated);
-              return updated;
-            }
-            return prev;
-          });
+          const exists = questions.some((q) => q.id === newVariant.id);
+          if (exists) {
+            const updated = questions.map((q) => (q.id === newVariant.id ? newVariant : q));
+            setQuestions(updated);
+            onUpdateQuestions?.(updated);
+          }
           setSavedSuccessMsg(`✨ Variant question ${newVariant.question_number} saved to Question Bank!`);
           setTimeout(() => setSavedSuccessMsg(null), 3000);
         }}
@@ -673,17 +697,16 @@ export function TestBuilderPage({
       <QuestionEditorModal
         isOpen={!!editingQuestion}
         question={editingQuestion}
+        syllabuses={syllabuses}
         targetContext="test"
         onClose={() => setEditingQuestion(null)}
         onSave={(savedQuestion) => {
-          setQuestions((prev) => {
-            const exists = prev.some((q) => q.id === savedQuestion.id);
-            const updated = exists
-              ? prev.map((q) => (q.id === savedQuestion.id ? savedQuestion : q))
-              : [...prev, savedQuestion];
-            onUpdateQuestions?.(updated);
-            return updated;
-          });
+          const exists = questions.some((q) => q.id === savedQuestion.id);
+          const updated = exists
+            ? questions.map((q) => (q.id === savedQuestion.id ? savedQuestion : q))
+            : [...questions, savedQuestion];
+          setQuestions(updated);
+          onUpdateQuestions?.(updated);
           
           setHeaderConfig((prev) => ({
             ...prev,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { PinGate } from './components/PinGate';
 import { OnboardingTutorial } from './components/OnboardingTutorial';
 import { SettingsModal } from './components/SettingsModal';
@@ -285,9 +285,9 @@ function App() {
     };
   }, [appMode]);
 
-  const selectedIds = new Set(selectedQuestions.keys());
+  const selectedIds = useMemo(() => new Set(selectedQuestions.keys()), [selectedQuestions]);
   const selectedCount = selectedQuestions.size;
-  const questionsList = Array.from(selectedQuestions.values());
+  const questionsList = useMemo(() => Array.from(selectedQuestions.values()), [selectedQuestions]);
 
   // ─── Route 1: Portal Landing Page (Student Quiz Code vs Teacher Suite) ───────
   if (appMode === 'portal') {

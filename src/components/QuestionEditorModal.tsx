@@ -389,7 +389,15 @@ export function QuestionEditorModal({
       setMisconceptionsList([]);
     }
     setErrorMessage(null);
-  }, [isOpen, question, syllabuses]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, question?.id]);
+
+  // Populate default syllabusId once syllabuses finish loading without resetting user edits
+  useEffect(() => {
+    if (isOpen && !syllabusId && Array.isArray(syllabuses) && syllabuses.length > 0) {
+      setSyllabusId(question?.syllabus_id || syllabuses[0].id || '');
+    }
+  }, [isOpen, syllabusId, syllabuses, question?.syllabus_id]);
 
   // Clean up any ongoing microphone recording or TTS speech on modal close / unmount
   useEffect(() => {
@@ -853,7 +861,7 @@ export function QuestionEditorModal({
         // Update existing question in Supabase
         const updated = await updateQuestion(question.id, payload);
         if (updated) {
-          onSave(updated);
+          onSave({ ...question, ...payload, ...updated });
           onClose();
         } else {
           // Fallback to local representation if DB write wasn't successful

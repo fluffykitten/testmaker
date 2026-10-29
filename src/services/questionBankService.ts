@@ -1156,8 +1156,12 @@ export function normalizeQuestionRecord(q: any): Question {
   const diagramSource = q.diagram_source || q.mark_scheme?._diagram_source || null;
   const resourceRef = q.resource_ref || q.mark_scheme?._resource_ref || null;
   const insertPageNumber = q.insert_page_number || q.mark_scheme?._insert_page_number || null;
-  const svgContent = q.svg_content || extractSvgFromDiagramUrl(q.diagram_url) || null;
+  const svgContent = q.svg_content || q.mark_scheme?._svg_content || extractSvgFromDiagramUrl(q.diagram_url) || null;
   const aiDiagramPrompt = q.ai_diagram_prompt || q.mark_scheme?._ai_diagram_prompt || null;
+  const diagramType = q.diagram_type || q.mark_scheme?._diagram_type || null;
+  const hasEmbeddedValues = q.has_embedded_values ?? q.mark_scheme?._has_embedded_values;
+  const dataTables = q.data_tables || q.mark_scheme?._data_tables;
+  const scratchpad = q.scratchpad || q.mark_scheme?._scratchpad;
 
   const normalizedSubs = Array.isArray(q.sub_questions)
     ? q.sub_questions.map((sub: any) => ({
@@ -1171,6 +1175,10 @@ export function normalizeQuestionRecord(q: any): Question {
     ...q,
     svg_content: svgContent,
     ai_diagram_prompt: aiDiagramPrompt,
+    ...(diagramType ? { diagram_type: diagramType } : {}),
+    ...(hasEmbeddedValues !== undefined ? { has_embedded_values: hasEmbeddedValues } : {}),
+    ...(dataTables ? { data_tables: dataTables } : {}),
+    ...(scratchpad ? { scratchpad } : {}),
     sub_questions: normalizedSubs,
     audio_url: audioUrl,
     audio_metadata: audioMetadata,
@@ -1188,6 +1196,68 @@ export async function updateQuestion(
   updates: Partial<Omit<Question, 'id' | 'created_at'>>
 ): Promise<Question | null> {
   const payload: any = { ...updates };
+
+  // Ensure SVG content is preserved in diagram_url if no separate diagram_url is set
+  if (payload.svg_content && !payload.diagram_url) {
+    payload.diagram_url = `data:image/svg+xml;utf8,${encodeURIComponent(payload.svg_content)}`;
+  }
+
+  // Normalize sub_questions SVG content into diagram_url as well
+  if (Array.isArray(payload.sub_questions)) {
+    payload.sub_questions = payload.sub_questions.map((sub: any) => ({
+      ...sub,
+      diagram_url:
+        sub.diagram_url ||
+        (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
+      ai_diagram_prompt: sub.ai_diagram_prompt || null,
+    }));
+  }
+
+  // Embed non-schema metadata into mark_scheme JSONB so it persists cleanly
+  if (
+    payload.ai_diagram_prompt !== undefined ||
+    payload.svg_content !== undefined ||
+    payload.diagram_type !== undefined ||
+    payload.has_embedded_values !== undefined ||
+    payload.data_tables !== undefined ||
+    payload.scratchpad !== undefined
+  ) {
+    const baseMarkScheme =
+      typeof payload.mark_scheme === 'object' && payload.mark_scheme !== null
+        ? { ...payload.mark_scheme }
+        : { marking_points: payload.mark_scheme ? [String(payload.mark_scheme)] : ['See marking criteria'] };
+
+    if (payload.ai_diagram_prompt) {
+      baseMarkScheme._ai_diagram_prompt = payload.ai_diagram_prompt;
+    } else if (payload.ai_diagram_prompt === null) {
+      delete baseMarkScheme._ai_diagram_prompt;
+    }
+
+    if (payload.svg_content && payload.diagram_url && !String(payload.diagram_url).startsWith('data:image/svg')) {
+      baseMarkScheme._svg_content = payload.svg_content;
+    } else if (!payload.svg_content) {
+      delete baseMarkScheme._svg_content;
+    }
+
+    if (payload.diagram_type) baseMarkScheme._diagram_type = payload.diagram_type;
+    if (payload.has_embedded_values !== undefined) baseMarkScheme._has_embedded_values = payload.has_embedded_values;
+    if (payload.data_tables) baseMarkScheme._data_tables = payload.data_tables;
+    if (payload.scratchpad) baseMarkScheme._scratchpad = payload.scratchpad;
+
+    payload.mark_scheme = baseMarkScheme;
+  }
+
+  // Strip virtual / generated client-only properties that do not exist as columns in `questions`
+  delete payload.svg_content;
+  delete payload.ai_diagram_prompt;
+  delete payload.diagram_type;
+  delete payload.has_embedded_values;
+  delete payload.data_tables;
+  delete payload.scratchpad;
+  delete payload.question_number_numeric;
+  delete payload.id;
+  delete payload.created_at;
+
   let { data, error } = await (supabase as any)
     .from('questions')
     .update(payload)
@@ -1206,6 +1276,7 @@ export async function updateQuestion(
       error.message.includes('resource_ref') ||
       error.message.includes('paper_number') ||
       error.message.includes('ai_diagram_prompt') ||
+      error.message.includes('svg_content') ||
       error.message.includes('invalid input syntax for type integer') ||
       error.message.includes('insert_page_number'))
   ) {
@@ -1225,6 +1296,7 @@ export async function updateQuestion(
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
     delete fallbackPayload.ai_diagram_prompt;
+    delete fallbackPayload.svg_content;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
       fallbackPayload.paper_number = 1;
@@ -1287,6 +1359,17 @@ export async function createQuestion(
   }
 
   // 2. Build clean insert payload (strip temp / non-UUID IDs and created_at)
+  const baseMarkScheme =
+    typeof questionData.mark_scheme === 'object' && questionData.mark_scheme !== null
+      ? { ...questionData.mark_scheme }
+      : questionData.mark_scheme
+        ? { marking_points: [String(questionData.mark_scheme)] }
+        : null;
+
+  if ((questionData as any).ai_diagram_prompt && baseMarkScheme) {
+    (baseMarkScheme as any)._ai_diagram_prompt = (questionData as any).ai_diagram_prompt;
+  }
+
   const payload: any = {
     syllabus_id: validSyllabusId,
     year: Number(questionData.year) || new Date().getFullYear(),
@@ -1301,12 +1384,12 @@ export async function createQuestion(
     topic: questionData.topic || 'General',
     sub_topic: questionData.sub_topic || null,
     difficulty: questionData.difficulty || 'Medium',
+    marks: Number(questionData.marks) || 1,
     diagram_url:
       questionData.diagram_url ||
       (questionData.svg_content
         ? `data:image/svg+xml;utf8,${encodeURIComponent(questionData.svg_content)}`
         : null),
-    ai_diagram_prompt: (questionData as any).ai_diagram_prompt || null,
     diagram_source: (questionData as any).diagram_source || null,
     resource_ref: (questionData as any).resource_ref || null,
     insert_page_number: (questionData as any).insert_page_number || null,
@@ -1322,7 +1405,7 @@ export async function createQuestion(
           ai_diagram_prompt: (sub as any).ai_diagram_prompt || null,
         }))
       : [],
-    mark_scheme: questionData.mark_scheme || null,
+    mark_scheme: baseMarkScheme,
   };
 
   // If a valid UUID id was passed explicitly, retain it; otherwise let DB generate UUID

@@ -162,22 +162,29 @@ export function SavedTestsPage({
   }, [activeSubjectView, deleteModalState.isOpen, exportData, offlineGradingData, googleFormsData, variantData]);
 
   // ─── Actions Handlers ───────────────────────────────────────────────────────
+  const buildEffectiveHeader = (test: CustomTestWithDetails, resolvedHeader?: ExamHeaderConfig, defaultInstructions?: string, defaultMaterials = ''): ExamHeaderConfig => {
+    const hdr = resolvedHeader || test.header_config;
+    return {
+      ...(hdr || {}),
+      title: hdr?.title || test.title || 'Custom Exam Assessment',
+      schoolName: hdr?.schoolName || '',
+      subject: hdr?.subject || test.primarySubject || 'General',
+      subjectCode: hdr?.subjectCode || '',
+      durationMinutes: hdr?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
+      instructions: hdr?.instructions || defaultInstructions || 'Answer all questions. Write your answers in the spaces provided on the question paper.',
+      additionalMaterials: hdr?.additionalMaterials || defaultMaterials,
+      layoutTemplate: hdr?.layoutTemplate,
+      teacherPin: hdr?.teacherPin,
+      questionOverrides: hdr?.questionOverrides || test.header_config?.questionOverrides,
+    };
+  };
+
   const handleOpenTest = async (test: CustomTestWithDetails) => {
     setLoadingTestId(test.id);
     try {
       const resolved = await fetchCustomTestWithQuestions(test.id);
       if (resolved && resolved.questions.length > 0) {
-        const effectiveHeader: ExamHeaderConfig = {
-          title: test.header_config?.title || test.title || 'Custom Exam Assessment',
-          schoolName: test.header_config?.schoolName || '',
-          subject: test.header_config?.subject || test.primarySubject || 'General',
-          subjectCode: test.header_config?.subjectCode || '',
-          durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
-          instructions: test.header_config?.instructions || 'Answer all questions. Write your answers in the spaces provided on the question paper.',
-          additionalMaterials: test.header_config?.additionalMaterials || '',
-          layoutTemplate: test.header_config?.layoutTemplate,
-          teacherPin: test.header_config?.teacherPin,
-        };
+        const effectiveHeader = buildEffectiveHeader(test, resolved.test.header_config);
         onLoadTestIntoBuilder(resolved.questions, effectiveHeader, test.id);
         onNavigateToBuilder();
       } else {
@@ -196,15 +203,12 @@ export function SavedTestsPage({
       const resolved = await fetchCustomTestWithQuestions(test.id);
       if (resolved && resolved.questions.length > 0) {
         setExportData({
-          headerConfig: {
-            title: test.header_config?.title || test.title || 'Custom Exam Assessment',
-            schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'General',
-            subjectCode: test.header_config?.subjectCode || '',
-            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
-            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers in the spaces provided on the question paper.',
-            additionalMaterials: test.header_config?.additionalMaterials || 'Periodic Table / Formula Sheet (if applicable)',
-          },
+          headerConfig: buildEffectiveHeader(
+            test,
+            resolved.test.header_config,
+            'Answer all questions. Write your answers in the spaces provided on the question paper.',
+            'Periodic Table / Formula Sheet (if applicable)'
+          ),
           questions: resolved.questions,
         });
       } else {
@@ -223,15 +227,7 @@ export function SavedTestsPage({
       const resolved = await fetchCustomTestWithQuestions(test.id);
       if (resolved && resolved.questions.length > 0) {
         setOfflineGradingData({
-          headerConfig: {
-            title: test.header_config?.title || test.title || 'Offline Exam Assessment',
-            schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'General',
-            subjectCode: test.header_config?.subjectCode || '',
-            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
-            instructions: test.header_config?.instructions || 'Answer all questions.',
-            additionalMaterials: test.header_config?.additionalMaterials || '',
-          },
+          headerConfig: buildEffectiveHeader(test, resolved.test.header_config, 'Answer all questions.'),
           questions: resolved.questions,
         });
       } else {
@@ -250,15 +246,7 @@ export function SavedTestsPage({
       const resolved = await fetchCustomTestWithQuestions(test.id);
       if (resolved && resolved.questions.length > 0) {
         setGoogleFormsData({
-          headerConfig: {
-            title: test.header_config?.title || test.title || 'Custom Exam Assessment',
-            schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'General',
-            subjectCode: test.header_config?.subjectCode || '',
-            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
-            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers clearly.',
-            additionalMaterials: test.header_config?.additionalMaterials || '',
-          },
+          headerConfig: buildEffectiveHeader(test, resolved.test.header_config, 'Answer all questions. Write your answers clearly.'),
           questions: resolved.questions,
         });
       } else {
@@ -277,16 +265,7 @@ export function SavedTestsPage({
       const resolved = await fetchCustomTestWithQuestions(test.id);
       if (resolved && resolved.questions.length > 0) {
         setVariantData({
-          headerConfig: {
-            title: test.header_config?.title || test.title || 'Exam Assessment',
-            schoolName: test.header_config?.schoolName || '',
-            subject: test.header_config?.subject || test.primarySubject || 'General',
-            subjectCode: test.header_config?.subjectCode || '',
-            durationMinutes: test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25),
-            instructions: test.header_config?.instructions || 'Answer all questions. Write your answers clearly.',
-            additionalMaterials: test.header_config?.additionalMaterials || '',
-            layoutTemplate: test.header_config?.layoutTemplate,
-          },
+          headerConfig: buildEffectiveHeader(test, resolved.test.header_config, 'Answer all questions. Write your answers clearly.'),
           questions: resolved.questions,
         });
       } else {

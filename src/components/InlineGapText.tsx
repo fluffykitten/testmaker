@@ -29,12 +29,19 @@ interface InlineGapTextProps {
 
 /**
  * Checks if a string contains inline gap tokens like [1], [blank], ____, {{1}}
+ * Avoids false positives on trailing exam mark allocations like "State the colour change. [1]"
  */
 export function hasInlineGaps(text: string): boolean {
   if (!text) return false;
-  // Match [1], [2], [blank 1], [gap 1], {{1}}, or 3+ underscores
-  const gapPattern = /(\[\s*\d+\s*\]|\[\s*(?:blank|gap)\s*\d*\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\]|\[\s*\d+\s*:\s*[^\]]+\])/i;
-  return gapPattern.test(text);
+  // Explicit unambiguous gap tokens
+  const explicitGapPattern = /(\[\s*(?:blank|gap)\s*\d*\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\]|\[\s*\d+\s*:\s*[^\]]+\])/i;
+  if (explicitGapPattern.test(text)) return true;
+
+  // Strip trailing mark allocations at the end of lines/sentences like ". [1]", "? [2]", or "). [3]"
+  const withoutTrailingMarks = text
+    .trim()
+    .replace(/([.?!:])\s*\[\s*\d+\s*(?:marks?|m|pts?)?\s*\]\s*$/gim, '$1');
+  return /\[\s*\d+\s*\]/.test(withoutTrailingMarks);
 }
 
 /**
@@ -51,6 +58,15 @@ export function parseGapSegments(text: string): GapSegment[] {
   let autoGapCounter = 1;
 
   while ((match = gapRegex.exec(text)) !== null) {
+    const matchedStr = match[0];
+    const isSimpleBracketNumber = /^\[\s*\d+\s*\]$/.test(matchedStr);
+    const beforeText = text.substring(0, match.index);
+    const afterText = text.substring(match.index + matchedStr.length);
+    // Ignore trailing mark allocation at the end of a line/prompt after sentence punctuation (e.g. ". [2]")
+    if (isSimpleBracketNumber && /[.?!:]\s*$/.test(beforeText) && /^\s*(?:\n|$)/.test(afterText)) {
+      continue;
+    }
+
     // 1. Preceding text segment
     if (match.index > lastIndex) {
       const textChunk = text.substring(lastIndex, match.index);
@@ -58,8 +74,6 @@ export function parseGapSegments(text: string): GapSegment[] {
         segments.push({ type: 'text', content: textChunk, gapId: '', gapNum: 0 });
       }
     }
-
-    const matchedStr = match[0];
     let gapNum = autoGapCounter;
     let expectedAnswer: string | undefined = undefined;
 

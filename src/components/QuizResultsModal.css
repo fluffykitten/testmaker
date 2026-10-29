@@ -1149,4 +1149,338 @@
   font-weight: 800;
 }
 
-
+
+
+/* ─── Teacher Manual Grading & Sub-Question Mark Controls ──────────────── */
+.qrm-grade-action-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.qrm-auto-total-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(36, 68, 140, 0.1);
+  border: 1px solid rgba(36, 68, 140, 0.28);
+  color: var(--icm-blue, #24448C);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 6px;
+  user-select: none;
+}
+
+.qrm-mark-input-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.qrm-mark-number-input {
+  width: 54px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1.5px solid var(--icm-blue, #24448C);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-weight: 800;
+  text-align: center;
+  font-size: 0.8125rem;
+  outline: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.qrm-mark-number-input:focus {
+  box-shadow: 0 0 0 2px rgba(36, 68, 140, 0.25);
+}
+
+.qrm-mark-denom {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  color: var(--color-text-secondary);
+}
+
+.qrm-grade-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ffffff !important;
+  border: 1px solid #059669;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(16, 185, 129, 0.28);
+  transition: all 0.15s ease;
+}
+
+.qrm-grade-save-btn:hover {
+  background: linear-gradient(135deg, #059669, #047857);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(16, 185, 129, 0.35);
+}
+
+.qrm-grade-save-btn:active {
+  transform: translateY(0);
+}
+
+.qrm-grade-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary) !important;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qrm-grade-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626 !important;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.qrm-grade-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all 0.15s ease;
+}
+
+.qrm-grade-edit-btn:hover {
+  background: var(--icm-blue-light, #f1f5fa);
+  border-color: var(--icm-blue, #24448C);
+  color: var(--icm-blue, #24448C);
+  transform: translateY(-1px);
+}
+
+.qrm-saved-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.14);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.qrm-teacher-remark-box {
+  padding: 10px 12px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin: 6px 0 10px;
+}
+
+.qrm-teacher-remark-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  display: block;
+  margin-bottom: 5px;
+}
+
+.qrm-teacher-remark-input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.qrm-teacher-remark-input:focus {
+  border-color: var(--icm-blue, #24448C);
+  box-shadow: 0 0 0 2px rgba(36, 68, 140, 0.15);
+}
+
+/* Sub-Question Item Cards & Inline Mark Controls */
+.qrm-sub-item-card {
+  background: var(--color-surface-sunken);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  transition: all 0.15s ease;
+}
+
+.qrm-sub-item-card.is-editing {
+  border-color: rgba(36, 68, 140, 0.38);
+  background: var(--color-surface);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
+.qrm-sub-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.qrm-sub-part-label {
+  color: var(--color-text-primary);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.qrm-sub-prompt-snippet {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+
+.qrm-sub-grade-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qrm-sub-quick-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.qrm-sub-quick-pill {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.qrm-sub-quick-pill:hover {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.qrm-sub-quick-pill.active-full {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.qrm-sub-quick-pill.active-partial {
+  background: #f59e0b;
+  color: #ffffff;
+}
+
+.qrm-sub-quick-pill.active-zero {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.qrm-sub-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.qrm-sub-mark-input {
+  width: 52px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1.5px solid var(--icm-blue, #24448C);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-weight: 800;
+  text-align: center;
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.qrm-sub-mark-input:focus {
+  box-shadow: 0 0 0 2px rgba(36, 68, 140, 0.2);
+}
+
+.qrm-sub-mark-max {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.qrm-sub-mark-badge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qrm-sub-mark-badge-btn.is-correct {
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.3);
+  background: rgba(22, 163, 74, 0.06);
+}
+
+.qrm-sub-mark-badge-btn.is-partial {
+  color: #d97706;
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.qrm-sub-mark-badge-btn.is-zero {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.qrm-sub-mark-badge-btn:hover {
+  border-color: var(--icm-blue, #24448C);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
+}
+
+.qrm-sub-edit-hint {
+  font-size: 0.68rem;
+  opacity: 0.65;
+}
+
+.qrm-sub-mark-badge-btn:hover .qrm-sub-edit-hint {
+  opacity: 1;
+}

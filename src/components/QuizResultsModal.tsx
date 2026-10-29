@@ -19,6 +19,7 @@ import {
   type QuestionSubmissionResult,
 } from '../services/quizSubmissionService';
 import { fetchQuestionsByIds } from '../services/quizCodeService';
+import { fetchCustomTestWithQuestions } from '../services/testBuilderService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import { gradeDeterministicAnswer, resolveQuestionModelAnswer } from '../services/deterministicGradingService';
 import {
@@ -65,7 +66,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   // Teacher Mark Override State
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [editMarksInput, setEditMarksInput] = useState<number>(0);
+  const [editSubMarksInput, setEditSubMarksInput] = useState<Record<number, number>>({});
   const [editTeacherNote, setEditTeacherNote] = useState<string>('');
+  const [savedQuestionId, setSavedQuestionId] = useState<string | null>(null);
   const [isEditingTotalScore, setIsEditingTotalScore] = useState<boolean>(false);
   const [editTotalScoreInput, setEditTotalScoreInput] = useState<number>(0);
 
@@ -229,6 +232,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     refreshSubmissions();
   };
 
+  const loadQuizQuestionsWithOverrides = useCallback(async () => {
+    if (quiz.testId) {
+      const customRes = await fetchCustomTestWithQuestions(quiz.testId);
+      if (customRes && customRes.questions && customRes.questions.length > 0) {
+        return customRes.questions;
+      }
+    }
+    return await fetchQuestionsByIds(quiz.questionIds || []);
+  }, [quiz.testId, quiz.questionIds]);
+
   const handleRunBatchAI = async () => {
     const targets = submissions.filter((s) => s.status === 'submitted' || !s.status);
     if (targets.length === 0) {
@@ -240,7 +253,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setGradingProgress({ current: 0, total: targets.length, text: 'Fetching exam questions...' });
 
     try {
-      const questions = await fetchQuestionsByIds(quiz.questionIds || []);
+      const questions = await loadQuizQuestionsWithOverrides();
       if (!questions || questions.length === 0) {
         alert('Could not load questions for this test.');
         setIsBatchGrading(false);
@@ -276,9 +289,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           const subResults: any[] = [];
 
           const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
+          const isMcq =
+            q.question_style === 'Multiple Choice' ||
+            q.question_style === 'Multiple Select' ||
+            Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
+          let finalStudentAnswer: string | number = rawAnswers[idx] !== undefined ? rawAnswers[idx] : '';
 
-          // Case A: Sub-questions
-          if (q.sub_questions && q.sub_questions.length > 0) {
+          // Case A: Sub-questions (excluding MCQ/Multiple Select)
+          if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
@@ -342,8 +360,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 userAns = '';
               }
             }
+            finalStudentAnswer = userAns;
             const det = gradeDeterministicAnswer(userAns, q);
-            const isMcq = (q.options && q.options.length > 0) || q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select';
             if (det.isHandled || isMcq) {
               qEarned = det.earnedMarks;
               isCorrect = det.isCorrect;
@@ -365,29 +383,29 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               // Throttled delay to respect Gemini rate limits
               await new Promise((r) => setTimeout(r, 1200));
             }
-
-            earnedMarks += qEarned;
-            topicBreakdown[top].earnedMarks += qEarned;
-
-            qResults.push({
-              questionId: q.id,
-              questionNumber: idx + 1,
-              questionText: q.question_text,
-              options: q.options || undefined,
-              topic: top,
-              maxMarks: qMarks,
-              earnedMarks: qEarned,
-              isCorrect,
-              studentAnswer: userAns,
-              correctAnswer: resolveQuestionModelAnswer(q),
-              misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
-              aiFeedback,
-              missingPoints,
-              criteriaBreakdown,
-              gradingMethod,
-              subQuestionResults: subResults.length > 0 ? subResults : undefined,
-            });
           }
+
+          earnedMarks += qEarned;
+          topicBreakdown[top].earnedMarks += qEarned;
+
+          qResults.push({
+            questionId: q.id,
+            questionNumber: idx + 1,
+            questionText: q.question_text,
+            options: q.options || undefined,
+            topic: top,
+            maxMarks: qMarks,
+            earnedMarks: qEarned,
+            isCorrect,
+            studentAnswer: finalStudentAnswer,
+            correctAnswer: resolveQuestionModelAnswer(q),
+            misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+            aiFeedback,
+            missingPoints,
+            criteriaBreakdown,
+            gradingMethod,
+            subQuestionResults: subResults.length > 0 ? subResults : undefined,
+          });
         }
 
         Object.keys(topicBreakdown).forEach((top) => {
@@ -428,7 +446,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setGradingProgress({ current: 0, total: submissions.length, text: 'Fetching test questions...' });
 
     try {
-      const questions = await fetchQuestionsByIds(quiz.questionIds || []);
+      const questions = await loadQuizQuestionsWithOverrides();
       if (!questions || questions.length === 0) {
         alert('Could not load questions for this test.');
         setIsBatchGrading(false);
@@ -462,8 +480,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           const subResults: any[] = [];
 
           const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
+          const isMcq =
+            q.question_style === 'Multiple Choice' ||
+            q.question_style === 'Multiple Select' ||
+            Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
 
-          if (q.sub_questions && q.sub_questions.length > 0) {
+          if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
@@ -692,76 +714,126 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
   const handleStartEditing = (qr: QuestionSubmissionResult) => {
     setEditingQuestionId(qr.questionId);
-    setEditMarksInput(qr.earnedMarks);
+    if (qr.subQuestionResults && qr.subQuestionResults.length > 0) {
+      const subMap: Record<number, number> = {};
+      let subSum = 0;
+      qr.subQuestionResults.forEach((sub, idx) => {
+        const clamped = Math.max(0, Math.min(sub.maxMarks || 1, Number(sub.earnedMarks) || 0));
+        subMap[idx] = clamped;
+        subSum += clamped;
+      });
+      setEditSubMarksInput(subMap);
+      setEditMarksInput(Math.min(qr.maxMarks, subSum));
+    } else {
+      setEditSubMarksInput({});
+      setEditMarksInput(qr.earnedMarks);
+    }
     setEditTeacherNote('');
+  };
+
+  const handleSubMarkChange = (qr: QuestionSubmissionResult, sIdx: number, rawVal: number) => {
+    const subMax = qr.subQuestionResults?.[sIdx]?.maxMarks || 1;
+    const clamped = isNaN(rawVal) ? 0 : Math.max(0, Math.min(subMax, rawVal));
+    setEditSubMarksInput((prev) => {
+      const next = { ...prev, [sIdx]: clamped };
+      const totalSub = (qr.subQuestionResults || []).reduce(
+        (acc, s, idx) => acc + Math.max(0, Math.min(s.maxMarks || 1, Number(next[idx] ?? s.earnedMarks ?? 0))),
+        0
+      );
+      setEditMarksInput(Math.min(qr.maxMarks, totalSub));
+      return next;
+    });
   };
 
   const handleSaveMarkOverride = async (qr: QuestionSubmissionResult) => {
     if (!selectedSubmission) return;
 
-    const diff = editMarksInput - qr.earnedMarks;
-    const newScore = Math.max(0, Math.min(selectedSubmission.totalMarks, selectedSubmission.score + diff));
-    const newPct = selectedSubmission.totalMarks > 0 ? Math.round((newScore / selectedSubmission.totalMarks) * 100) : 0;
+    const hasSubQuestions = Boolean(qr.subQuestionResults && qr.subQuestionResults.length > 0);
+    let finalQuestionEarned = Math.max(0, Math.min(qr.maxMarks, Number(editMarksInput) || 0));
+    let updatedSubResults = qr.subQuestionResults;
+
+    if (hasSubQuestions && qr.subQuestionResults) {
+      updatedSubResults = qr.subQuestionResults.map((sub, idx) => {
+        const subMax = sub.maxMarks || 1;
+        const newSubEarned = Math.max(0, Math.min(subMax, Number(editSubMarksInput[idx] ?? sub.earnedMarks ?? 0)));
+        const prevSubEarned = Number(sub.earnedMarks) || 0;
+        const wasEdited = newSubEarned !== prevSubEarned;
+        let nextFeedback = sub.feedback;
+        if (wasEdited && (!nextFeedback || nextFeedback === 'Awaiting examiner AI evaluation')) {
+          nextFeedback = `Marked by teacher (${newSubEarned}/${subMax} mark${subMax !== 1 ? 's' : ''})`;
+        }
+        return {
+          ...sub,
+          earnedMarks: newSubEarned,
+          isCorrect: newSubEarned >= subMax,
+          feedback: nextFeedback,
+        };
+      });
+      finalQuestionEarned = Math.min(
+        qr.maxMarks,
+        updatedSubResults.reduce((acc, s) => acc + (Number(s.earnedMarks) || 0), 0)
+      );
+    }
 
     const updatedQuestionResults = selectedSubmission.questionResults.map((q) => {
       if (q.questionId === qr.questionId) {
+        let nextAiFeedback = q.aiFeedback;
+        if (nextAiFeedback === 'Awaiting examiner AI evaluation') {
+          nextAiFeedback = undefined;
+        }
+        if (editTeacherNote.trim()) {
+          nextAiFeedback = `${nextAiFeedback ? nextAiFeedback + '\n' : ''}✏️ [Teacher Note]: ${editTeacherNote.trim()}`;
+        }
         return {
           ...q,
-          earnedMarks: editMarksInput,
-          isCorrect: editMarksInput === q.maxMarks,
-          aiFeedback: editTeacherNote ? `${q.aiFeedback ? q.aiFeedback + '\n' : ''}✏️ [Teacher Note]: ${editTeacherNote}` : q.aiFeedback,
+          earnedMarks: finalQuestionEarned,
+          isCorrect: finalQuestionEarned >= q.maxMarks,
+          aiFeedback: nextAiFeedback,
+          subQuestionResults: updatedSubResults,
         };
+      }
+      // Ensure any other multi-part question's earnedMarks reflects the sum of its sub-questions
+      if (q.subQuestionResults && q.subQuestionResults.length > 0) {
+        const subSum = Math.min(
+          q.maxMarks,
+          q.subQuestionResults.reduce((acc, s) => acc + (Number(s.earnedMarks) || 0), 0)
+        );
+        if (subSum !== q.earnedMarks) {
+          return {
+            ...q,
+            earnedMarks: subSum,
+            isCorrect: subSum >= q.maxMarks,
+          };
+        }
       }
       return q;
     });
 
-    // Synchronize topic breakdown so deterministic AI reports reflect the teacher's adjustment
+    const computedTotalEarned = updatedQuestionResults.reduce((acc, q) => acc + (Number(q.earnedMarks) || 0), 0);
+    const newScore = Math.max(0, Math.min(selectedSubmission.totalMarks, computedTotalEarned));
+    const newPct = selectedSubmission.totalMarks > 0 ? Math.round((newScore / selectedSubmission.totalMarks) * 100) : 0;
+    const diff = newScore - selectedSubmission.score;
+
+    // Recompute topic breakdown directly from updatedQuestionResults for 100% consistency
     const updatedTopicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
-    if (selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0) {
-      Object.entries(selectedSubmission.topicBreakdown).forEach(([k, v]) => {
-        updatedTopicBreakdown[k] = { ...v };
-      });
-    } else if (selectedSubmission.questionResults && selectedSubmission.questionResults.length > 0) {
-      selectedSubmission.questionResults.forEach((q) => {
-        const top = q.topic || 'General';
-        if (!updatedTopicBreakdown[top]) {
-          updatedTopicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
-        }
-        updatedTopicBreakdown[top].totalMarks += q.maxMarks || 1;
-        updatedTopicBreakdown[top].earnedMarks += q.earnedMarks || 0;
-      });
-      Object.keys(updatedTopicBreakdown).forEach((top) => {
-        const item = updatedTopicBreakdown[top];
-        item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
-      });
-    }
+    updatedQuestionResults.forEach((q) => {
+      const top = q.topic || 'General';
+      if (!updatedTopicBreakdown[top]) {
+        updatedTopicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+      }
+      updatedTopicBreakdown[top].totalMarks += q.maxMarks || 1;
+      updatedTopicBreakdown[top].earnedMarks += q.earnedMarks || 0;
+    });
+    Object.keys(updatedTopicBreakdown).forEach((top) => {
+      const item = updatedTopicBreakdown[top];
+      item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+    });
 
-    const topicKey = qr.topic || 'General';
-    let matchingKey = Object.keys(updatedTopicBreakdown).find(
-      (k) => k.toLowerCase().trim() === topicKey.toLowerCase().trim()
+    const hasRemainingAwaitingAI = updatedQuestionResults.some(
+      (q) =>
+        q.aiFeedback === 'Awaiting examiner AI evaluation' ||
+        (q.subQuestionResults && q.subQuestionResults.some((sr) => sr.feedback === 'Awaiting examiner AI evaluation'))
     );
-    if (!matchingKey && updatedTopicBreakdown[topicKey]) {
-      matchingKey = topicKey;
-    }
-
-    if (matchingKey) {
-      const current = updatedTopicBreakdown[matchingKey];
-      const newEarned = Math.max(0, Math.min(current.totalMarks, current.earnedMarks + diff));
-      const newPercentage = current.totalMarks > 0 ? (newEarned / current.totalMarks) * 100 : 0;
-      updatedTopicBreakdown[matchingKey] = {
-        ...current,
-        earnedMarks: newEarned,
-        percentage: newPercentage,
-      };
-    } else {
-      const maxMarks = qr.maxMarks || 1;
-      const earned = Math.max(0, Math.min(maxMarks, editMarksInput));
-      updatedTopicBreakdown[topicKey] = {
-        totalMarks: maxMarks,
-        earnedMarks: earned,
-        percentage: maxMarks > 0 ? (earned / maxMarks) * 100 : 0,
-      };
-    }
 
     const updatedSubmission: StudentSubmission = {
       ...selectedSubmission,
@@ -770,12 +842,23 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       questionResults: updatedQuestionResults,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
       topicBreakdown: updatedTopicBreakdown,
+      status: selectedSubmission.status === 'submitted' && !hasRemainingAwaitingAI ? 'graded' : selectedSubmission.status,
+      updatedAt: new Date().toISOString(),
     };
 
-    await updateSubmission(updatedSubmission);
+    // Optimistic UI update: apply immediately so Save feels instantaneous
     setSelectedSubmission(updatedSubmission);
-    await refreshSubmissions();
+    setSubmissions((prev) => prev.map((s) => (s.id === updatedSubmission.id ? updatedSubmission : s)));
     setEditingQuestionId(null);
+    setSavedQuestionId(qr.questionId);
+    setTimeout(() => {
+      setSavedQuestionId((curr) => (curr === qr.questionId ? null : curr));
+    }, 2500);
+
+    // Sync to localStorage & Supabase in background
+    updateSubmission(updatedSubmission).catch((err) => {
+      console.warn('Background mark override sync warning:', err);
+    });
   };
 
   const handleSaveTotalScoreOverride = async () => {
@@ -855,12 +938,17 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       percentage: newPct,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
       topicBreakdown: updatedTopicBreakdown,
+      updatedAt: new Date().toISOString(),
     };
 
-    await updateSubmission(updatedSubmission);
+    // Optimistic UI update: apply immediately
     setSelectedSubmission(updatedSubmission);
+    setSubmissions((prev) => prev.map((s) => (s.id === updatedSubmission.id ? updatedSubmission : s)));
     setIsEditingTotalScore(false);
-    await refreshSubmissions();
+
+    updateSubmission(updatedSubmission).catch((err) => {
+      console.warn('Background total score override sync warning:', err);
+    });
   };
 
   const backdropDismiss = useBackdropDismiss(onClose);
@@ -1292,31 +1380,20 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                           max={selectedSubmission.totalMarks}
                           value={editTotalScoreInput}
                           onChange={(e) => setEditTotalScoreInput(e.target.value ? Number(e.target.value) : ('' as any))}
-                          style={{
-                            width: '56px',
-                            padding: '4px',
-                            borderRadius: '6px',
-                            border: '1px solid var(--color-border)',
-                            background: 'var(--color-surface)',
-                            color: 'var(--color-text-primary)',
-                            fontWeight: 800,
-                            textAlign: 'center',
-                            fontSize: '1rem',
-                          }}
+                          className="qrm-mark-number-input"
+                          style={{ width: '58px', fontSize: '0.95rem', padding: '4px 6px' }}
                         />
-                        <span style={{ fontSize: '0.875rem' }}>/ {selectedSubmission.totalMarks}</span>
+                        <span style={{ fontSize: '0.875rem', fontWeight: 700 }}>/ {selectedSubmission.totalMarks}</span>
                         <button
                           type="button"
-                          className="sq-btn sq-btn-primary"
-                          style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                          className="qrm-grade-save-btn"
                           onClick={handleSaveTotalScoreOverride}
                         >
-                          Save
+                          ✓ Save
                         </button>
                         <button
                           type="button"
-                          className="sq-btn sq-btn-secondary"
-                          style={{ padding: '4px 6px', fontSize: '0.75rem' }}
+                          className="qrm-grade-cancel-btn"
                           onClick={() => setIsEditingTotalScore(false)}
                         >
                           ✕
@@ -1330,16 +1407,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         <span className="cand-grade-pct">{selectedSubmission.percentage.toFixed(1)}%</span>
                         <button
                           type="button"
-                          style={{
-                            background: 'rgba(255, 255, 255, 0.08)',
-                            border: '1px solid var(--color-border)',
-                            color: 'var(--color-text-secondary)',
-                            borderRadius: '4px',
-                            padding: '2px 8px',
-                            fontSize: '0.7rem',
-                            cursor: 'pointer',
-                            marginTop: '4px',
-                          }}
+                          className="qrm-grade-edit-btn"
+                          style={{ marginTop: '4px' }}
                           onClick={() => {
                             setIsEditingTotalScore(true);
                             setEditTotalScoreInput(selectedSubmission.score);
@@ -1533,66 +1602,75 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                               )}
                             </div>
 
-                          <div className="q-marks-tag" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <div className="q-marks-tag" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             {editingQuestionId === qr.questionId ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={(e) => e.stopPropagation()}>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={qr.maxMarks}
-                                  value={editMarksInput}
-                                  onChange={(e) => setEditMarksInput(e.target.value ? Number(e.target.value) : ('' as any))}
-                                  style={{
-                                    width: '48px',
-                                    padding: '2px 4px',
-                                    borderRadius: '4px',
-                                    border: '1px solid var(--color-border)',
-                                    background: 'var(--color-surface)',
-                                    color: 'var(--color-text-primary)',
-                                    fontWeight: 700,
-                                    textAlign: 'center',
-                                    fontSize: '0.8125rem',
-                                  }}
-                                />
-                                <span>/ {qr.maxMarks}</span>
+                              <div className="qrm-grade-action-bar" onClick={(e) => e.stopPropagation()}>
+                                {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
+                                  <span
+                                    className="qrm-auto-total-badge"
+                                    title="Total mark is automatically calculated from the sum of sub-questions below"
+                                  >
+                                    ∑ {editMarksInput} / {qr.maxMarks} Marks (from parts)
+                                  </span>
+                                ) : (
+                                  <div className="qrm-mark-input-group">
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={qr.maxMarks}
+                                      step="any"
+                                      value={editMarksInput}
+                                      onChange={(e) => setEditMarksInput(e.target.value !== '' ? Number(e.target.value) : ('' as any))}
+                                      className="qrm-mark-number-input"
+                                    />
+                                    <span className="qrm-mark-denom">/ {qr.maxMarks}</span>
+                                  </div>
+                                )}
                                 <button
                                   type="button"
-                                  className="sq-btn sq-btn-primary"
-                                  style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                                  className="qrm-grade-save-btn"
                                   onClick={() => handleSaveMarkOverride(qr)}
+                                  title="Save marks and remark immediately"
                                 >
-                                  Save
+                                  ✓ Save
                                 </button>
                                 <button
                                   type="button"
-                                  className="sq-btn sq-btn-secondary"
-                                  style={{ padding: '2px 6px', fontSize: '0.75rem' }}
+                                  className="qrm-grade-cancel-btn"
                                   onClick={() => setEditingQuestionId(null)}
+                                  title="Cancel editing"
                                 >
-                                  ✕
+                                  ✕ Cancel
                                 </button>
                               </div>
                             ) : (
                               <>
+                                {savedQuestionId === qr.questionId && (
+                                  <span className="qrm-saved-pill animate-fade-in">
+                                    ✓ Saved
+                                  </span>
+                                )}
                                 <span>
                                   {qr.isCorrect ? '✓ ' : '✗ '}
-                                  {qr.earnedMarks} / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
+                                  {qr.subQuestionResults && qr.subQuestionResults.length > 0
+                                    ? Math.min(
+                                        qr.maxMarks,
+                                        qr.subQuestionResults.reduce((acc, s) => acc + (Number(s.earnedMarks) || 0), 0)
+                                      )
+                                    : qr.earnedMarks}{' '}
+                                  / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
                                 </span>
                                 <button
                                   type="button"
-                                  style={{
-                                    background: 'rgba(255, 255, 255, 0.08)',
-                                    border: '1px solid var(--color-border)',
-                                    color: 'var(--color-text-secondary)',
-                                    borderRadius: '4px',
-                                    padding: '2px 6px',
-                                    fontSize: '0.7rem',
-                                    cursor: 'pointer',
-                                  }}
+                                  className="qrm-grade-edit-btn"
                                   onClick={() => handleStartEditing(qr)}
-                                  title="Adjust mark or add teacher remark"
+                                  title={
+                                    qr.subQuestionResults && qr.subQuestionResults.length > 0
+                                      ? 'Grade individual sub-questions or add teacher remark'
+                                      : 'Adjust mark or add teacher remark'
+                                  }
                                 >
-                                  ✏️ Remark
+                                  ✏️ {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? 'Grade Parts' : 'Edit Mark / Remark'}
                                 </button>
                               </>
                             )}
@@ -1601,25 +1679,22 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
                         {/* Teacher Remark Input Form if editing */}
                         {editingQuestionId === qr.questionId && (
-                          <div style={{ padding: '8px 12px', background: 'rgba(255, 255, 255, 0.04)', borderRadius: '6px', margin: '6px 0' }}>
-                            <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4 }}>
-                              Teacher Remark / Feedback Annotation:
+                          <div className="qrm-teacher-remark-box">
+                            <label className="qrm-teacher-remark-label">
+                              Teacher Remark / Feedback Annotation (optional):
                             </label>
                             <input
                               type="text"
                               placeholder="e.g. Awarded +1 for valid alternative derivation of molar volume"
                               value={editTeacherNote}
                               onChange={(e) => setEditTeacherNote(e.target.value)}
-                              style={{
-                                width: '100%',
-                                padding: '6px 10px',
-                                borderRadius: '6px',
-                                border: '1px solid var(--color-border)',
-                                background: 'var(--color-surface)',
-                                color: 'var(--color-text-primary)',
-                                fontSize: '0.8125rem',
-                                boxSizing: 'border-box',
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleSaveMarkOverride(qr);
+                                }
                               }}
+                              className="qrm-teacher-remark-input"
                             />
                           </div>
                         )}
@@ -1627,37 +1702,102 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         <div className="q-answer-details">
                           {/* Sub-Questions Results if present */}
                           {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
-                              {qr.subQuestionResults.map((sub, sIdx) => (
-                                <div
-                                  key={sIdx}
-                                  style={{
-                                    background: 'var(--color-surface-sunken)',
-                                    padding: '8px 12px',
-                                    borderRadius: 'var(--radius-md)',
-                                    border: '1px solid var(--color-border)',
-                                    fontSize: '0.8125rem',
-                                  }}
-                                >
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                                    <strong>Part ({sub.subId})</strong>
-                                    <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
-                                      {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
-                                    </span>
-                                  </div>
-                                  <div style={{ color: 'var(--color-text-secondary)' }}>
-                                    Candidate Answer:{' '}
-                                    <strong style={{ color: 'var(--color-text-primary)' }}>
-                                      <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
-                                    </strong>
-                                  </div>
-                                  {sub.feedback && (
-                                    <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
-                                      <ExamMathText content={sub.feedback} />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' }}>
+                              {qr.subQuestionResults.map((sub, sIdx) => {
+                                const cleanSubId = String(sub.subId || sIdx + 1).replace(/^\(+|\)+$/g, '');
+                                const subMax = sub.maxMarks || 1;
+                                const isEditingThisQuestion = editingQuestionId === qr.questionId;
+                                const activeSubMark = isEditingThisQuestion
+                                  ? Number(editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0)
+                                  : Number(sub.earnedMarks ?? 0);
+                                const isSubFullMarks = activeSubMark >= subMax;
+
+                                return (
+                                  <div
+                                    key={sIdx}
+                                    className={`qrm-sub-item-card ${isEditingThisQuestion ? 'is-editing' : ''}`}
+                                  >
+                                    <div className="qrm-sub-item-header">
+                                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flex: 1 }}>
+                                        <strong className="qrm-sub-part-label">Part ({cleanSubId})</strong>
+                                        {sub.questionText && (
+                                          <span className="qrm-sub-prompt-snippet">
+                                            <ExamMathText content={sub.questionText} />
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {isEditingThisQuestion ? (
+                                        <div className="qrm-sub-grade-controls" onClick={(e) => e.stopPropagation()}>
+                                          {subMax <= 5 && Number.isInteger(subMax) && (
+                                            <div className="qrm-sub-quick-pills" title="Quickly select mark for this part">
+                                              {Array.from({ length: subMax + 1 }, (_, m) => (
+                                                <button
+                                                  key={m}
+                                                  type="button"
+                                                  className={`qrm-sub-quick-pill ${activeSubMark === m ? (m === subMax ? 'active-full' : m > 0 ? 'active-partial' : 'active-zero') : ''}`}
+                                                  onClick={() => handleSubMarkChange(qr, sIdx, m)}
+                                                >
+                                                  {m}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          )}
+                                          <div className="qrm-sub-input-wrap">
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={subMax}
+                                              step="any"
+                                              value={editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0}
+                                              onChange={(e) =>
+                                                handleSubMarkChange(
+                                                  qr,
+                                                  sIdx,
+                                                  e.target.value !== '' ? Number(e.target.value) : 0
+                                                )
+                                              }
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  handleSaveMarkOverride(qr);
+                                                }
+                                              }}
+                                              className="qrm-sub-mark-input"
+                                            />
+                                            <span className="qrm-sub-mark-max">
+                                              / {subMax} mark{subMax !== 1 ? 's' : ''}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className={`qrm-sub-mark-badge-btn ${isSubFullMarks ? 'is-correct' : activeSubMark > 0 ? 'is-partial' : 'is-zero'}`}
+                                          onClick={() => handleStartEditing(qr)}
+                                          title={`Click to edit mark for Part (${cleanSubId})`}
+                                        >
+                                          <span>
+                                            {activeSubMark} / {subMax} mark{subMax !== 1 ? 's' : ''}
+                                          </span>
+                                          <span className="qrm-sub-edit-hint">✏️</span>
+                                        </button>
+                                      )}
                                     </div>
-                                  )}
-                                </div>
-                              ))}
+                                    <div style={{ color: 'var(--color-text-secondary)' }}>
+                                      Candidate Answer:{' '}
+                                      <strong style={{ color: 'var(--color-text-primary)' }}>
+                                        <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                                      </strong>
+                                    </div>
+                                    {sub.feedback && (
+                                      <div style={{ fontSize: '0.75rem', color: isSubFullMarks ? '#16a34a' : 'var(--color-text-secondary)', marginTop: 3 }}>
+                                        <ExamMathText content={sub.feedback} />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           ) : (
                             <div className="ans-block">

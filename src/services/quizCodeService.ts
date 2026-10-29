@@ -70,7 +70,7 @@ const questionObjectCache = new Map<string, Question>();
 const QUIZ_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes TTL
 
 /**
- * Clears the in-memory cache for resolved quizzes
+ * Clears the in-memory cache for resolved quizzes and cached question objects
  */
 export function clearQuizMemoryCache(codeOrId?: string): void {
   if (codeOrId) {
@@ -79,6 +79,24 @@ export function clearQuizMemoryCache(codeOrId?: string): void {
   } else {
     resolvedQuizMemoryCache.clear();
   }
+}
+
+export function clearQuestionObjectCache(questionId?: string): void {
+  if (questionId) {
+    questionObjectCache.delete(questionId);
+  } else {
+    questionObjectCache.clear();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('questions_updated', () => {
+    questionObjectCache.clear();
+    resolvedQuizMemoryCache.clear();
+  });
+  window.addEventListener('tests_updated', () => {
+    resolvedQuizMemoryCache.clear();
+  });
 }
 
 /**
