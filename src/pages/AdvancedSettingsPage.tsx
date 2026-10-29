@@ -13,6 +13,8 @@ import {
   loadAndSyncSchoolSubjects,
   loadAndSyncGoogleDriveClientId,
   syncGoogleDriveClientIdToCloud,
+  saveCreativeModeLandingVisibility,
+  loadAndSyncCreativeModeLandingVisibility,
 } from '../lib/settings';
 import { testR2Connection } from '../services/storageService';
 import {
@@ -133,6 +135,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       loadAndSyncGoogleDriveClientId().then((id) => {
         if (id) setGoogleClientIdInput(id);
       });
+      loadAndSyncCreativeModeLandingVisibility().then((hide) => {
+        setSettingsState((prev) => ({ ...prev, hideCreativeModeOnLanding: hide }));
+      });
     }
   }, [isUnlocked]);
 
@@ -145,6 +150,16 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     const updated = { ...settings, [key]: value };
     setSettingsState(updated);
     saveSettings(updated);
+  };
+
+  const handleToggleHideCreativeMode = (hide: boolean) => {
+    updateSetting('hideCreativeModeOnLanding', hide);
+    saveCreativeModeLandingVisibility(hide);
+    showNotice(
+      hide
+        ? '✓ Creative Mode Hub & Avatar Studio hidden from student landing page'
+        : '✓ Creative Mode Hub & Avatar Studio now visible on landing page'
+    );
   };
 
   // ─── PIN Gate Handlers ───────────────────────────────────────────────────────
@@ -596,8 +611,8 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
             className={`adv-tab-btn ${activeSection === 'security' ? 'adv-tab-btn--active' : ''}`}
             onClick={() => setActiveSection('security')}
           >
-            🛡️ Exam Security & AI Defaults
-            <span className="adv-tab-counter">Watermarking · AI Visuals · Auto-Lock</span>
+            🛡️ Exam Security & Feature Controls
+            <span className="adv-tab-counter">Watermarking · Creative Mode · Auto-Lock</span>
           </button>
 
           <button
@@ -981,9 +996,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
           <div className="adv-section-card">
             <div className="adv-section-header">
               <div>
-                <h2 className="adv-section-title">🛡️ Exam Security Defaults</h2>
+                <h2 className="adv-section-title">🛡️ Exam Security & Feature Controls</h2>
                 <p className="adv-section-subtitle">
-                  Configure default integrity protections, candidate watermarking, multi-monitor shields, and automatic lockouts.
+                  Configure default integrity protections, candidate watermarking, multi-monitor shields, portal visibility, and automatic lockouts.
                 </p>
               </div>
             </div>
@@ -1074,6 +1089,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   onClick={() => updateSetting('enableQuizizzMode', !settings.enableQuizizzMode)}
                 >
                   {settings.enableQuizizzMode ? 'Enabled' : 'Disabled (Formal Exam Only)'}
+                </button>
+              </div>
+
+              {/* Creative Mode Hub & Avatar Studio on Landing Page */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">🎨 Hide Creative Mode Hub & Avatar Studio (Landing Page)</strong>
+                  <p className="adv-setting-desc">
+                    Hides the Creative Mode Hub, student avatar studio, coin balances, and topic mastery card from the student portal landing page. Recommended during formal examination periods or high-stakes testing sessions to minimize student distraction.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.hideCreativeModeOnLanding ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => handleToggleHideCreativeMode(!settings.hideCreativeModeOnLanding)}
+                >
+                  {settings.hideCreativeModeOnLanding ? 'Hidden on Landing (Active)' : 'Visible (Default)'}
                 </button>
               </div>
             </div>

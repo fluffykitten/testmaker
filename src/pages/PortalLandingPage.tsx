@@ -17,6 +17,7 @@ import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
 import { SchoolDoodlesBackground } from '../components/SchoolDoodlesBackground';
+import { getSavedSettings, loadAndSyncCreativeModeLandingVisibility } from '../lib/settings';
 import { APP_VERSION, DEVELOPER_NAME, DEVELOPER_EMAIL } from '../config/version';
 import '../components/PinGate.css';
 import './PortalLandingPage.css';
@@ -345,6 +346,9 @@ export function PortalLandingPage({
   // Creative Mode Game Studio State
   const [isGameStudioOpen, setIsGameStudioOpen] = useState(false);
   const [activeGameProfile, setActiveGameProfileState] = useState<GameProfile | null>(() => getActiveGameProfile());
+  const [hideCreativeMode, setHideCreativeMode] = useState<boolean>(() =>
+    Boolean(getSavedSettings().hideCreativeModeOnLanding)
+  );
 
   // Result Modal State
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
@@ -431,11 +435,30 @@ export function PortalLandingPage({
     window.addEventListener('game_profile_changed', handleGameProfileUpdate);
     window.addEventListener('game_profile_updated', handleGameProfileUpdate);
 
+    // Sync cloud visibility setting for Creative Mode Hub & Avatar Studio
+    loadAndSyncCreativeModeLandingVisibility().then((hidden) => {
+      setHideCreativeMode(hidden);
+    });
+
+    const handleVisibilityUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && typeof detail.hideCreativeModeOnLanding === 'boolean') {
+        setHideCreativeMode(detail.hideCreativeModeOnLanding);
+      } else {
+        setHideCreativeMode(Boolean(getSavedSettings().hideCreativeModeOnLanding));
+      }
+    };
+
+    window.addEventListener('creative_mode_landing_visibility_updated', handleVisibilityUpdate);
+    window.addEventListener('storage', handleVisibilityUpdate);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
       window.removeEventListener('game_profile_changed', handleGameProfileUpdate);
       window.removeEventListener('game_profile_updated', handleGameProfileUpdate);
+      window.removeEventListener('creative_mode_landing_visibility_updated', handleVisibilityUpdate);
+      window.removeEventListener('storage', handleVisibilityUpdate);
     };
   }, [handleFlushPendingOutbox, refreshPendingOutbox]);
 
@@ -755,37 +778,39 @@ export function PortalLandingPage({
           </div>
 
           {/* Tertiary: Creative Mode Hub & Avatar Studio */}
-          <div className="portal-results-card portal-creative-card" style={{ marginTop: '12px' }}>
-            <button
-              type="button"
-              className="portal-results-toggle-btn"
-              onClick={() => setIsGameStudioOpen(true)}
-              aria-label="Open Creative Mode Hub & Avatar Studio"
-            >
-              <div className="portal-results-header">
-                <div className="portal-results-icon-wrap" style={{ background: 'rgba(138, 191, 68, 0.15)', color: '#8abf44' }}>
-                  {activeGameProfile ? (
-                    <GameAvatarRenderer avatar={activeGameProfile.avatar} size={28} showAura={false} />
-                  ) : (
-                    <span style={{ fontSize: '1.2rem' }}>🎨</span>
-                  )}
+          {!hideCreativeMode && (
+            <div className="portal-results-card portal-creative-card" style={{ marginTop: '12px' }}>
+              <button
+                type="button"
+                className="portal-results-toggle-btn"
+                onClick={() => setIsGameStudioOpen(true)}
+                aria-label="Open Creative Mode Hub & Avatar Studio"
+              >
+                <div className="portal-results-header">
+                  <div className="portal-results-icon-wrap" style={{ background: 'rgba(138, 191, 68, 0.15)', color: '#8abf44' }}>
+                    {activeGameProfile ? (
+                      <GameAvatarRenderer avatar={activeGameProfile.avatar} size={28} showAura={false} />
+                    ) : (
+                      <span style={{ fontSize: '1.2rem' }}>🎨</span>
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="portal-results-title">
+                      {activeGameProfile ? `${activeGameProfile.handle} • Lv. ${activeGameProfile.level}` : 'Creative Mode Hub & Avatar Studio'}
+                    </h3>
+                    <p className="portal-results-desc">
+                      {activeGameProfile
+                        ? `🪙 ${activeGameProfile.coins} Coins • Wardrobe cosmetics, avatar studio & topic mastery`
+                        : 'Customize your 6-layer avatar, view subject mastery, and open coin shop'}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="portal-results-title">
-                    {activeGameProfile ? `${activeGameProfile.handle} • Lv. ${activeGameProfile.level}` : 'Creative Mode Hub & Avatar Studio'}
-                  </h3>
-                  <p className="portal-results-desc">
-                    {activeGameProfile
-                      ? `🪙 ${activeGameProfile.coins} Coins • Wardrobe cosmetics, avatar studio & topic mastery`
-                      : 'Customize your 6-layer avatar, view subject mastery, and open coin shop'}
-                  </p>
+                <div className="portal-results-action-pill" style={{ borderColor: '#8abf44', color: '#65a30d' }}>
+                  <span>{activeGameProfile ? 'Open Studio 🎮' : 'Customize Avatar 🎨'}</span>
                 </div>
-              </div>
-              <div className="portal-results-action-pill" style={{ borderColor: '#8abf44', color: '#65a30d' }}>
-                <span>{activeGameProfile ? 'Open Studio 🎮' : 'Customize Avatar 🎨'}</span>
-              </div>
-            </button>
-          </div>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ─── Decoy Teacher Portal (Honeypot) ─── */}
@@ -827,13 +852,15 @@ export function PortalLandingPage({
       />
 
       {/* Creative Mode Student Profile & Avatar Studio */}
-      <GameProfileStudioModal
-        isOpen={isGameStudioOpen}
-        onClose={() => {
-          setIsGameStudioOpen(false);
-          setActiveGameProfileState(getActiveGameProfile());
-        }}
-      />
+      {!hideCreativeMode && (
+        <GameProfileStudioModal
+          isOpen={isGameStudioOpen}
+          onClose={() => {
+            setIsGameStudioOpen(false);
+            setActiveGameProfileState(getActiveGameProfile());
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -26,6 +26,7 @@ export interface AppSettings {
   r2UploadSecret?: string;
   enableVariantImageGeneration?: boolean; // AI diagram & SVG generation for question variants (default: false)
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
+  hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -74,6 +75,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   r2UploadSecret: 'tm_r2_uploader_secret_2026',
   enableVariantImageGeneration: false,
   enableQuizizzMode: false,
+  hideCreativeModeOnLanding: false,
 };
 
 // Accent palette color mappings for --color-primary tokens
@@ -446,4 +448,81 @@ export async function loadAndSyncGoogleDriveClientId(): Promise<string> {
   saveSettings(updated);
   syncGoogleDriveClientIdToCloud(fallback).catch(() => {});
   return fallback;
+}
+
+/**
+ * Saves and syncs Creative Mode landing page visibility to local settings & Supabase cloud app_config
+ */
+export function saveCreativeModeLandingVisibility(hide: boolean): void {
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    hideCreativeModeOnLanding: hide,
+  };
+  saveSettings(updated);
+  syncCreativeModeLandingVisibilityToCloud(hide).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('creative_mode_landing_visibility_updated', {
+        detail: { hideCreativeModeOnLanding: hide },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs Creative Mode landing page visibility to Supabase app_config store
+ */
+export async function syncCreativeModeLandingVisibilityToCloud(hide: boolean): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'hide_creative_mode_landing',
+      value: JSON.stringify(hide),
+    });
+    if (error) {
+      console.warn('Creative Mode landing visibility cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for Creative Mode landing visibility:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads Creative Mode landing page visibility from local storage, fetches from Supabase cloud app_config if available,
+ * and updates local cache.
+ */
+export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolean> {
+  const current = getSavedSettings();
+  const localVal = Boolean(current.hideCreativeModeOnLanding);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'hide_creative_mode_landing')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = Boolean(parsed);
+      if (current.hideCreativeModeOnLanding !== cloudVal) {
+        const updated = { ...current, hideCreativeModeOnLanding: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('creative_mode_landing_visibility_updated', {
+              detail: { hideCreativeModeOnLanding: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
+  }
+
+  return localVal;
 }

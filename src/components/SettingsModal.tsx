@@ -10,6 +10,7 @@ import {
   getSavedSettings,
   saveSettings,
   DEFAULT_SETTINGS,
+  saveCreativeModeLandingVisibility,
 } from '../lib/settings';
 import './SettingsModal.css';
 
@@ -180,6 +181,28 @@ export function SettingsModal({
             </div>
           </div>
 
+          {/* 6. Student Portal Display */}
+          <div className="settings-section">
+            <h3 className="settings-section-title">Student Portal Display</h3>
+            <div className="settings-action-row">
+              <div className="settings-action-info">
+                <span className="settings-action-name">🎨 Hide Creative Mode Hub on Landing</span>
+                <span className="settings-action-desc">Hide the Creative Mode Hub and Avatar Studio card from students on the main portal landing screen</span>
+              </div>
+              <button
+                type="button"
+                className={`settings-seg-btn ${settings.hideCreativeModeOnLanding ? 'settings-seg-btn--active' : ''}`}
+                style={{ flex: 'none', padding: '6px 16px' }}
+                onClick={() => {
+                  const nextVal = !settings.hideCreativeModeOnLanding;
+                  updateSetting('hideCreativeModeOnLanding', nextVal);
+                  saveCreativeModeLandingVisibility(nextVal);
+                }}
+              >
+                {settings.hideCreativeModeOnLanding ? 'Hidden' : 'Visible'}
+              </button>
+            </div>
+          </div>
 
           {/* 7. Tools & Reset */}
           <div className="settings-section">
