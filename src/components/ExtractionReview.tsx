@@ -749,6 +749,35 @@ export function ExtractionReview({
                   {isFastEditMode ? (
                     <select
                       className="review-inline-select"
+                      value={q.cognitive_level || 'C2'}
+                      onChange={(e) => handleUpdateQuestionField(idx, 'cognitive_level', e.target.value)}
+                      title="Bloom's Taxonomy Cognitive Level"
+                    >
+                      <option value="C1">C1 (Remembering)</option>
+                      <option value="C2">C2 (Understanding)</option>
+                      <option value="C3">C3 (Applying)</option>
+                      <option value="C4">C4 (Analyzing)</option>
+                      <option value="C5">C5 (Evaluating)</option>
+                      <option value="C6">C6 (Creating)</option>
+                    </select>
+                  ) : (
+                    <span
+                      className="review-badge"
+                      style={{
+                        background: '#eff6ff',
+                        color: '#1d4ed8',
+                        borderColor: '#bfdbfe',
+                        fontWeight: 600,
+                      }}
+                      title={`Bloom's Taxonomy: ${q.cognitive_level || 'C2'}`}
+                    >
+                      {q.cognitive_level || 'C2'}
+                    </span>
+                  )}
+
+                  {isFastEditMode ? (
+                    <select
+                      className="review-inline-select"
                       value={normalizeQuestionStyle(q.question_style, q.options)}
                       onChange={(e) => handleUpdateQuestionField(idx, 'question_style', e.target.value)}
                     >
@@ -1429,7 +1458,7 @@ export function ExtractionReview({
         onClose={() => setShowBookletDrawer(false)}
         questions={questions as any}
         resources={result.insert_resources}
-        title={`${paperMetadata?.subject || 'Assessment'} — Insert / Resource Booklet`}
+        title={`${paperMetadata?.subject || 'Assessment'} : Insert / Resource Booklet`}
         subject={paperMetadata?.subject || 'Humanities'}
       />
 

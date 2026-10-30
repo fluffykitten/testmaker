@@ -322,3 +322,54 @@ export async function uploadExamAttachment(
     uploadedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Uploads a source Cambridge past paper Question Paper (QP) PDF.
+ * Uses a clean deterministic path: papers/${cleanSubject}_${year}_${cleanSeries}_qp_${cleanPaper}.pdf
+ * Routes to Cloudflare R2 proxy first, falling back to Supabase Storage.
+ */
+export async function uploadPastPaperPdf(
+  file: File | Blob,
+  metadata: {
+    subject_code: string;
+    year: number;
+    series: string;
+    paper_number: string | number;
+  }
+): Promise<string | null> {
+  const cleanSubject = String(metadata.subject_code || 'paper').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanSeries = String(metadata.series || 'series').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanPaper = String(metadata.paper_number || '1').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const pathKey = `papers/${cleanSubject}_${metadata.year}_${cleanSeries}_qp_${cleanPaper}.pdf`;
+
+  // 1. Try Cloudflare R2 Proxy if enabled
+  if (isR2StorageEnabled()) {
+    try {
+      const r2Url = await uploadToR2Proxy(file, pathKey);
+      if (r2Url) return r2Url;
+    } catch (err) {
+      console.warn('R2 past paper upload failed, falling back to Supabase:', err);
+    }
+  }
+
+  // 2. Fallback to Supabase Storage (exam-diagrams bucket with application/pdf)
+  try {
+    const bucketName = 'exam-diagrams';
+    const { data, error } = await supabase.storage
+      .from(bucketName)
+      .upload(pathKey, file, {
+        contentType: 'application/pdf',
+        upsert: true,
+      });
+
+    if (!error && data) {
+      const urlData = supabase.storage.from(bucketName).getPublicUrl(pathKey);
+      return urlData.data?.publicUrl || null;
+    }
+  } catch (err) {
+    console.warn('Supabase past paper PDF upload exception:', err);
+  }
+
+  return null;
+}
+

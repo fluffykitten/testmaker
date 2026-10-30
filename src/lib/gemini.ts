@@ -238,6 +238,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 1,
           "question_text": "(a) A student investigates the rate of reaction between dilute hydrochloric acid and marble chips ($CaCO_3$).\\\\n\\\\n(i) Name the gas produced in this reaction.",
           "marks": 1,
+          "cognitive_level": "C1",
           "has_diagram": false,
           "diagram_source": null,
           "resource_ref": null,
@@ -249,6 +250,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 1,
           "question_text": "Describe a test for this gas.\\\\ntest: ..............................\\\\nobservations: ..............................",
           "marks": 2,
+          "cognitive_level": "C2",
           "has_diagram": false,
           "diagram_source": null,
           "resource_ref": null,
@@ -260,6 +262,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 2,
           "question_text": "(b) The student measures the volume of gas produced over time and plots the graph shown in Fig. 1.2.\\\\n\\\\n(i) Explain why the rate of reaction decreases as the reaction proceeds.",
           "marks": 2,
+          "cognitive_level": "C4",
           "has_diagram": true,
           "diagram_source": "qp",
           "diagram_type": "graph",
@@ -272,6 +275,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 2,
           "question_text": "Calculate the volume of $CO_2$ gas produced at room temperature and pressure from 0.05 mol of $CaCO_3$.",
           "marks": 2,
+          "cognitive_level": "C3",
           "has_diagram": false,
           "diagram_source": null,
           "resource_ref": null,
@@ -283,6 +287,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 2,
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
+          "cognitive_level": "C2",
           "has_diagram": false,
           "diagram_source": null,
           "resource_ref": null,
@@ -296,6 +301,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 1,
           "question_text": "State the formula of hydrochloric acid.",
           "marks": 1,
+          "cognitive_level": "C1",
           "has_diagram": false,
           "bounding_box": null,
           "mark_scheme": "$HCl$ [1]"${subGuidanceSnippet}
@@ -305,6 +311,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 1,
           "question_text": "Explain why the rate of reaction decreases as the reaction proceeds.",
           "marks": 2,
+          "cognitive_level": "C2",
           "has_diagram": false,
           "bounding_box": null,
           "mark_scheme": "Concentration of reactants decreases [1]; fewer successful collisions per unit time [1]"${subGuidanceSnippet}
@@ -314,6 +321,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 1,
           "question_text": "Complete the table to show the formula and physical state of each compound at r.t.p.\\\\n\\\\n| Compound Name | Formula | State at r.t.p. |\\\\n|---|---|---|\\\\n| Methane | $CH_4$ | gas |\\\\n| Calcium carbonate | $CaCO_3$ | solid |\\\\n| Sodium chloride | [       ] | [       ] |",
           "marks": 2,
+          "cognitive_level": "C3",
           "has_diagram": false,
           "bounding_box": null,
           "mark_scheme": "$NaCl$ [1]; solid [1]"${subGuidanceSnippet}
@@ -323,6 +331,7 @@ CAMBRIDGE PAPER 4 SUB-QUESTION HIERARCHY, DIAGRAMS & CONTEXT PRESERVATION (TOP P
           "page_number": 2,
           "question_text": "Describe one effect of increasing the temperature on the collisions between reacting particles.",
           "marks": 2,
+          "cognitive_level": "C2",
           "has_diagram": false,
           "bounding_box": null,
           "mark_scheme": "Particles have greater kinetic energy [1]; more collisions have energy $\\\\ge E_a$ [1]"${subGuidanceSnippet}
@@ -351,6 +360,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "question_style": "Structured",
       "total_marks": ${isIgcse ? 9 : 7},
       "estimated_difficulty": "Medium",
+      "cognitive_level": "C3",
       "topic": "States of Matter",
       "sub_topic": "Rates of Reaction",
       "has_diagram": true,
@@ -387,6 +397,7 @@ Output strictly valid JSON matching this exact schema — no markdown fences, no
       "question_style": "Multiple Choice",
       "total_marks": 1,
       "estimated_difficulty": "Easy",
+      "cognitive_level": "C1",
       "topic": "Atomic Structure",
       "sub_topic": "Electronic Configuration",
       "has_diagram": false,
@@ -3559,3 +3570,131 @@ SVG Code:`;
   return cleaned;
 }
 
+// ─── Batch Bloom's Taxonomy Cognitive Classification ──────────────────────────
+
+export interface CognitiveAnalysisTarget {
+  id: string;
+  question_number?: string;
+  question_text: string;
+  question_style?: string | null;
+  marks?: number;
+  sub_questions?: Array<{
+    sub_id: string;
+    question_text: string;
+    marks?: number;
+  }>;
+}
+
+export interface CognitiveAnalysisResult {
+  id: string;
+  cognitive_level: 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'C6';
+  sub_questions?: Array<{
+    sub_id: string;
+    cognitive_level: 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'C6';
+  }>;
+}
+
+/**
+ * Batch classifies exam questions and their sub-questions according to Bloom's Taxonomy (C1 to C6).
+ */
+export async function analyzeCognitiveLevelsBatch(
+  questions: CognitiveAnalysisTarget[],
+  onProgress?: (processed: number, total: number) => void
+): Promise<CognitiveAnalysisResult[]> {
+  if (!questions || questions.length === 0) return [];
+
+  const results: CognitiveAnalysisResult[] = [];
+  const chunkSize = 8;
+
+  for (let i = 0; i < questions.length; i += chunkSize) {
+    const chunk = questions.slice(i, i + chunkSize);
+
+    const compactInput = chunk.map((q) => ({
+      id: q.id,
+      qNum: q.question_number || '1',
+      style: q.question_style || 'Structured',
+      text: q.question_text?.slice(0, 400) || '',
+      marks: q.marks || 1,
+      subs: (q.sub_questions || []).map((s) => ({
+        sub_id: s.sub_id,
+        text: s.question_text?.slice(0, 250) || '',
+        marks: s.marks || 1,
+      })),
+    }));
+
+    const prompt = `You are an expert Cambridge Assessment (CAIE) curriculum analyst and Bloom's Revised Taxonomy specialist.
+
+Analyze each of the following exam questions and their sub-parts, and assign the most appropriate Bloom's Taxonomy cognitive level (C1 to C6):
+- C1: Remembering (Recall facts: State, Define, Name, List, Identify, Recall)
+- C2: Understanding (Explain concepts: Describe, Explain, Classify, Outline, Summarize, Distinguish)
+- C3: Applying (Apply to concrete situations: Calculate, Solve, Determine, Demonstrate, Construct)
+- C4: Analyzing (Examine & draw connections: Deduce, Compare, Contrast, Interpret graphs/data/curves)
+- C5: Evaluating (Justify decisions or evaluate errors: Evaluate, Justify, Assess, Criticize, Appraise)
+- C6: Creating (Original design or formulation: Design apparatus, Plan investigation, Formulate hypothesis)
+
+For the parent question, set "cognitive_level" to the predominant or highest cognitive level across its sub-parts.
+
+Input questions:
+${JSON.stringify(compactInput, null, 2)}
+
+Return ONLY a valid JSON array matching this exact schema:
+[
+  {
+    "id": "question_id",
+    "cognitive_level": "C1" | "C2" | "C3" | "C4" | "C5" | "C6",
+    "sub_questions": [
+      {
+        "sub_id": "a",
+        "cognitive_level": "C1" | "C2" | "C3" | "C4" | "C5" | "C6"
+      }
+    ]
+  }
+]`;
+
+    try {
+      const responseText = await callGeminiWithProxyFallback({
+        prompt,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+          maxOutputTokens: 4096,
+        },
+      });
+
+      const cleanJson = responseText.replace(/\`\`\`json\n?|\n?\\`\`\`/g, '').trim();
+      const parsed = JSON.parse(cleanJson);
+      if (Array.isArray(parsed)) {
+        for (const res of parsed) {
+          if (res && res.id) {
+            const validLevels = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'];
+            results.push({
+              id: String(res.id),
+              cognitive_level: (validLevels.includes(res.cognitive_level) ? res.cognitive_level : 'C2') as any,
+              sub_questions: Array.isArray(res.sub_questions)
+                ? res.sub_questions.map((sq: any) => ({
+                    sub_id: String(sq.sub_id || ''),
+                    cognitive_level: (validLevels.includes(sq.cognitive_level) ? sq.cognitive_level : res.cognitive_level || 'C2') as any,
+                  }))
+                : undefined,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Batch cognitive classification chunk failed, using fallback C2:', err);
+      for (const item of chunk) {
+        results.push({
+          id: item.id,
+          cognitive_level: 'C2',
+          sub_questions: item.sub_questions
+            ? item.sub_questions.map((s) => ({ sub_id: s.sub_id, cognitive_level: 'C2' }))
+            : undefined,
+        });
+      }
+    }
+
+    onProgress?.(Math.min(i + chunkSize, questions.length), questions.length);
+  }
+
+  return results;
+}

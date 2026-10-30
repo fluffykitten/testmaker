@@ -38,6 +38,7 @@ import {
   stitchPassagesToQuestions,
 } from './passageExtractor';
 import { addTagsToQuestions } from '../services/questionTagService';
+import { uploadPastPaperPdf } from '../services/storageService';
 
 export { stitchPassagesToQuestions } from './passageExtractor';
 
@@ -126,6 +127,22 @@ export async function saveExtractedQuestions(
     );
   }
 
+  // 2b. Upload source Question Paper PDF to R2 / Supabase Storage for persistent citations
+  let sourcePdfUrl: string | null = null;
+  if (_qpFile) {
+    onProgress?.('Uploading source Question Paper PDF for citations…');
+    try {
+      sourcePdfUrl = await uploadPastPaperPdf(_qpFile, {
+        subject_code: paper_metadata.subject_code,
+        year: paper_metadata.year,
+        series: paper_metadata.series,
+        paper_number: paper_metadata.paper_number,
+      });
+    } catch (pdfErr) {
+      console.warn('Failed to upload past paper PDF for citations:', pdfErr);
+    }
+  }
+
   // 3. Resolve syllabus
   onProgress?.('Resolving syllabus…');
   const syllabusId = await resolveSyllabus(
@@ -151,6 +168,14 @@ export async function saveExtractedQuestions(
       (ms as any)._passages = passages;
     }
 
+    const effectivePdfUrl = q.source_pdf_url || sourcePdfUrl || null;
+    const effectiveCognitiveLevel = q.cognitive_level || null;
+    const effectivePageNumber = q.page_number || null;
+
+    if (effectivePdfUrl) (ms as any)._source_pdf_url = effectivePdfUrl;
+    if (effectiveCognitiveLevel) (ms as any)._cognitive_level = effectiveCognitiveLevel;
+    if (effectivePageNumber) (ms as any)._page_number = effectivePageNumber;
+
     return {
       syllabus_id: syllabusId,
       year: q.year || paper_metadata.year,
@@ -163,6 +188,9 @@ export async function saveExtractedQuestions(
       topic: q.topic,
       sub_topic: q.sub_topic || null,
       difficulty: q.estimated_difficulty,
+      cognitive_level: effectiveCognitiveLevel,
+      source_pdf_url: effectivePdfUrl,
+      page_number: effectivePageNumber,
       marks: q.total_marks,
       diagram_url: permanentDiagramUrls.get(q.question_number) || null,
       diagram_source: q.diagram_source || null,
@@ -171,6 +199,7 @@ export async function saveExtractedQuestions(
       options: (q.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
       sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
         ...sub,
+        cognitive_level: sub.cognitive_level || effectiveCognitiveLevel || null,
         question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
         options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
         diagram_source: sub.diagram_source || null,
@@ -203,13 +232,16 @@ export async function saveExtractedQuestions(
       error.message.includes('invalid input syntax for type integer'))
   ) {
     console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
-    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, mark_scheme, paper_number, ...rest }: any) => {
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, cognitive_level, source_pdf_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
       const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
       if (audio_url) (ms as any)._audio_url = audio_url;
       if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
       if (diagram_source) (ms as any)._diagram_source = diagram_source;
       if (resource_ref) (ms as any)._resource_ref = resource_ref;
       if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
+      if (cognitive_level) (ms as any)._cognitive_level = cognitive_level;
+      if (source_pdf_url) (ms as any)._source_pdf_url = source_pdf_url;
+      if (page_number) (ms as any)._page_number = page_number;
 
       let safePaperNum: any = paper_number;
       if (isNaN(Number(paper_number))) {

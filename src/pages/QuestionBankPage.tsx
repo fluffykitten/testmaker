@@ -25,6 +25,8 @@ const QuestionEditorModal = lazy(() => import('../components/QuestionEditorModal
 const QuestionVariantModal = lazy(() => import('../components/QuestionVariantModal').then((m) => ({ default: m.QuestionVariantModal })));
 const SmartTestAssemblerModal = lazy(() => import('../components/SmartTestAssemblerModal').then((m) => ({ default: m.SmartTestAssemblerModal })));
 const ExportModal = lazy(() => import('../components/ExportModal').then((m) => ({ default: m.ExportModal })));
+const PastPaperPdfManagerModal = lazy(() => import('../components/PastPaperPdfManagerModal').then((m) => ({ default: m.PastPaperPdfManagerModal })));
+const BatchCognitiveAnalyzeModal = lazy(() => import('../components/BatchCognitiveAnalyzeModal').then((m) => ({ default: m.BatchCognitiveAnalyzeModal })));
 
 const PAGE_SIZE_STORAGE_KEY = 'testmaker_bank_page_size';
 const DEFAULT_PAGE_SIZE = 12;
@@ -130,6 +132,8 @@ export function QuestionBankPage({
 
   // Smart Test Auto-Assembler modal state
   const [isAssemblerOpen, setIsAssemblerOpen] = useState(false);
+  const [isPdfManagerOpen, setIsPdfManagerOpen] = useState(false);
+  const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
 
   // Question deletion modal state
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -446,6 +450,24 @@ export function QuestionBankPage({
               onClick={() => setShowMobileFilters(!showMobileFilters)}
             >
               ⚙️ {showMobileFilters ? 'Hide Filters' : 'Filters'}
+            </button>
+
+            <button
+              type="button"
+              className="bank-btn bank-btn--secondary"
+              onClick={() => setIsPdfManagerOpen(true)}
+              title="Manage and link Cambridge Past Paper Question Paper PDFs"
+            >
+              Source PDFs
+            </button>
+
+            <button
+              type="button"
+              className="bank-btn bank-btn--secondary"
+              onClick={() => setIsCognitiveModalOpen(true)}
+              title="Batch classify questions with Bloom's Taxonomy (C1 to C6)"
+            >
+              Analyze Bloom's
             </button>
 
             <button
@@ -844,6 +866,42 @@ export function QuestionBankPage({
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteModalState({ isOpen: false, title: '', message: '', ids: [] })}
       />
+
+      {/* ─── Past Paper Source PDF Manager Modal ────────────────────────────── */}
+      {isPdfManagerOpen && (
+        <Suspense fallback={null}>
+          <PastPaperPdfManagerModal
+            isOpen={isPdfManagerOpen}
+            onClose={() => setIsPdfManagerOpen(false)}
+            onPdfsUpdated={() => {
+              loadQuestions();
+              setActionToast({
+                message: 'Past paper source PDFs updated.',
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {/* ─── Batch Cognitive Taxonomy Classification Modal ─────────────────── */}
+      {isCognitiveModalOpen && (
+        <Suspense fallback={null}>
+          <BatchCognitiveAnalyzeModal
+            isOpen={isCognitiveModalOpen}
+            onClose={() => setIsCognitiveModalOpen(false)}
+            onComplete={() => {
+              loadQuestions();
+              setActionToast({
+                message: "Bloom's taxonomy cognitive classification complete.",
+                type: 'success',
+              });
+              setTimeout(() => setActionToast(null), 3000);
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* ─── Quick Export Modal ────────────────────────────────────────────── */}
       {isQuickExportOpen && (

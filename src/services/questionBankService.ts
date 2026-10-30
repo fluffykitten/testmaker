@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import type { Question, Syllabus, QuestionDifficulty, QuestionStyle } from '../types/database';
+import type { Question, Syllabus, QuestionDifficulty, QuestionStyle, CognitiveLevel } from '../types/database';
 import { getBookmarkedQuestionIds } from './questionBookmarkService';
 import { getAllQuestionTagsMap } from './questionTagService';
 import { expandFormulaSearch } from '../lib/formulaSearch';
@@ -21,6 +21,7 @@ export interface QuestionFilterParams {
   hasAudio?: boolean;
   bookmarkedOnly?: boolean;
   customTag?: string;
+  cognitiveLevel?: CognitiveLevel | 'all';
   sortBy?: 'created_at' | 'marks_desc' | 'marks_asc' | 'difficulty' | 'year_desc' | 'question_number_asc' | 'question_number_desc';
   page?: number;
   pageSize?: number;
@@ -768,6 +769,12 @@ export async function fetchQuestions(
           q = q.eq('difficulty', difficulty);
         }
 
+        // Filter: Cognitive Level (Bloom's Taxonomy)
+        if (params.cognitiveLevel && params.cognitiveLevel !== 'all') {
+          q = q.filter('mark_scheme->>_cognitive_level', 'eq', params.cognitiveLevel);
+        }
+
+
         // Filter: Paper Type (Presets, Specific Paper Number, or Exam Series e.g. "Try Out TKA 1")
         const activePaperType = paperType || (typeof paperNumber === 'string' ? paperNumber : undefined);
 
@@ -1162,10 +1169,14 @@ export function normalizeQuestionRecord(q: any): Question {
   const hasEmbeddedValues = q.has_embedded_values ?? q.mark_scheme?._has_embedded_values;
   const dataTables = q.data_tables || q.mark_scheme?._data_tables;
   const scratchpad = q.scratchpad || q.mark_scheme?._scratchpad;
+  const cognitiveLevel = q.cognitive_level || q.mark_scheme?._cognitive_level || null;
+  const sourcePdfUrl = q.source_pdf_url || q.mark_scheme?._source_pdf_url || null;
+  const pageNumber = q.page_number !== undefined && q.page_number !== null ? q.page_number : (q.mark_scheme?._page_number ?? null);
 
   const normalizedSubs = Array.isArray(q.sub_questions)
     ? q.sub_questions.map((sub: any) => ({
         ...sub,
+        cognitive_level: sub.cognitive_level || sub.mark_scheme?._cognitive_level || cognitiveLevel || null,
         svg_content: sub.svg_content || extractSvgFromDiagramUrl(sub.diagram_url) || null,
         ai_diagram_prompt: sub.ai_diagram_prompt || sub.mark_scheme?._ai_diagram_prompt || null,
       }))
@@ -1173,6 +1184,9 @@ export function normalizeQuestionRecord(q: any): Question {
 
   return {
     ...q,
+    cognitive_level: cognitiveLevel,
+    source_pdf_url: sourcePdfUrl,
+    page_number: pageNumber,
     svg_content: svgContent,
     ai_diagram_prompt: aiDiagramPrompt,
     ...(diagramType ? { diagram_type: diagramType } : {}),
@@ -1220,7 +1234,10 @@ export async function updateQuestion(
     payload.diagram_type !== undefined ||
     payload.has_embedded_values !== undefined ||
     payload.data_tables !== undefined ||
-    payload.scratchpad !== undefined
+    payload.scratchpad !== undefined ||
+    payload.cognitive_level !== undefined ||
+    payload.source_pdf_url !== undefined ||
+    payload.page_number !== undefined
   ) {
     const baseMarkScheme =
       typeof payload.mark_scheme === 'object' && payload.mark_scheme !== null
@@ -1243,6 +1260,9 @@ export async function updateQuestion(
     if (payload.has_embedded_values !== undefined) baseMarkScheme._has_embedded_values = payload.has_embedded_values;
     if (payload.data_tables) baseMarkScheme._data_tables = payload.data_tables;
     if (payload.scratchpad) baseMarkScheme._scratchpad = payload.scratchpad;
+    if (payload.cognitive_level) baseMarkScheme._cognitive_level = payload.cognitive_level;
+    if (payload.source_pdf_url) baseMarkScheme._source_pdf_url = payload.source_pdf_url;
+    if (payload.page_number !== undefined) baseMarkScheme._page_number = payload.page_number;
 
     payload.mark_scheme = baseMarkScheme;
   }
@@ -1275,6 +1295,9 @@ export async function updateQuestion(
       error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
       error.message.includes('paper_number') ||
+      error.message.includes('cognitive_level') ||
+      error.message.includes('source_pdf_url') ||
+      error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('svg_content') ||
       error.message.includes('invalid input syntax for type integer') ||
@@ -1292,11 +1315,17 @@ export async function updateQuestion(
     if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
     if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
+    if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
+    if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
+    if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
     delete fallbackPayload.ai_diagram_prompt;
     delete fallbackPayload.svg_content;
+    delete fallbackPayload.cognitive_level;
+    delete fallbackPayload.source_pdf_url;
+    delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
       fallbackPayload.paper_number = 1;
@@ -1384,6 +1413,9 @@ export async function createQuestion(
     topic: questionData.topic || 'General',
     sub_topic: questionData.sub_topic || null,
     difficulty: questionData.difficulty || 'Medium',
+    cognitive_level: questionData.cognitive_level || null,
+    source_pdf_url: questionData.source_pdf_url || null,
+    page_number: questionData.page_number || null,
     marks: Number(questionData.marks) || 1,
     diagram_url:
       questionData.diagram_url ||
@@ -1429,6 +1461,9 @@ export async function createQuestion(
       error.message.includes('options') ||
       error.message.includes('diagram_source') ||
       error.message.includes('resource_ref') ||
+      error.message.includes('cognitive_level') ||
+      error.message.includes('source_pdf_url') ||
+      error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('insert_page_number'))
   ) {
@@ -1444,10 +1479,16 @@ export async function createQuestion(
     if (fallbackPayload.resource_ref) markScheme._resource_ref = fallbackPayload.resource_ref;
     if (fallbackPayload.insert_page_number) markScheme._insert_page_number = fallbackPayload.insert_page_number;
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
+    if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
+    if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
+    if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
     delete fallbackPayload.audio_metadata;
     delete fallbackPayload.ai_diagram_prompt;
+    delete fallbackPayload.cognitive_level;
+    delete fallbackPayload.source_pdf_url;
+    delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
       fallbackPayload.paper_number = 1;
@@ -1475,4 +1516,216 @@ export async function createQuestion(
   clearQuestionBankCache();
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return normalizeQuestionRecord(data);
+}
+
+// ─── Past Paper Source PDF & Batch Cognitive Classification Helpers ───────────
+
+export interface PastPaperGroupSummary {
+  key: string;
+  syllabusId: string;
+  subjectName: string;
+  subjectCode: string;
+  year: number;
+  series: string;
+  paperNumber: string | number;
+  questionCount: number;
+  linkedPdfCount: number;
+  totalQuestions: number;
+  hasPdfUrl: boolean;
+  samplePdfUrl: string | null;
+}
+
+/**
+ * Fetches an aggregated summary of all distinct past papers in the Question Bank,
+ * including how many questions are linked to a Question Paper PDF.
+ */
+export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promise<PastPaperGroupSummary[]> {
+  let query = (supabase as any)
+    .from('questions')
+    .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )');
+
+  if (syllabusId) {
+    query = query.eq('syllabus_id', syllabusId);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) {
+    console.error('Failed to fetch distinct past papers:', error);
+    return [];
+  }
+
+  const groups = new Map<string, PastPaperGroupSummary>();
+
+  data.forEach((row: any) => {
+    const sId = row.syllabus_id || '';
+    const syl = row.syllabuses || {};
+    const yr = Number(row.year) || 0;
+    const ser = String(row.series || '').trim();
+    const pNum = row.paper_number !== null && row.paper_number !== undefined ? String(row.paper_number).trim() : '1';
+
+    const key = `${sId}_${yr}_${ser}_${pNum}`;
+    const pdfUrl = row.source_pdf_url || row.mark_scheme?._source_pdf_url || null;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        syllabusId: sId,
+        subjectName: syl.subject_name || 'General Subject',
+        subjectCode: syl.subject_code || '',
+        year: yr,
+        series: ser,
+        paperNumber: pNum,
+        questionCount: 0,
+        linkedPdfCount: 0,
+        totalQuestions: 0,
+        hasPdfUrl: false,
+        samplePdfUrl: null,
+      });
+    }
+
+    const group = groups.get(key)!;
+    group.questionCount += 1;
+    group.totalQuestions += 1;
+    if (pdfUrl) {
+      group.linkedPdfCount += 1;
+      group.hasPdfUrl = true;
+      if (!group.samplePdfUrl) {
+        group.samplePdfUrl = pdfUrl;
+      }
+    }
+  });
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (b.year !== a.year) return b.year - a.year;
+    return a.series.localeCompare(b.series) || String(a.paperNumber).localeCompare(String(b.paperNumber));
+  });
+}
+
+/**
+ * Attaches a source Question Paper PDF URL to all questions belonging to a specific past paper group.
+ */
+export async function batchAttachPastPaperPdf(
+  filter: { syllabusId?: string; year: number; series: string; paperNumber: string | number },
+  pdfUrl: string
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache();
+
+  let query = (supabase as any)
+    .from('questions')
+    .select('id, mark_scheme')
+    .eq('year', filter.year);
+
+  if (filter.syllabusId) {
+    query = query.eq('syllabus_id', filter.syllabusId);
+  }
+
+  if (filter.series) {
+    query = query.eq('series', filter.series);
+  }
+
+  const pNum = Number(filter.paperNumber);
+  if (!isNaN(pNum) && /^\d+$/.test(String(filter.paperNumber).trim())) {
+    query = query.or(`paper_number.eq.${pNum},paper_number.eq.${String(filter.paperNumber).trim()}`);
+  } else {
+    query = query.eq('paper_number', String(filter.paperNumber).trim());
+  }
+
+  const { data, error } = await query;
+  if (error || !data || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Try native column update
+  const nativeRes = await (supabase as any)
+    .from('questions')
+    .update({ source_pdf_url: pdfUrl })
+    .in('id', ids);
+
+  if (!nativeRes.error) {
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+    return { success: true, updatedCount: ids.length };
+  }
+
+  // 2. Schema fallback: store in mark_scheme JSONB
+  let successCount = 0;
+  for (const row of data) {
+    const ms = typeof row.mark_scheme === 'object' && row.mark_scheme !== null
+      ? { ...row.mark_scheme }
+      : { marking_points: ['See mark scheme'] };
+    ms._source_pdf_url = pdfUrl;
+
+    const { error: msErr } = await (supabase as any)
+      .from('questions')
+      .update({ mark_scheme: ms })
+      .eq('id', row.id);
+
+    if (!msErr) successCount += 1;
+  }
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
+/**
+ * Batch updates cognitive levels (Bloom's Taxonomy C1 to C6) across multiple questions.
+ */
+export async function batchUpdateCognitiveLevels(
+  updates: {
+    id: string;
+    cognitiveLevel?: CognitiveLevel;
+    cognitive_level?: CognitiveLevel;
+    subQuestions?: any[];
+    sub_questions?: any[];
+  }[]
+): Promise<number> {
+  clearQuestionBankCache();
+  let updatedCount = 0;
+
+  for (const item of updates) {
+    const level = item.cognitiveLevel || item.cognitive_level || 'C2';
+    const subQs = item.subQuestions || item.sub_questions;
+    const payload: any = { cognitive_level: level };
+    if (subQs) {
+      payload.sub_questions = subQs;
+    }
+
+    const { error } = await (supabase as any)
+      .from('questions')
+      .update(payload)
+      .eq('id', item.id);
+
+    if (!error) {
+      updatedCount += 1;
+    } else {
+      // Fallback to mark_scheme._cognitive_level
+      const { data: current } = await (supabase as any)
+        .from('questions')
+        .select('mark_scheme, sub_questions')
+        .eq('id', item.id)
+        .single();
+
+      if (current) {
+        const ms = typeof current.mark_scheme === 'object' && current.mark_scheme !== null
+          ? { ...current.mark_scheme }
+          : { marking_points: ['See mark scheme'] };
+        ms._cognitive_level = level;
+
+        const effectiveSubQs = item.subQuestions || current.sub_questions;
+        const retryPayload: any = { mark_scheme: ms };
+        if (effectiveSubQs) retryPayload.sub_questions = effectiveSubQs;
+
+        const { error: retryErr } = await (supabase as any)
+          .from('questions')
+          .update(retryPayload)
+          .eq('id', item.id);
+
+        if (!retryErr) updatedCount += 1;
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return updatedCount;
 }

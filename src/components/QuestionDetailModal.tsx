@@ -120,6 +120,46 @@ export function QuestionDetailModal({
                 {question.difficulty}
               </span>
             )}
+
+            {question.cognitive_level && (
+              <span
+                className="q-badge"
+                style={{
+                  background: '#eff6ff',
+                  color: '#1d4ed8',
+                  border: '1px solid #bfdbfe',
+                  fontWeight: 600,
+                  fontSize: '0.75rem',
+                }}
+                title={`Bloom's Taxonomy Cognitive Level: ${question.cognitive_level}`}
+              >
+                Bloom: {question.cognitive_level}
+              </span>
+            )}
+
+            {question.source_pdf_url && (
+              <a
+                href={`${question.source_pdf_url}${question.page_number && !question.source_pdf_url.includes('#page=') ? `#page=${question.page_number}` : ''}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="q-badge"
+                style={{
+                  background: '#f0fdf4',
+                  color: '#15803d',
+                  border: '1px solid #bbf7d0',
+                  fontWeight: 600,
+                  fontSize: '0.75rem',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+                title={`View Question Paper PDF${question.page_number ? ` on page ${question.page_number}` : ''}`}
+              >
+                <span>Past Paper PDF{question.page_number ? ` (p. ${question.page_number})` : ''}</span>
+                <span>↗</span>
+              </a>
+            )}
             {question.question_style && (
               <span className="q-badge q-badge--style">
                 {question.question_style}

@@ -5,6 +5,54 @@
 
 export type QuestionDifficulty = 'Easy' | 'Medium' | 'Hard';
 
+export type CognitiveLevel = 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'C6';
+
+export interface CognitiveLevelMeta {
+  level: CognitiveLevel;
+  category: string;
+  actionVerbs: string[];
+  description: string;
+}
+
+export const COGNITIVE_LEVEL_META: Record<CognitiveLevel, CognitiveLevelMeta> = {
+  C1: {
+    level: 'C1',
+    category: 'Remembering',
+    actionVerbs: ['State', 'Define', 'Name', 'List', 'Identify', 'Recall'],
+    description: 'Recall facts and basic concepts',
+  },
+  C2: {
+    level: 'C2',
+    category: 'Understanding',
+    actionVerbs: ['Describe', 'Explain', 'Classify', 'Summarize', 'Outline'],
+    description: 'Explain ideas, trends, or concepts',
+  },
+  C3: {
+    level: 'C3',
+    category: 'Applying',
+    actionVerbs: ['Calculate', 'Determine', 'Construct', 'Solve', 'Use', 'Demonstrate'],
+    description: 'Use information in concrete situations or calculations',
+  },
+  C4: {
+    level: 'C4',
+    category: 'Analyzing',
+    actionVerbs: ['Deduce', 'Compare', 'Contrast', 'Distinguish', 'Examine', 'Interpret'],
+    description: 'Draw connections among ideas, data, or experimental curves',
+  },
+  C5: {
+    level: 'C5',
+    category: 'Evaluating',
+    actionVerbs: ['Evaluate', 'Justify', 'Assess', 'Criticize', 'Argue', 'Appraise'],
+    description: 'Justify a stance, evaluate errors, or assess methods',
+  },
+  C6: {
+    level: 'C6',
+    category: 'Creating',
+    actionVerbs: ['Design', 'Plan', 'Formulate', 'Devise', 'Propose', 'Synthesize'],
+    description: 'Produce new or original work, plan investigations, or design apparatus',
+  },
+};
+
 export type QuestionStyle =
   | 'Structured'
   | 'Multiple Choice'
@@ -119,6 +167,7 @@ export interface SubQuestion {
   insert_page_number?: number | null; // Insert booklet page number if from Insert Booklet
   bounding_box?: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options?: string[] | null;// Optional choices for tick box / multiple-choice sub-questions
+  cognitive_level?: CognitiveLevel | null; // Bloom's Taxonomy cognitive level (C1-C6)
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
   guidance?: string;        // Sub-question specific teacher guidance/examiner tip
   common_misconceptions?: string[]; // Sub-question specific common student errors
@@ -150,6 +199,9 @@ export interface Question {
   topic: string;
   sub_topic: string | null;
   difficulty: QuestionDifficulty | null;
+  cognitive_level?: CognitiveLevel | null; // Bloom's Taxonomy cognitive level (C1-C6)
+  source_pdf_url?: string | null;          // Permanent public URL of the source Question Paper PDF
+  page_number?: number | null;             // 1-indexed page in the QP PDF where this question appears
   marks: number;
   diagram_url: string | null;       // Supabase Storage public URL
   svg_content?: string | null;      // AI-generated parametric SVG vector graphic
@@ -274,6 +326,8 @@ export interface ExtractedQuestion {
   question_style: QuestionStyle;
   total_marks: number;
   estimated_difficulty: QuestionDifficulty;
+  cognitive_level?: CognitiveLevel | null;
+  source_pdf_url?: string | null;
   topic: string;
   sub_topic: string | null;
   has_diagram: boolean;

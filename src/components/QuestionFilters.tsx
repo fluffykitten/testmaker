@@ -5,7 +5,7 @@ import {
   fetchPaperTypes,
   getCachedPaperTypes,
 } from '../services/questionBankService';
-import type { Syllabus, QuestionDifficulty, QuestionStyle } from '../types/database';
+import { type Syllabus, type QuestionDifficulty, type QuestionStyle, COGNITIVE_LEVEL_META } from '../types/database';
 import { getBookmarkedQuestionIds } from '../services/questionBookmarkService';
 import { getDistinctCustomTags } from '../services/questionTagService';
 import { useTeacherProfile } from '../hooks/useTeacherProfile';
@@ -528,6 +528,31 @@ export function QuestionFilters({
           >
             🔴 Hard
           </button>
+        </div>
+      </div>
+
+      {/* Bloom's Taxonomy Cognitive Level Selector */}
+      <div className="filter-group">
+        <label className="filter-label">Bloom's Taxonomy</label>
+        <div className="filter-pills">
+          <button
+            type="button"
+            className={`filter-pill ${!filters.cognitiveLevel ? 'filter-pill--active' : ''}`}
+            onClick={() => onFilterChange({ ...filters, cognitiveLevel: undefined, page: 1 })}
+          >
+            All
+          </button>
+          {(['C1', 'C2', 'C3', 'C4', 'C5', 'C6'] as const).map((lvl) => (
+            <button
+              key={lvl}
+              type="button"
+              className={`filter-pill ${filters.cognitiveLevel === lvl ? 'filter-pill--active' : ''}`}
+              onClick={() => onFilterChange({ ...filters, cognitiveLevel: filters.cognitiveLevel === lvl ? undefined : lvl, page: 1 })}
+              title={`${COGNITIVE_LEVEL_META[lvl]?.category}: ${COGNITIVE_LEVEL_META[lvl]?.description}`}
+            >
+              {lvl}
+            </button>
+          ))}
         </div>
       </div>
 

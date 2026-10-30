@@ -26,6 +26,7 @@ import {
   type ExportLayoutOptions,
 } from '../types/exportTemplates';
 import { exportOfflineGradingTemplateExcel } from '../services/offlineGradingService';
+import { exportTableOfSpecificationsDocx } from '../services/tosExportService';
 import { exportOfflineInteractiveHtmlQuiz } from '../services/htmlQuizExportService';
 import { GoogleFormsExportModal } from './GoogleFormsExportModal';
 import { DEFAULT_SCHOOL_LOGO } from '../assets/logoConstants';
@@ -238,6 +239,34 @@ export function ExportModal({
     } catch (err) {
       console.error('Failed to export Insert Booklet Docx:', err);
       alert('Error generating Word Insert Booklet file.');
+    } finally {
+      setIsExporting(false);
+      setActiveTask(null);
+    }
+  };
+
+  // 10. Export Table of Specifications (ToS)
+  const [tosExpandSubQuestions, setTosExpandSubQuestions] = useState(true);
+  const [tosIncludeSummary, setTosIncludeSummary] = useState(true);
+  const [tosTeacherName, setTosTeacherName] = useState('');
+  const [tosGradeSemester, setTosGradeSemester] = useState('Grade 10 / Semester 1');
+  const [tosExamDate, setTosExamDate] = useState('');
+
+  const handleExportTosDocx = async () => {
+    setIsExporting(true);
+    setActiveTask('Generating Table of Specifications (.docx)...');
+    try {
+      await exportTableOfSpecificationsDocx(headerConfig, questions, {
+        schoolName: layoutOptions.schoolName,
+        expandSubQuestions: tosExpandSubQuestions,
+        includeCognitiveSummary: tosIncludeSummary,
+        teacherName: tosTeacherName.trim() || undefined,
+        gradeSemester: tosGradeSemester.trim() || undefined,
+        examDate: tosExamDate.trim() || undefined,
+      });
+    } catch (err) {
+      console.error('Failed to export Table of Specifications:', err);
+      alert('Error generating Table of Specifications Word file.');
     } finally {
       setIsExporting(false);
       setActiveTask(null);
@@ -534,6 +563,33 @@ export function ExportModal({
                 <span>🔢 Auto-renumber figures to match test question order (e.g. Fig. 1.1 for Question 1)</span>
               </label>
             </div>
+
+            {/* Table of Specifications (ToS) Configuration */}
+            <div className="export-opt-col" style={{ gridColumn: '1 / -1', background: '#f8fafc', padding: '10px 14px', borderRadius: '6px', border: '1px solid #cbd5e1', marginTop: '4px' }}>
+              <div style={{ fontWeight: 600, color: '#1e293b', fontSize: '13px', marginBottom: '6px' }}>
+                Table of Specifications (ToS) Options:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: '#334155', margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={tosExpandSubQuestions}
+                    onChange={(e) => setTosExpandSubQuestions(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: '#0284c7', cursor: 'pointer' }}
+                  />
+                  <span>Expand sub-questions into separate rows (e.g. 1(a), 1(b))</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: '#334155', margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={tosIncludeSummary}
+                    onChange={(e) => setTosIncludeSummary(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: '#0284c7', cursor: 'pointer' }}
+                  />
+                  <span>Include Bloom's Taxonomy cognitive summary distribution table</span>
+                </label>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -814,6 +870,82 @@ export function ExportModal({
                     Print PDF
                   </button>
                 </div>
+              </div>
+
+              {/* Table of Specifications (ToS) Word Document */}
+              <div className="export-card" onClick={handleExportTosDocx}>
+                <div
+                  className="export-card-icon-wrap"
+                  style={{ background: '#f0f9ff', color: '#0284c7', border: '1px solid #bae6fd', fontWeight: 700, fontSize: '13px' }}
+                >
+                  ToS
+                </div>
+                <div className="export-card-content">
+                  <div className="export-card-header-row">
+                    <h3 className="export-card-name">Table of Specifications (.docx)</h3>
+                    <span className="export-badge" style={{ background: '#e0f2fe', color: '#0369a1' }}>Landscape Word</span>
+                  </div>
+                  <p className="export-card-desc">
+                    Official curriculum ToS: question type (MC/Essay), Bloom's level (C1 to C6), question stem, embedded diagrams, mark scheme, marks, and clickable Cambridge citation links.
+                  </p>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                      gap: '8px',
+                      marginTop: '8px',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="text"
+                      placeholder="Teacher Name"
+                      value={tosTeacherName}
+                      onChange={(e) => setTosTeacherName(e.target.value)}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.78rem',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '4px',
+                        background: '#ffffff',
+                      }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Grade / Semester"
+                      value={tosGradeSemester}
+                      onChange={(e) => setTosGradeSemester(e.target.value)}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.78rem',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '4px',
+                        background: '#ffffff',
+                      }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Date (e.g. 30 Oct 2026)"
+                      value={tosExamDate}
+                      onChange={(e) => setTosExamDate(e.target.value)}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.78rem',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '4px',
+                        background: '#ffffff',
+                      }}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="export-card-action-btn"
+                  style={{ background: '#0284c7' }}
+                  disabled={isExporting}
+                >
+                  Download ToS (.docx)
+                </button>
               </div>
 
               {/* Card 4: Teacher Mark Scheme */}

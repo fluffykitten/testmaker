@@ -150,6 +150,44 @@ function QuestionCardComponent({
             </span>
           )}
 
+          {question.cognitive_level && (
+            <span
+              className="q-badge"
+              style={{
+                background: '#eff6ff',
+                color: '#1d4ed8',
+                borderColor: '#bfdbfe',
+                fontWeight: 600,
+              }}
+              title={`Bloom's Taxonomy Cognitive Level: ${question.cognitive_level}`}
+            >
+              {question.cognitive_level}
+            </span>
+          )}
+
+          {question.source_pdf_url && (
+            <a
+              href={`${question.source_pdf_url}${question.page_number && !question.source_pdf_url.includes('#page=') ? `#page=${question.page_number}` : ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="q-badge"
+              style={{
+                background: '#f0fdf4',
+                color: '#15803d',
+                borderColor: '#bbf7d0',
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              title={`Open original past paper PDF${question.page_number ? ` on page ${question.page_number}` : ''}`}
+            >
+              <span>Past Paper{question.page_number ? ` p.${question.page_number}` : ''}</span>
+              <span style={{ fontSize: '11px' }}>↗</span>
+            </a>
+          )}
+
           {question.question_style && (
             <span className="q-badge q-badge--style">
               {question.question_style}
@@ -306,6 +344,24 @@ function QuestionCardComponent({
               <div key={si} className="q-sub-item">
                 <div className="q-sub-item-header">
                   <span className="q-sub-id">{sub.sub_id}</span>
+                  {sub.cognitive_level && (
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        color: '#1d4ed8',
+                        background: '#eff6ff',
+                        padding: '1px 5px',
+                        borderRadius: '4px',
+                        border: '1px solid #bfdbfe',
+                        marginRight: '6px',
+                        alignSelf: 'center',
+                      }}
+                      title={`Bloom's Taxonomy: ${sub.cognitive_level}`}
+                    >
+                      {sub.cognitive_level}
+                    </span>
+                  )}
                   <div className="q-sub-text">
                     <ExamMathText content={stripDuplicateSubIdPrefix(sub.sub_id, sub.question_text)} />
                   </div>

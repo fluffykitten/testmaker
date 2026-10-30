@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { normalizeQuestionStyle, type Question, type Syllabus, type QuestionStyle, type QuestionDifficulty, type SubQuestion } from '../types/database';
 import { ExamMathText } from './ExamMathText';
-import { updateQuestion, createQuestion, fetchSyllabuses } from '../services/questionBankService';
+import { updateQuestion, createQuestion, fetchSyllabuses, batchAttachPastPaperPdf } from '../services/questionBankService';
+import { uploadPastPaperPdf } from '../services/storageService';
+import type { CognitiveLevel } from '../types/database';
 import { DiagramCropModal } from './DiagramCropModal';
 import { uploadSingleDiagramBlob } from '../lib/diagramCropper';
 import {
@@ -103,6 +105,12 @@ export function QuestionEditorModal({
   const [paperNumber, setPaperNumber] = useState<string | number | null>('1');
   const [questionStyle, setQuestionStyle] = useState<QuestionStyle>('Structured');
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>('Medium');
+  const [cognitiveLevel, setCognitiveLevel] = useState<CognitiveLevel | ''>((question?.cognitive_level as CognitiveLevel) || 'C2');
+  const [sourcePdfUrl, setSourcePdfUrl] = useState<string>(question?.source_pdf_url || '');
+  const [pageNumber, setPageNumber] = useState<number | ''>(question?.page_number !== undefined && question?.page_number !== null ? question.page_number : '');
+  const [isUploadingQpPdf, setIsUploadingQpPdf] = useState(false);
+  const [applyPdfToPaper, setApplyPdfToPaper] = useState(false);
+  const qpPdfInputRef = useRef<HTMLInputElement>(null);
   const [totalMarks, setTotalMarks] = useState(4);
   const [diagramUrl, setDiagramUrl] = useState('');
   const [svgContent, setSvgContent] = useState<string | null>(question?.svg_content || null);
@@ -855,6 +863,13 @@ export function QuestionEditorModal({
         onSave({ ...question, ...payload, id: question?.id || `local-custom-${Date.now()}` } as Question);
         onClose();
         return;
+      }
+
+      if (applyPdfToPaper && sourcePdfUrl.trim() && syllabusId) {
+        batchAttachPastPaperPdf(
+          { syllabusId, year, series, paperNumber: paperNumber || 1 },
+          sourcePdfUrl.trim()
+        ).catch((err) => console.warn('Failed to batch attach PDF:', err));
       }
 
       if (isDbRecord && question?.id) {
@@ -2409,6 +2424,98 @@ export function QuestionEditorModal({
                     <option value="Medium">Medium</option>
                     <option value="Hard">Hard</option>
                   </select>
+                </div>
+
+                <div className="q-editor-field">
+                  <label className="q-editor-label" htmlFor="q-cognitive-select">
+                    Bloom's Taxonomy Cognitive Level:
+                  </label>
+                  <select
+                    id="q-cognitive-select"
+                    className="q-editor-select"
+                    value={cognitiveLevel}
+                    onChange={(e) => setCognitiveLevel(e.target.value as CognitiveLevel)}
+                  >
+                    <option value="C1">C1 - Remembering (Recall facts, State, Define, Name)</option>
+                    <option value="C2">C2 - Understanding (Describe, Explain, Classify, Outline)</option>
+                    <option value="C3">C3 - Applying (Calculate, Solve, Determine, Demonstrate)</option>
+                    <option value="C4">C4 - Analyzing (Compare, Contrast, Deduce, Distinguish)</option>
+                    <option value="C5">C5 - Evaluating (Evaluate, Justify, Assess, Appraise)</option>
+                    <option value="C6">C6 - Creating (Design apparatus, Plan investigation, Formulate)</option>
+                  </select>
+                </div>
+
+                <div className="q-editor-field" style={{ gridColumn: '1 / -1' }}>
+                  <label className="q-editor-label">
+                    Source Past Paper Question Paper (QP) PDF for Citations:
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      type="url"
+                      className="q-editor-input"
+                      placeholder="https://.../papers/0620_2023_s23_qp_12.pdf"
+                      value={sourcePdfUrl}
+                      onChange={(e) => setSourcePdfUrl(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <input
+                      type="number"
+                      className="q-editor-input"
+                      placeholder="Page #"
+                      title="Page number in Question Paper"
+                      style={{ width: '90px' }}
+                      value={pageNumber}
+                      onChange={(e) => setPageNumber(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
+                      min={1}
+                    />
+                    <input
+                      type="file"
+                      ref={qpPdfInputRef}
+                      accept="application/pdf"
+                      style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setIsUploadingQpPdf(true);
+                        try {
+                          const syl = syllabuses.find((s) => s.id === syllabusId);
+                          const url = await uploadPastPaperPdf(file, {
+                            subject_code: syl?.subject_code || '0620',
+                            year,
+                            series,
+                            paper_number: paperNumber || 1,
+                          });
+                          if (url) {
+                            setSourcePdfUrl(url);
+                          }
+                        } catch (err) {
+                          console.warn('Past paper PDF upload failed:', err);
+                        } finally {
+                          setIsUploadingQpPdf(false);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="q-editor-btn-secondary"
+                      onClick={() => qpPdfInputRef.current?.click()}
+                      disabled={isUploadingQpPdf}
+                    >
+                      {isUploadingQpPdf ? 'Uploading...' : 'Upload QP PDF'}
+                    </button>
+                  </div>
+                  {sourcePdfUrl && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '12px', color: '#475569', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={applyPdfToPaper}
+                        onChange={(e) => setApplyPdfToPaper(e.target.checked)}
+                        style={{ accentColor: '#2563eb' }}
+                      />
+                      <span>Also attach this QP PDF to all other questions in this paper ({series} {year} Paper {paperNumber})</span>
+                    </label>
+                  )}
                 </div>
 
                 <div className="q-editor-field">
