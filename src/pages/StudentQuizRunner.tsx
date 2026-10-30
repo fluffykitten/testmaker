@@ -40,7 +40,13 @@ import { ExamScratchpadModal } from '../components/ExamScratchpadModal';
 import type { ExamAttachment } from '../services/quizManagerService';
 import { ExamAudioPlayer } from '../components/ExamAudioPlayer';
 import { CandidateWatermark } from '../components/CandidateWatermark';
-import { flushClipboard, detectMultiMonitor, formatSessionHash } from '../utils/examSecurityUtils';
+import {
+  flushClipboard,
+  detectMultiMonitor,
+  formatSessionHash,
+  requestSecureFullscreen,
+  applyMaskedPinInput,
+} from '../utils/examSecurityUtils';
 import {
   joinProctorSession,
   sendStudentHeartbeat,
@@ -480,14 +486,8 @@ export function StudentQuizRunner({
   });
 
   const handleResumeFullscreen = useCallback(async () => {
-    try {
-      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
-      }
-      setIsFullscreenActive(true);
-    } catch (err) {
-      console.warn('Fullscreen resume notice:', err);
-    }
+    await requestSecureFullscreen();
+    setIsFullscreenActive(true);
   }, []);
 
   // Timer warning latches to prevent missed alerts during background tab throttling
@@ -810,30 +810,47 @@ export function StudentQuizRunner({
     }
 
     if (entered.toUpperCase() === expected.toUpperCase()) {
+      // Wipe PIN state immediately before unmounting the modal so no DOM value remains
+      setPinInput('');
+      setPinError(null);
       setIsUnlocking(true);
-      setTimeout(async () => {
-        setIsLockedByProctor(false);
-        setLockReason('');
-        setLockTime('');
-        setPinInput('');
-        setPinError(null);
-        setIsUnlocking(false);
-        setSecurityAlert('✅ Exam unlocked by invigilator. Please remain focused in fullscreen.');
-        setTimeout(() => setSecurityAlert(null), 5000);
+      requestAnimationFrame(() => {
+        setTimeout(async () => {
+          setIsLockedByProctor(false);
+          setLockReason('');
+          setLockTime('');
+          setIsUnlocking(false);
+          setSecurityAlert('✅ Exam unlocked by invigilator. Please remain focused in fullscreen.');
+          setTimeout(() => setSecurityAlert(null), 5000);
 
-        // Re-enter Fullscreen on unlock
-        try {
-          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-            await document.documentElement.requestFullscreen();
-          }
-        } catch (err) {
-          console.warn('Fullscreen resume notice:', err);
-        }
-      }, 350);
+          // Re-enter Fullscreen on unlock
+          await requestSecureFullscreen();
+        }, 250);
+      });
     } else {
       setPinError('❌ Incorrect Teacher PIN. Please have the exam invigilator verify and re-enter.');
     }
   };
+
+  // ─── 2B. Browser History Trap (Prevents 2-finger touchpad horizontal overscroll back/forward) ───
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading || !securityEnabled) return;
+
+    try {
+      window.history.pushState({ examGuard: true }, '', window.location.href);
+    } catch { }
+
+    const handlePopState = () => {
+      if (!isSubmittingRef.current && !isSubmitted) {
+        try {
+          window.history.pushState({ examGuard: true }, '', window.location.href);
+        } catch { }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled]);
 
   // ─── 3. Anti-Cheating & Clipboard Event Listeners ───────────────────────────
   useEffect(() => {
@@ -846,7 +863,7 @@ export function StudentQuizRunner({
       }
     };
 
-    // B. Window Blur & Focus Sanitization
+    // B. Window Blur & Focus Sanitization (Immediate violation & PIN lock on any focus loss)
     const handleWindowBlur = () => {
       if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
         logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
@@ -866,8 +883,20 @@ export function StudentQuizRunner({
       }
     };
 
-    // D. Keyboard Shortcut Trapping
+    // D. Keyboard Shortcut Trapping (Capture Phase)
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Disable Escape and F11 keys during exam so they cannot exit fullscreen
+      if (e.key === 'Escape' || e.key === 'F11' || e.code === 'Escape' || e.code === 'F11') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      // Block Alt+Left / Alt+Right (browser back/forward keyboard navigation)
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Block F12 (DevTools)
       if (e.key === 'F12') {
         e.preventDefault();
@@ -940,7 +969,7 @@ export function StudentQuizRunner({
     window.addEventListener('paste', handlePaste);
     window.addEventListener('mobile-proctor-violation', handleMobileProctor);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
@@ -952,7 +981,7 @@ export function StudentQuizRunner({
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, logViolation]);
@@ -1024,11 +1053,7 @@ export function StudentQuizRunner({
         setPinError(null);
         setSecurityAlert('✅ Examination remotely unlocked by invigilator. Please remain focused.');
         setTimeout(() => setSecurityAlert(null), 5000);
-        try {
-          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(() => { });
-          }
-        } catch { }
+        requestSecureFullscreen().catch(() => { });
       } else if (cmd.type === 'add_time') {
         const extraSec = (cmd.minutes || 5) * 60;
         setTimeLeft((prev) => prev + extraSec);
@@ -1830,6 +1855,8 @@ export function StudentQuizRunner({
       return;
     }
 
+    // Wipe PIN state immediately upon verification so no value remains in the DOM
+    setTeacherActionPin('');
     setTeacherActionError(null);
 
     if (teacherActionType === 'resubmit') {
@@ -1883,14 +1910,8 @@ export function StudentQuizRunner({
         setSecurityAlert('🔓 Exam unlocked by invigilator. Resuming examination session.');
         setTimeout(() => setSecurityAlert(null), 5000);
 
-        // Resume fullscreen if in exam mode
-        try {
-          if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-            await document.documentElement.requestFullscreen();
-          }
-        } catch (err) {
-          console.warn('Fullscreen resume notice:', err);
-        }
+        // Resume fullscreen & lock Escape/F11 if in exam mode
+        await requestSecureFullscreen();
       } catch (err: any) {
         setTeacherActionError(err?.message || 'Failed to resume exam session.');
       } finally {
@@ -2239,13 +2260,7 @@ export function StudentQuizRunner({
     await flushClipboard();
 
     if (securityEnabled && containerRef.current) {
-      try {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen();
-        }
-      } catch (err) {
-        console.warn('Fullscreen request blocked:', err);
-      }
+      await requestSecureFullscreen();
     }
 
     setHasStarted(true);
@@ -2330,13 +2345,7 @@ export function StudentQuizRunner({
     setTargetEndTime(end);
     setTimeLeft(durationToUseSec);
     if (securityEnabled && containerRef.current) {
-      try {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen();
-        }
-      } catch (err) {
-        console.warn('Fullscreen request blocked:', err);
-      }
+      await requestSecureFullscreen();
     }
     setHasStarted(true);
 
@@ -3240,11 +3249,23 @@ export function StudentQuizRunner({
                   🛡️ 4-Digit Candidate Exam PIN: <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
-                  type="password"
+                  type="text"
+                  inputMode="numeric"
+                  name="candidate_session_seq"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
                   maxLength={4}
-                  value={studentPinInput}
+                  value={'•'.repeat(studentPinInput.length)}
                   onChange={(e) => {
-                    setStudentPinInput(e.target.value.replace(/\D/g, '').slice(0, 4));
+                    const nextPin = applyMaskedPinInput(e.target.value, studentPinInput, 4)
+                      .replace(/\D/g, '')
+                      .slice(0, 4);
+                    setStudentPinInput(nextPin);
                     if (studentPinError) setStudentPinError(null);
                   }}
                   placeholder="• • • •"
@@ -4059,7 +4080,7 @@ export function StudentQuizRunner({
                       </button>
                     </div>
                   ) : (
-                    <form onSubmit={handleTeacherAuthorizeAction}>
+                    <div role="region" aria-label="Invigilator Authorization">
                       <div style={{ marginBottom: '16px' }}>
                         <label
                           style={{
@@ -4075,13 +4096,27 @@ export function StudentQuizRunner({
                           Enter Invigilator / Teacher PIN
                         </label>
                         <input
-                          type="password"
+                          type="text"
+                          name="examiner_action_token"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="off"
+                          spellCheck={false}
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-form-type="other"
                           autoFocus
                           disabled={isTeacherActionRunning}
-                          value={teacherActionPin}
+                          value={'•'.repeat(teacherActionPin.length)}
                           onChange={(e) => {
-                            setTeacherActionPin(e.target.value);
+                            setTeacherActionPin(applyMaskedPinInput(e.target.value, teacherActionPin, 20));
                             if (teacherActionError) setTeacherActionError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleTeacherAuthorizeAction();
+                            }
                           }}
                           placeholder="••••"
                           style={{
@@ -4208,7 +4243,8 @@ export function StudentQuizRunner({
                           Cancel
                         </button>
                         <button
-                          type="submit"
+                          type="button"
+                          onClick={() => handleTeacherAuthorizeAction()}
                           disabled={isTeacherActionRunning || !teacherActionPin.trim()}
                           className="sq-btn sq-btn-primary"
                           style={{
@@ -4225,7 +4261,7 @@ export function StudentQuizRunner({
                             : '🔓 Authorize Exam Unlock'}
                         </button>
                       </div>
-                    </form>
+                    </div>
                   )}
                 </div>
               </div>
@@ -6040,8 +6076,8 @@ export function StudentQuizRunner({
               )}
             </div>
 
-            {/* Invigilator PIN Input Form */}
-            <form className="sq-lockdown-form" onSubmit={handleUnlockWithPin}>
+            {/* Invigilator PIN Input Gate (Non-Form + Solution 3 Bullet State Masking) */}
+            <div className="sq-lockdown-form" role="region" aria-label="Proctor Unlock Gate">
               <div className="sq-ld-form-header">
                 <span className="sq-ld-key-icon">🔑</span>
                 <span>Proctor / Teacher Unlock Gate</span>
@@ -6052,12 +6088,26 @@ export function StudentQuizRunner({
 
               <div className="sq-ld-input-row">
                 <input
-                  type="password"
+                  type="text"
+                  name="exam_resume_token"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
                   className={`sq-ld-pin-input ${pinError ? 'sq-ld-input--error animate-shake' : ''}`}
-                  value={pinInput}
+                  value={'•'.repeat(pinInput.length)}
                   onChange={(e) => {
-                    setPinInput(e.target.value);
+                    setPinInput(applyMaskedPinInput(e.target.value, pinInput, 20));
                     if (pinError) setPinError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleUnlockWithPin();
+                    }
                   }}
                   placeholder="Enter Teacher PIN"
                   maxLength={20}
@@ -6065,7 +6115,8 @@ export function StudentQuizRunner({
                   disabled={isUnlocking}
                 />
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={() => handleUnlockWithPin()}
                   className="sq-btn sq-ld-unlock-btn"
                   disabled={isUnlocking || !pinInput.trim()}
                 >
@@ -6078,7 +6129,7 @@ export function StudentQuizRunner({
                   {pinError}
                 </div>
               )}
-            </form>
+            </div>
           </div>
         </div>
       )}

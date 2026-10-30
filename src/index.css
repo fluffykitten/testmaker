@@ -103,6 +103,8 @@ html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: clip;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
 }
 
 body {
@@ -116,6 +118,8 @@ body {
   line-height: 1.6;
   min-height: 100vh;
   overflow-x: clip;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
   -webkit-tap-highlight-color: transparent;
 }
 

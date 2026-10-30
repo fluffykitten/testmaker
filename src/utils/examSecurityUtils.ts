@@ -116,3 +116,41 @@ export async function detectMultiMonitor(): Promise<MultiMonitorCheckResult> {
 
   return { isMultiMonitor: false };
 }
+
+/**
+ * Requests browser fullscreen with navigationUI set to 'hide' (suppresses Windows touchscreen
+ * edge-swipe overlays where supported) without invoking navigator.keyboard.lock (which triggers
+ * persistent Chromium "Hold Esc to exit fullscreen" browser notifications).
+ */
+export async function requestSecureFullscreen(): Promise<boolean> {
+  if (typeof document === 'undefined') return false;
+  try {
+    if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      try {
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+      } catch {
+        await document.documentElement.requestFullscreen();
+      }
+    }
+    return !!document.fullscreenElement;
+  } catch (err) {
+    console.warn('[Security] Fullscreen request notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Solution 3 Cross-Browser State Masking for Security / Teacher PIN inputs.
+ * Keeps the DOM input as type="text" displaying only '•' bullets while updating the real
+ * secret string in memory. Completely prevents browser "Save Password?" popups and DOM inspection.
+ */
+export function applyMaskedPinInput(
+  rawDomValue: string,
+  currentSecret: string,
+  maxLen = 20
+): string {
+  if (!rawDomValue) return '';
+  const keptBullets = (rawDomValue.match(/•/g) || []).length;
+  const addedChars = rawDomValue.replace(/•/g, '');
+  return (currentSecret.slice(0, keptBullets) + addedChars).slice(0, maxLen);
+}
