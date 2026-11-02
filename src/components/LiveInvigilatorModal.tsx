@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useDeferredValue } from 'react';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import {
   subscribeMultiProctorDashboard,
@@ -50,6 +50,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   >('all');
   const [sortBy, setSortBy] = useState<ProctorSortOption>('class_seat');
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const pendingHeartbeatsRef = useRef<Record<string, ProctorStudentState>>({});
   const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
@@ -201,6 +203,33 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       .catch(() => {});
   }, [monitoredCodesKey, monitoredQuizzes]);
 
+  // ─── 1B. Micro-Batch Heartbeats Flush (300ms window for high-volume 200+ concurrency) ─
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const pending = pendingHeartbeatsRef.current;
+      const keys = Object.keys(pending);
+      if (keys.length === 0) return;
+
+      pendingHeartbeatsRef.current = {};
+      setStudents((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        keys.forEach((compKey) => {
+          const student = pending[compKey];
+          const existing = next[compKey];
+          if (existing?.status === 'submitted' && student.status !== 'submitted') {
+            return;
+          }
+          next[compKey] = student;
+          changed = true;
+        });
+        return changed ? next : prev;
+      });
+    }, 300);
+
+    return () => clearInterval(timer);
+  }, []);
+
   // ─── 2. Multi-Channel Real-time WebSockets Subscription ────────────────────
   useEffect(() => {
     const codes = monitoredQuizzes
@@ -213,20 +242,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       const qCode = (student.quizCode || '').trim().toUpperCase();
       const compKey = `${qCode}::${student.studentId}`;
 
-      setStudents((prev) => {
-        const existing = prev[compKey];
-        if (existing?.status === 'submitted' && student.status !== 'submitted') {
-          return prev;
-        }
-        return {
-          ...prev,
-          [compKey]: {
-            ...student,
-            quizCode: qCode,
-            quizTitle: student.quizTitle || quizByCode[qCode]?.title,
-          },
-        };
-      });
+      pendingHeartbeatsRef.current[compKey] = {
+        ...student,
+        quizCode: qCode,
+        quizTitle: student.quizTitle || quizByCode[qCode]?.title,
+      };
 
       // Recover activity logs from recentViolations telemetry if missing
       if (student.recentViolations && student.recentViolations.length > 0) {
@@ -474,8 +494,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       if (activeFilter === 'active' && s.status !== 'active') return false;
       if (activeFilter === 'submitted' && s.status !== 'submitted') return false;
 
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
+      if (deferredSearchQuery.trim()) {
+        const q = deferredSearchQuery.toLowerCase();
         const matchName = s.studentName.toLowerCase().includes(q);
         const matchNum = (s.candidateNumber || '').toLowerCase().includes(q);
         const matchClass = (s.candidateClass || '').toLowerCase().includes(q);
@@ -527,13 +547,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
       return 0;
     });
-  }, [scopeStudents, activeFilter, searchQuery, sortBy, isStudentExceeded]);
+  }, [scopeStudents, activeFilter, deferredSearchQuery, sortBy, isStudentExceeded]);
 
   // ─── 6. Command Handlers (Individual & Scoped Bulk) ─────────────────────────
   const handleRemoteUnlock = useCallback((compositeKey: string) => {
     const s = students[compositeKey];
     if (!s || !s.quizCode) return;
 
+    delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'unlock');
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
@@ -564,6 +585,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     const s = students[compositeKey];
     if (!s || !s.quizCode) return;
 
+    delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'add_time', { minutes });
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
@@ -601,6 +623,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       return;
     }
 
+    delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'force_submit');
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
@@ -630,6 +653,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     const s = students[compositeKey];
     if (!s || !s.quizCode) return;
 
+    delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'pardon');
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
@@ -674,14 +698,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
     }
 
-    // If whole exam is selected with all classes, send single 'ALL' broadcast
-    if (sidebarMode === 'exam' && selectedKey !== '__ALL__' && secondaryFilter === 'all') {
-      sendProctorCommand(selectedKey, 'ALL', 'unlock');
-    } else {
-      lockedTargets.forEach((t) => {
-        sendProctorCommand(t.quizCode!, t.studentId, 'unlock');
-      });
-    }
+    const targetClass =
+      sidebarMode === 'class' && selectedKey !== '__ALL__'
+        ? selectedKey
+        : sidebarMode === 'exam' && secondaryFilter !== 'all'
+        ? secondaryFilter
+        : undefined;
+
+    const targetQuizzes = Array.from(
+      new Set(lockedTargets.map((t) => t.quizCode!).filter(Boolean))
+    );
+    const codesToSend =
+      targetQuizzes.length > 0 ? targetQuizzes : monitoredQuizzes.map((q) => q.quizCode);
+
+    codesToSend.forEach((code) => {
+      sendProctorCommand(code, 'ALL', 'unlock', { targetClass });
+    });
 
     const lockedKeys = new Set(
       lockedTargets.map((t) => `${t.quizCode!.toUpperCase()}::${t.studentId}`)
@@ -725,13 +757,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         }
       }
 
-      if (sidebarMode === 'exam' && selectedKey !== '__ALL__' && secondaryFilter === 'all') {
-        sendProctorCommand(selectedKey, 'ALL', 'add_time', { minutes });
-      } else {
-        activeTargets.forEach((t) => {
-          sendProctorCommand(t.quizCode!, t.studentId, 'add_time', { minutes });
-        });
-      }
+      const targetClass =
+        sidebarMode === 'class' && selectedKey !== '__ALL__'
+          ? selectedKey
+          : sidebarMode === 'exam' && secondaryFilter !== 'all'
+          ? secondaryFilter
+          : undefined;
+
+      const targetQuizzes = Array.from(
+        new Set(activeTargets.map((t) => t.quizCode!).filter(Boolean))
+      );
+      const codesToSend =
+        targetQuizzes.length > 0 ? targetQuizzes : monitoredQuizzes.map((q) => q.quizCode);
+
+      codesToSend.forEach((code) => {
+        sendProctorCommand(code, 'ALL', 'add_time', { minutes, targetClass });
+      });
 
       const targetKeys = new Set(
         activeTargets.map((t) => `${t.quizCode!.toUpperCase()}::${t.studentId}`)
@@ -782,19 +823,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
     }
 
-    if (sidebarMode === 'exam' && selectedKey !== '__ALL__' && secondaryFilter === 'all') {
-      sendProctorCommand(selectedKey, 'ALL', 'announcement', { message });
-    } else if (selectedKey === '__ALL__' && secondaryFilter === 'all') {
-      monitoredQuizzes.forEach((q) => {
-        if (q.quizCode) {
-          sendProctorCommand(q.quizCode, 'ALL', 'announcement', { message });
-        }
-      });
-    } else {
-      activeTargets.forEach((t) => {
-        sendProctorCommand(t.quizCode!, t.studentId, 'announcement', { message });
-      });
-    }
+    const targetClass =
+      sidebarMode === 'class' && selectedKey !== '__ALL__'
+        ? selectedKey
+        : sidebarMode === 'exam' && secondaryFilter !== 'all'
+        ? secondaryFilter
+        : undefined;
+
+    const targetQuizzes = Array.from(
+      new Set(activeTargets.map((t) => t.quizCode!).filter(Boolean))
+    );
+    const codesToSend =
+      targetQuizzes.length > 0 ? targetQuizzes : monitoredQuizzes.map((q) => q.quizCode);
+
+    codesToSend.forEach((code) => {
+      sendProctorCommand(code, 'ALL', 'announcement', { message, targetClass });
+    });
 
     setLogEvents((prev) => [
       {

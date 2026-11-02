@@ -43,6 +43,7 @@ export type ProctorCommandType = 'unlock' | 'add_time' | 'force_submit' | 'annou
 export interface ProctorCommand {
   id: string;
   targetStudentId: string | 'ALL';
+  targetClass?: string;        // Scopes broadcast to a specific class cohort (e.g. "X IPA 1")
   type: ProctorCommandType;
   minutes?: number;            // For 'add_time' (e.g. +5)
   message?: string;            // For 'announcement'
@@ -84,6 +85,7 @@ function getChannelName(quizCode: string): string {
 
 let studentChannel: RealtimeChannel | null = null;
 let currentStudentId: string = '';
+let currentStudentClass: string = '';
 
 export interface StudentProctorCallbacks {
   onCommandReceived: (cmd: ProctorCommand) => void;
@@ -101,6 +103,7 @@ export function joinProctorSession(
   leaveProctorSession();
 
   currentStudentId = initialState.studentId;
+  currentStudentClass = (initialState.candidateClass || '').trim();
   const channelName = getChannelName(quizCode);
 
   studentChannel = supabase.channel(channelName, {
@@ -110,7 +113,18 @@ export function joinProctorSession(
   // Listen for commands broadcast by teacher
   studentChannel.on('broadcast', { event: 'proctor_cmd' }, ({ payload }) => {
     const cmd = payload as ProctorCommand;
-    if (cmd && (cmd.targetStudentId === 'ALL' || cmd.targetStudentId === currentStudentId)) {
+    if (!cmd) return;
+
+    // Check if targeted to ALL or this student
+    const matchesStudent = cmd.targetStudentId === 'ALL' || cmd.targetStudentId === currentStudentId;
+
+    // Check if targeted to a specific class
+    const matchesClass =
+      !cmd.targetClass ||
+      (Boolean(currentStudentClass) &&
+        cmd.targetClass.trim().toLowerCase() === currentStudentClass.toLowerCase());
+
+    if (matchesStudent && matchesClass) {
       callbacks.onCommandReceived(cmd);
     }
   });
@@ -180,6 +194,7 @@ export function leaveProctorSession(): void {
     supabase.removeChannel(studentChannel);
     studentChannel = null;
     currentStudentId = '';
+    currentStudentClass = '';
   }
 }
 
@@ -261,7 +276,7 @@ export function sendProctorCommand(
   quizCode: string,
   targetStudentId: string | 'ALL',
   type: ProctorCommandType,
-  options?: { minutes?: number; message?: string }
+  options?: { minutes?: number; message?: string; targetClass?: string }
 ): void {
   const ch = hostChannels.get(quizCode.trim().toUpperCase());
   if (!ch) return;
@@ -269,6 +284,7 @@ export function sendProctorCommand(
   const cmd: ProctorCommand = {
     id: `cmd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     targetStudentId,
+    targetClass: options?.targetClass,
     type,
     minutes: options?.minutes,
     message: options?.message,

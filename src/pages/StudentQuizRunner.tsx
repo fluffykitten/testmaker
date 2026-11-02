@@ -1063,12 +1063,14 @@ export function StudentQuizRunner({
         setSecurityAlert('✅ Examination remotely unlocked by invigilator. Please remain focused.');
         setTimeout(() => setSecurityAlert(null), 5000);
         requestSecureFullscreen().catch(() => { });
+        setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'add_time') {
         const extraSec = (cmd.minutes || 5) * 60;
         setTimeLeft((prev) => prev + extraSec);
         setTargetEndTime((prev) => (prev ? prev + extraSec * 1000 : Date.now() + extraSec * 1000));
         setSecurityAlert(`⏱️ TIME EXTENSION: Invigilator granted +${cmd.minutes || 5} minutes extra time.`);
         setTimeout(() => setSecurityAlert(null), 7000);
+        setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'force_submit') {
         setSecurityAlert('🛑 Examination submission requested by invigilator.');
         // Notify proctor channel immediately of forced submission
@@ -1112,6 +1114,7 @@ export function StudentQuizRunner({
         setPinError(null);
         setSecurityAlert('✅ Security strikes pardoned and cleared by invigilator. Please stay in fullscreen.');
         setTimeout(() => setSecurityAlert(null), 5000);
+        setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'announcement') {
         setTeacherAnnouncement(cmd.message || null);
       }
