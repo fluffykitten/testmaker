@@ -450,6 +450,7 @@ export function StudentQuizRunner({
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => { });
+  const sendCurrentHeartbeatRef = useRef<() => void>(() => { });
 
   // 🕵️ Forensic Telemetry Refs (Answer Change History & Dwell Times)
   const answerChangeHistoryRef = useRef<AnswerChangeLogEntry[]>([]);
@@ -743,6 +744,8 @@ export function StudentQuizRunner({
             lastHeartbeat: Date.now(),
             exceededMaxViolations: isExceeded,
             maxViolations,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
             recentViolations: [...violations, rec].map((v) => ({
               timestamp: v.timestamp,
               detail: v.detail,
@@ -789,6 +792,7 @@ export function StudentQuizRunner({
       startTime,
       maxViolations,
       resolvedQuizCode,
+      title,
       sessionHash,
       candidateName,
       candidateNumber,
@@ -1040,6 +1044,8 @@ export function StudentQuizRunner({
       multiMonitorDetected,
       deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
       lastHeartbeat: Date.now(),
+      quizCode: resolvedQuizCode,
+      quizTitle: title,
       recentViolations: violations.map((v) => ({
         timestamp: v.timestamp,
         detail: v.detail,
@@ -1082,6 +1088,8 @@ export function StudentQuizRunner({
           multiMonitorDetected: false,
           deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
           lastHeartbeat: Date.now(),
+          quizCode: resolvedQuizCode,
+          quizTitle: title,
           recentViolations: violations.map((v) => ({
             timestamp: v.timestamp,
             detail: v.detail,
@@ -1111,6 +1119,7 @@ export function StudentQuizRunner({
 
     joinProctorSession(resolvedQuizCode, initialTelemetry, {
       onCommandReceived: handleCommand,
+      onSyncRequested: () => sendCurrentHeartbeatRef.current(),
     });
 
     return () => {
@@ -1184,13 +1193,17 @@ export function StudentQuizRunner({
       lastHeartbeat: Date.now(),
       exceededMaxViolations: isExceeded,
       maxViolations: s.maxViolations,
+      quizCode: resolvedQuizCode,
+      quizTitle: title,
       recentViolations: s.violations.map((v) => ({
         timestamp: v.timestamp,
         detail: v.detail,
         type: v.type,
       })),
     });
-  }, [hasStarted, resolvedQuizCode, sessionHash, candidateName, candidateNumber, candidateClass]);
+  }, [hasStarted, resolvedQuizCode, sessionHash, candidateName, candidateNumber, candidateClass, title]);
+
+  sendCurrentHeartbeatRef.current = sendCurrentHeartbeat;
 
   // 1. Periodic Heartbeat (Every 15s) - Maintains liveness without spamming WebSockets
   useEffect(() => {
@@ -1383,6 +1396,8 @@ export function StudentQuizRunner({
       multiMonitorDetected: false,
       deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
       lastHeartbeat: Date.now(),
+      quizCode: resolvedQuizCode,
+      quizTitle: title,
     };
     sendStudentHeartbeat(submitTelemetry);
     sendStudentViolation(resolvedQuizCode, submitTelemetry, {

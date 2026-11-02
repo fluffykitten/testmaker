@@ -125,6 +125,7 @@ export function QuizManagerPage({
   const isQuizizzAllowed = Boolean(securityDefaults.enableQuizizzMode);
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
+  const [isSchoolProctorOpen, setIsSchoolProctorOpen] = useState(false);
   const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
@@ -209,6 +210,7 @@ export function QuizManagerPage({
         !isConfigModalOpen &&
         !selectedQuizForResults &&
         !selectedQuizForProctor &&
+        !isSchoolProctorOpen &&
         !deleteModalState.isOpen &&
         !offlineGradingData &&
         !isSelectOfflineTestOpen
@@ -218,7 +220,11 @@ export function QuizManagerPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
+  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
+
+  const activeExamQuizzes = useMemo(() => {
+    return quizzes.filter((q) => q.isActive && q.quizMode !== 'game');
+  }, [quizzes]);
 
   // ─── 2. Data Aggregation for Level 1: Subject Hub ──────────────────────────
   const subjectSummaries = useMemo(() => {
@@ -722,6 +728,16 @@ export function QuizManagerPage({
               <div className="qm-hub-header-actions">
                 <button
                   type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={() => setIsSchoolProctorOpen(true)}
+                  title="Monitor all active examinations across all classes simultaneously"
+                >
+                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>📡</span>
+                  <span>School Live Proctor ({activeExamQuizzes.length})</span>
+                </button>
+
+                <button
+                  type="button"
                   className="qm-btn qm-btn--secondary qm-btn--grade-offline"
                   onClick={handleOpenOfflineGrader}
                   title="Grade offline physical papers using rapid Excel or visual grid"
@@ -914,6 +930,15 @@ export function QuizManagerPage({
               </div>
 
               <div className="qm-breadcrumb-right">
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  onClick={() => setIsSchoolProctorOpen(true)}
+                  title="Monitor all active examinations across all classes simultaneously"
+                >
+                  <span>📡 School Live Proctor ({activeExamQuizzes.length})</span>
+                </button>
+
                 {isQuizizzAllowed && (
                   <button
                     type="button"
@@ -2542,8 +2567,19 @@ export function QuizManagerPage({
       {/* Live Invigilator Proctoring Cockpit Modal */}
       {selectedQuizForProctor && (
         <LiveInvigilatorModal
-          quiz={selectedQuizForProctor}
+          quizzes={
+            activeExamQuizzes.some((q) => q.id === selectedQuizForProctor.id)
+              ? activeExamQuizzes
+              : [selectedQuizForProctor, ...activeExamQuizzes]
+          }
+          initialFocusQuizCode={selectedQuizForProctor.quizCode}
           onClose={() => setSelectedQuizForProctor(null)}
+        />
+      )}
+      {isSchoolProctorOpen && !selectedQuizForProctor && (
+        <LiveInvigilatorModal
+          quizzes={activeExamQuizzes}
+          onClose={() => setIsSchoolProctorOpen(false)}
         />
       )}
 

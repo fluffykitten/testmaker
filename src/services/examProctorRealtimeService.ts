@@ -34,6 +34,8 @@ export interface ProctorStudentState {
   recentViolations?: ProctorViolationSummary[];
   exceededMaxViolations?: boolean;
   maxViolations?: number;
+  quizCode?: string;
+  quizTitle?: string;
 }
 
 export type ProctorCommandType = 'unlock' | 'add_time' | 'force_submit' | 'announcement' | 'pardon';
@@ -52,6 +54,8 @@ export interface ProctorLogEvent {
   timestamp: string;
   studentName: string;
   candidateNumber?: string;
+  quizCode?: string;
+  quizTitle?: string;
   type:
     | 'join'
     | 'blur'
@@ -83,6 +87,7 @@ let currentStudentId: string = '';
 
 export interface StudentProctorCallbacks {
   onCommandReceived: (cmd: ProctorCommand) => void;
+  onSyncRequested?: () => void;
 }
 
 /**
@@ -108,6 +113,11 @@ export function joinProctorSession(
     if (cmd && (cmd.targetStudentId === 'ALL' || cmd.targetStudentId === currentStudentId)) {
       callbacks.onCommandReceived(cmd);
     }
+  });
+
+  // Listen for proctor immediate state sync requests
+  studentChannel.on('broadcast', { event: 'proctor_sync_request' }, () => {
+    callbacks.onSyncRequested?.();
   });
 
   studentChannel.subscribe((status) => {
@@ -145,6 +155,8 @@ export function sendStudentViolation(
     timestamp: new Date().toISOString(),
     studentName: studentState.studentName,
     candidateNumber: studentState.candidateNumber,
+    quizCode: studentState.quizCode,
+    quizTitle: studentState.quizTitle,
     type: (violation.type as any) || 'blur',
     detail: violation.detail,
     severity: violation.severity || 'warning',
@@ -175,7 +187,7 @@ export function leaveProctorSession(): void {
 // TEACHER (PROCTOR) SIDE HOOKS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let hostChannel: RealtimeChannel | null = null;
+const hostChannels = new Map<string, RealtimeChannel>();
 
 export interface ProctorDashboardCallbacks {
   onHeartbeat: (student: ProctorStudentState) => void;
@@ -183,41 +195,76 @@ export interface ProctorDashboardCallbacks {
 }
 
 /**
- * Connects the teacher dashboard to receive live student telemetry.
+ * Connects the teacher dashboard to receive live student telemetry across multiple quizzes.
+ */
+export function subscribeMultiProctorDashboard(
+  quizCodes: string[],
+  callbacks: ProctorDashboardCallbacks
+): void {
+  destroyProctorSession();
+
+  const normalizedCodes = Array.from(
+    new Set(quizCodes.map((c) => c.trim().toUpperCase()).filter(Boolean))
+  );
+
+  normalizedCodes.forEach((code) => {
+    const channelName = getChannelName(code);
+    const ch = supabase.channel(channelName, {
+      config: { broadcast: { self: false } },
+    });
+
+    ch.on('broadcast', { event: 'student_heartbeat' }, ({ payload }) => {
+      const student = payload as ProctorStudentState;
+      callbacks.onHeartbeat({
+        ...student,
+        quizCode: (student.quizCode || code).toUpperCase(),
+      });
+    });
+
+    ch.on('broadcast', { event: 'proctor_log_event' }, ({ payload }) => {
+      const logEvent = payload as ProctorLogEvent;
+      callbacks.onLogEvent({
+        ...logEvent,
+        quizCode: (logEvent.quizCode || code).toUpperCase(),
+      });
+    });
+
+    ch.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        ch.send({
+          type: 'broadcast',
+          event: 'proctor_sync_request',
+          payload: { requestedAt: Date.now() },
+        });
+      }
+    });
+
+    hostChannels.set(code, ch);
+  });
+}
+
+/**
+ * Connects the teacher dashboard to receive live student telemetry for a single quiz.
  */
 export function subscribeProctorDashboard(
   quizCode: string,
   callbacks: ProctorDashboardCallbacks
-): RealtimeChannel {
-  destroyProctorSession();
-
-  const channelName = getChannelName(quizCode);
-
-  hostChannel = supabase.channel(channelName, {
-    config: { broadcast: { self: false } },
-  });
-
-  hostChannel.on('broadcast', { event: 'student_heartbeat' }, ({ payload }) => {
-    callbacks.onHeartbeat(payload as ProctorStudentState);
-  });
-
-  hostChannel.on('broadcast', { event: 'proctor_log_event' }, ({ payload }) => {
-    callbacks.onLogEvent(payload as ProctorLogEvent);
-  });
-
-  hostChannel.subscribe();
-  return hostChannel;
+): RealtimeChannel | null {
+  subscribeMultiProctorDashboard([quizCode], callbacks);
+  return hostChannels.get(quizCode.trim().toUpperCase()) ?? null;
 }
 
 /**
- * Broadcasts an invigilator command (unlock, add time, force submit, announcement) to students.
+ * Broadcasts an invigilator command (unlock, add time, force submit, announcement) to students on a specific quiz channel.
  */
 export function sendProctorCommand(
+  quizCode: string,
   targetStudentId: string | 'ALL',
   type: ProctorCommandType,
   options?: { minutes?: number; message?: string }
 ): void {
-  if (!hostChannel) return;
+  const ch = hostChannels.get(quizCode.trim().toUpperCase());
+  if (!ch) return;
 
   const cmd: ProctorCommand = {
     id: `cmd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -228,7 +275,7 @@ export function sendProctorCommand(
     timestamp: Date.now(),
   };
 
-  hostChannel.send({
+  ch.send({
     type: 'broadcast',
     event: 'proctor_cmd',
     payload: cmd,
@@ -236,11 +283,11 @@ export function sendProctorCommand(
 }
 
 /**
- * Closes the teacher proctor dashboard channel.
+ * Closes all active teacher proctor dashboard channels.
  */
 export function destroyProctorSession(): void {
-  if (hostChannel) {
-    supabase.removeChannel(hostChannel);
-    hostChannel = null;
-  }
+  hostChannels.forEach((ch) => {
+    supabase.removeChannel(ch);
+  });
+  hostChannels.clear();
 }
