@@ -10,6 +10,11 @@ import {
 } from '../services/examProctorRealtimeService';
 import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
 import { getSchoolClasses } from '../lib/settings';
+import {
+  getSchoolRoster,
+  loadAndSyncSchoolRoster,
+  type RosterStudent,
+} from '../services/studentRosterService';
 import './LiveInvigilatorModal.css';
 
 export interface LiveInvigilatorModalProps {
@@ -46,8 +51,23 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [students, setStudents] = useState<Record<string, ProctorStudentState>>({});
   const [logEvents, setLogEvents] = useState<ProctorLogEvent[]>([]);
   const [activeFilter, setActiveFilter] = useState<
-    'all' | 'exceeded' | 'locked' | 'warnings' | 'active' | 'submitted'
+    'all' | 'exceeded' | 'locked' | 'warnings' | 'active' | 'submitted' | 'missing'
   >('all');
+  const [schoolRoster, setSchoolRoster] = useState<RosterStudent[]>(() => {
+    try {
+      return getSchoolRoster();
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    loadAndSyncSchoolRoster().then((list) => {
+      if (list && list.length > 0) {
+        setSchoolRoster(list);
+      }
+    }).catch(() => {});
+  }, []);
   const [sortBy, setSortBy] = useState<ProctorSortOption>('class_seat');
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -327,6 +347,18 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     return () => clearInterval(interval);
   }, []);
 
+  // ─── 2B. Centralized School Roster Directory by Class ───────────────────────
+  const rosterByClass = useMemo(() => {
+    const map: Record<string, RosterStudent[]> = {};
+    schoolRoster.forEach((r) => {
+      const cls = (r.class || '').trim();
+      if (!cls) return;
+      if (!map[cls]) map[cls] = [];
+      map[cls].push(r);
+    });
+    return map;
+  }, [schoolRoster]);
+
   // ─── 3. Candidate Aggregations & Sidebar Navigation Models ─────────────────
   const allStudentList = useMemo(() => Object.values(students), [students]);
 
@@ -358,20 +390,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     return list;
   }, [activeMonitoredStudents, hideEmptyClasses]);
 
-  // Per-Class metrics
+  // Per-Class metrics with Roster Reconciliation
   const classStats = useMemo(() => {
     const map: Record<
       string,
-      { total: number; locked: number; warnings: number; exceeded: number }
+      { total: number; locked: number; warnings: number; exceeded: number; rosterTotal: number; missingCount: number }
     > = {};
     sidebarClasses.forEach((c) => {
-      map[c] = { total: 0, locked: 0, warnings: 0, exceeded: 0 };
+      const rTotal = rosterByClass[c]?.length || 0;
+      map[c] = { total: 0, locked: 0, warnings: 0, exceeded: 0, rosterTotal: rTotal, missingCount: 0 };
     });
 
     activeMonitoredStudents.forEach((s) => {
       const cls = getStudentClass(s);
       if (!map[cls]) {
-        map[cls] = { total: 0, locked: 0, warnings: 0, exceeded: 0 };
+        const rTotal = rosterByClass[cls]?.length || 0;
+        map[cls] = { total: 0, locked: 0, warnings: 0, exceeded: 0, rosterTotal: rTotal, missingCount: 0 };
       }
       map[cls].total++;
       if (s.status === 'locked') map[cls].locked++;
@@ -381,8 +415,28 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
     });
 
+    // Calculate missing students count per class
+    Object.keys(map).forEach((cls) => {
+      const classRoster = rosterByClass[cls] || [];
+      if (classRoster.length === 0) {
+        map[cls].missingCount = 0;
+        return;
+      }
+      const connected = activeMonitoredStudents.filter((s) => getStudentClass(s) === cls);
+      const connectedNames = new Set(connected.map((s) => s.studentName.trim().toLowerCase()));
+      const connectedSeats = new Set(
+        connected.map((s) => (s.candidateNumber || '').trim().toLowerCase()).filter(Boolean)
+      );
+      const missing = classRoster.filter((r) => {
+        const nameMatch = connectedNames.has(r.name.trim().toLowerCase());
+        const seatMatch = r.candidateNumber && connectedSeats.has(r.candidateNumber.trim().toLowerCase());
+        return !nameMatch && !seatMatch;
+      });
+      map[cls].missingCount = missing.length;
+    });
+
     return map;
-  }, [sidebarClasses, activeMonitoredStudents, isStudentExceeded]);
+  }, [sidebarClasses, activeMonitoredStudents, isStudentExceeded, rosterByClass]);
 
   // Per-Exam metrics
   const examStats = useMemo(() => {
@@ -477,6 +531,67 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       exceeded,
     };
   }, [scopeStudents, isStudentExceeded]);
+
+  // ─── 4B. Reconciled Missing Candidates in Current Scope ───────────────────────
+  const missingStudents = useMemo(() => {
+    let expectedRoster: RosterStudent[] = [];
+
+    if (sidebarMode === 'class') {
+      if (selectedKey === '__ALL__') {
+        sidebarClasses.forEach((cls) => {
+          if (rosterByClass[cls]) {
+            expectedRoster.push(...rosterByClass[cls]);
+          }
+        });
+      } else {
+        expectedRoster = rosterByClass[selectedKey] || [];
+      }
+    } else {
+      if (secondaryFilter !== 'all') {
+        expectedRoster = rosterByClass[secondaryFilter] || [];
+      } else {
+        sidebarClasses.forEach((cls) => {
+          if (rosterByClass[cls]) {
+            expectedRoster.push(...rosterByClass[cls]);
+          }
+        });
+      }
+    }
+
+    if (expectedRoster.length === 0) return [];
+
+    const connectedNames = new Set(scopeStudents.map((s) => s.studentName.trim().toLowerCase()));
+    const connectedSeats = new Set(
+      scopeStudents.map((s) => (s.candidateNumber || '').trim().toLowerCase()).filter(Boolean)
+    );
+
+    const missing = expectedRoster.filter((r) => {
+      const nameMatch = connectedNames.has(r.name.trim().toLowerCase());
+      const seatMatch = r.candidateNumber && connectedSeats.has(r.candidateNumber.trim().toLowerCase());
+      return !nameMatch && !seatMatch;
+    });
+
+    if (deferredSearchQuery.trim()) {
+      const q = deferredSearchQuery.toLowerCase();
+      return missing.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          (r.candidateNumber || '').toLowerCase().includes(q) ||
+          (r.class || '').toLowerCase().includes(q)
+      );
+    }
+
+    return missing.sort((a, b) => {
+      const classComp = (a.class || '').localeCompare(b.class || '');
+      if (classComp !== 0) return classComp;
+      const numA = parseInt((a.candidateNumber || '').replace(/\D/g, ''), 10);
+      const numB = parseInt((b.candidateNumber || '').replace(/\D/g, ''), 10);
+      if (!isNaN(numA) && !isNaN(numB) && numA !== numB) {
+        return numA - numB;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [sidebarMode, selectedKey, secondaryFilter, sidebarClasses, rosterByClass, scopeStudents, deferredSearchQuery]);
 
   // ─── 5. Filtered & Sorted Student View ──────────────────────────────────────
   const filteredStudents = useMemo(() => {
@@ -1098,7 +1213,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                             ⚠️ {m.warnings}
                           </span>
                         )}
-                        <span className="lip-sidebar-count">{m.total}</span>
+                        {m.missingCount > 0 && (
+                          <span className="lip-sidebar-alert lip-sidebar-alert--missing" title={`${m.missingCount} candidate(s) not joined yet`}>
+                            👻 {m.missingCount}
+                          </span>
+                        )}
+                        <span className="lip-sidebar-count">
+                          {m.rosterTotal > 0 ? `${m.total}/${m.rosterTotal}` : m.total}
+                        </span>
                       </div>
                     </button>
                   );
@@ -1227,6 +1349,16 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 >
                   ⚪ Submitted ({scopedStats.submitted})
                 </button>
+                {missingStudents.length > 0 && (
+                  <button
+                    type="button"
+                    className={`lip-tab lip-tab--missing ${activeFilter === 'missing' ? 'lip-tab--active' : ''}`}
+                    onClick={() => setActiveFilter('missing')}
+                    title="Candidates registered in school roster who have not joined yet"
+                  >
+                    👻 Not Joined ({missingStudents.length})
+                  </button>
+                )}
               </div>
 
               {/* Secondary Filter Dropdown */}
@@ -1337,7 +1469,63 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                   showLogDrawer ? 'lip-grid-container--with-drawer' : ''
                 }`}
               >
-                {filteredStudents.length === 0 ? (
+                {activeFilter === 'missing' ? (
+                  missingStudents.length === 0 ? (
+                    <div className="lip-empty-state">
+                      <span className="lip-empty-icon">🎉</span>
+                      <h3>Full Attendance!</h3>
+                      <p>All candidates from the school roster in {scopeLabel} have connected to the examination.</p>
+                    </div>
+                  ) : (
+                    <div className="lip-students-grid">
+                      {missingStudents.map((m) => (
+                        <div
+                          key={`missing_${m.class}_${m.id || m.name}`}
+                          className="lip-student-card lip-student-card--missing"
+                        >
+                          <div className="lip-card-header">
+                            <div className="lip-student-info">
+                              <h4 className="lip-student-name" title={m.name}>
+                                {m.name}
+                              </h4>
+                              <div className="lip-student-sub">
+                                {m.candidateNumber && (
+                                  <span className="lip-tag lip-tag-seat">
+                                    Seat: {m.candidateNumber}
+                                  </span>
+                                )}
+                                <span className="lip-tag lip-tag-class">
+                                  {m.class}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="lip-card-badge-wrap">
+                              <span className="lip-status-badge lip-status-badge--missing">
+                                ⚫ NOT JOINED
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="lip-missing-notice-box">
+                            <span className="lip-missing-icon">👻</span>
+                            <span className="lip-missing-text">
+                              Candidate is registered in the class roster but has not connected to this exam session yet.
+                            </span>
+                          </div>
+
+                          <div className="lip-card-telemetry">
+                            <div className="lip-telemetry-row">
+                              <span className="lip-telemetry-label">Status:</span>
+                              <span style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>
+                                Expected from School Roster
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                ) : filteredStudents.length === 0 ? (
                   <div className="lip-empty-state">
                     {activeMonitoredStudents.length === 0 ? (
                       <>

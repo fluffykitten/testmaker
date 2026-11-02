@@ -1122,7 +1122,13 @@ export function StudentQuizRunner({
 
     joinProctorSession(resolvedQuizCode, initialTelemetry, {
       onCommandReceived: handleCommand,
-      onSyncRequested: () => sendCurrentHeartbeatRef.current(),
+      onSyncRequested: () => {
+        // Distribute response bursts across 100ms - 2500ms to protect Supabase message rate limit
+        const jitterMs = Math.floor(Math.random() * 2400) + 100;
+        setTimeout(() => {
+          sendCurrentHeartbeatRef.current();
+        }, jitterMs);
+      },
     });
 
     return () => {
@@ -1208,13 +1214,27 @@ export function StudentQuizRunner({
 
   sendCurrentHeartbeatRef.current = sendCurrentHeartbeat;
 
-  // 1. Periodic Heartbeat (Every 15s) - Maintains liveness without spamming WebSockets
+  // 1. Periodic Heartbeat (12-18s with randomized jitter) - Desynchronizes network traffic
   useEffect(() => {
     if (!hasStarted) return;
-    const interval = setInterval(() => {
-      sendCurrentHeartbeat();
-    }, 15000);
-    return () => clearInterval(interval);
+    let timeoutId: any;
+    let isCancelled = false;
+
+    const scheduleNextHeartbeat = () => {
+      const delay = 12000 + Math.floor(Math.random() * 6000);
+      timeoutId = setTimeout(() => {
+        if (isCancelled) return;
+        sendCurrentHeartbeat();
+        scheduleNextHeartbeat();
+      }, delay);
+    };
+
+    scheduleNextHeartbeat();
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timeoutId);
+    };
   }, [hasStarted, sendCurrentHeartbeat]);
 
   // 2. Reactive Heartbeat (Triggered ONLY on significant state changes, heavily debounced)
