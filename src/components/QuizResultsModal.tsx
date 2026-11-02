@@ -32,7 +32,13 @@ import { supabase } from '../lib/supabase';
 import { ExamMathText } from './ExamMathText';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { GradeThresholdEditor } from './GradeThresholdEditor';
-import { deriveGradeFromPercentage, type GradeThresholds } from '../utils/gradeThresholdUtils';
+import {
+  deriveGradeFromPercentage,
+  sanitizeGradeThresholds,
+  GRADE_VISUALS,
+  type GradeThresholds,
+  type GradeLetter,
+} from '../utils/gradeThresholdUtils';
 import { savePublishedQuiz } from '../services/quizManagerService';
 import './QuizResultsModal.css';
 
@@ -71,7 +77,21 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'flagged'>('all');
   const [selectedClass, setSelectedClass] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<'score-desc' | 'score-asc' | 'name-asc' | 'strikes-desc'>('score-desc');
   const [showMarkSchemeInReports, setShowMarkSchemeInReports] = useState<boolean>(true);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState<boolean>(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isExportMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setIsExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isExportMenuOpen]);
 
   // Live Connection State
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(true);
@@ -637,6 +657,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       ? submissions
       : submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase());
 
+    const emptyGrades: Record<GradeLetter, number> = { 'A*': 0, A: 0, B: 0, C: 0, D: 0, E: 0, U: 0 };
+
     if (activeSubmissions.length === 0) {
       return {
         count: 0,
@@ -646,17 +668,45 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         lowestScore: 0,
         cleanCount: 0,
         flaggedCount: 0,
+        gradeCounts: emptyGrades,
+        classTopics: [] as { topic: string; earnedMarks: number; totalMarks: number; percentage: number }[],
       };
     }
 
     const count = activeSubmissions.length;
     const totalScore = activeSubmissions.reduce((s, sub) => s + sub.score, 0);
     const avgScore = totalScore / count;
-    const avgPercentage = (avgScore / (quiz.totalMarks || 1)) * 100;
+    const avgPercentage = (avgScore / (currentQuiz.totalMarks || 1)) * 100;
     const highestScore = Math.max(...activeSubmissions.map((s) => s.score));
     const lowestScore = Math.min(...activeSubmissions.map((s) => s.score));
     const cleanCount = activeSubmissions.filter((s) => s.violationsCount === 0).length;
     const flaggedCount = count - cleanCount;
+
+    const gradeCounts: Record<GradeLetter, number> = { ...emptyGrades };
+    const topicMap = new Map<string, { topic: string; earnedMarks: number; totalMarks: number }>();
+
+    activeSubmissions.forEach((sub) => {
+      const g = deriveGradeFromPercentage(sub.percentage, currentQuiz.gradeThresholds).grade;
+      gradeCounts[g] = (gradeCounts[g] || 0) + 1;
+
+      if (sub.topicBreakdown) {
+        Object.entries(sub.topicBreakdown).forEach(([topName, tData]) => {
+          const cleanName = topName.trim() || 'General';
+          const key = cleanName.toLowerCase();
+          const prev = topicMap.get(key) || { topic: cleanName, earnedMarks: 0, totalMarks: 0 };
+          prev.earnedMarks += Number(tData.earnedMarks) || 0;
+          prev.totalMarks += Number(tData.totalMarks) || 0;
+          topicMap.set(key, prev);
+        });
+      }
+    });
+
+    const classTopics = Array.from(topicMap.values())
+      .map((t) => ({
+        ...t,
+        percentage: t.totalMarks > 0 ? (t.earnedMarks / t.totalMarks) * 100 : 0,
+      }))
+      .sort((a, b) => a.percentage - b.percentage);
 
     return {
       count,
@@ -666,12 +716,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       lowestScore,
       cleanCount,
       flaggedCount,
+      gradeCounts,
+      classTopics,
     };
-  }, [submissions, quiz.totalMarks, selectedClass]);
+  }, [submissions, currentQuiz.totalMarks, currentQuiz.gradeThresholds, selectedClass]);
 
-  // ─── Filtered Submissions ───────────────────────────────────────────────────
+  // ─── Filtered & Sorted Submissions ──────────────────────────────────────────
   const filteredSubmissions = useMemo(() => {
-    return submissions.filter((sub) => {
+    const filtered = submissions.filter((sub) => {
       const q = searchFilter.toLowerCase().trim();
       const matchesSearch = !q || sub.studentName.toLowerCase().includes(q) || (sub.candidateNumber && sub.candidateNumber.includes(q));
       const matchesStatus =
@@ -684,7 +736,15 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
       return matchesSearch && matchesStatus && matchesClass;
     });
-  }, [submissions, searchFilter, statusFilter, selectedClass]);
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === 'score-desc') return b.percentage - a.percentage || a.studentName.localeCompare(b.studentName);
+      if (sortBy === 'score-asc') return a.percentage - b.percentage || a.studentName.localeCompare(b.studentName);
+      if (sortBy === 'name-asc') return a.studentName.localeCompare(b.studentName);
+      if (sortBy === 'strikes-desc') return b.violationsCount - a.violationsCount || b.percentage - a.percentage;
+      return 0;
+    });
+  }, [submissions, searchFilter, statusFilter, selectedClass, sortBy]);
 
   const handleDelete = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -979,14 +1039,33 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   return createPortal(
     <div className="qrm-backdrop animate-fade-in" {...backdropDismiss}>
       <div className="qrm-modal animate-scale-up" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
+        {/* Unified Top Command Bar */}
         <div className="qrm-header">
           <div className="qrm-header-info">
-            <div className="qrm-subject-badge">{quiz.subject || 'Chemistry'}</div>
-            <h2 className="qrm-title">{quiz.title}</h2>
-            <p className="qrm-sub">
-              Access Code: <code className="qrm-code">{quiz.quizCode}</code> • {quiz.totalMarks} Total Marks • {submissions.length} Student Submission{submissions.length !== 1 ? 's' : ''}
-            </p>
+            <div className="qrm-header-title-row">
+              <span className="qrm-subject-badge">{currentQuiz.subject || 'Chemistry'}</span>
+              <h2 className="qrm-title" title={currentQuiz.title}>{currentQuiz.title}</h2>
+              <code className="qrm-code" title="Assessment Access Code">{currentQuiz.quizCode}</code>
+              <span className="qrm-meta-summary">
+                {currentQuiz.totalMarks} Marks • {submissions.length} Submission{submissions.length !== 1 ? 's' : ''}
+              </span>
+
+              {unanalyzedCount > 0 ? (
+                <span className="qrm-status-badge awaiting">
+                  ⏳ {unanalyzedCount} Awaiting AI
+                </span>
+              ) : submissions.length > 0 ? (
+                <span className="qrm-status-badge graded">
+                  ✅ All Graded
+                </span>
+              ) : null}
+
+              {submissions.length > 0 && (
+                <span className={`qrm-status-badge ${isAllReleased ? 'released' : 'hidden'}`}>
+                  {isAllReleased ? '📢 Released' : '🔒 Hidden'}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="qrm-header-actions">
@@ -998,6 +1077,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             >
               📊 Grade Curve
             </button>
+
             {submissions.length > 0 && (
               <>
                 <button
@@ -1018,7 +1098,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     disabled={isBatchGrading}
                     title="Execute batch AI pedagogical diagnostics on all submissions"
                   >
-                    {isBatchGrading ? '⏳ Evaluating...' : '🤖 Run Batch AI Analysis'}
+                    {isBatchGrading ? '⏳ Evaluating...' : '🤖 Run Batch AI'}
                   </button>
                 )}
 
@@ -1034,20 +1114,108 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               </>
             )}
 
-            {/* Manual Paper Import Action */}
-            <button
-              type="button"
-              className="qrm-btn-header-ghost"
-              onClick={() => {
-                setIsImportModalOpen(true);
-                setImportError(null);
-                setImportSuccessMsg(null);
-                setImportTokenInput('');
-              }}
-              title="Import offline student submission from backup .exam file or token string"
-            >
-              📥 Import Paper
-            </button>
+            {/* Consolidated Export & Tools Dropdown */}
+            <div className="qrm-export-dropdown-wrap" ref={exportMenuRef}>
+              <button
+                type="button"
+                className={`qrm-btn-export-trigger ${isExportMenuOpen ? 'active' : ''}`}
+                onClick={() => setIsExportMenuOpen((prev) => !prev)}
+                title="Export reports or import offline student scripts"
+              >
+                <span>📤 Export &amp; Tools</span>
+                <span className="qrm-caret">{isExportMenuOpen ? '▴' : '▾'}</span>
+              </button>
+
+              {isExportMenuOpen && (
+                <div className="qrm-export-popover animate-fade-in">
+                  {submissions.length > 0 && (
+                    <>
+                      <div className="qrm-popover-section-lbl">Report Settings</div>
+                      <label className="qrm-popover-toggle">
+                        <input
+                          type="checkbox"
+                          checked={showMarkSchemeInReports}
+                          onChange={(e) => setShowMarkSchemeInReports(e.target.checked)}
+                        />
+                        <span>Include Mark Scheme in PDFs</span>
+                      </label>
+
+                      <div className="qrm-popover-divider" />
+                      <div className="qrm-popover-section-lbl">Class Deliverables</div>
+
+                      <button
+                        type="button"
+                        className="qrm-popover-item"
+                        onClick={() => {
+                          setIsExportMenuOpen(false);
+                          exportBatchStudentFeedbackReportPdf(submissions, currentQuiz.title, selectedClass, {
+                            showMarkScheme: showMarkSchemeInReports,
+                            gradeThresholds: currentQuiz.gradeThresholds,
+                          });
+                        }}
+                      >
+                        <span className="qrm-popover-icon batch">🎓</span>
+                        <div className="qrm-popover-item-text">
+                          <strong>Batch 1-Page Reports (PDF)</strong>
+                          <span>Individual report cards for {stats.count} candidates</span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="qrm-popover-item"
+                        onClick={() => {
+                          setIsExportMenuOpen(false);
+                          exportClassQuizReportPdf(currentQuiz, submissions, selectedClass);
+                        }}
+                      >
+                        <span className="qrm-popover-icon pdf">📄</span>
+                        <div className="qrm-popover-item-text">
+                          <strong>Export Class Report (PDF)</strong>
+                          <span>Cohort analytics, grade bands &amp; rankings</span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="qrm-popover-item"
+                        onClick={() => {
+                          setIsExportMenuOpen(false);
+                          handleExportAllExcel();
+                        }}
+                      >
+                        <span className="qrm-popover-icon excel">📗</span>
+                        <div className="qrm-popover-item-text">
+                          <strong>Export All (Excel .xlsx)</strong>
+                          <span>Official ICM gradebook &amp; item analysis</span>
+                        </div>
+                      </button>
+
+                      <div className="qrm-popover-divider" />
+                    </>
+                  )}
+
+                  <div className="qrm-popover-section-lbl">Offline Recovery</div>
+                  <button
+                    type="button"
+                    className="qrm-popover-item"
+                    onClick={() => {
+                      setIsExportMenuOpen(false);
+                      setIsImportModalOpen(true);
+                      setImportError(null);
+                      setImportSuccessMsg(null);
+                      setImportTokenInput('');
+                    }}
+                  >
+                    <span className="qrm-popover-icon import">📥</span>
+                    <div className="qrm-popover-item-text">
+                      <strong>Import Offline Paper</strong>
+                      <span>Upload .exam backup file or token string</span>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Live Sync Status Indicator */}
             <div
@@ -1061,16 +1229,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   boxShadow: isLiveConnected ? '0 0 6px #22c55e' : 'none',
                 }}
               />
-              <span>{isLiveConnected ? 'Live Synced' : 'Connecting...'}</span>
+              <span>{isLiveConnected ? 'Live' : 'Syncing'}</span>
             </div>
 
-            <button type="button" className="qrm-close-btn" onClick={onClose}>
+            <button type="button" className="qrm-close-btn" onClick={onClose} title="Close Results Workspace">
               ✕
             </button>
           </div>
         </div>
 
-        {/* Live Grade Curve Tuning Panel */}
+        {/* Live Grade Curve Tuning Drawer (When toggled from top bar) */}
         {isCurveEditorOpen && (
           <div className="qrm-curve-panel animate-fade-in">
             <div className="qrm-curve-panel-header">
@@ -1101,91 +1269,18 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         )}
 
-        {/* ─── 2. MAIN PRIMARY ACTION RIBBON (MAIN EXPORT DELIVERABLES) ─── */}
-        <div className="qrm-action-ribbon">
-          <div className="qrm-status-badges">
-            {unanalyzedCount > 0 ? (
-              <span className="qrm-status-badge awaiting">
-                ⏳ {unanalyzedCount} Submission{unanalyzedCount !== 1 ? 's' : ''} Awaiting AI
-              </span>
-            ) : submissions.length > 0 ? (
-              <span className="qrm-status-badge graded">
-                ✅ All Submissions Graded
-              </span>
-            ) : null}
-
-            {submissions.length > 0 && (
-              <span className={`qrm-status-badge ${isAllReleased ? 'released' : 'hidden'}`}>
-                {isAllReleased ? '📢 Results Released to Students' : '🔒 Results Hidden from Students'}
-              </span>
-            )}
-          </div>
-
-          <div className="qrm-main-actions">
-            {submissions.length > 0 && (
-              <>
-                <label
-                  className="qrm-ms-toggle"
-                  title="Toggle whether Mark Scheme answers are included in 1-page student feedback report cards"
-                >
-                  <input
-                    type="checkbox"
-                    checked={showMarkSchemeInReports}
-                    onChange={(e) => setShowMarkSchemeInReports(e.target.checked)}
-                    style={{ accentColor: 'var(--icm-blue)', cursor: 'pointer', width: '14px', height: '14px' }}
-                  />
-                  <span>Show Mark Scheme</span>
-                </label>
-
-                <button
-                  type="button"
-                  className="qrm-btn-main qrm-btn-main-batch"
-                  onClick={() => exportBatchStudentFeedbackReportPdf(submissions, currentQuiz.title, selectedClass, { showMarkScheme: showMarkSchemeInReports, gradeThresholds: currentQuiz.gradeThresholds })}
-                  title={`Print 1-page feedback report cards for all candidates (${selectedClass === 'all' ? submissions.length : submissions.filter(s => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase()).length} students) in 1 PDF`}
-                >
-                  🎓 Batch 1-Page Reports (PDF)
-                </button>
-
-                <button
-                  type="button"
-                  className="qrm-btn-main qrm-btn-main-class"
-                  onClick={() => exportClassQuizReportPdf(currentQuiz, submissions, selectedClass)}
-                  title="Export complete class diagnostic report as PDF"
-                >
-                  📄 Export Class Report (PDF)
-                </button>
-
-                <button
-                  type="button"
-                  className="qrm-btn-main qrm-btn-main-excel"
-                  onClick={handleExportAllExcel}
-                  title="Export all results to Excel (.xlsx)"
-                >
-                  📗 Export All (Excel .xlsx)
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
         {/* Live Batch Grading Progress Bar */}
         {isBatchGrading && (
-          <div
-            style={{
-              background: 'linear-gradient(90deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.15))',
-              borderBottom: '1px solid rgba(139, 92, 246, 0.3)',
-              padding: '12px 24px',
-            }}
-          >
+          <div className="qrm-batch-progress-bar">
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8125rem', marginBottom: '6px' }}>
-              <span style={{ fontWeight: 700, color: '#c4b5fd' }}>
+              <span style={{ fontWeight: 700, color: 'var(--icm-blue)' }}>
                 🤖 {gradingProgress.text}
               </span>
-              <span style={{ fontWeight: 800, color: '#f8fafc' }}>
+              <span style={{ fontWeight: 800, color: 'var(--color-text-primary)' }}>
                 {gradingProgress.current} / {gradingProgress.total} Candidates
               </span>
             </div>
-            <div style={{ height: '6px', background: 'rgba(0, 0, 0, 0.3)', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ height: '6px', background: 'var(--color-border)', borderRadius: '3px', overflow: 'hidden' }}>
               <div
                 style={{
                   width: `${gradingProgress.total > 0 ? (gradingProgress.current / gradingProgress.total) * 100 : 0}%`,
@@ -1199,38 +1294,30 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         )}
 
-        {/* Analytics KPI Ribbon */}
-        <div className="qrm-kpi-ribbon">
-          <div className="qrm-kpi-card">
-            <span className="kpi-val">{stats.count}</span>
-            <span className="kpi-lbl">Total Students {selectedClass !== 'all' ? `(${selectedClass})` : ''}</span>
-          </div>
-          <div className="qrm-kpi-card">
-            <span className="kpi-val kpi-val--score">
-              {stats.count > 0 ? `${stats.avgScore.toFixed(1)} / ${quiz.totalMarks}` : '-'}
-            </span>
-            <span className="kpi-lbl">Average Score ({stats.avgPercentage.toFixed(0)}%)</span>
-          </div>
-          <div className="qrm-kpi-card">
-            <span className="kpi-val kpi-val--highest">
-              {stats.count > 0 ? `${stats.highestScore} / ${quiz.totalMarks}` : '-'}
-            </span>
-            <span className="kpi-lbl">Highest Score</span>
-          </div>
-          <div className="qrm-kpi-card">
-            <span className="kpi-val kpi-val--integrity">
-              {stats.count > 0
-                ? `${((stats.cleanCount / stats.count) * 100).toFixed(0)}%`
-                : '-'}
-            </span>
-            <span className="kpi-lbl">Clean Integrity Rate ({stats.cleanCount} clean)</span>
-          </div>
-        </div>
-
         {/* Body Split View */}
         <div className="qrm-body-layout">
           {/* Left Panel: Student Roster List */}
           <div className="qrm-roster-panel">
+            {/* Top Navigation Button: Class Overview */}
+            <div className="qrm-overview-nav-wrap">
+              <button
+                type="button"
+                className={`qrm-overview-nav-btn ${!selectedSubmission ? 'active' : ''}`}
+                onClick={() => setSelectedSubmission(null)}
+              >
+                <div className="qrm-ov-btn-left">
+                  <span className="qrm-ov-icon">📊</span>
+                  <div className="qrm-ov-btn-text">
+                    <strong>Class Overview &amp; Analytics</strong>
+                    <span>
+                      {stats.count} Student{stats.count !== 1 ? 's' : ''} • Avg {stats.avgPercentage.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+                <span className="qrm-ov-chevron">›</span>
+              </button>
+            </div>
+
             <div className="qrm-roster-toolbar">
               <input
                 type="text"
@@ -1240,39 +1327,39 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 onChange={(e) => setSearchFilter(e.target.value)}
               />
 
-              {/* Class Filter Selection */}
-              {availableClasses.length > 1 && (
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '8px 0' }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)' }}>Class:</span>
+              {/* Compact Class & Sort Controls */}
+              <div className="qrm-roster-select-row">
+                {availableClasses.length > 1 && (
                   <select
-                    className="qrm-class-select"
+                    className="qrm-compact-select"
                     value={selectedClass}
                     onChange={(e) => setSelectedClass(e.target.value)}
-                    style={{
-                      background: 'var(--color-surface)',
-                      border: '1px solid var(--color-border)',
-                      color: 'var(--color-text-primary)',
-                      borderRadius: '6px',
-                      padding: '4px 8px',
-                      fontSize: '0.8125rem',
-                      fontWeight: 600,
-                      outline: 'none',
-                      cursor: 'pointer',
-                      flex: 1,
-                    }}
+                    title="Filter by class cohort"
                   >
                     <option value="all">All Classes ({submissions.length})</option>
                     {availableClasses.map((cls) => {
                       const clsCount = submissions.filter((s) => (s.studentClass || 'General').toLowerCase() === cls.toLowerCase()).length;
                       return (
                         <option key={cls} value={cls}>
-                          {cls} ({clsCount} students)
+                          {cls} ({clsCount})
                         </option>
                       );
                     })}
                   </select>
-                </div>
-              )}
+                )}
+
+                <select
+                  className="qrm-compact-select"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as any)}
+                  title="Sort student roster"
+                >
+                  <option value="score-desc">Score: High → Low</option>
+                  <option value="score-asc">Score: Low → High</option>
+                  <option value="name-asc">Name: A → Z</option>
+                  <option value="strikes-desc">Most Strikes</option>
+                </select>
+              </div>
 
               <div className="qrm-status-filter-pills">
                 <button
@@ -1312,7 +1399,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 <div className="empty-icon">📝</div>
                 <h3>No Submissions Yet</h3>
                 <p>
-                  When students complete this quiz using code <strong>{quiz.quizCode}</strong>, their answers, scores, and proctoring audit logs will show up here instantly.
+                  When students complete this quiz using code <strong>{currentQuiz.quizCode}</strong>, their answers, scores, and proctoring audit logs will show up here instantly.
                 </p>
               </div>
             ) : filteredSubmissions.length === 0 ? (
@@ -1325,6 +1412,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   const isSelected = selectedSubmission?.id === sub.id;
                   const isClean = sub.violationsCount === 0;
                   const percent = Math.round(sub.percentage);
+                  const candGrade = deriveGradeFromPercentage(sub.percentage, currentQuiz.gradeThresholds);
 
                   return (
                     <div
@@ -1332,8 +1420,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       className={`qrm-student-card ${isSelected ? 'selected' : ''}`}
                       onClick={() => setSelectedSubmission(sub)}
                     >
-                      {/* Line 1: Indicator dot, Candidate Name, Class badge */}
-                      <div className="qrm-sc-line-1">
+                      <div className="qrm-sc-col-left">
                         <div className="qrm-sc-name-group">
                           <span
                             className="qrm-sc-dot"
@@ -1347,43 +1434,36 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                                 : '#ef4444',
                             }}
                           />
-                          <strong className="qrm-sc-name">{sub.studentName}</strong>
+                          <strong className="qrm-sc-name" title={sub.studentName}>{sub.studentName}</strong>
                         </div>
-                        <span className="qrm-sc-class">{sub.studentClass || 'General'}</span>
-                      </div>
-
-                      {/* Line 2: Score pill, Graded/AI status, Strikes */}
-                      <div className="qrm-sc-line-2">
-                        <div className="qrm-sc-score-group">
-                          <span className={`score-tag ${percent >= 70 ? 'high' : percent >= 40 ? 'med' : 'low'}`}>
-                            {sub.score} / {sub.totalMarks} ({percent}%)
-                          </span>
-                          {(() => {
-                            const candGrade = deriveGradeFromPercentage(sub.percentage, currentQuiz.gradeThresholds);
-                            return (
-                              <span
-                                className="grade-tag"
-                                style={{
-                                  backgroundColor: candGrade.color,
-                                  color: candGrade.textColor,
-                                  fontWeight: 800,
-                                  padding: '2px 7px',
-                                  borderRadius: '4px',
-                                  fontSize: '0.75rem',
-                                  lineHeight: 1.2,
-                                }}
-                              >
-                                {candGrade.grade}
-                              </span>
-                            );
-                          })()}
-                          <span className={`qrm-sc-status ${sub.status}`}>
+                        <div className="qrm-sc-subline">
+                          <span className="qrm-sc-class">{sub.studentClass || 'General'}</span>
+                          <span className={`qrm-sc-status ${sub.status || 'submitted'}`}>
                             {sub.status === 'published' ? 'Released' : sub.status === 'graded' ? 'Graded' : 'Awaiting AI'}
                           </span>
+                          {!isClean && (
+                            <span className="qrm-sc-strike-tag" title={`${sub.violationsCount} security strike(s)`}>
+                              ⚠️ {sub.violationsCount} Strike{sub.violationsCount !== 1 ? 's' : ''}
+                            </span>
+                          )}
                         </div>
+                      </div>
 
-                        <span className={`qrm-sc-integrity ${isClean ? 'clean' : 'flagged'}`}>
-                          {isClean ? '🟢 0 Strikes' : `⚠️ ${sub.violationsCount} Strike${sub.violationsCount !== 1 ? 's' : ''}`}
+                      <div className="qrm-sc-col-right">
+                        <div className="qrm-sc-score-block">
+                          <span className="qrm-sc-score-raw">
+                            {sub.score}<small>/{sub.totalMarks}</small>
+                          </span>
+                          <span className="qrm-sc-score-pct">{percent}%</span>
+                        </div>
+                        <span
+                          className="grade-tag"
+                          style={{
+                            backgroundColor: candGrade.color,
+                            color: candGrade.textColor,
+                          }}
+                        >
+                          {candGrade.grade}
                         </span>
                       </div>
                     </div>
@@ -1405,16 +1485,246 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             )}
           </div>
 
-          {/* Right Panel: Detailed Answer & Proctoring Inspector */}
+          {/* Right Panel: Class Overview Dashboard OR Candidate Script Inspector */}
           <div className="qrm-detail-panel">
             {!selectedSubmission ? (
-              <div className="qrm-detail-placeholder">
-                <div className="placeholder-icon">🔍</div>
-                <h3>Select a Candidate</h3>
-                <p>Click on any student in the roster to inspect their response breakdown, step-by-step answers, and security audit log.</p>
+              <div className="qrm-overview-dashboard animate-fade-in">
+                {/* Overview Top Bar */}
+                <div className="qrm-ov-header">
+                  <div>
+                    <h3 className="qrm-ov-title">
+                      Class Performance Overview {selectedClass !== 'all' ? `— ${selectedClass}` : '— All Classes'}
+                    </h3>
+                    <p className="qrm-ov-subtitle">
+                      Select any student on the left roster to inspect their individual script, adjust marks, or review proctoring logs.
+                    </p>
+                  </div>
+
+                  {submissions.length > 0 && (
+                    <div className="qrm-ov-quick-exports">
+                      <button
+                        type="button"
+                        className="qrm-btn-main qrm-btn-main-batch"
+                        onClick={() =>
+                          exportBatchStudentFeedbackReportPdf(submissions, currentQuiz.title, selectedClass, {
+                            showMarkScheme: showMarkSchemeInReports,
+                            gradeThresholds: currentQuiz.gradeThresholds,
+                          })
+                        }
+                      >
+                        🎓 Batch 1-Page Reports
+                      </button>
+                      <button
+                        type="button"
+                        className="qrm-btn-main qrm-btn-main-class"
+                        onClick={() => exportClassQuizReportPdf(currentQuiz, submissions, selectedClass)}
+                      >
+                        📄 Class Report (PDF)
+                      </button>
+                      <button
+                        type="button"
+                        className="qrm-btn-main qrm-btn-main-excel"
+                        onClick={handleExportAllExcel}
+                      >
+                        📗 Export Excel (.xlsx)
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* 4 Executive KPI Cards */}
+                <div className="qrm-ov-kpi-grid">
+                  <div className="qrm-ov-kpi-card">
+                    <span className="qrm-ov-kpi-label">Total Candidates</span>
+                    <span className="qrm-ov-kpi-val">{stats.count}</span>
+                    <span className="qrm-ov-kpi-foot">
+                      {selectedClass === 'all' ? `${availableClasses.length || 1} cohort(s)` : `Cohort: ${selectedClass}`}
+                    </span>
+                  </div>
+
+                  <div className="qrm-ov-kpi-card">
+                    <span className="qrm-ov-kpi-label">Cohort Average</span>
+                    <span className="qrm-ov-kpi-val kpi-val--score">
+                      {stats.count > 0 ? `${stats.avgScore.toFixed(1)} / ${currentQuiz.totalMarks}` : '—'}
+                    </span>
+                    <span className="qrm-ov-kpi-foot">
+                      {stats.count > 0
+                        ? `${stats.avgPercentage.toFixed(1)}% Mean (${deriveGradeFromPercentage(stats.avgPercentage, currentQuiz.gradeThresholds).grade})`
+                        : 'No submissions yet'}
+                    </span>
+                  </div>
+
+                  <div className="qrm-ov-kpi-card">
+                    <span className="qrm-ov-kpi-label">Score Range</span>
+                    <span className="qrm-ov-kpi-val kpi-val--highest">
+                      {stats.count > 0 ? `${stats.highestScore} / ${currentQuiz.totalMarks}` : '—'}
+                    </span>
+                    <span className="qrm-ov-kpi-foot">
+                      {stats.count > 0 ? `Highest: ${stats.highestScore} • Lowest: ${stats.lowestScore}` : '—'}
+                    </span>
+                  </div>
+
+                  <div className="qrm-ov-kpi-card">
+                    <span className="qrm-ov-kpi-label">Exam Integrity</span>
+                    <span className="qrm-ov-kpi-val kpi-val--integrity">
+                      {stats.count > 0 ? `${((stats.cleanCount / stats.count) * 100).toFixed(0)}%` : '—'}
+                    </span>
+                    <span className="qrm-ov-kpi-foot">
+                      {stats.cleanCount} Clean • {stats.flaggedCount} Flagged
+                    </span>
+                  </div>
+                </div>
+
+                {/* Grade Band Distribution & Curve Card */}
+                <div className="qrm-ov-section-card">
+                  <div className="qrm-ov-section-header">
+                    <div>
+                      <h4>📈 Grade Band Distribution (A* – U)</h4>
+                      <p>Live distribution of candidates across configured Cambridge grade thresholds.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className={`qrm-btn-header-ghost ${isCurveEditorOpen ? 'active' : ''}`}
+                      onClick={() => setIsCurveEditorOpen((prev) => !prev)}
+                    >
+                      {isCurveEditorOpen ? '✓ Hide Curve Editor' : '⚙️ Adjust Grade Curve'}
+                    </button>
+                  </div>
+
+                  {(() => {
+                    const gt = sanitizeGradeThresholds(currentQuiz.gradeThresholds);
+                    const tiers: { grade: GradeLetter; cutoffLabel: string }[] = [
+                      { grade: 'A*', cutoffLabel: `≥ ${gt.aStar}%` },
+                      { grade: 'A', cutoffLabel: `${gt.a}–${gt.aStar - 1}%` },
+                      { grade: 'B', cutoffLabel: `${gt.b}–${gt.a - 1}%` },
+                      { grade: 'C', cutoffLabel: `${gt.c}–${gt.b - 1}%` },
+                      { grade: 'D', cutoffLabel: `${gt.d}–${gt.c - 1}%` },
+                      { grade: 'E', cutoffLabel: `${gt.e}–${gt.d - 1}%` },
+                      { grade: 'U', cutoffLabel: `< ${gt.e}%` },
+                    ];
+
+                    return (
+                      <div className="qrm-grade-dist-grid">
+                        {tiers.map(({ grade, cutoffLabel }) => {
+                          const gCount = stats.gradeCounts[grade] || 0;
+                          const gPct = stats.count > 0 ? Math.round((gCount / stats.count) * 100) : 0;
+                          const vis = GRADE_VISUALS[grade];
+
+                          return (
+                            <div key={grade} className="qrm-grade-dist-col">
+                              <div className="qrm-gd-top">
+                                <span
+                                  className="qrm-gd-pill"
+                                  style={{ backgroundColor: vis.color, color: vis.textColor }}
+                                >
+                                  {grade}
+                                </span>
+                                <span className="qrm-gd-cutoff">{cutoffLabel}</span>
+                              </div>
+                              <div className="qrm-gd-bar-track">
+                                <div
+                                  className="qrm-gd-bar-fill"
+                                  style={{
+                                    height: `${Math.max(gCount > 0 ? 10 : 0, gPct)}%`,
+                                    background: vis.color,
+                                  }}
+                                />
+                              </div>
+                              <div className="qrm-gd-bottom">
+                                <strong>{gCount}</strong>
+                                <span>({gPct}%)</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Class-Wide Syllabus Topic Mastery */}
+                {stats.classTopics.length > 0 && (
+                  <div className="qrm-ov-section-card">
+                    <div className="qrm-ov-section-header">
+                      <div>
+                        <h4>🎯 Cohort Syllabus Topic Mastery</h4>
+                        <p>Aggregated accuracy across all {stats.count} candidates (sorted from lowest to highest mastery).</p>
+                      </div>
+                    </div>
+                    <div className="topic-bars">
+                      {stats.classTopics.map((t) => (
+                        <div key={t.topic} className="topic-bar-row">
+                          <div className="topic-bar-labels">
+                            <span>{t.topic}</span>
+                            <span>
+                              {t.earnedMarks} / {t.totalMarks} marks ({Math.round(t.percentage)}%)
+                            </span>
+                          </div>
+                          <div className="topic-progress-bg">
+                            <div
+                              className="topic-progress-fill"
+                              style={{
+                                width: `${Math.min(100, Math.max(0, t.percentage))}%`,
+                                background:
+                                  t.percentage >= 75
+                                    ? '#10b981'
+                                    : t.percentage >= 50
+                                    ? 'var(--icm-blue)'
+                                    : '#ef4444',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="qrm-detail-content animate-fade-in">
+                {/* Candidate Quick Navigation Bar */}
+                {(() => {
+                  const curIdx = filteredSubmissions.findIndex((s) => s.id === selectedSubmission.id);
+                  const prevSub = curIdx > 0 ? filteredSubmissions[curIdx - 1] : null;
+                  const nextSub = curIdx >= 0 && curIdx < filteredSubmissions.length - 1 ? filteredSubmissions[curIdx + 1] : null;
+
+                  return (
+                    <div className="qrm-cand-nav-bar">
+                      <button
+                        type="button"
+                        className="qrm-back-overview-btn"
+                        onClick={() => setSelectedSubmission(null)}
+                      >
+                        ← Back to Class Overview
+                      </button>
+
+                      <div className="qrm-cand-Order-controls">
+                        <span className="qrm-cand-pos-label">
+                          Candidate {curIdx >= 0 ? curIdx + 1 : 1} of {filteredSubmissions.length}
+                        </span>
+                        <button
+                          type="button"
+                          className="qrm-cand-step-btn"
+                          disabled={!prevSub}
+                          onClick={() => prevSub && setSelectedSubmission(prevSub)}
+                          title={prevSub ? `Previous: ${prevSub.studentName}` : 'First candidate'}
+                        >
+                          ◀ Prev
+                        </button>
+                        <button
+                          type="button"
+                          className="qrm-cand-step-btn"
+                          disabled={!nextSub}
+                          onClick={() => nextSub && setSelectedSubmission(nextSub)}
+                          title={nextSub ? `Next: ${nextSub.studentName}` : 'Last candidate'}
+                        >
+                          Next ▶
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Candidate Overview Card */}
                 <div className="qrm-candidate-header-card">
                   <div className="cand-info">
