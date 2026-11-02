@@ -1303,6 +1303,7 @@ export async function exportAllSubmissionsExcel(
     subject?: string;
     targetClass?: string;
     schoolName?: string;
+    gradeThresholds?: import('../utils/gradeThresholdUtils').GradeThresholds;
   }
 ): Promise<void> {
   return exportAllSubmissionsExcelICM(quizTitle, quizCode, totalMarks, submissions, options);
@@ -1313,6 +1314,9 @@ export async function exportAllSubmissionsExcel(
  * with official Sekolah Insan Cendekia Madani (ICM) branding, model keys,
  * and psychometric diagnostics.
  */
-export async function exportSingleSubmissionExcel(submission: StudentSubmission): Promise<void> {
-  return exportSingleSubmissionExcelICM(submission);
+export async function exportSingleSubmissionExcel(
+  submission: StudentSubmission,
+  options?: { gradeThresholds?: import('../utils/gradeThresholdUtils').GradeThresholds }
+): Promise<void> {
+  return exportSingleSubmissionExcelICM(submission, options);
 }

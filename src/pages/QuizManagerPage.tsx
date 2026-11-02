@@ -25,6 +25,7 @@ import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
 import { getSavedSettings } from '../lib/settings';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
 import { useTeacherProfile } from '../hooks/useTeacherProfile';
@@ -2104,6 +2105,25 @@ export function QuizManagerPage({
                       )}
                     </div>
                   )}
+                </section>
+
+                {/* 3. Grade Boundaries & Curve (A* – U) */}
+                <section className="qm-studio-section">
+                  <h3 className="qm-studio-section-title">
+                    <span>📊</span> Grade Boundaries &amp; Curve (A* – U)
+                  </h3>
+                  <div className="qm-studio-card">
+                    <GradeThresholdEditor
+                      value={activeQuizDraft.gradeThresholds}
+                      onChange={(gradeThresholds) =>
+                        setActiveQuizDraft({
+                          ...activeQuizDraft,
+                          gradeThresholds,
+                        })
+                      }
+                      totalMarks={activeQuizDraft.totalMarks}
+                    />
+                  </div>
                 </section>
               </div>
 

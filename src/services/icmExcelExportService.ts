@@ -4,6 +4,7 @@
 // and a student-by-question response heatmap matrix.
 
 import ExcelJS from 'exceljs';
+import { deriveGradeFromPercentage, type GradeThresholds } from '../utils/gradeThresholdUtils';
 import { exportFileUniversal } from './fileExportBridge';
 import type {
   StudentSubmission,
@@ -350,6 +351,7 @@ export async function exportAllSubmissionsExcelICM(
     subject?: string;
     targetClass?: string;
     schoolName?: string;
+    gradeThresholds?: GradeThresholds;
   }
 ): Promise<void> {
   if (!submissions || submissions.length === 0) {
@@ -431,8 +433,7 @@ export async function exportAllSubmissionsExcelICM(
   // Grade Distribution Bar (Rows 9-10)
   const gradeDistribution: Record<string, number> = { 'A*': 0, 'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0, 'U': 0 };
   submissions.forEach((s) => {
-    const p = s.percentage;
-    const g = p >= 90 ? 'A*' : p >= 80 ? 'A' : p >= 70 ? 'B' : p >= 60 ? 'C' : p >= 50 ? 'D' : p >= 40 ? 'E' : 'U';
+    const g = deriveGradeFromPercentage(s.percentage, options?.gradeThresholds).grade;
     gradeDistribution[g]++;
   });
 
@@ -489,7 +490,7 @@ export async function exportAllSubmissionsExcelICM(
     row.height = 20;
 
     const p = s.percentage;
-    const grade = p >= 90 ? 'A*' : p >= 80 ? 'A' : p >= 70 ? 'B' : p >= 60 ? 'C' : p >= 50 ? 'D' : p >= 40 ? 'E' : 'U';
+    const grade = deriveGradeFromPercentage(p, options?.gradeThresholds).grade;
     const durationFmt = isOffline ? '-' : `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`;
     const strikesFmt = isOffline ? '-' : s.violationsCount;
     const statusFmt = isOffline ? 'Offline Paper Exam' : s.violationsCount === 0 ? 'Clean (0 Strikes)' : s.violationsCount >= 3 ? 'Disqualified / Flagged' : `Suspicious (${s.violationsCount})`;
@@ -961,7 +962,7 @@ export async function exportAllSubmissionsExcelICM(
 /**
  * Exports an individual student's detailed response report in matching ICM branding.
  */
-export async function exportSingleSubmissionExcelICM(submission: StudentSubmission): Promise<void> {
+export async function exportSingleSubmissionExcelICM(submission: StudentSubmission, options?: { gradeThresholds?: GradeThresholds }): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Sekolah Insan Cendekia Madani (ICM)';
   wb.created = new Date();
@@ -998,7 +999,7 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     { property: 'Assessment Access Code', value: submission.quizCode },
     { property: 'Score Earned', value: `${submission.score} / ${submission.totalMarks}` },
     { property: 'Percentage Achieved', value: `${submission.percentage.toFixed(1)}%` },
-    { property: 'Calculated Grade', value: submission.percentage >= 90 ? 'A*' : submission.percentage >= 80 ? 'A' : submission.percentage >= 70 ? 'B' : submission.percentage >= 60 ? 'C' : submission.percentage >= 50 ? 'D' : submission.percentage >= 40 ? 'E' : 'U' },
+    { property: 'Calculated Grade', value: deriveGradeFromPercentage(submission.percentage, options?.gradeThresholds).grade },
     { property: 'Assessment Mode', value: isOffline ? 'Offline Paper Exam' : 'Computer-Based (Online)' },
     { property: 'Time Taken', value: isOffline ? '-' : `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
     { property: 'Violation Strikes', value: isOffline ? '-' : String(submission.violationsCount) },

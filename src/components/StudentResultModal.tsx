@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
@@ -12,6 +12,8 @@ import {
   exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
+import { getPublishedQuizzes } from '../services/quizManagerService';
+import { deriveGradeFromPercentage } from '../utils/gradeThresholdUtils';
 import './StudentResultModal.css';
 
 interface StudentResultModalProps {
@@ -74,14 +76,28 @@ export function StudentResultModal({
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
+  const matchingQuiz = useMemo(() => {
+    try {
+      const list = getPublishedQuizzes();
+      const code = quizCode.trim().toUpperCase();
+      return list.find((q) => q.quizCode.trim().toUpperCase() === code || q.id === quizCode);
+    } catch {
+      return null;
+    }
+  }, [quizCode]);
+
   const getGradeInfo = (percentage: number) => {
-    if (percentage >= 90) return { label: 'A*', className: 'srm-grade-pill--a', stroke: '#10b981' };
-    if (percentage >= 80) return { label: 'A', className: 'srm-grade-pill--a', stroke: '#10b981' };
-    if (percentage >= 70) return { label: 'B', className: 'srm-grade-pill--b', stroke: '#2563eb' };
-    if (percentage >= 60) return { label: 'C', className: 'srm-grade-pill--b', stroke: '#4f46e5' };
-    if (percentage >= 50) return { label: 'D', className: 'srm-grade-pill--c', stroke: '#ca8a04' };
-    if (percentage >= 40) return { label: 'E', className: 'srm-grade-pill--u', stroke: '#e11d48' };
-    return { label: 'U', className: 'srm-grade-pill--u', stroke: '#e11d48' };
+    const detail = deriveGradeFromPercentage(percentage, matchingQuiz?.gradeThresholds);
+    const className =
+      detail.grade === 'A*' || detail.grade === 'A'
+        ? 'srm-grade-pill--a'
+        : detail.grade === 'B' || detail.grade === 'C'
+        ? 'srm-grade-pill--b'
+        : detail.grade === 'D'
+        ? 'srm-grade-pill--c'
+        : 'srm-grade-pill--u';
+
+    return { label: detail.grade, className, stroke: detail.color, tierName: detail.tierName };
   };
 
   if (!isOpen) return null;
@@ -277,7 +293,7 @@ export function StudentResultModal({
                   <button
                     type="button"
                     className="srm-btn-report-card"
-                    onClick={() => exportStudentFeedbackReportPdf(selectedSubmission)}
+                    onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { gradeThresholds: matchingQuiz?.gradeThresholds })}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                       <span>🎓</span> 1-Page Report Card
@@ -288,7 +304,7 @@ export function StudentResultModal({
                   <button
                     type="button"
                     className="srm-btn-full-script"
-                    onClick={() => exportIndividualStudentReportPdf(selectedSubmission)}
+                    onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { gradeThresholds: matchingQuiz?.gradeThresholds })}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                       <span>📄</span> Full Script PDF

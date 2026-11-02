@@ -31,6 +31,9 @@ import {
 import { supabase } from '../lib/supabase';
 import { ExamMathText } from './ExamMathText';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import { GradeThresholdEditor } from './GradeThresholdEditor';
+import { deriveGradeFromPercentage, type GradeThresholds } from '../utils/gradeThresholdUtils';
+import { savePublishedQuiz } from '../services/quizManagerService';
 import './QuizResultsModal.css';
 
 interface QuizResultsModalProps {
@@ -39,6 +42,25 @@ interface QuizResultsModalProps {
 }
 
 export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
+  const [currentQuiz, setCurrentQuiz] = useState<PublishedQuiz>(quiz);
+  const [isCurveEditorOpen, setIsCurveEditorOpen] = useState(false);
+  const [curveSavedMsg, setCurveSavedMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrentQuiz(quiz);
+  }, [quiz]);
+
+  const handleUpdateGradeThresholds = async (gradeThresholds: GradeThresholds) => {
+    const updated: PublishedQuiz = { ...currentQuiz, gradeThresholds };
+    setCurrentQuiz(updated);
+    try {
+      await savePublishedQuiz(updated);
+      setCurveSavedMsg('✅ Boundaries updated');
+      setTimeout(() => setCurveSavedMsg(null), 3000);
+    } catch (err) {
+      console.error('Failed to save updated grade curve:', err);
+    }
+  };
   const [submissions, setSubmissions] = useState<StudentSubmission[]>(() =>
     getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId)
   );
@@ -701,15 +723,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   };
 
   const handleExportAllExcel = () => {
-    exportAllSubmissionsExcel(quiz.title, quiz.quizCode, quiz.totalMarks, submissions, {
-      subject: quiz.subject,
-      schoolName: quiz.headerConfig?.schoolName,
+    exportAllSubmissionsExcel(currentQuiz.title, currentQuiz.quizCode, currentQuiz.totalMarks, submissions, {
+      subject: currentQuiz.subject,
+      schoolName: currentQuiz.headerConfig?.schoolName,
       targetClass: selectedClass !== 'all' ? selectedClass : undefined,
+      gradeThresholds: currentQuiz.gradeThresholds,
     });
   };
 
   const handleExportSingleExcel = (sub: StudentSubmission) => {
-    exportSingleSubmissionExcel(sub);
+    exportSingleSubmissionExcel(sub, { gradeThresholds: currentQuiz.gradeThresholds });
   };
 
   const handleStartEditing = (qr: QuestionSubmissionResult) => {
@@ -967,6 +990,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
 
           <div className="qrm-header-actions">
+            <button
+              type="button"
+              className={`qrm-btn-header-ghost ${isCurveEditorOpen ? 'active' : ''}`}
+              onClick={() => setIsCurveEditorOpen((prev) => !prev)}
+              title="Fine-tune percentage thresholds for each grade tier"
+            >
+              📊 Grade Curve
+            </button>
             {submissions.length > 0 && (
               <>
                 <button
@@ -1039,6 +1070,37 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           </div>
         </div>
 
+        {/* Live Grade Curve Tuning Panel */}
+        {isCurveEditorOpen && (
+          <div className="qrm-curve-panel animate-fade-in">
+            <div className="qrm-curve-panel-header">
+              <div>
+                <div className="qrm-curve-panel-title">
+                  <span>📊</span> Grade Boundaries &amp; Curve Tuning
+                </div>
+                <div className="qrm-curve-panel-sub">
+                  Fine-tune cutoff percentages for this assessment. Changes apply live to all student badges, class diagnostics, and report exports.
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {curveSavedMsg && <span className="qrm-curve-saved-badge">{curveSavedMsg}</span>}
+                <button
+                  type="button"
+                  className="qrm-btn-header-ghost"
+                  onClick={() => setIsCurveEditorOpen(false)}
+                >
+                  ✕ Close Editor
+                </button>
+              </div>
+            </div>
+            <GradeThresholdEditor
+              value={currentQuiz.gradeThresholds}
+              onChange={handleUpdateGradeThresholds}
+              totalMarks={currentQuiz.totalMarks}
+            />
+          </div>
+        )}
+
         {/* ─── 2. MAIN PRIMARY ACTION RIBBON (MAIN EXPORT DELIVERABLES) ─── */}
         <div className="qrm-action-ribbon">
           <div className="qrm-status-badges">
@@ -1078,7 +1140,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 <button
                   type="button"
                   className="qrm-btn-main qrm-btn-main-batch"
-                  onClick={() => exportBatchStudentFeedbackReportPdf(submissions, quiz.title, selectedClass, { showMarkScheme: showMarkSchemeInReports })}
+                  onClick={() => exportBatchStudentFeedbackReportPdf(submissions, currentQuiz.title, selectedClass, { showMarkScheme: showMarkSchemeInReports, gradeThresholds: currentQuiz.gradeThresholds })}
                   title={`Print 1-page feedback report cards for all candidates (${selectedClass === 'all' ? submissions.length : submissions.filter(s => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase()).length} students) in 1 PDF`}
                 >
                   🎓 Batch 1-Page Reports (PDF)
@@ -1087,7 +1149,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 <button
                   type="button"
                   className="qrm-btn-main qrm-btn-main-class"
-                  onClick={() => exportClassQuizReportPdf(quiz, submissions, selectedClass)}
+                  onClick={() => exportClassQuizReportPdf(currentQuiz, submissions, selectedClass)}
                   title="Export complete class diagnostic report as PDF"
                 >
                   📄 Export Class Report (PDF)
@@ -1296,6 +1358,25 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                           <span className={`score-tag ${percent >= 70 ? 'high' : percent >= 40 ? 'med' : 'low'}`}>
                             {sub.score} / {sub.totalMarks} ({percent}%)
                           </span>
+                          {(() => {
+                            const candGrade = deriveGradeFromPercentage(sub.percentage, currentQuiz.gradeThresholds);
+                            return (
+                              <span
+                                className="grade-tag"
+                                style={{
+                                  backgroundColor: candGrade.color,
+                                  color: candGrade.textColor,
+                                  fontWeight: 800,
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.75rem',
+                                  lineHeight: 1.2,
+                                }}
+                              >
+                                {candGrade.grade}
+                              </span>
+                            );
+                          })()}
                           <span className={`qrm-sc-status ${sub.status}`}>
                             {sub.status === 'published' ? 'Released' : sub.status === 'graded' ? 'Graded' : 'Awaiting AI'}
                           </span>
@@ -1405,6 +1486,24 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                           {selectedSubmission.score} / {selectedSubmission.totalMarks}
                         </span>
                         <span className="cand-grade-pct">{selectedSubmission.percentage.toFixed(1)}%</span>
+                        {(() => {
+                          const sg = deriveGradeFromPercentage(selectedSubmission.percentage, currentQuiz.gradeThresholds);
+                          return (
+                            <span
+                              style={{
+                                backgroundColor: sg.color,
+                                color: sg.textColor,
+                                fontWeight: 800,
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontSize: '0.8rem',
+                                marginLeft: '8px',
+                              }}
+                            >
+                              Grade {sg.grade}
+                            </span>
+                          );
+                        })()}
                         <button
                           type="button"
                           className="qrm-grade-edit-btn"
@@ -1438,7 +1537,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         alignItems: 'center',
                         gap: '6px',
                       }}
-                      onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { showMarkScheme: showMarkSchemeInReports })}
+                      onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { showMarkScheme: showMarkSchemeInReports, gradeThresholds: currentQuiz.gradeThresholds })}
                       title="Print 1-page student feedback & improvement report card"
                     >
                       🎓 1-Page Report
@@ -1460,7 +1559,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         alignItems: 'center',
                         gap: '6px',
                       }}
-                      onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { showMarkScheme: showMarkSchemeInReports })}
+                      onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { showMarkScheme: showMarkSchemeInReports, gradeThresholds: currentQuiz.gradeThresholds })}
                       title="Export this candidate's full diagnostic script as PDF"
                     >
                       📄 Full Script

@@ -7,12 +7,16 @@ import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissi
 import { formatProctorTimestamp, formatCandidateAnswer, formatSubmissionDateTime } from './quizSubmissionService';
 import { formatLatexForHtml } from './pdfExportService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
+import { deriveGradeFromPercentage, sanitizeGradeThresholds, type GradeThresholds } from '../utils/gradeThresholdUtils';
 import { generateStudentImprovementPlan, generateDeterministicStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
 
 /**
  * Derives Cambridge letter grade from percentage with tier list rarity color styling
  */
-export function deriveGrade(percentage: number): {
+export function deriveGrade(
+  percentage: number,
+  thresholds?: Partial<GradeThresholds> | null
+): {
   grade: string;
   color: string;
   gradient: string;
@@ -20,74 +24,7 @@ export function deriveGrade(percentage: number): {
   textColor: string;
   tierName: string;
 } {
-  if (percentage >= 90) {
-    return {
-      grade: 'A*',
-      color: '#d97706',
-      gradient: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-      borderColor: '#fbbf24',
-      textColor: '#ffffff',
-      tierName: 'Legendary Gold',
-    };
-  }
-  if (percentage >= 80) {
-    return {
-      grade: 'A',
-      color: '#059669',
-      gradient: 'linear-gradient(135deg, #10b981 0%, #047857 100%)',
-      borderColor: '#34d399',
-      textColor: '#ffffff',
-      tierName: 'Epic Emerald',
-    };
-  }
-  if (percentage >= 70) {
-    return {
-      grade: 'B',
-      color: '#2563eb',
-      gradient: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-      borderColor: '#60a5fa',
-      textColor: '#ffffff',
-      tierName: 'Rare Sapphire',
-    };
-  }
-  if (percentage >= 60) {
-    return {
-      grade: 'C',
-      color: '#7c3aed',
-      gradient: 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)',
-      borderColor: '#a78bfa',
-      textColor: '#ffffff',
-      tierName: 'Uncommon Amethyst',
-    };
-  }
-  if (percentage >= 50) {
-    return {
-      grade: 'D',
-      color: '#ea580c',
-      gradient: 'linear-gradient(135deg, #f97316 0%, #c2410c 100%)',
-      borderColor: '#fb923c',
-      textColor: '#ffffff',
-      tierName: 'Bronze',
-    };
-  }
-  if (percentage >= 40) {
-    return {
-      grade: 'E',
-      color: '#dc2626',
-      gradient: 'linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)',
-      borderColor: '#f87171',
-      textColor: '#ffffff',
-      tierName: 'Ruby Coral',
-    };
-  }
-  return {
-    grade: 'U',
-    color: '#475569',
-    gradient: 'linear-gradient(135deg, #64748b 0%, #334155 100%)',
-    borderColor: '#94a3b8',
-    textColor: '#ffffff',
-    tierName: 'Shadow Slate',
-  };
+  return deriveGradeFromPercentage(percentage, thresholds);
 }
 
 /**
@@ -96,7 +33,7 @@ export function deriveGrade(percentage: number): {
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 export function exportClassQuizReportPdf(
-  quiz: { title: string; quizCode: string; subject?: string; totalMarks: number },
+  quiz: { title: string; quizCode: string; subject?: string; totalMarks: number; gradeThresholds?: GradeThresholds },
   submissions: StudentSubmission[],
   selectedClass: string = 'all'
 ): void {
@@ -105,6 +42,7 @@ export function exportClassQuizReportPdf(
     return;
   }
 
+  const gt = sanitizeGradeThresholds(quiz.gradeThresholds);
   const isOffline =
     !quiz.quizCode ||
     quiz.quizCode.toUpperCase().startsWith('OFFLINE') ||
@@ -162,7 +100,7 @@ export function exportClassQuizReportPdf(
   // Grade Distribution Counts
   const gradeCounts: Record<string, number> = { 'A*': 0, 'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0, 'U': 0 };
   filteredSubmissions.forEach((s) => {
-    const { grade } = deriveGrade(s.percentage);
+    const { grade } = deriveGrade(s.percentage, quiz.gradeThresholds);
     gradeCounts[grade] = (gradeCounts[grade] || 0) + 1;
   });
 
@@ -271,12 +209,12 @@ export function exportClassQuizReportPdf(
     <thead>
       <tr>
         <th style="width: 14%;">Grade</th>
-        <th style="width: 14%;">A* (≥90%)</th>
-        <th style="width: 14%;">A (80–89%)</th>
-        <th style="width: 14%;">B (70–79%)</th>
-        <th style="width: 14%;">C (60–69%)</th>
-        <th style="width: 14%;">D (50–59%)</th>
-        <th style="width: 16%;">E / U (&lt;50%)</th>
+        <th style="width: 14%;">A* (≥${gt.aStar}%)</th>
+        <th style="width: 14%;">A (${gt.a}–${gt.aStar - 1}%)</th>
+        <th style="width: 14%;">B (${gt.b}–${gt.a - 1}%)</th>
+        <th style="width: 14%;">C (${gt.c}–${gt.b - 1}%)</th>
+        <th style="width: 14%;">D (${gt.d}–${gt.c - 1}%)</th>
+        <th style="width: 16%;">E / U (&lt;${gt.d}%)</th>
       </tr>
     </thead>
     <tbody>
@@ -321,7 +259,7 @@ export function exportClassQuizReportPdf(
     </thead>
     <tbody>
       ${rankedSubmissions.map((sub, rIdx) => {
-    const { grade, color } = deriveGrade(sub.percentage);
+    const { grade, color } = deriveGrade(sub.percentage, quiz.gradeThresholds);
     const mins = Math.floor(sub.durationSeconds / 60);
     const secs = sub.durationSeconds % 60;
     const isClean = sub.violationsCount === 0;
@@ -343,6 +281,7 @@ export function exportClassQuizReportPdf(
 
 export interface ReportCardOptions {
   showMarkScheme?: boolean;
+  gradeThresholds?: GradeThresholds;
 }
 
 function normalizeTopicName(rawTopic?: string): string {
@@ -923,7 +862,7 @@ export function renderSingleStudentFeedbackReportHtml(
   options?: ReportCardOptions
 ): string {
   const showMarkScheme = options?.showMarkScheme !== false;
-  const { grade, color } = deriveGrade(submission.percentage);
+  const { grade, color } = deriveGrade(submission.percentage, options?.gradeThresholds);
   const results = submission.questionResults || [];
 
   // Normalize and merge topic breakdown (fixes OCR "lonic" vs "Ionic" duplicates)
@@ -1403,7 +1342,7 @@ export function exportIndividualStudentReportPdf(
     submission.durationSeconds === 0 ||
     submission.teacherNotes?.toLowerCase().includes('offline');
 
-  const { grade, color } = deriveGrade(submission.percentage);
+  const { grade, color } = deriveGrade(submission.percentage, options?.gradeThresholds);
   const mins = Math.floor(submission.durationSeconds / 60);
   const secs = submission.durationSeconds % 60;
   const isClean = submission.violationsCount === 0;

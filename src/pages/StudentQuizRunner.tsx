@@ -38,6 +38,7 @@ import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
 import { ExamAttachmentModal } from '../components/ExamAttachmentModal';
 import { ExamScratchpadModal } from '../components/ExamScratchpadModal';
 import type { ExamAttachment } from '../services/quizManagerService';
+import type { GradeThresholds } from '../utils/gradeThresholdUtils';
 import { ExamAudioPlayer } from '../components/ExamAudioPlayer';
 import { CandidateWatermark } from '../components/CandidateWatermark';
 import {
@@ -323,6 +324,7 @@ export function StudentQuizRunner({
   const [isQuizPaused, setIsQuizPaused] = useState<boolean>(false);
   const [title, setTitle] = useState(initialHeaderConfig?.title || 'Interactive Examination');
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig | undefined>(initialHeaderConfig);
+  const [gradeThresholds, setGradeThresholds] = useState<GradeThresholds | undefined>((initialHeaderConfig as any)?.gradeThresholds);
   const [questions, setQuestions] = useState<Question[]>(initialQuestions || []);
 
   // Session Persistence Key (per exam code) - Migrated to localStorage to survive tab & browser crashes
@@ -609,6 +611,7 @@ export function StudentQuizRunner({
           if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
           if (data.testId) setResolvedTestId(data.testId);
           if (data.publishedId) setResolvedPublishedId(data.publishedId);
+          if ((data as any).gradeThresholds) setGradeThresholds((data as any).gradeThresholds);
           setTitle(data.title);
           const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
           setHeaderConfig(
@@ -4651,7 +4654,7 @@ export function StudentQuizRunner({
                   ),
                   forensics: buildExamForensics(),
                 };
-                exportStudentFeedbackReportPdf(submissionToExport);
+                exportStudentFeedbackReportPdf(submissionToExport, undefined, { gradeThresholds });
               }}
             >
               🎓 1-Page Report Card (PDF)

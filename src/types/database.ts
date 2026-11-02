@@ -242,6 +242,7 @@ export interface TeacherPreferences {
   defaultCalculator?: 'scientific' | 'basic'; // Default student calculator
   showOtherSubjects?: boolean;                // Toggle to show other subjects in test/question lists
   defaultExamDurationMinutes?: number;       // Default exam timer
+  defaultGradeThresholds?: import('../utils/gradeThresholdUtils').GradeThresholds; // Default boundary presets
 }
 
 export interface TeacherProfile {

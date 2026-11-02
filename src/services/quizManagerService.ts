@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
+import type { GradeThresholds } from '../utils/gradeThresholdUtils';
 import { getSavedSettings } from '../lib/settings';
 
 export interface ExamAttachment {
@@ -27,6 +28,7 @@ export interface PublishedQuiz {
   questionCount: number;
   questionIds: string[];
   headerConfig?: ExamHeaderConfig;
+  gradeThresholds?: GradeThresholds;
   durationMinutes: number;
   isExamMode: boolean;                   // Enforce timer and submit gate
   securityEnabled: boolean;              // Anti-cheating fullscreen / tab lock
@@ -325,6 +327,7 @@ export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: strin
       ...quiz,
       durationMinutes: resolvedDuration,
       headerConfig: mergedHeader,
+
       subject: cleanSubject,
       teacherPin: effectiveTeacherPin,
       quizCode: cleanQuizCode,
@@ -533,7 +536,9 @@ export function createDraftFromTest(
     totalMarks: tMarks,
     questionCount: qCount,
     questionIds: test.question_ids || (questions ? questions.map((q) => q.id) : existing?.questionIds || []),
+    gradeThresholds: existing?.gradeThresholds || (header as any)?.gradeThresholds || undefined,
     headerConfig: mergedHeader,
+
     durationMinutes: dur,
     isExamMode: existing?.isExamMode ?? true,
     securityEnabled: existing?.securityEnabled ?? true,

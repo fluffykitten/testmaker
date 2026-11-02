@@ -25,6 +25,7 @@ import {
 } from '../services/quizReportPdfService';
 import type { PublishedQuiz } from '../services/quizManagerService';
 import { getSchoolClasses } from '../lib/settings';
+import { deriveGradeFromPercentage } from '../utils/gradeThresholdUtils';
 import './OfflineGradingModal.css';
 
 interface OfflineGradingModalProps {
@@ -830,6 +831,7 @@ export function OfflineGradingModal({
                           quizCode: 'OFFLINE',
                           totalMarks,
                           subject: headerConfig.subject,
+                          gradeThresholds: (headerConfig as any)?.gradeThresholds,
                         },
                         gradedSubmissions,
                         selectedClass
@@ -896,35 +898,9 @@ export function OfflineGradingModal({
                   </thead>
                   <tbody>
                     {displayedSubmissions.map((sub, sIdx) => {
-                      const grade =
-                        sub.percentage >= 90
-                          ? 'A*'
-                          : sub.percentage >= 80
-                          ? 'A'
-                          : sub.percentage >= 70
-                          ? 'B'
-                          : sub.percentage >= 60
-                          ? 'C'
-                          : sub.percentage >= 50
-                          ? 'D'
-                          : sub.percentage >= 40
-                          ? 'E'
-                          : 'U';
-
-                      const gradeColor =
-                        grade === 'A*'
-                          ? '#d97706'
-                          : grade === 'A'
-                          ? '#059669'
-                          : grade === 'B'
-                          ? '#2563eb'
-                          : grade === 'C'
-                          ? '#7c3aed'
-                          : grade === 'D'
-                          ? '#ea580c'
-                          : grade === 'E'
-                          ? '#dc2626'
-                          : '#475569';
+                      const gradeDetail = deriveGradeFromPercentage(sub.percentage, (headerConfig as any)?.gradeThresholds);
+                      const grade = gradeDetail.grade;
+                      const gradeColor = gradeDetail.color;
 
                       return (
                         <tr key={sub.id}>

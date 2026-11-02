@@ -1,0 +1,197 @@
+/* ── Grade Threshold Editor ─────────────────────────────────────────────── */
+
+.gte-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+/* Presets Bar */
+.gte-presets-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.gte-presets-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.gte-preset-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gte-preset-chip {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #cbd5e1);
+  color: var(--color-text-primary, #1e293b);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.gte-preset-chip:hover:not(:disabled) {
+  border-color: var(--color-primary, #0284c7);
+  background: var(--color-surface-hover, #f8fafc);
+}
+
+.gte-preset-chip--active {
+  background: var(--color-primary, #0284c7);
+  border-color: var(--color-primary, #0284c7);
+  color: #ffffff;
+}
+
+.gte-preset-chip--reset {
+  color: var(--color-text-muted, #94a3b8);
+  border-style: dashed;
+}
+
+.gte-preset-chip--reset:hover:not(:disabled) {
+  color: var(--color-text-primary, #1e293b);
+  border-color: var(--color-border-hover, #94a3b8);
+}
+
+/* Threshold Grid */
+.gte-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.gte-tier-card {
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.gte-tier-card--ungraded {
+  background: var(--color-surface-muted, #f8fafc);
+  opacity: 0.9;
+}
+
+.gte-tier-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gte-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.gte-tier-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Input Row */
+.gte-tier-input-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--color-bg, #f1f5f9);
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.9rem;
+}
+
+.gte-prefix {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  margin-right: 4px;
+}
+
+.gte-number-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  text-align: right;
+  padding: 4px 2px;
+  outline: none;
+}
+
+.gte-number-input:focus {
+  outline: none;
+}
+
+.gte-unit {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  margin-left: 2px;
+}
+
+.gte-tier-auto {
+  justify-content: space-between;
+  padding: 6px 10px;
+}
+
+.gte-auto-val {
+  font-weight: 700;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.gte-raw-marks {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #64748b);
+  text-align: center;
+  padding-top: 2px;
+  border-top: 1px dashed var(--color-border, #e2e8f0);
+}
+
+.gte-raw-marks strong {
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* Validation Alert */
+.gte-validation-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.gte-error-icon {
+  font-size: 1rem;
+}
+

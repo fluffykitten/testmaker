@@ -1484,3 +1484,53 @@
 .qrm-sub-mark-badge-btn:hover .qrm-sub-edit-hint {
   opacity: 1;
 }
+
+/* ── Grade Curve Tuning Panel ─────────────────────────────────────────── */
+.qrm-curve-panel {
+  background: var(--color-surface, #ffffff);
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.qrm-curve-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.qrm-curve-panel-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qrm-curve-panel-sub {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary, #64748b);
+  margin-top: 2px;
+}
+
+.qrm-curve-saved-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #16a34a;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.qrm-btn-header-ghost.active {
+  background: var(--icm-blue, #24448C);
+  color: #ffffff;
+  border-color: var(--icm-blue, #24448C);
+}
