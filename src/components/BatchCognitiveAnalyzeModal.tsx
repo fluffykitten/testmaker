@@ -43,18 +43,30 @@ export function BatchCognitiveAnalyzeModal({
     setCompletedCount(null);
 
     try {
-      let query = (supabase as any)
-        .from('questions')
-        .select('*');
+      const allRawQuestions: any[] = [];
+      const pageSize = 1000;
+      let from = 0;
 
-      if (syllabusId) {
-        query = query.eq('syllabus_id', syllabusId);
+      while (true) {
+        let pageQuery = (supabase as any)
+          .from('questions')
+          .select('*')
+          .range(from, from + pageSize - 1);
+
+        if (syllabusId) {
+          pageQuery = pageQuery.eq('syllabus_id', syllabusId);
+        }
+
+        const { data, error } = await pageQuery;
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+
+        allRawQuestions.push(...data);
+        if (data.length < pageSize) break;
+        from += pageSize;
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
-
-      const allQuestions: Question[] = (data || []).map(normalizeQuestionRecord);
+      const allQuestions: Question[] = allRawQuestions.map(normalizeQuestionRecord);
 
       // Filter target questions based on scope
       const targetQuestions = allQuestions.filter((q) => {
