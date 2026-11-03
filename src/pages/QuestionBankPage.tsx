@@ -891,6 +891,7 @@ export function QuestionBankPage({
           <BatchCognitiveAnalyzeModal
             isOpen={isCognitiveModalOpen}
             onClose={() => setIsCognitiveModalOpen(false)}
+            syllabusId={filters.syllabusId}
             onComplete={() => {
               loadQuestions();
               setActionToast({

@@ -21,6 +21,7 @@ export function BatchCognitiveAnalyzeModal({
   isOpen,
   onClose,
   syllabusId,
+  onComplete,
 }: BatchCognitiveAnalyzeModalProps) {
   const [scope, setScope] = useState<'unclassified' | 'all'>('unclassified');
   const [isRunning, setIsRunning] = useState(false);
@@ -32,7 +33,10 @@ export function BatchCognitiveAnalyzeModal({
 
   if (!isOpen) return null;
 
-  const handleStartAnalysis = async () => {
+  const handleStartAnalysis = async (forcedScope?: 'unclassified' | 'all') => {
+    const effectiveScope = forcedScope || scope;
+    if (forcedScope) setScope(forcedScope);
+
     setIsRunning(true);
     setStatusMessage('Scanning questions from database…');
     setProgress(null);
@@ -54,16 +58,22 @@ export function BatchCognitiveAnalyzeModal({
 
       // Filter target questions based on scope
       const targetQuestions = allQuestions.filter((q) => {
-        if (scope === 'all') return true;
+        if (effectiveScope === 'all') return true;
         return !q.cognitive_level;
       });
 
       if (targetQuestions.length === 0) {
-        setStatusMessage(
-          scope === 'unclassified'
-            ? 'All questions in this syllabus already have Bloom\'s cognitive levels assigned.'
-            : 'No questions found in this syllabus.'
-        );
+        if (effectiveScope === 'unclassified' && allQuestions.length > 0) {
+          setStatusMessage(
+            `All ${allQuestions.length} questions in this syllabus already have Bloom's cognitive levels assigned.`
+          );
+        } else {
+          setStatusMessage(
+            effectiveScope === 'unclassified'
+              ? 'All questions in this syllabus already have Bloom\'s cognitive levels assigned.'
+              : 'No questions found in this syllabus.'
+          );
+        }
         setIsRunning(false);
         return;
       }
@@ -119,6 +129,7 @@ export function BatchCognitiveAnalyzeModal({
 
       setCompletedCount(processed);
       setStatusMessage(`Completed Bloom's Taxonomy classification for ${processed} questions.`);
+      onComplete?.();
     } catch (err: any) {
       console.error('Batch cognitive classification error:', err);
       setStatusMessage(`Error: ${err?.message || 'Classification failed'}`);
@@ -240,6 +251,18 @@ export function BatchCognitiveAnalyzeModal({
               }}
             >
               {statusMessage}
+              {!isRunning && statusMessage.includes('already have Bloom') && (
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    className="past-paper-btn past-paper-btn-primary"
+                    onClick={() => handleStartAnalysis('all')}
+                    style={{ width: '100%', padding: '8px 12px', fontSize: '0.8125rem' }}
+                  >
+                    ⚡ Re-analyze All Questions Now
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -248,7 +271,10 @@ export function BatchCognitiveAnalyzeModal({
           <button
             type="button"
             className="past-paper-btn"
-            onClick={onClose}
+            onClick={() => {
+              if (completedCount !== null) onComplete?.();
+              onClose();
+            }}
             disabled={isRunning}
           >
             {completedCount !== null ? 'Done' : 'Cancel'}
@@ -257,7 +283,7 @@ export function BatchCognitiveAnalyzeModal({
             <button
               type="button"
               className="past-paper-btn past-paper-btn-primary"
-              onClick={handleStartAnalysis}
+              onClick={() => handleStartAnalysis()}
               disabled={isRunning}
             >
               {isRunning ? 'Analyzing…' : 'Start Classification'}

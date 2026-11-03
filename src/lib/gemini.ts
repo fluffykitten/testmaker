@@ -3663,8 +3663,16 @@ Return ONLY a valid JSON array matching this exact schema:
 
       const cleanJson = responseText.replace(/\`\`\`json\n?|\n?\\`\`\`/g, '').trim();
       const parsed = JSON.parse(cleanJson);
-      if (Array.isArray(parsed)) {
-        for (const res of parsed) {
+      const rawList = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.questions)
+        ? parsed.questions
+        : Array.isArray(parsed?.results)
+        ? parsed.results
+        : [];
+
+      if (rawList.length > 0) {
+        for (const res of rawList) {
           if (res && res.id) {
             const validLevels = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'];
             results.push({

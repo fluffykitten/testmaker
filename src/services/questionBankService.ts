@@ -1685,10 +1685,29 @@ export async function batchUpdateCognitiveLevels(
 
   for (const item of updates) {
     const level = item.cognitiveLevel || item.cognitive_level || 'C2';
-    const subQs = item.subQuestions || item.sub_questions;
-    const payload: any = { cognitive_level: level };
-    if (subQs) {
-      payload.sub_questions = subQs;
+    const subQs = item.sub_questions || item.subQuestions;
+
+    // Fetch current mark_scheme and sub_questions to merge cleanly
+    const { data: current } = await (supabase as any)
+      .from('questions')
+      .select('mark_scheme, sub_questions')
+      .eq('id', item.id)
+      .single();
+
+    const ms = typeof current?.mark_scheme === 'object' && current?.mark_scheme !== null
+      ? { ...current.mark_scheme }
+      : { marking_points: ['See mark scheme'] };
+    ms._cognitive_level = level;
+
+    const effectiveSubQs = subQs || current?.sub_questions;
+
+    // Primary attempt: update both mark_scheme and cognitive_level column
+    const payload: any = {
+      cognitive_level: level,
+      mark_scheme: ms,
+    };
+    if (effectiveSubQs) {
+      payload.sub_questions = effectiveSubQs;
     }
 
     const { error } = await (supabase as any)
@@ -1699,30 +1718,14 @@ export async function batchUpdateCognitiveLevels(
     if (!error) {
       updatedCount += 1;
     } else {
-      // Fallback to mark_scheme._cognitive_level
-      const { data: current } = await (supabase as any)
+      // Fallback: if 'cognitive_level' column is not in DB schema, update mark_scheme & sub_questions only
+      delete payload.cognitive_level;
+      const { error: retryErr } = await (supabase as any)
         .from('questions')
-        .select('mark_scheme, sub_questions')
-        .eq('id', item.id)
-        .single();
+        .update(payload)
+        .eq('id', item.id);
 
-      if (current) {
-        const ms = typeof current.mark_scheme === 'object' && current.mark_scheme !== null
-          ? { ...current.mark_scheme }
-          : { marking_points: ['See mark scheme'] };
-        ms._cognitive_level = level;
-
-        const effectiveSubQs = item.subQuestions || current.sub_questions;
-        const retryPayload: any = { mark_scheme: ms };
-        if (effectiveSubQs) retryPayload.sub_questions = effectiveSubQs;
-
-        const { error: retryErr } = await (supabase as any)
-          .from('questions')
-          .update(retryPayload)
-          .eq('id', item.id);
-
-        if (!retryErr) updatedCount += 1;
-      }
+      if (!retryErr) updatedCount += 1;
     }
   }
 
