@@ -5,6 +5,8 @@ import type { Question } from '../types/database';
 import {
   fetchCustomTestsWithMetadata,
   fetchCustomTestWithQuestions,
+  getLocalTestsWithMetadata,
+  getLocalTests,
   type CustomTestWithDetails,
   type ExamHeaderConfig,
 } from '../services/testBuilderService';
@@ -63,7 +65,13 @@ export function QuizManagerPage({
     }
   });
 
-  const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>([]);
+  const [savedTests, setSavedTests] = useState<CustomTestWithDetails[]>(() => {
+    try {
+      return getLocalTestsWithMetadata();
+    } catch {
+      return [];
+    }
+  });
   const [loading, setLoading] = useState(() => quizzes.length === 0);
   const [submissionsVersion, setSubmissionsVersion] = useState(0);
 
@@ -118,6 +126,7 @@ export function QuizManagerPage({
 
   // Modal states
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isPreparingModal, setIsPreparingModal] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [attachmentUploadError, setAttachmentUploadError] = useState<string | null>(null);
   const [activeQuizDraft, setActiveQuizDraft] = useState<PublishedQuiz | null>(null);
@@ -158,21 +167,31 @@ export function QuizManagerPage({
         setLoading(false);
       }
 
-      const [testsRes, syncedRes, submissionsRes] = await Promise.allSettled([
-        fetchCustomTestsWithMetadata(),
+      // 1. Fetch saved tests concurrently without blocking on heavy submission sync
+      const testsPromise = fetchCustomTestsWithMetadata()
+        .then((tests) => {
+          setSavedTests(tests);
+          return tests;
+        })
+        .catch((err) => {
+          console.warn('Error loading custom tests for quiz manager:', err);
+          return [];
+        });
+
+      // 2. Concurrently sync published quizzes and student submissions
+      const [syncedRes, submissionsRes] = await Promise.allSettled([
         loadAndSyncPublishedQuizzes(),
         loadAndSyncAllSubmissions(),
       ]);
 
-      if (testsRes.status === 'fulfilled') {
-        setSavedTests(testsRes.value);
-      }
       if (syncedRes.status === 'fulfilled') {
         setQuizzes(sanitize(syncedRes.value));
       }
       if (submissionsRes.status === 'fulfilled') {
         setSubmissionsVersion((v) => v + 1);
       }
+
+      await testsPromise;
     } catch (err) {
       console.error('Error loading quiz manager data:', err);
     } finally {
@@ -330,8 +349,38 @@ export function QuizManagerPage({
   }, [finalFilteredQuizzes, isGroupedBySubject]);
 
   // ─── 4. Handlers ────────────────────────────────────────────────────────────
-  const handleOpenCreateModal = (initialMode: 'exam' | 'game' = 'exam') => {
-    if (savedTests.length === 0) {
+  const handleOpenCreateModal = async (initialMode: 'exam' | 'game' = 'exam') => {
+    if (isPreparingModal) return;
+
+    let availableTests = savedTests;
+
+    // 1. Check synchronous local storage if memory state is empty
+    if (availableTests.length === 0) {
+      const local = getLocalTestsWithMetadata();
+      if (local.length > 0) {
+        setSavedTests(local);
+        availableTests = local;
+      }
+    }
+
+    // 2. If still empty, fetch on-demand from Supabase cloud before alerting
+    if (availableTests.length === 0) {
+      setIsPreparingModal(true);
+      try {
+        const fetched = await fetchCustomTestsWithMetadata();
+        if (fetched.length > 0) {
+          setSavedTests(fetched);
+          availableTests = fetched;
+        }
+      } catch (err) {
+        console.warn('On-demand test fetch failed:', err);
+      } finally {
+        setIsPreparingModal(false);
+      }
+    }
+
+    // 3. Only if truly 0 tests exist after cloud confirmation, show alert
+    if (availableTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before creating an interactive quiz.');
       onNavigateToBuilder?.();
       return;
@@ -341,7 +390,7 @@ export function QuizManagerPage({
     setSecurityDefaults(currentSettings);
 
     const effectiveMode = (initialMode === 'game' && currentSettings.enableQuizizzMode) ? 'game' : 'exam';
-    const firstTest = savedTests[0];
+    const firstTest = availableTests[0];
     setSelectedTestId(firstTest.id);
     const draft = createDraftFromTest(firstTest);
     draft.quizMode = effectiveMode;
@@ -358,14 +407,43 @@ export function QuizManagerPage({
     setIsConfigModalOpen(true);
   };
 
-  const handleOpenOfflineGrader = () => {
-    if (savedTests.length === 0) {
+  const handleOpenOfflineGrader = async () => {
+    if (isPreparingModal) return;
+
+    let availableTests = savedTests;
+
+    // 1. Check synchronous local storage if memory state is empty
+    if (availableTests.length === 0) {
+      const local = getLocalTestsWithMetadata();
+      if (local.length > 0) {
+        setSavedTests(local);
+        availableTests = local;
+      }
+    }
+
+    // 2. If still empty, fetch on-demand from Supabase cloud before alerting
+    if (availableTests.length === 0) {
+      setIsPreparingModal(true);
+      try {
+        const fetched = await fetchCustomTestsWithMetadata();
+        if (fetched.length > 0) {
+          setSavedTests(fetched);
+          availableTests = fetched;
+        }
+      } catch (err) {
+        console.warn('On-demand test fetch for offline grader failed:', err);
+      } finally {
+        setIsPreparingModal(false);
+      }
+    }
+
+    if (availableTests.length === 0) {
       alert('You have no saved tests yet. Please build and save a test first before grading offline students.');
       onNavigateToBuilder?.();
       return;
     }
-    if (savedTests.length === 1) {
-      handleLaunchOfflineGraderForTest(savedTests[0].id);
+    if (availableTests.length === 1) {
+      handleLaunchOfflineGraderForTest(availableTests[0].id);
     } else {
       setIsSelectOfflineTestOpen(true);
     }
@@ -375,13 +453,13 @@ export function QuizManagerPage({
     setIsSelectOfflineTestOpen(false);
     try {
       const resolved = await fetchCustomTestWithQuestions(testId);
-      const testMeta = savedTests.find((t) => t.id === testId);
+      const testMeta = savedTests.find((t) => t.id === testId) || getLocalTests().find((t) => t.id === testId);
       if (resolved && resolved.questions.length > 0) {
         setOfflineGradingData({
           headerConfig: {
             title: testMeta?.header_config?.title || testMeta?.title || 'Offline Exam Assessment',
             schoolName: testMeta?.header_config?.schoolName || '',
-            subject: testMeta?.header_config?.subject || testMeta?.primarySubject || 'Chemistry',
+            subject: testMeta?.header_config?.subject || (testMeta as any)?.primarySubject || 'Chemistry',
             subjectCode: testMeta?.header_config?.subjectCode || '',
             durationMinutes: testMeta?.header_config?.durationMinutes || Math.round((testMeta?.total_marks || 20) * 1.25),
             instructions: testMeta?.header_config?.instructions || 'Answer all questions.',
@@ -399,7 +477,7 @@ export function QuizManagerPage({
 
   const handleSelectSavedTest = (testId: string) => {
     setSelectedTestId(testId);
-    const selected = savedTests.find((t) => t.id === testId);
+    const selected = savedTests.find((t) => t.id === testId) || getLocalTests().find((t) => t.id === testId);
     if (selected) {
       const currentSettings = getSavedSettings();
       setSecurityDefaults(currentSettings);
@@ -595,7 +673,7 @@ export function QuizManagerPage({
       return;
     }
 
-    const testMeta = savedTests.find((t) => t.id === quiz.testId);
+    const testMeta = savedTests.find((t) => t.id === quiz.testId) || getLocalTests().find((t) => t.id === quiz.testId);
     const resolvedHeader: ExamHeaderConfig = {
       title: testMeta?.header_config?.title || quiz.title,
       schoolName: testMeta?.header_config?.schoolName || '',

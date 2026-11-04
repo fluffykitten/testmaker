@@ -3,7 +3,7 @@ import {
   fetchCustomTestsWithMetadata,
   fetchCustomTestWithQuestions,
   deleteCustomTest,
-  getLocalTests,
+  getLocalTestsWithMetadata,
   type ExamHeaderConfig,
   type CustomTestWithDetails,
 } from '../services/testBuilderService';
@@ -12,7 +12,7 @@ import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { GoogleFormsExportModal } from '../components/GoogleFormsExportModal';
 import { ExamVariantModal } from '../components/ExamVariantModal';
-import type { Question, CustomTest } from '../types/database';
+import type { Question } from '../types/database';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
 import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import './SavedTestsPage.css';
@@ -34,14 +34,7 @@ export function SavedTestsPage({
 }: SavedTestsPageProps) {
   const [tests, setTests] = useState<CustomTestWithDetails[]>(() => {
     try {
-      const local = getLocalTests();
-      return local.map((t: CustomTest) => ({
-        ...t,
-        topics: [],
-        subjects: t.header_config?.subject ? [t.header_config.subject] : ['General'],
-        primaryTopic: 'General',
-        primarySubject: t.header_config?.subject || 'General',
-      }));
+      return getLocalTestsWithMetadata();
     } catch {
       return [];
     }

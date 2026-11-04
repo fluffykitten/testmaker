@@ -387,6 +387,21 @@ export interface CustomTestWithDetails extends CustomTest {
 }
 
 /**
+ * Synchronously retrieves local tests mapped to CustomTestWithDetails structure
+ * for instant, zero-delay rendering and hydration before cloud sync completes.
+ */
+export function getLocalTestsWithMetadata(): CustomTestWithDetails[] {
+  const local = getLocalTests();
+  return local.map((t) => ({
+    ...t,
+    topics: [],
+    subjects: t.header_config?.subject ? [t.header_config.subject] : ['General'],
+    primaryTopic: 'General',
+    primarySubject: t.header_config?.subject || 'General',
+  }));
+}
+
+/**
  * Fetches all saved custom tests from Supabase and local storage,
  * strictly filtering out any tombstoned/deleted test IDs.
  */
@@ -467,7 +482,26 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
         }
       });
 
-      return Array.from(mergedMap.values());
+      const mergedList = Array.from(mergedMap.values());
+
+      // Safely cache merged tests to localStorage for instant hydration & offline access
+      try {
+        const testsToCache = mergedList.slice(0, 50).map((t, idx) =>
+          idx < 15
+            ? compactTestOverrides(t)
+            : {
+                ...t,
+                header_config: t.header_config
+                  ? { ...t.header_config, questionOverrides: undefined }
+                  : undefined,
+              }
+        );
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(testsToCache));
+      } catch (cacheErr) {
+        console.warn('Could not cache merged tests to localStorage:', cacheErr);
+      }
+
+      return mergedList;
     }
   } catch (err) {
     console.warn('Supabase fetch failed, using local tests:', err);
