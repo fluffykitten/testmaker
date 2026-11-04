@@ -21,15 +21,22 @@ import {
   detectAndSplitInDocumentAnswerKey,
   isSaveMyExamsDocument,
   splitSaveMyExamsPdfBySections,
+  uint8ArrayToBase64,
   type SaveMyExamsMeta,
   type PdfChunk,
 } from './pdfChunker';
+import { trimMarkSchemePreamble } from './markSchemeTrim';
+import { tryBuildPaperOutline } from './paperOutline';
+import type { PaperOutline } from './paperOutlineParse';
+import { separatePracticalQuestions } from './practicalPostProcess';
 import {
   cropDiagramsLocally,
   uploadDiagramsToStorage,
   revokeLocalDiagramUrls,
+  renderPdfPageToCanvas,
   type DiagramCropItem,
 } from './diagramCropper';
+import { buildQualitativeNotesResources, renderNotePagesToDataUrls } from './practicalResources';
 import type { ExtractionResult, ExtractedQuestion, SubQuestion } from '../types/database';
 import { compareQuestionNumbers } from '../services/questionBankService';
 import {
@@ -229,6 +236,11 @@ export async function saveExtractedQuestions(
       error.message.includes('audio_url') ||
       error.message.includes('audio_metadata') ||
       error.message.includes('paper_number') ||
+      error.message.includes('cognitive_level') ||
+      error.message.includes('source_pdf_url') ||
+      error.message.includes('page_number') ||
+      error.message.includes('schema cache') ||
+      error.message.includes('Could not find') ||
       error.message.includes('invalid input syntax for type integer'))
   ) {
     console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
@@ -576,85 +588,12 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
 }
 
 /**
- * Ensures Practical Exam Questions (Cambridge Paper 5 & 6) do not have Question 2 (Qualitative Analysis on solid A)
- * mistakenly grouped into Question 1 (Calorimetry / Thermochemistry).
+ * Ensures Practical Exam Questions (Cambridge Paper 5 & 6) do not have Question 2
+ * (Qualitative Analysis) mistakenly grouped into Question 1 (Calorimetry /
+ * Thermochemistry). Implemented as a pure function in practicalPostProcess.ts —
+ * the caller's array is never mutated — and re-exported here for existing callers.
  */
-export function separatePracticalQuestions(questions: ExtractedQuestion[]): ExtractedQuestion[] {
-  const result: ExtractedQuestion[] = [];
-
-  for (const q of questions) {
-    if (!q.sub_questions || q.sub_questions.length <= 2) {
-      result.push(q);
-      continue;
-    }
-
-    const qNum = String(q.question_number).trim();
-    // Only check Question 1 if it has sub-questions switching to solid A / qualitative analysis
-    if (qNum === '1') {
-      let splitIdx = -1;
-      for (let i = 1; i < q.sub_questions.length; i++) {
-        const sq = q.sub_questions[i];
-        const text = sq.question_text || '';
-        const isQ2Start =
-          /tests on solid|solution [A-Z] in a test-tube|portion of solution [A-Z]|solid [A-Z]\./i.test(text) &&
-          !/magnesium|temperature|thermometer|burette/i.test(text);
-        if (isQ2Start) {
-          splitIdx = i;
-          break;
-        }
-      }
-
-      if (splitIdx > 0) {
-        const q1Subs = q.sub_questions.slice(0, splitIdx);
-        const q2Subs = q.sub_questions.slice(splitIdx);
-
-        const q1Marks = q1Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
-        const q2Marks = q2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0);
-
-        result.push({
-          ...q,
-          sub_questions: q1Subs,
-          total_marks: q1Marks || q.total_marks,
-        });
-
-        // Check if Question 2 already exists in the list
-        const existingQ2Idx = questions.findIndex((item) => String(item.question_number).trim() === '2');
-        if (existingQ2Idx >= 0) {
-          const existingQ2 = questions[existingQ2Idx];
-          const combinedSubs = [...q2Subs, ...(existingQ2.sub_questions || [])];
-          const uniqueSubMap = new Map<string, SubQuestion>();
-          combinedSubs.forEach((s) => {
-            const k = (s.sub_id || '').replace(/[().\s]/g, '').toLowerCase();
-            if (!uniqueSubMap.has(k)) uniqueSubMap.set(k, s);
-          });
-          const mergedQ2Subs = Array.from(uniqueSubMap.values());
-          questions[existingQ2Idx] = {
-            ...existingQ2,
-            sub_questions: mergedQ2Subs,
-            total_marks: mergedQ2Subs.reduce((s, x) => s + (Number(x.marks) || 0), 0),
-          };
-        } else {
-          result.push({
-            ...q,
-            question_number: '2',
-            parent_question_id: 'Q2',
-            question_text:
-              'You are provided with one solid: solid A. Do the following tests on solid A. Record all of your observations at each stage.',
-            sub_questions: q2Subs,
-            total_marks: q2Marks || 15,
-            topic: 'Qualitative Analysis',
-            sub_topic: 'Identification of ions and gases',
-          });
-        }
-        continue;
-      }
-    }
-
-    result.push(q);
-  }
-
-  return result;
-}
+export { separatePracticalQuestions };
 
 // ─── Full Pipeline Orchestrator (Zero Storage Uploads during Preview) ─────────
 
@@ -687,6 +626,28 @@ export async function runExtractionPipeline(
     });
 
     let msBase64 = markSchemeFile ? await fileToBase64(markSchemeFile) : undefined;
+
+    // Cambridge mark schemes open with 4–6 pages of generic marking principles that are
+    // identical across papers; send only the answer-table pages (Phase 4).
+    if (markSchemeFile) {
+      try {
+        const msBytes = new Uint8Array(await markSchemeFile.arrayBuffer());
+        const trimmedMs = await trimMarkSchemePreamble(msBytes);
+        if (trimmedMs.trimmed) {
+          msBase64 = uint8ArrayToBase64(trimmedMs.bytes);
+          onStateChange({
+            stage: 'extracting',
+            message: `Mark scheme: skipped ${trimmedMs.startPage - 1} preamble page(s) of ${trimmedMs.totalPages} — sending only the answer tables…`,
+            progress: 18,
+            result: null,
+            error: null,
+          });
+        }
+      } catch (error) {
+        console.warn('[pdfProcessor] mark scheme trim failed, sending the full mark scheme:', error);
+      }
+    }
+
     const insertBase64 = insertFile ? await fileToBase64(insertFile) : undefined;
     let bytesToChunk: File | Uint8Array = file;
 
@@ -729,6 +690,35 @@ export async function runExtractionPipeline(
     }
 
     let result: ExtractionResult;
+
+    // Deterministic outline for practical papers: build once, hand to the extractor
+    // so it transcribes content into a known skeleton instead of inventing one.
+    // Only for single-chunk runs — a multi-chunk extraction sees a page subset, not the paper.
+    let paperOutline: PaperOutline | null = null;
+    if (chunks.length === 1 && !isSaveMyExams) {
+      try {
+        const qpBytes: Uint8Array =
+          bytesToChunk instanceof Uint8Array
+            ? bytesToChunk
+            : new Uint8Array(await bytesToChunk.arrayBuffer());
+        paperOutline = await tryBuildPaperOutline(qpBytes);
+        if (paperOutline?.usable) {
+          const subCount = paperOutline.questions.reduce((a, q) => a + q.subs.filter((s) => !s.isStem).length, 0);
+          onStateChange({
+            stage: 'extracting',
+            message: `Outline verified (${paperOutline.profile.key}): ${paperOutline.questions.length} questions · ${subCount} sub-parts · Σ${paperOutline.totalMarks ?? '?'} marks — constraining extraction to the printed structure…`,
+            progress: 40,
+            result: null,
+            error: null,
+          });
+        } else if (paperOutline) {
+          console.info('[pdfProcessor] outline rejected, using vision-only extraction:', paperOutline.reasons);
+        }
+      } catch (error) {
+        console.warn('[pdfProcessor] outline build failed, using vision-only extraction:', error);
+        paperOutline = null;
+      }
+    }
 
     if (chunks.length > 1) {
       const apiKeys = getGeminiApiKeys();
@@ -1066,6 +1056,7 @@ export async function runExtractionPipeline(
           saveMyExamsPackType: chunks[0]?.packType || smeMeta?.packType || 'theory',
           targetSection: chunks[0]?.targetSection,
           topicHint: chunks[0]?.topicHint || smeMeta?.topic,
+          paperOutline: paperOutline ?? undefined,
         }
       );
       let verifiedPassages = result.passages || [];
@@ -1097,6 +1088,33 @@ export async function runExtractionPipeline(
         })),
       }));
       result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;
+    }
+
+    // Practical papers: attach the qualitative-analysis notes pages (11–12) as
+    // Resource Booklet items, so Question 2 can open them during the exam.
+    if (paperOutline?.usable && paperOutline.profile.family === 'practical-5x') {
+      const noteCatalog = buildQualitativeNotesResources(paperOutline);
+      if (noteCatalog.length) {
+        try {
+          const qpBytes: Uint8Array =
+            bytesToChunk instanceof Uint8Array
+              ? bytesToChunk
+              : new Uint8Array(await bytesToChunk.arrayBuffer());
+          const rendered = await renderNotePagesToDataUrls(qpBytes, noteCatalog, (bytes, pageNumber) =>
+            renderPdfPageToCanvas(
+              bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+              pageNumber,
+              2,
+            ),
+          );
+          const byId = new Map([...(result.insert_resources ?? []), ...rendered].map((item) => [item.id, item]));
+          result.insert_resources = Array.from(byId.values());
+          console.info(`[pdfProcessor] attached ${rendered.length} qualitative-notes page(s) as resources`);
+        } catch (error) {
+          console.warn('[pdfProcessor] qualitative notes rendering failed:', error);
+          result.insert_resources = [...(result.insert_resources ?? []), ...noteCatalog];
+        }
+      }
     }
 
     // Stage 2: Local In-Memory Diagram Cropping (Zero Storage Uploads)

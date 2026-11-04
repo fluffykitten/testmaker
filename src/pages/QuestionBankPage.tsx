@@ -873,6 +873,7 @@ export function QuestionBankPage({
           <PastPaperPdfManagerModal
             isOpen={isPdfManagerOpen}
             onClose={() => setIsPdfManagerOpen(false)}
+            initialSyllabusId={filters.syllabusId}
             onPdfsUpdated={() => {
               loadQuestions();
               setActionToast({

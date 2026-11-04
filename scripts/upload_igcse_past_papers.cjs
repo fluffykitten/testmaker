@@ -197,7 +197,7 @@ async function main() {
         const qP = String(q.paper_number || '').trim();
 
         return (
-          qCode === qp.code &&
+          Boolean(qCode) && Boolean(qp.code) && String(qCode).trim().toLowerCase() === String(qp.code).trim().toLowerCase() &&
           qYr === qp.year &&
           qp.seriesVariants.some((v) => v.toLowerCase() === qSer.toLowerCase()) &&
           (qP === qp.paper || Number(qP) === Number(qp.paper))

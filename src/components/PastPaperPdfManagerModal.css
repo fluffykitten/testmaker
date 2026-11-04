@@ -162,3 +162,43 @@
   background: #f8fafc;
 }
 
+
+.past-paper-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  background: #f8fafc;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.past-paper-select {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+  font-weight: 500;
+}
+
+.past-paper-select:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
+}
+
+.past-paper-btn-danger {
+  color: #dc2626;
+  border-color: #fca5a5;
+  background: #fff5f5;
+}
+
+.past-paper-btn-danger:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #f87171;
+  color: #b91c1c;
+}

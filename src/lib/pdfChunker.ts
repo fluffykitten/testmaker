@@ -1,6 +1,7 @@
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import { tryBuildPaperOutline } from './paperOutline';
 
 // Configure pdf.js worker in browser
 if (typeof window !== 'undefined' && pdfjsWorker) {
@@ -221,8 +222,25 @@ export async function splitPdfForParallelExtraction(
     const rawTotalPages = doc.getPageCount();
     const totalPages = await detectEffectiveQuestionPageCount(rawBytes, rawTotalPages);
 
+    // Practical papers (0620/5x) are three long, multi-page questions. Splitting
+    // them by page count with overlap severs Q1/Q2 mid-question and then re-stitches
+    // duplicates, so run them as a single pass whenever the deterministic outline
+    // proves the structure and the active page count is small (see paper5update.md §Phase 1).
+    const outline = await tryBuildPaperOutline(rawBytes);
+    const practicalSinglePass =
+      outline !== null &&
+      outline.usable &&
+      outline.profile.family === 'practical-5x' &&
+      totalPages <= 9;
+    if (practicalSinglePass) {
+      console.info(
+        `[pdfChunker] practical paper ${outline.profile.key}: single pass over ${totalPages} active pages ` +
+          `(${outline.questions.length} questions, ${outline.questions.reduce((a, q) => a + q.subs.length, 0)} sub-parts)`,
+      );
+    }
+
     // If active question pages are 4 or fewer, process in a single pass
-    if (totalPages <= 4) {
+    if (totalPages <= 4 || practicalSinglePass) {
       if (totalPages === rawTotalPages) {
         return [
           {

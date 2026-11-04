@@ -3,6 +3,8 @@
 // Features dynamic model discovery, auto-fallback, and retry.
 
 import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion, type QuestionStyle } from '../types/database';
+import type { PaperOutline } from './paperOutlineParse';
+import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
 import { getSavedSettings } from './settings';
@@ -2659,6 +2661,9 @@ export interface ExtractionOptions {
   saveMyExamsPackType?: 'mcq' | 'theory';
   targetSection?: 'Easy' | 'Medium' | 'Hard';
   topicHint?: string;
+  /** Deterministic paper outline (see paperOutlineParse.ts). When usable and a
+   *  practical paper, extraction is constrained to its printed structure. */
+  paperOutline?: PaperOutline;
 }
 
 /**
@@ -2684,22 +2689,35 @@ export async function extractQuestionsFromPdf(
   const domain = options.domain || 'stem';
   const hasInsert = Boolean(insertBase64 || options.hasInsertBooklet);
   const isIgcse = options.isIgcse !== false;
-  const promptText = getExtractionPrompt(
-    options.includeGuidance !== false,
-    domain,
-    hasInsert,
-    options.extractResourceCatalog !== false,
-    isIgcse,
-    Boolean(options.isSaveMyExams),
-    options.targetSection,
-    options.topicHint,
-    options.saveMyExamsPackType
-  );
+  const practicalOutline =
+    options.paperOutline && options.paperOutline.usable && options.paperOutline.profile.family === 'practical-5x'
+      ? options.paperOutline
+      : null;
+  const promptText = practicalOutline
+    ? getCambridgePracticalExtractionPrompt(practicalOutline, {
+        includeGuidance: options.includeGuidance !== false,
+        hasMarkScheme: Boolean(markSchemeBase64),
+      })
+    : getExtractionPrompt(
+        options.includeGuidance !== false,
+        domain,
+        hasInsert,
+        options.extractResourceCatalog !== false,
+        isIgcse,
+        Boolean(options.isSaveMyExams),
+        options.targetSection,
+        options.topicHint,
+        options.saveMyExamsPackType
+      );
+  if (practicalOutline) {
+    onProgress?.(`Outline-constrained extraction (${practicalOutline.profile.key})…`);
+  }
 
   onProgress?.('Discovering available Gemini models…');
 
   // If user configured a specific model, try it first
-  const userConfiguredModel = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODEL) || (typeof process !== 'undefined' && process.env?.VITE_GEMINI_MODEL);
+  const rawUserModel = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODEL) || (typeof process !== 'undefined' && process.env?.VITE_GEMINI_MODEL);
+  const userConfiguredModel = rawUserModel ? (rawUserModel.trim().startsWith('gemini-') ? rawUserModel.trim() : `gemini-${rawUserModel.trim()}`) : undefined;
   const discoveredModels = await discoverAvailableModels(activeKey);
 
   const candidateModels = Array.from(
@@ -2905,7 +2923,8 @@ export async function enrichQuestionWithGuidance(
     );
   }
 
-  const userConfiguredModel = import.meta.env.VITE_GEMINI_MODEL;
+  const rawUserModel2 = import.meta.env.VITE_GEMINI_MODEL;
+  const userConfiguredModel = rawUserModel2 ? (rawUserModel2.trim().startsWith('gemini-') ? rawUserModel2.trim() : `gemini-${rawUserModel2.trim()}`) : undefined;
   const discoveredModels = await discoverAvailableModels(activeKey);
   const candidateModels = Array.from(
     new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])

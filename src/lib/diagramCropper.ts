@@ -5,6 +5,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { uploadDiagramImage } from '../services/storageService';
+import { locateFigureBox, type Box4 } from './figureLocator';
 
 // Configure pdf.js worker using Vite's ?url loader for 100% reliable bundling
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -601,6 +602,69 @@ export async function uploadDiagramsToStorage(
 }
 
 /**
+ * Recovers a figure's bounding box from the page's vector geometry.
+ *
+ * Practical-paper apparatus figures are drawn as paths, not raster images, so when
+ * the extraction model flags a diagram but omits its box, this reconstructs one
+ * instead of falling back to a generic mid-page slice.
+ */
+export async function locateFigureBoxOnPage(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageNumber: number,
+  captionRef?: string | null,
+): Promise<Box4 | null> {
+  try {
+    const safePage = Math.max(1, Math.min(doc.numPages, pageNumber || 1));
+    const page = await doc.getPage(safePage);
+    const viewport = page.getViewport({ scale: 1 });
+    const ops = await page.getOperatorList();
+    const textContent = await page.getTextContent();
+
+    const pathBoxes: Box4[] = [];
+    for (let i = 0; i < ops.fnArray.length; i++) {
+      if (ops.fnArray[i] !== pdfjsLib.OPS.constructPath) continue;
+      const minMax = (ops.argsArray[i] as unknown[])?.[2] as Record<number, number> | undefined;
+      if (!minMax) continue;
+      const box: Box4 = [Number(minMax[0]), Number(minMax[1]), Number(minMax[2]), Number(minMax[3])];
+      if (box.every(Number.isFinite)) pathBoxes.push(box);
+    }
+
+    // Text runs report width in glyph space; cap it so a stray trailing-space run cannot
+    // stretch the figure box across the page.
+    const textBox = (item: { transform: number[]; width?: number; height?: number }, maxWidth = 120): Box4 => {
+      const [, , , , e, f] = item.transform;
+      const w = Math.min(item.width ?? 0, maxWidth);
+      const h = item.height ?? 9;
+      return [e, f, e + w, f + h];
+    };
+
+    const captionPattern = captionRef
+      ? new RegExp(`^${captionRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i')
+      : /^Fig\.?\s*\d+\.\d+$/i;
+
+    let captionBox: Box4 | null = null;
+    const labelBoxes: Box4[] = [];
+    for (const raw of textContent.items as Array<{ str?: string; transform: number[]; width?: number; height?: number }>) {
+      const text = (raw.str ?? '').trim();
+      if (!text) continue;
+      if (!captionBox && captionPattern.test(text)) captionBox = textBox(raw, 80);
+      else if (text.length <= 24 && /^[A-Za-z][A-Za-z() \-']+$/.test(text)) labelBoxes.push(textBox(raw));
+    }
+
+    return locateFigureBox({
+      pathBoxes,
+      captionBox,
+      labelBoxes,
+      pageWidth: viewport.width,
+      pageHeight: viewport.height,
+    });
+  } catch (error) {
+    console.warn(`[diagramCropper] could not locate figure on page ${pageNumber}:`, error);
+    return null;
+  }
+}
+
+/**
  * Processes all diagram-bearing questions and sub-questions from an extraction result purely in-memory:
  * 1. Loads the Question Paper PDF (and optional Insert Booklet PDF)
  * 2. Renders the target PDF page(s) at 4x resolution
@@ -648,6 +712,33 @@ export async function cropDiagramsLocally(
       }
     }
 
+    // Fill in figure boxes the model flagged but did not locate. Practical-paper figures are
+    // vector art, so the page geometry itself is the most reliable source (see figureLocator.ts).
+    const locatedBoxes = new Map<object, Box4>();
+    const isUsableBox = (box: unknown): boolean =>
+      Array.isArray(box) && box.length >= 4 && box.every((n) => Number.isFinite(Number(n)));
+
+    const fillMissingBox = async (entity: QuestionWithDiagram | any, fallbackPage?: number | null) => {
+      if (!entity || !entity.has_diagram || isUsableBox(entity.bounding_box)) return;
+      if (entity.diagram_source === 'insert') return;
+      const page =
+        Number(entity.page_number) > 0
+          ? Number(entity.page_number)
+          : Number(fallbackPage) > 0
+            ? Number(fallbackPage)
+            : 1;
+      const box = await locateFigureBoxOnPage(qpDoc, page, entity.resource_ref ?? null);
+      if (box) {
+        locatedBoxes.set(entity, box);
+        onProgress?.(`Located ${entity.resource_ref ?? 'figure'} on page ${page} from page geometry.`);
+      }
+    };
+
+    for (const question of questions) {
+      await fillMissingBox(question);
+      for (const sub of question.sub_questions ?? []) await fillMissingBox(sub, question.page_number);
+    }
+
     // Cache rendered pages per document (at 4x resolution)
     const qpPageCache = new Map<number, HTMLCanvasElement>();
     const insertPageCache = new Map<number, HTMLCanvasElement>();
@@ -676,7 +767,7 @@ export async function cropDiagramsLocally(
           pageCache.set(safePageNumber, canvas);
         }
 
-        const normalizedBox = normalizeBoundingBox(q.bounding_box);
+        const normalizedBox = normalizeBoundingBox(locatedBoxes.get(q) ?? q.bounding_box);
         const [, , ymax] = normalizedBox;
 
         // Multi-page stitching if near bottom boundary
@@ -792,7 +883,7 @@ export async function cropDiagramsLocally(
             pageCache.set(safePageNumber, canvas);
           }
 
-          const normalizedBox = normalizeBoundingBox(sub.bounding_box);
+          const normalizedBox = normalizeBoundingBox(locatedBoxes.get(sub) ?? sub.bounding_box);
           const sourceCanvas = pageCache.get(safePageNumber)!;
 
           onProgress?.(`Cropping sub-diagram for Q${q.question_number} ${sub.sub_id} (${sourceLabel})…`);

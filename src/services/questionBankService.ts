@@ -1542,13 +1542,26 @@ export interface PastPaperGroupSummary {
 export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promise<PastPaperGroupSummary[]> {
   let query = (supabase as any)
     .from('questions')
-    .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )');
+    .select('id, syllabus_id, year, series, paper_number, mark_scheme, source_pdf_url, syllabuses ( id, subject_name, subject_code )');
 
   if (syllabusId) {
     query = query.eq('syllabus_id', syllabusId);
   }
 
-  const { data, error } = await query;
+  let { data, error } = await query;
+  if (error && (error.message?.includes('source_pdf_url') || error.code === '42703')) {
+    // Graceful fallback if native source_pdf_url column is not yet migrated in Supabase
+    let fallbackQuery = (supabase as any)
+      .from('questions')
+      .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )');
+    if (syllabusId) {
+      fallbackQuery = fallbackQuery.eq('syllabus_id', syllabusId);
+    }
+    const res = await fallbackQuery;
+    data = res.data;
+    error = res.error;
+  }
+
   if (error || !data) {
     console.error('Failed to fetch distinct past papers:', error);
     return [];
@@ -1603,21 +1616,42 @@ export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promi
 
 /**
  * Attaches a source Question Paper PDF URL to all questions belonging to a specific past paper group.
+ * Strictly requires a non-empty syllabusId and verifies subject codes to prevent cross-subject contamination.
  */
 export async function batchAttachPastPaperPdf(
-  filter: { syllabusId?: string; year: number; series: string; paperNumber: string | number },
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number },
   pdfUrl: string
 ): Promise<{ success: boolean; updatedCount: number }> {
   clearQuestionBankCache();
 
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchAttachPastPaperPdf requires a valid, non-empty syllabusId to prevent cross-subject contamination.');
+  }
+
+  // Cross-check: If PDF URL starts with a subject code (e.g. papers/0620_...), verify it matches target syllabus
+  if (pdfUrl && pdfUrl.trim()) {
+    const codeMatch = pdfUrl.match(/papers\/([A-Za-z0-9_-]+?)_\d{4}/);
+    if (codeMatch) {
+      const pdfSubCode = codeMatch[1].toLowerCase();
+      const { data: targetSyl } = await (supabase as any)
+        .from('syllabuses')
+        .select('subject_code, subject_name')
+        .eq('id', filter.syllabusId.trim())
+        .single();
+
+      if (targetSyl?.subject_code && pdfSubCode !== targetSyl.subject_code.toLowerCase()) {
+        throw new Error(
+          `Subject mismatch: Cannot attach ${codeMatch[1].toUpperCase()} PDF to ${targetSyl.subject_name} (${targetSyl.subject_code}).`
+        );
+      }
+    }
+  }
+
   let query = (supabase as any)
     .from('questions')
     .select('id, mark_scheme')
+    .eq('syllabus_id', filter.syllabusId.trim())
     .eq('year', filter.year);
-
-  if (filter.syllabusId) {
-    query = query.eq('syllabus_id', filter.syllabusId);
-  }
 
   if (filter.series) {
     query = query.eq('series', filter.series);
@@ -1637,18 +1671,13 @@ export async function batchAttachPastPaperPdf(
 
   const ids = data.map((d: any) => d.id);
 
-  // 1. Try native column update
-  const nativeRes = await (supabase as any)
+  // 1. Try native column update if present
+  await (supabase as any)
     .from('questions')
     .update({ source_pdf_url: pdfUrl })
     .in('id', ids);
 
-  if (!nativeRes.error) {
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
-    return { success: true, updatedCount: ids.length };
-  }
-
-  // 2. Schema fallback: store in mark_scheme JSONB
+  // 2. Also keep mark_scheme JSONB in sync for maximum schema resilience
   let successCount = 0;
   for (const row of data) {
     const ms = typeof row.mark_scheme === 'object' && row.mark_scheme !== null
@@ -1669,8 +1698,69 @@ export async function batchAttachPastPaperPdf(
 }
 
 /**
- * Batch updates cognitive levels (Bloom's Taxonomy C1 to C6) across multiple questions.
+ * Unlinks / removes a source Question Paper PDF URL from all questions belonging to a specific past paper group.
  */
+export async function batchDetachPastPaperPdf(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number }
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache();
+
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchDetachPastPaperPdf requires a valid, non-empty syllabusId.');
+  }
+
+  let query = (supabase as any)
+    .from('questions')
+    .select('id, mark_scheme')
+    .eq('syllabus_id', filter.syllabusId.trim())
+    .eq('year', filter.year);
+
+  if (filter.series) {
+    query = query.eq('series', filter.series);
+  }
+
+  const pNum = Number(filter.paperNumber);
+  if (!isNaN(pNum) && /^\d+$/.test(String(filter.paperNumber).trim())) {
+    query = query.or(`paper_number.eq.${pNum},paper_number.eq.${String(filter.paperNumber).trim()}`);
+  } else {
+    query = query.eq('paper_number', String(filter.paperNumber).trim());
+  }
+
+  const { data, error } = await query;
+  if (error || !data || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Clear native column
+  await (supabase as any)
+    .from('questions')
+    .update({ source_pdf_url: null })
+    .in('id', ids);
+
+  // 2. Clear from mark_scheme JSONB
+  let successCount = 0;
+  for (const row of data) {
+    if (typeof row.mark_scheme === 'object' && row.mark_scheme !== null && row.mark_scheme._source_pdf_url) {
+      const ms = { ...row.mark_scheme };
+      delete ms._source_pdf_url;
+
+      const { error: msErr } = await (supabase as any)
+        .from('questions')
+        .update({ mark_scheme: ms })
+        .eq('id', row.id);
+
+      if (!msErr) successCount += 1;
+    } else {
+      successCount += 1;
+    }
+  }
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
 export async function batchUpdateCognitiveLevels(
   updates: {
     id: string;

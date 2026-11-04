@@ -4,14 +4,18 @@ import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   fetchDistinctPastPapersSummary,
   batchAttachPastPaperPdf,
+  batchDetachPastPaperPdf,
+  fetchSyllabuses,
   type PastPaperGroupSummary,
 } from '../services/questionBankService';
 import { uploadPastPaperPdf } from '../services/storageService';
+import type { Syllabus } from '../types/database';
 import './PastPaperPdfManagerModal.css';
 
 interface PastPaperPdfManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialSyllabusId?: string;
   syllabusId?: string;
   onPdfsUpdated?: () => void;
 }
@@ -19,9 +23,15 @@ interface PastPaperPdfManagerModalProps {
 export function PastPaperPdfManagerModal({
   isOpen,
   onClose,
-  syllabusId,
+  initialSyllabusId,
+  syllabusId: propSyllabusId,
+  onPdfsUpdated,
 }: PastPaperPdfManagerModalProps) {
   const [papers, setPapers] = useState<PastPaperGroupSummary[]>([]);
+  const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
+  const [selectedSyllabusId, setSelectedSyllabusId] = useState<string>(
+    initialSyllabusId || propSyllabusId || 'all'
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [activeUploadKey, setActiveUploadKey] = useState<string | null>(null);
   const [editingUrlKey, setEditingUrlKey] = useState<string | null>(null);
@@ -30,10 +40,28 @@ export function PastPaperPdfManagerModal({
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
-  const loadPapers = async () => {
+  // Sync selected syllabus if prop changes on open
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedSyllabusId(initialSyllabusId || propSyllabusId || 'all');
+    }
+  }, [isOpen, initialSyllabusId, propSyllabusId]);
+
+  // Load list of available syllabuses for filter dropdown
+  useEffect(() => {
+    if (isOpen) {
+      fetchSyllabuses()
+        .then((data) => setSyllabuses(data || []))
+        .catch((err) => console.error('Failed to load syllabuses in modal:', err));
+    }
+  }, [isOpen]);
+
+  const loadPapers = async (filterSylId?: string) => {
     setIsLoading(true);
     try {
-      const data = await fetchDistinctPastPapersSummary(syllabusId);
+      const activeSyl = filterSylId !== undefined ? filterSylId : selectedSyllabusId;
+      const targetSylId = activeSyl && activeSyl !== 'all' ? activeSyl : undefined;
+      const data = await fetchDistinctPastPapersSummary(targetSylId);
       setPapers(data);
     } catch (err) {
       console.error('Failed to load past papers summary:', err);
@@ -44,14 +72,19 @@ export function PastPaperPdfManagerModal({
 
   useEffect(() => {
     if (isOpen) {
-      loadPapers();
+      loadPapers(selectedSyllabusId);
       setStatusMessage(null);
     }
-  }, [isOpen, syllabusId]);
+  }, [isOpen, selectedSyllabusId]);
 
   if (!isOpen) return null;
 
   const handleFileUpload = async (paper: PastPaperGroupSummary, file: File) => {
+    if (!paper.syllabusId) {
+      setStatusMessage('Error: Paper group is missing syllabus ID.');
+      return;
+    }
+
     const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
     setActiveUploadKey(key);
     setStatusMessage(`Uploading PDF for ${paper.subjectCode} ${paper.year} Paper ${paper.paperNumber}…`);
@@ -78,8 +111,9 @@ export function PastPaperPdfManagerModal({
         url
       );
 
-      setStatusMessage(`Attached PDF to ${res.updatedCount} questions in this paper.`);
+      setStatusMessage(`Attached PDF to ${res.updatedCount} questions in ${paper.subjectName} (${paper.subjectCode}).`);
       await loadPapers();
+      onPdfsUpdated?.();
     } catch (err: any) {
       setStatusMessage(`Error: ${err?.message || 'Upload failed'}`);
     } finally {
@@ -90,6 +124,11 @@ export function PastPaperPdfManagerModal({
   const handleSaveCustomUrl = async (paper: PastPaperGroupSummary) => {
     const url = customUrlInput.trim();
     if (!url) return;
+
+    if (!paper.syllabusId) {
+      setStatusMessage('Error: Paper group is missing syllabus ID.');
+      return;
+    }
 
     const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
     setActiveUploadKey(key);
@@ -106,12 +145,43 @@ export function PastPaperPdfManagerModal({
         url
       );
 
-      setStatusMessage(`Attached URL to ${res.updatedCount} questions.`);
+      setStatusMessage(`Attached URL to ${res.updatedCount} questions in ${paper.subjectName}.`);
       setEditingUrlKey(null);
       setCustomUrlInput('');
       await loadPapers();
+      onPdfsUpdated?.();
     } catch (err: any) {
       setStatusMessage(`Error: ${err?.message || 'Failed to attach URL'}`);
+    } finally {
+      setActiveUploadKey(null);
+    }
+  };
+
+  const handleUnlinkPdf = async (paper: PastPaperGroupSummary) => {
+    if (!paper.syllabusId) return;
+
+    const confirmed = window.confirm(
+      `Remove PDF link from ${paper.subjectName} (${paper.subjectCode}) ${paper.year} Paper ${paper.paperNumber}?\n\nThis will remove the past paper citation link from ${paper.linkedPdfCount} questions.`
+    );
+    if (!confirmed) return;
+
+    const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
+    setActiveUploadKey(key);
+    setStatusMessage('Unlinking PDF…');
+
+    try {
+      const res = await batchDetachPastPaperPdf({
+        syllabusId: paper.syllabusId,
+        year: paper.year,
+        series: paper.series,
+        paperNumber: paper.paperNumber,
+      });
+
+      setStatusMessage(`Unlinked PDF from ${res.updatedCount} questions in ${paper.subjectName}.`);
+      await loadPapers();
+      onPdfsUpdated?.();
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err?.message || 'Failed to unlink PDF'}`);
     } finally {
       setActiveUploadKey(null);
     }
@@ -147,6 +217,31 @@ export function PastPaperPdfManagerModal({
         </div>
 
         <div className="past-paper-modal-body">
+          {/* Subject Filter Bar */}
+          <div className="past-paper-filter-bar">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label htmlFor="past-paper-subject-filter" style={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569' }}>
+                Filter by Subject:
+              </label>
+              <select
+                id="past-paper-subject-filter"
+                className="past-paper-select"
+                value={selectedSyllabusId}
+                onChange={(e) => setSelectedSyllabusId(e.target.value)}
+              >
+                <option value="all">All Subjects ({syllabuses.length})</option>
+                {syllabuses.map((syl) => (
+                  <option key={syl.id} value={syl.id}>
+                    {syl.subject_name} ({syl.subject_code})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+              {papers.length} {papers.length === 1 ? 'paper' : 'papers'} found
+            </div>
+          </div>
+
           {statusMessage && (
             <div
               style={{
@@ -190,7 +285,12 @@ export function PastPaperPdfManagerModal({
                   return (
                     <tr key={key} className="past-paper-row">
                       <td>
-                        <strong>{paper.subjectName} ({paper.subjectCode})</strong>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <strong>{paper.subjectName}</strong>
+                          <span style={{ fontSize: '0.75rem', background: '#e2e8f0', color: '#334155', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                            {paper.subjectCode}
+                          </span>
+                        </div>
                         <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '2px' }}>
                           {paper.year} • {paper.series} • Paper {paper.paperNumber}
                         </div>
@@ -201,7 +301,7 @@ export function PastPaperPdfManagerModal({
                       <td>
                         {paper.hasPdfUrl ? (
                           <span className="past-paper-badge-linked">
-                            Linked
+                            Linked ({paper.linkedPdfCount}/{paper.totalQuestions})
                           </span>
                         ) : (
                           <span className="past-paper-badge-missing">
@@ -278,6 +378,17 @@ export function PastPaperPdfManagerModal({
                             >
                               Paste URL
                             </button>
+                            {paper.hasPdfUrl && (
+                              <button
+                                type="button"
+                                className="past-paper-btn past-paper-btn-danger"
+                                title="Unlink PDF from this paper"
+                                disabled={isUploading}
+                                onClick={() => handleUnlinkPdf(paper)}
+                              >
+                                Unlink
+                              </button>
+                            )}
                           </div>
                         )}
                       </td>
