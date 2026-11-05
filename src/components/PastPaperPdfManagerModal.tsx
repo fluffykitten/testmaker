@@ -29,9 +29,7 @@ export function PastPaperPdfManagerModal({
 }: PastPaperPdfManagerModalProps) {
   const [papers, setPapers] = useState<PastPaperGroupSummary[]>([]);
   const [syllabuses, setSyllabuses] = useState<Syllabus[]>([]);
-  const [selectedSyllabusId, setSelectedSyllabusId] = useState<string>(
-    initialSyllabusId || propSyllabusId || 'all'
-  );
+  const [selectedSyllabusId, setSelectedSyllabusId] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [activeUploadKey, setActiveUploadKey] = useState<string | null>(null);
   const [editingUrlKey, setEditingUrlKey] = useState<string | null>(null);
@@ -40,10 +38,11 @@ export function PastPaperPdfManagerModal({
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
-  // Sync selected syllabus if prop changes on open
+  // Default to 'all' so users see all papers immediately (matching previous behavior),
+  // while respecting propSyllabusId or initialSyllabusId if explicitly passed
   useEffect(() => {
     if (isOpen) {
-      setSelectedSyllabusId(initialSyllabusId || propSyllabusId || 'all');
+      setSelectedSyllabusId(propSyllabusId || initialSyllabusId || 'all');
     }
   }, [isOpen, initialSyllabusId, propSyllabusId]);
 
@@ -264,7 +263,20 @@ export function PastPaperPdfManagerModal({
             </div>
           ) : papers.length === 0 ? (
             <div className="past-paper-empty">
-              No questions found for the selected syllabus. Upload an exam paper first to get started.
+              <p style={{ margin: '0 0 12px 0' }}>
+                {selectedSyllabusId !== 'all'
+                  ? 'No past paper questions found for the selected subject.'
+                  : 'No questions found in the question bank. Upload an exam paper first to get started.'}
+              </p>
+              {selectedSyllabusId !== 'all' && (
+                <button
+                  type="button"
+                  className="past-paper-btn past-paper-btn-primary"
+                  onClick={() => setSelectedSyllabusId('all')}
+                >
+                  Show All Subjects
+                </button>
+              )}
             </div>
           ) : (
             <table className="past-paper-table">

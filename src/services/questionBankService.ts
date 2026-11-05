@@ -1540,32 +1540,51 @@ export interface PastPaperGroupSummary {
  * including how many questions are linked to a Question Paper PDF.
  */
 export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promise<PastPaperGroupSummary[]> {
-  let query = (supabase as any)
-    .from('questions')
-    .select('id, syllabus_id, year, series, paper_number, mark_scheme, source_pdf_url, syllabuses ( id, subject_name, subject_code )');
+  const allRows: any[] = [];
+  const pageSize = 1000;
+  let from = 0;
 
-  if (syllabusId) {
-    query = query.eq('syllabus_id', syllabusId);
-  }
-
-  let { data, error } = await query;
-  if (error && (error.message?.includes('source_pdf_url') || error.code === '42703')) {
-    // Graceful fallback if native source_pdf_url column is not yet migrated in Supabase
-    let fallbackQuery = (supabase as any)
+  while (true) {
+    let query = (supabase as any)
       .from('questions')
-      .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )');
+      .select('id, syllabus_id, year, series, paper_number, mark_scheme, source_pdf_url, syllabuses ( id, subject_name, subject_code )')
+      .range(from, from + pageSize - 1);
+
     if (syllabusId) {
-      fallbackQuery = fallbackQuery.eq('syllabus_id', syllabusId);
+      query = query.eq('syllabus_id', syllabusId);
     }
-    const res = await fallbackQuery;
-    data = res.data;
-    error = res.error;
+
+    let { data, error } = await query;
+    if (error && (error.message?.includes('source_pdf_url') || error.code === '42703')) {
+      let fallbackQuery = (supabase as any)
+        .from('questions')
+        .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )')
+        .range(from, from + pageSize - 1);
+      if (syllabusId) {
+        fallbackQuery = fallbackQuery.eq('syllabus_id', syllabusId);
+      }
+      const res = await fallbackQuery;
+      data = res.data;
+      error = res.error;
+    }
+
+    if (error) {
+      console.error('Failed to fetch distinct past papers page:', error);
+      break;
+    }
+
+    if (!data || data.length === 0) {
+      break;
+    }
+
+    allRows.push(...data);
+    if (data.length < pageSize) {
+      break;
+    }
+    from += pageSize;
   }
 
-  if (error || !data) {
-    console.error('Failed to fetch distinct past papers:', error);
-    return [];
-  }
+  const data = allRows;
 
   const groups = new Map<string, PastPaperGroupSummary>();
 
