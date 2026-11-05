@@ -15,8 +15,13 @@ import {
   syncGoogleDriveClientIdToCloud,
   saveCreativeModeLandingVisibility,
   loadAndSyncCreativeModeLandingVisibility,
+  getGeminiExtractionModel,
+  saveGeminiExtractionModel,
+  syncGeminiExtractionModelToCloud,
+  loadAndSyncGeminiExtractionModel,
 } from '../lib/settings';
 import { testR2Connection } from '../services/storageService';
+import { testGeminiModelConnectivity } from '../lib/gemini';
 import {
   type RosterStudent,
   getSchoolRoster,
@@ -113,6 +118,17 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [isTestingR2, setIsTestingR2] = useState(false);
   const [r2TestResult, setR2TestResult] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
 
+  // Gemini AI Extraction Model State
+  const initialModel = getGeminiExtractionModel();
+  const isInitialPreset = initialModel === 'gemini-3.5-flash-lite' || initialModel === 'gemini-3.8-flash';
+  const [geminiModelPreset, setGeminiModelPreset] = useState<'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | 'custom'>(
+    () => (isInitialPreset ? (initialModel as 'gemini-3.5-flash-lite' | 'gemini-3.8-flash') : 'custom')
+  );
+  const [customModelInput, setCustomModelInput] = useState(() => (isInitialPreset ? '' : initialModel));
+  const [isTestingModel, setIsTestingModel] = useState(false);
+  const [modelTestFeedback, setModelTestFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [isSavingModel, setIsSavingModel] = useState(false);
+
   // Focus first pin digit on load if locked
   useEffect(() => {
     if (!isUnlocked) {
@@ -138,6 +154,16 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       loadAndSyncCreativeModeLandingVisibility().then((hide) => {
         setSettingsState((prev) => ({ ...prev, hideCreativeModeOnLanding: hide }));
       });
+      loadAndSyncGeminiExtractionModel().then((cloudModel) => {
+        if (cloudModel) {
+          const isPreset = cloudModel === 'gemini-3.5-flash-lite' || cloudModel === 'gemini-3.8-flash';
+          setGeminiModelPreset(isPreset ? (cloudModel as 'gemini-3.5-flash-lite' | 'gemini-3.8-flash') : 'custom');
+          if (!isPreset) {
+            setCustomModelInput(cloudModel);
+          }
+          setSettingsState((prev) => ({ ...prev, geminiExtractionModel: cloudModel }));
+        }
+      });
     }
   }, [isUnlocked]);
 
@@ -160,6 +186,45 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
         ? '✓ Creative Mode Hub & Avatar Studio hidden from student landing page'
         : '✓ Creative Mode Hub & Avatar Studio now visible on landing page'
     );
+  };
+
+  const handleSaveGeminiModel = async () => {
+    const finalModel = geminiModelPreset === 'custom' ? customModelInput.trim() : geminiModelPreset;
+    if (!finalModel) {
+      showNotice('Please provide a valid Gemini model identifier.');
+      return;
+    }
+    setIsSavingModel(true);
+    try {
+      saveGeminiExtractionModel(finalModel);
+      updateSetting('geminiExtractionModel', finalModel);
+      const synced = await syncGeminiExtractionModelToCloud(finalModel);
+      if (synced) {
+        showNotice(`✓ Gemini model saved and synced to cloud: "${finalModel}"`);
+      } else {
+        showNotice(`✓ Gemini model saved locally: "${finalModel}"`);
+      }
+    } finally {
+      setIsSavingModel(false);
+    }
+  };
+
+  const handleTestGeminiModel = async () => {
+    const targetModel = geminiModelPreset === 'custom' ? customModelInput.trim() : geminiModelPreset;
+    if (!targetModel) {
+      setModelTestFeedback({ ok: false, message: 'Please enter a custom model name to test.' });
+      return;
+    }
+    setIsTestingModel(true);
+    setModelTestFeedback(null);
+    try {
+      const res = await testGeminiModelConnectivity(targetModel);
+      setModelTestFeedback({ ok: res.ok, message: res.message });
+    } catch (err: any) {
+      setModelTestFeedback({ ok: false, message: err?.message || 'Failed to ping Gemini API.' });
+    } finally {
+      setIsTestingModel(false);
+    }
   };
 
   // ─── PIN Gate Handlers ───────────────────────────────────────────────────────
@@ -1056,6 +1121,120 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   <option value={30}>30 Minutes</option>
                   <option value={0}>Never (Disabled)</option>
                 </select>
+              </div>
+
+              {/* Gemini AI Model for Paper Extraction */}
+              <div className="adv-setting-card adv-setting-card--vertical">
+                <div className="adv-setting-info" style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', width: '100%' }}>
+                    <strong className="adv-setting-title">⚡ Gemini Model for Paper Extraction</strong>
+                    <span className="adv-tab-counter" style={{ background: 'rgba(99, 102, 241, 0.15)', color: 'var(--color-primary-500, #6366f1)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
+                      Active: {geminiModelPreset === 'custom' ? (customModelInput || 'Custom') : (geminiModelPreset === 'gemini-3.5-flash-lite' ? '3.5 Flash Lite' : '3.8 Flash')}
+                    </span>
+                  </div>
+                  <p className="adv-setting-desc">
+                    Choose the primary Gemini AI model utilized for parsing question papers, mark schemes, resource booklets, and teacher guidance. Synchronized across all school devices via cloud config.
+                  </p>
+                </div>
+
+                {/* Preset Options */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px', marginBottom: '12px' }}>
+                  <button
+                    type="button"
+                    className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.5-flash-lite' ? 'adv-tab-btn--active' : ''}`}
+                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                    onClick={() => {
+                      setGeminiModelPreset('gemini-3.5-flash-lite');
+                      setModelTestFeedback(null);
+                    }}
+                  >
+                    ⚡ Gemini 3.5 Flash Lite <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(Ultra-Fast ~5s)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.8-flash' ? 'adv-tab-btn--active' : ''}`}
+                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                    onClick={() => {
+                      setGeminiModelPreset('gemini-3.8-flash');
+                      setModelTestFeedback(null);
+                    }}
+                  >
+                    🧠 Gemini 3.8 Flash <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(High Visual Reasoning)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`adv-tab-btn ${geminiModelPreset === 'custom' ? 'adv-tab-btn--active' : ''}`}
+                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                    onClick={() => {
+                      setGeminiModelPreset('custom');
+                      setModelTestFeedback(null);
+                    }}
+                  >
+                    🛠️ Custom Model...
+                  </button>
+                </div>
+
+                {/* Custom Model Input if custom preset selected */}
+                {geminiModelPreset === 'custom' && (
+                  <div style={{ marginTop: '4px', marginBottom: '12px', width: '100%' }}>
+                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted, #64748b)', marginBottom: '4px' }}>
+                      Custom Model Identifier (e.g. <code>gemini-2.5-pro</code>, <code>gemini-2.0-flash</code>)
+                    </label>
+                    <input
+                      type="text"
+                      className="adv-input"
+                      placeholder="e.g. gemini-2.5-pro"
+                      value={customModelInput}
+                      onChange={(e) => {
+                        setCustomModelInput(e.target.value);
+                        setModelTestFeedback(null);
+                      }}
+                      style={{ width: '100%', maxWidth: '420px', fontFamily: 'monospace' }}
+                    />
+                  </div>
+                )}
+
+                {/* Test Feedback Notice */}
+                {modelTestFeedback && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      marginBottom: '12px',
+                      width: '100%',
+                      fontSize: '13px',
+                      backgroundColor: modelTestFeedback.ok ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                      color: modelTestFeedback.ok ? '#059669' : '#dc2626',
+                      border: `1px solid ${modelTestFeedback.ok ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                    }}
+                  >
+                    <span>{modelTestFeedback.ok ? '✓' : '⚠️'}</span>
+                    <span>{modelTestFeedback.message}</span>
+                  </div>
+                )}
+
+                {/* Action Buttons: Test Connection & Save */}
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={handleTestGeminiModel}
+                    disabled={isTestingModel || (geminiModelPreset === 'custom' && !customModelInput.trim())}
+                  >
+                    {isTestingModel ? 'Testing Model API…' : '🔍 Test Model Availability'}
+                  </button>
+                  <button
+                    type="button"
+                    className="adv-btn-primary"
+                    onClick={handleSaveGeminiModel}
+                    disabled={isSavingModel || (geminiModelPreset === 'custom' && !customModelInput.trim())}
+                  >
+                    {isSavingModel ? 'Saving…' : '💾 Save & Sync Model to Cloud'}
+                  </button>
+                </div>
               </div>
 
               {/* AI Diagram & Image Generation for Variants */}

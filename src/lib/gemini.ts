@@ -7,7 +7,7 @@ import type { PaperOutline } from './paperOutlineParse';
 import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
-import { getSavedSettings } from './settings';
+import { getSavedSettings, getGeminiExtractionModel } from './settings';
 
 /**
  * Collects and deduplicates all available Gemini API keys from environment variables.
@@ -2384,8 +2384,9 @@ export function parseRobustJson<T = any>(rawText: string): T {
 }
 
 const VERIFIED_FAST_MODELS = [
-  'gemini-3.1-flash-lite',
   'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
 ];
@@ -2452,13 +2453,107 @@ async function discoverAvailableModels(targetApiKey?: string): Promise<string[]>
 
   // Static fallback list with verified ultra-fast models
   const staticFallbacks = [
-    'gemini-3.1-flash-lite',
     'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
   ];
   cachedDiscoveredModels = staticFallbacks;
   return staticFallbacks;
+}
+
+/**
+ * Resolves the configured Gemini model for paper extraction and AI tasks.
+ * Precedence:
+ * 1. Admin setting configured in Advanced Settings (cloud-synced across teachers via app_config)
+ * 2. VITE_GEMINI_MODEL from .env.local or Cloudflare Pages environment
+ * 3. Returns undefined (triggering dynamic discovery / fast fallback pool)
+ */
+export function getConfiguredGeminiModel(): string | undefined {
+  try {
+    const adminModel = getGeminiExtractionModel()?.trim();
+    if (adminModel && adminModel !== 'auto') {
+      return adminModel.startsWith('gemini-') ? adminModel : `gemini-${adminModel}`;
+    }
+  } catch (err) {
+    console.warn('Could not read admin gemini extraction model:', err);
+  }
+
+  const rawEnvModel =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODEL) ||
+    (typeof process !== 'undefined' && process.env?.VITE_GEMINI_MODEL);
+  if (rawEnvModel && rawEnvModel.trim() && rawEnvModel.trim() !== 'auto') {
+    const m = rawEnvModel.trim();
+    return m.startsWith('gemini-') ? m : `gemini-${m}`;
+  }
+
+  return undefined;
+}
+
+/**
+ * Pings Google AI Studio to verify whether a specified model identifier exists and is reachable
+ * with the active API key. Used in Admin Settings before saving.
+ */
+export async function testGeminiModelConnectivity(
+  modelName: string,
+  targetApiKey?: string
+): Promise<{ ok: boolean; message: string; details?: any }> {
+  const cleanName = modelName?.trim();
+  if (!cleanName) {
+    return { ok: false, message: 'Please enter a valid model identifier.' };
+  }
+
+  const normalized = cleanName.startsWith('gemini-') ? cleanName : `gemini-${cleanName}`;
+  const apiKey = targetApiKey || getApiKeyForChunk(0);
+
+  if (!apiKey) {
+    return {
+      ok: false,
+      message: 'No Gemini API key found. Please configure VITE_GEMINI_API_KEY in environment or settings.',
+    };
+  }
+
+  try {
+    const startTime = performance.now();
+    const infoRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${normalized}?key=${apiKey}`
+    );
+    const latency = Math.round(performance.now() - startTime);
+
+    if (infoRes.ok) {
+      const data = await infoRes.json();
+      return {
+        ok: true,
+        message: `Connected successfully (${latency}ms) — "${data.displayName || normalized}" (Input limit: ${data.inputTokenLimit ? Number(data.inputTokenLimit).toLocaleString() : '1M'} tokens)`,
+        details: data,
+      };
+    }
+
+    if (infoRes.status === 404) {
+      return {
+        ok: false,
+        message: `Model "${normalized}" was not found (404). Verify the model identifier in Google AI Studio.`,
+      };
+    }
+
+    if (infoRes.status === 403) {
+      return {
+        ok: false,
+        message: `Permission denied (403): Your Gemini API key does not have access to model "${normalized}".`,
+      };
+    }
+
+    return {
+      ok: false,
+      message: `Gemini API returned status ${infoRes.status}: ${infoRes.statusText}`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: `Network error connecting to Gemini API: ${err?.message || 'Failed to fetch'}`,
+    };
+  }
 }
 
 /**
@@ -2716,8 +2811,8 @@ export async function extractQuestionsFromPdf(
   onProgress?.('Discovering available Gemini models…');
 
   // If user configured a specific model, try it first
-  const rawUserModel = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODEL) || (typeof process !== 'undefined' && process.env?.VITE_GEMINI_MODEL);
-  const userConfiguredModel = rawUserModel ? (rawUserModel.trim().startsWith('gemini-') ? rawUserModel.trim() : `gemini-${rawUserModel.trim()}`) : undefined;
+  const userConfiguredModel = getConfiguredGeminiModel();
+  // Prioritize configured model
   const discoveredModels = await discoverAvailableModels(activeKey);
 
   const candidateModels = Array.from(
@@ -2923,8 +3018,8 @@ export async function enrichQuestionWithGuidance(
     );
   }
 
-  const rawUserModel2 = import.meta.env.VITE_GEMINI_MODEL;
-  const userConfiguredModel = rawUserModel2 ? (rawUserModel2.trim().startsWith('gemini-') ? rawUserModel2.trim() : `gemini-${rawUserModel2.trim()}`) : undefined;
+  const userConfiguredModel = getConfiguredGeminiModel();
+  // Prioritize configured model
   const discoveredModels = await discoverAvailableModels(activeKey);
   const candidateModels = Array.from(
     new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])

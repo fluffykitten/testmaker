@@ -27,6 +27,7 @@ export interface AppSettings {
   enableVariantImageGeneration?: boolean; // AI diagram & SVG generation for question variants (default: false)
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
   hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
+  geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -76,6 +77,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableVariantImageGeneration: false,
   enableQuizizzMode: false,
   hideCreativeModeOnLanding: false,
+  geminiExtractionModel: 'gemini-3.5-flash-lite',
 };
 
 // Accent palette color mappings for --color-primary tokens
@@ -522,6 +524,97 @@ export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolea
     }
   } catch (err) {
     console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
+  }
+
+  return localVal;
+}
+
+
+/**
+ * Gets the configured Gemini extraction model from local settings or defaults to 'gemini-3.5-flash-lite'
+ */
+export function getGeminiExtractionModel(): string {
+  const current = getSavedSettings();
+  const trimmed = current.geminiExtractionModel?.trim();
+  return trimmed || 'gemini-3.5-flash-lite';
+}
+
+/**
+ * Saves and syncs the configured Gemini extraction model to local settings & Supabase cloud app_config
+ */
+export function saveGeminiExtractionModel(model: string): void {
+  const current = getSavedSettings();
+  const trimmed = model?.trim() || 'gemini-3.5-flash-lite';
+  const updated: AppSettings = {
+    ...current,
+    geminiExtractionModel: trimmed,
+  };
+
+  saveSettings(updated);
+  syncGeminiExtractionModelToCloud(trimmed).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('gemini_model_updated', {
+        detail: { geminiExtractionModel: trimmed },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs the configured Gemini extraction model to Supabase app_config store
+ */
+export async function syncGeminiExtractionModelToCloud(model: string): Promise<boolean> {
+  const trimmed = model?.trim();
+  if (!trimmed) return false;
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'gemini_extraction_model',
+      value: JSON.stringify(trimmed),
+    });
+    if (error) {
+      console.warn('Gemini extraction model cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for Gemini extraction model:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads the configured Gemini extraction model from local storage, fetches from Supabase cloud app_config if available,
+ * and updates local cache.
+ */
+export async function loadAndSyncGeminiExtractionModel(): Promise<string> {
+  const current = getSavedSettings();
+  const localVal = current.geminiExtractionModel?.trim() || 'gemini-3.5-flash-lite';
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'gemini_extraction_model')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = typeof parsed === 'string' && parsed.trim() ? parsed.trim() : 'gemini-3.5-flash-lite';
+      if (current.geminiExtractionModel !== cloudVal) {
+        const updated = { ...current, geminiExtractionModel: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('gemini_model_updated', {
+              detail: { geminiExtractionModel: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch Gemini extraction model from cloud:', err);
   }
 
   return localVal;

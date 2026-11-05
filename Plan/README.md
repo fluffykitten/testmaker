@@ -11,3 +11,4 @@ This directory contains all design specifications, architectural proposals, and 
   2. Technical Architecture & Schemas
   3. Step-by-step Implementation Plan
   4. Verification & Testing Strategy
+
