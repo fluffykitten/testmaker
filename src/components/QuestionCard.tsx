@@ -8,6 +8,7 @@ import { ExamVisualRender } from './ExamVisualRender';
 import { ExamDataTable } from './ExamDataTable';
 import { formatPaperBadge } from '../utils/paperUtils';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
+import { hasMarkdownTable } from '../lib/markdownTable';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -265,8 +266,9 @@ function QuestionCardComponent({
           onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
         />
 
-        {/* Structured Data Tables if present */}
-        {question.data_tables && question.data_tables.length > 0 && (
+        {/* Structured Data Tables — only when the text carries no Markdown copy,
+            otherwise the same table renders twice (question_text plus data_tables) */}
+        {question.data_tables && question.data_tables.length > 0 && !hasMarkdownTable(question.question_text) && (
           <ExamDataTable tables={question.data_tables} />
         )}
 
@@ -379,8 +381,8 @@ function QuestionCardComponent({
                   onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
                 />
 
-                {/* Sub-question data tables if present */}
-                {sub.data_tables && sub.data_tables.length > 0 && (
+                {/* Sub-question data tables — fallback only when the text has no Markdown copy */}
+                {sub.data_tables && sub.data_tables.length > 0 && !hasMarkdownTable(sub.question_text) && (
                   <ExamDataTable tables={sub.data_tables} />
                 )}
 

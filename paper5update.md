@@ -254,3 +254,35 @@ node node_modules/typescript/bin/tsc -b              # typecheck
 node node_modules/vite/bin/vite.js build             # bundle check
 ```
 
+### 2026-11-05 — Tables never rendered: `columns` vs `headers`, plus single-owner rule
+
+**Trigger (report `uploadbug1.md`):** Nov 2024/53 Q1(a) was reported as a one-line summary with both
+results tables missing. Re-running the app's exact request (prompt + QP + MS, temperature 0,
+`maxOutputTokens: 16384`, `gemini-3.5-flash-lite`) **did not reproduce it**: 0 occurrences in 5 runs;
+4 runs returned the full 1.4k-char procedure with both tables. One run returned malformed JSON
+(`\u00frac{…}`), which `parseRobustJson` repairs — that repair path is the standing suspect for the
+original loss, not the prompt.
+
+**What was actually broken, 4/4 runs:** `practicalPrompt.ts` asked for `"columns"`, but
+`ExamDataTable` (and the PDF, image and Google Forms renderers) read `"headers"` and silently drop a
+table without it. Every practical-paper table was extracted and then discarded at render time — which
+is why "tables captured" passed the harness while nothing displayed.
+
+| Change | File |
+|---|---|
+| `"columns"` → `"headers"`; `data_tables` on `sub_questions`; one-owner rule; layout-conditional transcription rule (`(a)` may be printed above `Experiment 1`) | `practicalPrompt.ts` |
+| `enforceTableOwnership()` — a parent table moves into the sub-part whose text names it and carries a Markdown row; never duplicates; pure | `practicalPostProcess.ts` |
+| Owner pass wired after `separatePracticalQuestions` in both pipelines | `pdfProcessor.ts` |
+| Content gates: `headers` array present · each printed `Table n.m` exactly once · Markdown copy in the owning text · each printed `Experiment n` transcribed · dump-write denial no longer turns PASS into a non-zero exit | `extract-paper5.mjs` |
+| UI de-duplication: render `data_tables` only when the text carries no Markdown copy (the PDF exporter already did this, the cards did not) | `markdownTable.ts` · `QuestionCard.tsx` · `TestQuestionItem.tsx` · `QuestionVariantModal.tsx` |
+
+Prompt ownership alone proved insufficient — the same paper came back with the tables on the parent in
+one run and on `(a)` in the next — so the rule is enforced deterministically after extraction.
+
+**Verified (Nov 2024/53):** `RESULT: PASS`, `tables=1 parent + 2 sub · headers=ok · printed=3` —
+Table 1.1/1.2 on `(a)`, Table 3.1 on Q3. Typecheck clean (`tsc --noEmit`, app + node projects).
+
+**Not done:** the 24-paper sweep. Fix 1 changes table output on every practical paper, so the full
+sweep is still required before trusting this across the corpus.
+
+

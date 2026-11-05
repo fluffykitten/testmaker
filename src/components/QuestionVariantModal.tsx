@@ -13,6 +13,7 @@ import {
   generateParametricSvg,
   type VariantMode,
 } from '../lib/gemini';
+import { hasMarkdownTable } from '../lib/markdownTable';
 import {
   generateExamDiagram,
   suggestDiagramPrompt,
@@ -559,8 +560,8 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                 </div>
               )}
 
-              {/* Original Structured Data Tables if present */}
-              {question.data_tables && question.data_tables.length > 0 && (
+              {/* Original Structured Data Tables — fallback only when the text has no Markdown copy */}
+              {question.data_tables && question.data_tables.length > 0 && !hasMarkdownTable(question.question_text) && (
                 <ExamDataTable tables={question.data_tables} />
               )}
 
@@ -586,7 +587,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                           />
                         </div>
                       )}
-                      {sub.data_tables && sub.data_tables.length > 0 && (
+                      {sub.data_tables && sub.data_tables.length > 0 && !hasMarkdownTable(sub.question_text) && (
                         <ExamDataTable tables={sub.data_tables} />
                       )}
                       {sub.mark_scheme && showMarkScheme && (
@@ -910,8 +911,8 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                   </div>
                   )}
 
-                  {/* Variant Structured Data Tables if present */}
-                  {variant.data_tables && variant.data_tables.length > 0 && (
+                  {/* Variant Structured Data Tables — fallback only when the text has no Markdown copy */}
+                  {variant.data_tables && variant.data_tables.length > 0 && !hasMarkdownTable(variant.question_text) && (
                     <ExamDataTable tables={variant.data_tables} />
                   )}
 
@@ -936,7 +937,7 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
                             diagramType={sub.diagram_type}
                             hasEmbeddedValues={sub.has_embedded_values}
                           />
-                          {sub.data_tables && sub.data_tables.length > 0 && (
+                          {sub.data_tables && sub.data_tables.length > 0 && !hasMarkdownTable(sub.question_text) && (
                             <ExamDataTable tables={sub.data_tables} />
                           )}
                           {sub.mark_scheme && showMarkScheme && (

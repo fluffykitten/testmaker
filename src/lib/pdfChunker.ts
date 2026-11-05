@@ -1,5 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { tryBuildPaperOutline } from './paperOutline';
 
@@ -64,8 +65,34 @@ export async function detectAndSplitInDocumentAnswerKey(
   fileOrBytes: File | Uint8Array | ArrayBuffer
 ): Promise<InDocumentAnswerKeySplit> {
   try {
-    const rawBytes = await toUint8Array(fileOrBytes);
-    const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
+    return await inspectInDocumentAnswerKey(fileOrBytes);
+  } catch (err) {
+    console.warn('In-document answer key detection error, treating as single document:', err);
+    const fallbackBuffer =
+      fileOrBytes instanceof ArrayBuffer
+        ? fileOrBytes
+        : fileOrBytes instanceof Uint8Array
+        ? fileOrBytes.slice().buffer
+        : await fileOrBytes.arrayBuffer();
+    const rawBytes = new Uint8Array(fallbackBuffer);
+    return {
+      hasAnswerKey: false,
+      qpDocBytes: rawBytes,
+      qpStartPage: 1,
+      qpEndPage: 1,
+    };
+  }
+}
+
+async function inspectInDocumentAnswerKey(
+  fileOrBytes: File | Uint8Array | ArrayBuffer
+): Promise<InDocumentAnswerKeySplit> {
+  const rawBytes = await toUint8Array(fileOrBytes);
+  // pdf.js transfers the bytes to its worker, which detaches the ArrayBuffer on this
+  // thread. Hand it a copy so `rawBytes` survives for PDFDocument.load and the caller.
+  const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
+  const pdfJsDoc = await loadingTask.promise;
+  try {
     const totalPages = pdfJsDoc.numPages;
 
     if (totalPages <= 2) {
@@ -139,21 +166,8 @@ export async function detectAndSplitInDocumentAnswerKey(
       qpStartPage: 1,
       qpEndPage: totalPages,
     };
-  } catch (err) {
-    console.warn('In-document answer key detection error, treating as single document:', err);
-    const fallbackBuffer =
-      fileOrBytes instanceof ArrayBuffer
-        ? fileOrBytes
-        : fileOrBytes instanceof Uint8Array
-        ? fileOrBytes.buffer
-        : await fileOrBytes.arrayBuffer();
-    const rawBytes = new Uint8Array(fallbackBuffer);
-    return {
-      hasAnswerKey: false,
-      qpDocBytes: rawBytes,
-      qpStartPage: 1,
-      qpEndPage: 1,
-    };
+  } finally {
+    await loadingTask.destroy();
   }
 }
 
@@ -171,7 +185,18 @@ export async function detectAndSplitInDocumentAnswerKey(
 async function detectEffectiveQuestionPageCount(rawBytes: Uint8Array, fallbackTotal: number): Promise<number> {
   if (fallbackTotal <= 2) return fallbackTotal;
   try {
-    const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
+    return await countEffectiveQuestionPages(rawBytes);
+  } catch {
+    return fallbackTotal;
+  }
+}
+
+async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number> {
+  // pdf.js detaches the buffer it is handed; give it a copy so `rawBytes` stays valid
+  // for the outline build and base64 encoding that follow (see chunkfix.md).
+  const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
+  const pdfJsDoc = await loadingTask.promise;
+  try {
     let effectiveEnd = pdfJsDoc.numPages;
 
     for (let p = pdfJsDoc.numPages; p >= 2; p--) {
@@ -200,8 +225,8 @@ async function detectEffectiveQuestionPageCount(rawBytes: Uint8Array, fallbackTo
     }
 
     return Math.max(1, effectiveEnd);
-  } catch {
-    return fallbackTotal;
+  } finally {
+    await loadingTask.destroy();
   }
 }
 
@@ -363,7 +388,18 @@ export async function detectSaveMyExamsMetadata(
   fileOrBytes: File | Uint8Array | ArrayBuffer
 ): Promise<SaveMyExamsMeta> {
   const rawBytes = await toUint8Array(fileOrBytes);
-  const pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) }).promise;
+  // pdf.js detaches the buffer it is handed; give it a copy so `rawBytes` stays valid
+  // for the split and PDFDocument.load calls that follow (see chunkfix.md).
+  const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
+  const pdfJsDoc = await loadingTask.promise;
+  try {
+    return await inspectSaveMyExams(pdfJsDoc);
+  } finally {
+    await loadingTask.destroy();
+  }
+}
+
+async function inspectSaveMyExams(pdfJsDoc: PDFDocumentProxy): Promise<SaveMyExamsMeta> {
   const numPages = pdfJsDoc.numPages;
 
   if (numPages <= 1) {

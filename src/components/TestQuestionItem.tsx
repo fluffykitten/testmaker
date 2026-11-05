@@ -6,6 +6,7 @@ import { ExamDataTable } from './ExamDataTable';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { formatPaperBadge } from '../utils/paperUtils';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
+import { hasMarkdownTable } from '../lib/markdownTable';
 import {
   generateExamDiagram,
   suggestDiagramPrompt,
@@ -309,8 +310,8 @@ function TestQuestionItemComponent({
           </div>
         )}
 
-        {/* Structured Data Tables if present */}
-        {question.data_tables && question.data_tables.length > 0 && (
+        {/* Structured Data Tables — fallback only when the text has no Markdown copy */}
+        {question.data_tables && question.data_tables.length > 0 && !hasMarkdownTable(question.question_text) && (
           <ExamDataTable tables={question.data_tables} />
         )}
 
@@ -354,8 +355,8 @@ function TestQuestionItemComponent({
                   hasEmbeddedValues={sub.has_embedded_values}
                 />
 
-                {/* Sub-question data tables if present */}
-                {sub.data_tables && sub.data_tables.length > 0 && (
+                {/* Sub-question data tables — fallback only when the text has no Markdown copy */}
+                {sub.data_tables && sub.data_tables.length > 0 && !hasMarkdownTable(sub.question_text) && (
                   <ExamDataTable tables={sub.data_tables} />
                 )}
 

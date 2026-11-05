@@ -42,8 +42,11 @@ ${hasQ3 ? '6. Question 3 has no sub-parts: set "sub_questions": [] and "total_ma
 
 ## TRANSCRIPTION RULES
 
-- "question_text" = the printed stem that appears BEFORE the first sub-part, verbatim. For Question 1 this includes every "Experiment 1"…"Experiment n" block, every bullet, every volume and reagent. Do not summarise or shorten.
-- Each sub-part's "question_text" = its printed text from its label up to the next label. Keep "dropwise" and "in excess" observation prompts on separate lines where they are printed that way.
+- The parent "question_text" is the printed stem that appears BEFORE the first sub-part label, verbatim. Stop at that label. Never move printed sub-part content up into the stem, and never repeat sub-part text in the stem.
+- Each sub-part's "question_text" = its printed text from its own label up to the next printed label, verbatim.
+- Some papers print the sub-part label directly above the procedure — "(a) Experiment 1" — instead of placing "Experiment 1"…"Experiment n" in the stem. In that layout every experiment block belongs to that sub-part: transcribe every bullet, volume, mass, reagent, apparatus instruction and formula in full.
+- Never replace printed content with a summary, an instruction, or a description of what the candidate should do. If the printed part is long, the transcription is long.
+- Keep "dropwise" and "in excess" observation prompts on separate lines where they are printed that way.
 - Dotted answer lines are answer spaces: render each as "____". Never emit runs of dots.
 - Exclude page furniture: "DO NOT WRITE IN THIS MARGIN", "* 0000… *", "DFD", "© UCLES", "[Turn over", page numbers, barcodes.
 - Exclude the "Notes for use in qualitative analysis" pages entirely — they are reference material, not questions.
@@ -52,7 +55,9 @@ ${hasQ3 ? '6. Question 3 has no sub-parts: set "sub_questions": [] and "total_ma
 
 ## FIGURES, TABLES AND GRAPHS
 
-- Every printed table (e.g. "Table 1.1", "Table 3.1") must appear twice: as a Markdown table inside the owning "question_text", and as an entry in that question's "data_tables" array: { "title": "Table 1.1", "columns": ["..."], "rows": [["..."]] }.
+- Every printed table (e.g. "Table 1.1", "Table 3.1") must appear twice: as a Markdown table inside the owning "question_text", and as an entry in that owner's "data_tables" array: { "title": "Table 1.1", "headers": ["..."], "rows": [["..."]] }.
+- Exactly one owner per table. A table printed after a sub-part label goes in that sub-part's "data_tables" only; a table printed before the first sub-part label goes in the parent question's "data_tables" only. Never store the same table at both levels.
+- Use the key names "title", "headers" and "rows" — always "headers", never "columns". A cell the candidate must fill in is written "".
 - Attach a figure whenever the question relies on printed artwork the candidate must read or complete: a graph grid to plot on, an apparatus diagram, a specimen photograph. Applies to ANY question, including the 6-mark planning question if it shows apparatus. Set "has_diagram": true, "diagram_source": "qp", "diagram_type": "graph" | "apparatus" | "photo", and "resource_ref" to the printed label (e.g. "Fig. 1.1", "Fig. 3.1"). Never invent a label.
 - A figure marked "has_diagram": true MUST also carry its location, or it cannot be cropped:
   - "page_number": the 1-indexed PDF page the figure is printed on.
@@ -94,9 +99,9 @@ Return a single JSON object, no prose, no code fence:
       "resource_ref": "Fig. 1.1" | null,
       "bounding_box": [<ymin>, <xmin>, <ymax>, <xmax>] | null,
       "options": null,
-      "data_tables": [ { "title": "Table 1.1", "columns": ["..."], "rows": [["..."]] } ],
+      "data_tables": [ { "title": "Table 1.1", "headers": ["..."], "rows": [["..."]] } ],
       "sub_questions": [
-        { "sub_id": "${outline.questions[0]?.subs[0]?.id ?? '(a)'}", "question_text": "...", "marks": <number>, "page_number": <number>, "has_diagram": false, "diagram_type": null }
+        { "sub_id": "${outline.questions[0]?.subs[0]?.id ?? '(a)'}", "question_text": "...", "marks": <number>, "page_number": <number>, "has_diagram": false, "diagram_type": null, "data_tables": [] }
       ],
       "mark_scheme": { "marking_points": ["...", "..."] }
     }

@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const pdfjs = await import('file://' + require.resolve('pdfjs-dist/legacy/build/pdf.mjs').replace(/\\/g, '/'));
 const { parseOutline, expectedSubIds } = await import('../src/lib/paperOutlineParse.ts');
 const { getCambridgePracticalExtractionPrompt } = await import('../src/lib/practicalPrompt.ts');
+const { enforceTableOwnership } = await import('../src/lib/practicalPostProcess.ts');
 
 const args = process.argv.slice(2);
 const pdfPath = args.find((a) => !a.startsWith('--'));
@@ -93,7 +94,7 @@ async function callGemini(pdfBase64, prompt, msBase64) {
 }
 
 /** Everything wrong with an extraction, phrased as instructions for the re-ask. */
-function findProblems(parsed, outline, expected) {
+function findProblems(parsed, outline, expected, paper = { tableTitles: [], experiments: [] }) {
   const problems = [];
   const questions = Array.isArray(parsed?.questions) ? parsed.questions : null;
   if (!questions) return ['The response had no "questions" array.'];
@@ -138,6 +139,75 @@ function findProblems(parsed, outline, expected) {
     }
   }
 
+  // Every stored table must use the shape the renderers read (headers, not columns),
+  // and must exist exactly once — on the innermost container that prints it.
+  const tableEntries = [];
+  for (const q of questions) {
+    for (const t of q.data_tables ?? []) tableEntries.push({ owner: `Question ${q.question_number}`, table: t, text: q.question_text ?? '' });
+    for (const s of q.sub_questions ?? []) {
+      for (const t of s.data_tables ?? []) {
+        tableEntries.push({
+          owner: `Question ${q.question_number} sub-question ${s.sub_id}`,
+          table: t,
+          text: s.question_text ?? '',
+        });
+      }
+    }
+  }
+  for (const { owner, table } of tableEntries) {
+    if (!table || !Array.isArray(table.headers)) {
+      const keys = Object.keys(table ?? {}).join(', ') || 'none';
+      problems.push(
+        `${owner} has a "data_tables" entry without a "headers" array (keys: ${keys}). ` +
+          `Every table must be { "title": "Table 1.1", "headers": [...], "rows": [[...]] } — "columns" is not read by the renderers.`,
+      );
+    }
+    if (!table || !Array.isArray(table.rows)) {
+      problems.push(`${owner} has a "data_tables" entry without a "rows" array.`);
+    }
+  }
+  // Each table must also exist as Markdown inside the text of the container that stores it.
+  for (const { owner, table, text } of tableEntries) {
+    const title = String(table?.title ?? '').replace(/\s+/g, ' ').trim();
+    if (!title) continue;
+    if (!/(^|\n)\s*\|/.test(text ?? '')) {
+      problems.push(
+        `${owner} stores "${title}" in "data_tables" but that container's "question_text" has no Markdown table. ` +
+          `A printed table appears twice: as a Markdown table inside the owning text, and as one "data_tables" entry on that same container. ` +
+          `If the table is printed inside a sub-part, both copies belong to that sub-part, not the parent.`,
+      );
+    }
+  }
+  for (const want of paper.tableTitles) {
+    const hits = tableEntries.filter(
+      ({ table }) => String(table?.title ?? '').replace(/\s+/g, ' ').trim().toLowerCase() === want.toLowerCase(),
+    ).length;
+    if (hits === 0) {
+      problems.push(
+        `"${want}" is printed in the paper but is missing from "data_tables". ` +
+          `Transcribe it as a Markdown table in its container's "question_text" and add one "data_tables" entry on that same container.`,
+      );
+    } else if (hits > 1) {
+      problems.push(
+        `"${want}" appears ${hits} times across "data_tables". Store each table exactly once, on its innermost container — ` +
+          `a sub-part when its label precedes the table, otherwise the parent question.`,
+      );
+    }
+  }
+
+  // Printed procedure blocks must survive transcription somewhere in their question.
+  const allText = questions
+    .flatMap((q) => [q.question_text ?? '', ...(q.sub_questions ?? []).map((s) => s.question_text ?? '')])
+    .join('\n');
+  for (const n of paper.experiments) {
+    if (!new RegExp(`Experiment\\s*${n}\\b`).test(allText)) {
+      problems.push(
+        `The paper prints "Experiment ${n}" but its transcription is missing. Transcribe the whole experiment block verbatim ` +
+          `into the part that owns it — never summarise a procedure.`,
+      );
+    }
+  }
+
   if (questions.some((q) => /Notes for use in qualitative analysis|Tests for anions|BLANK PAGE/i.test(q.question_text ?? ''))) {
     problems.push('Remove all reference-page content (qualitative analysis notes, blank pages) from question_text.');
   }
@@ -154,6 +224,14 @@ if (!outline.usable) {
 }
 const expected = expectedSubIds(outline);
 console.log(`  outline: ${outline.questions.map((q) => `Q${q.number}:${q.total}`).join(' ')} | columns ${JSON.stringify(outline.columns)}`);
+
+// What the paper itself prints, so the content gates know what to look for.
+const paperText = pages.map((p) => p.items.map((i) => i.s).join(' ')).join(' ');
+const paper = {
+  tableTitles: [...new Set([...paperText.matchAll(/Table\s*(\d+\.\d+)/g)].map((m) => `Table ${m[1]}`))],
+  experiments: [...new Set([...paperText.matchAll(/Experiment\s*(\d+)/g)].map((m) => Number(m[1])))].sort((a, b) => a - b),
+};
+console.log(`  printed: experiments [${paper.experiments.join(', ')}] · tables [${paper.tableTitles.join(', ')}]`);
 
 // Optional mark scheme: trimmed exactly as the app does (Phase 4) before sending.
 let msBase64 = null;
@@ -214,7 +292,9 @@ while (attempts < maxAttempts) {
     if (attempts === maxAttempts) fs.writeFileSync('scratch/extract-raw-failure.json', text);
     continue;
   }
-  problems = findProblems(parsed, outline, expected);
+  // Mirrors the app: the deterministic owner pass runs before anything is stored.
+  if (Array.isArray(parsed.questions)) parsed.questions = enforceTableOwnership(parsed.questions);
+  problems = findProblems(parsed, outline, expected, paper);
   if (!problems.length) break;
 }
 
@@ -245,9 +325,20 @@ for (const q of outline.questions) {
     );
   }
 }
-const tables = questions.reduce((a, q) => a + (q.data_tables?.length ?? 0), 0);
-console.log(`  leak=${problems.some((p) => p.includes('reference-page')) ? 'YES' : 'no'} · data_tables=${tables}`);
+const parentTables = questions.reduce((a, q) => a + (q.data_tables?.length ?? 0), 0);
+const subTables = questions.reduce((a, q) => a + (q.sub_questions ?? []).reduce((b, s) => b + (s.data_tables?.length ?? 0), 0), 0);
+const allTables = questions.flatMap((q) => [...(q.data_tables ?? []), ...(q.sub_questions ?? []).flatMap((s) => s.data_tables ?? [])]);
+const headersOk = allTables.every((t) => Array.isArray(t?.headers));
+console.log(
+  `  leak=${problems.some((p) => p.includes('reference-page')) ? 'YES' : 'no'} · ` +
+    `tables=${parentTables} parent + ${subTables} sub · headers=${headersOk ? 'ok' : 'MISSING'} · printed=${paper.tableTitles.length}`,
+);
 console.log(`  RESULT: ${problems.length === 0 ? 'PASS' : 'FAIL — ' + problems[0]}`);
 
-fs.writeFileSync(`scratch/extract-${label.replace(/[^a-zA-Z0-9]+/g, '-')}.json`, JSON.stringify(parsed, null, 1));
+// A sandbox that denies the dump must not turn a PASS into a non-zero exit.
+try {
+  fs.writeFileSync(`scratch/extract-${label.replace(/[^a-zA-Z0-9]+/g, '-')}.json`, JSON.stringify(parsed, null, 1));
+} catch (error) {
+  console.log(`  (raw JSON not saved: ${String(error.message).slice(0, 80)})`);
+}
 process.exit(problems.length === 0 ? 0 : 1);

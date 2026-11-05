@@ -138,6 +138,63 @@ function splitPlanningQuestion(questions: ExtractedQuestion[]): ExtractedQuestio
   return next;
 }
 
+/** "Table 1.1" → "table 1.1"; tolerant of whitespace drift and a missing title. */
+function tableKey(table: { title?: string; id?: string } | null | undefined): string {
+  return String(table?.title ?? table?.id ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Guarantees one owner per table.
+ *
+ * Vision extraction is inconsistent about where a results table lives: the same
+ * paper comes back with Table 1.1 on the parent question in one run and on the
+ * sub-part that prints it in the next. When a table stays on the parent while its
+ * title is printed inside a sub-part, the renderers draw it twice — once from
+ * `data_tables` under the stem, once from the Markdown copy inside the sub-part.
+ * The prompt asks for a single owner; this makes it true.
+ *
+ * A table moves down only when a sub-part's printed text both names it and carries
+ * a Markdown table row, so stem-owned stimulus tables are left where they are.
+ *
+ * Pure: the input array and its question objects are never modified.
+ */
+export function enforceTableOwnership(questions: ExtractedQuestion[]): ExtractedQuestion[] {
+  return questions.map((q) => {
+    const parentTables = q.data_tables ?? [];
+    if (!parentTables.length || !Array.isArray(q.sub_questions) || q.sub_questions.length === 0) return q;
+
+    const subs = q.sub_questions.map((sub) => ({ ...sub, data_tables: [...(sub.data_tables ?? [])] }));
+    const remaining: NonNullable<ExtractedQuestion['data_tables']> = [];
+
+    for (const table of parentTables) {
+      const key = tableKey(table);
+      const owner = key
+        ? subs.find(
+            (sub) =>
+              (sub.question_text ?? '').toLowerCase().includes(key) && /(^|\n)\s*\|/.test(sub.question_text ?? ''),
+          )
+        : undefined;
+
+      if (!owner) {
+        remaining.push(table);
+        continue;
+      }
+      if (!owner.data_tables!.some((existing) => tableKey(existing) === key)) {
+        owner.data_tables!.push(table);
+      }
+    }
+
+    return {
+      ...q,
+      data_tables: remaining.length ? remaining : undefined,
+      sub_questions: subs,
+    };
+  });
+}
+
 /**
  * Repairs question boundaries for Cambridge practical papers.
  * Pure: the input array and its question objects are never modified.

@@ -40,3 +40,4 @@ backup/
 
 # Superdesign temporary outputs
 .superdesign/tmp/
+geopaper/
