@@ -162,7 +162,10 @@ export async function createGoogleFormQuiz(
   }
 
   // Flatten items
-  const flattenedItems = flattenQuestionsForForms(workingQuestions, imageBase64Map, imageUrlMap, exportOptions?.shuffleQuestions);
+  const flattenedItems = flattenQuestionsForForms(workingQuestions, imageBase64Map, imageUrlMap, exportOptions?.shuffleQuestions, {
+    stripOptionPrefixes: Boolean(exportOptions?.shuffleOptions),
+    includeStudentInfo: exportOptions?.includeStudentInfo === true,
+  });
   const isRequired = exportOptions?.isRequired !== false; // Default true (Fixes Issue #19)
   const shuffleChoices = Boolean(exportOptions?.shuffleOptions); // Fixes Issue #18
 
@@ -172,6 +175,8 @@ export async function createGoogleFormQuiz(
   let lastSectionStyle: string | null = null;
 
   flattenedItems.forEach((item, idx) => {
+    const itemRequired = item.isRequired ?? isRequired;
+
     // Check if section break is needed (Fixes Issue #17)
     let shouldInsertBreak = false;
     let sectionTitle = '';
@@ -179,7 +184,13 @@ export async function createGoogleFormQuiz(
     if (exportOptions?.sectionBreakMode === 'chunk_10' && idx > 0 && idx % 10 === 0) {
       shouldInsertBreak = true;
       sectionTitle = `Section ${Math.floor(idx / 10) + 1}`;
-    } else if (exportOptions?.sectionBreakMode === 'by_question' && !item.isSubQuestion && idx > 0) {
+    } else if (exportOptions?.sectionBreakMode === 'by_parent_question') {
+      // One section per Cambridge question: the shared context item opens the group.
+      if (item.isContextItem || (!item.isSubQuestion && !item.isStudentInfo && idx > 0)) {
+        shouldInsertBreak = true;
+        sectionTitle = item.isContextItem ? item.title : `Question ${idx + 1}`;
+      }
+    } else if (exportOptions?.sectionBreakMode === 'by_question' && !item.isSubQuestion && !item.isContextItem && !item.isStudentInfo && idx > 0) {
       shouldInsertBreak = true;
       sectionTitle = item.title;
     } else if (exportOptions?.sectionBreakMode === 'by_style') {
@@ -189,6 +200,12 @@ export async function createGoogleFormQuiz(
         sectionTitle = `Section: ${currentCategory} Questions`;
       }
       lastSectionStyle = currentCategory;
+    }
+
+    // Student identification gets its own opening section so it never mixes with the exam.
+    if (idx === 0 && item.isStudentInfo && exportOptions?.sectionBreakMode && exportOptions.sectionBreakMode !== 'none') {
+      shouldInsertBreak = true;
+      sectionTitle = 'Student Information';
     }
 
     if (shouldInsertBreak) {
@@ -205,7 +222,8 @@ export async function createGoogleFormQuiz(
       });
     }
 
-    if (item.type === 'GRID' && item.gridRows && item.gridColumns && item.gridRows.length > 0 && item.gridColumns.length > 0) {
+    // Shared Cambridge context (scenario + procedure + stimulus figure) as a single item.
+    if (item.type === 'CONTEXT' || item.isContextItem) {
       if (item.imageUrl) {
         let finalUri = item.imageUrl;
         if (finalUri.includes('testmaker-media.icmadani.workers.dev') && finalUri.endsWith('.webp')) {
@@ -215,6 +233,44 @@ export async function createGoogleFormQuiz(
           createItem: {
             item: {
               title: item.title,
+              description: item.description || undefined,
+              imageItem: {
+                image: {
+                  sourceUri: encodeURI(finalUri),
+                  altText: item.altText || 'Context diagram',
+                },
+              },
+            },
+            location: { index: itemIndex++ },
+          },
+        });
+      } else {
+        createRequests.push({
+          createItem: {
+            item: {
+              title: item.title,
+              description: item.description || undefined,
+              textItem: {},
+            },
+            location: { index: itemIndex++ },
+          },
+        });
+      }
+      return;
+    }
+
+    if (item.type === 'GRID' && item.gridRows && item.gridColumns && item.gridRows.length > 0 && item.gridColumns.length > 0) {
+      if (item.imageUrl) {
+        let finalUri = item.imageUrl;
+        if (finalUri.includes('testmaker-media.icmadani.workers.dev') && finalUri.endsWith('.webp')) {
+          finalUri = finalUri.replace(/\.webp$/i, '.png');
+        }
+        createRequests.push({
+          createItem: {
+            item: {
+              // The grid below carries the question title; repeating it on the image reads as a
+              // duplicate item, so the image is labelled as the figure it is.
+              title: item.altText || `Figure: ${item.title}`,
               imageItem: {
                 image: {
                   sourceUri: encodeURI(finalUri),
@@ -230,7 +286,7 @@ export async function createGoogleFormQuiz(
       }
 
       const rowCount = item.gridRows.length;
-      const rowPoints = Math.max(1, Math.round(item.pointValue / rowCount));
+      const rowPoints = Math.max(1, Math.round((item.pointValue || 1) / rowCount));
 
       const questionGroupItem: any = {
         grid: {
@@ -245,21 +301,24 @@ export async function createGoogleFormQuiz(
             rowQuestion: {
               title: row,
             },
-            required: isRequired,
-            grading: {
-              pointValue: rowPoints,
-            },
+            required: itemRequired,
           };
 
-          const correctCol = item.gridRowCorrectAnswers?.[row];
-          if (correctCol) {
-            qObj.grading.correctAnswers = {
-              answers: [{ value: correctCol }],
+          if (!item.isStudentInfo && rowPoints > 0) {
+            qObj.grading = {
+              pointValue: rowPoints,
             };
-            qObj.grading.whenRight = { text: 'Correct!' };
-            qObj.grading.whenWrong = { text: `Expected: ${correctCol}` };
-          } else if (item.feedbackWrong) {
-            qObj.grading.whenWrong = { text: `Mark Scheme: ${item.feedbackWrong}` };
+
+            const correctCol = item.gridRowCorrectAnswers?.[row];
+            if (correctCol) {
+              qObj.grading.correctAnswers = {
+                answers: [{ value: correctCol }],
+              };
+              qObj.grading.whenRight = { text: 'Correct!' };
+              qObj.grading.whenWrong = { text: `Expected: ${correctCol}` };
+            } else if (item.feedbackWrong) {
+              qObj.grading.whenWrong = { text: `Mark Scheme: ${item.feedbackWrong}` };
+            }
           }
 
           return qObj;
@@ -282,14 +341,19 @@ export async function createGoogleFormQuiz(
       return;
     }
 
+    const isGraded = !item.isStudentInfo && (item.pointValue > 0 || (item.correctAnswers && item.correctAnswers.length > 0));
+
     const questionItem: any = {
       question: {
-        required: isRequired, // Fixes Issue #19
-        grading: {
-          pointValue: item.pointValue,
-        },
+        required: itemRequired, // Fixes Issue #19
       },
     };
+
+    if (isGraded) {
+      questionItem.question.grading = {
+        pointValue: Math.max(1, Math.round(item.pointValue || 1)),
+      };
+    }
 
     if (item.imageUrl) {
       let finalUri = item.imageUrl;
@@ -310,38 +374,42 @@ export async function createGoogleFormQuiz(
         shuffle: shuffleChoices, // Fixes Issue #18
       };
 
-      if (item.correctAnswers && item.correctAnswers.length > 0) {
-        questionItem.question.grading.correctAnswers = {
-          answers: item.correctAnswers.map((ans) => ({ value: ans })),
-        };
-      }
+      if (isGraded && questionItem.question.grading) {
+        if (item.correctAnswers && item.correctAnswers.length > 0) {
+          questionItem.question.grading.correctAnswers = {
+            answers: item.correctAnswers.map((ans) => ({ value: ans })),
+          };
+        }
 
-      if (item.feedbackRight) {
-        questionItem.question.grading.whenRight = { text: item.feedbackRight };
-      }
-      if (item.feedbackWrong) {
-        // Pure feedback without double prefix (Fixes Issue #8)
-        questionItem.question.grading.whenWrong = { text: `Mark Scheme: ${item.feedbackWrong}` };
+        if (item.feedbackRight) {
+          questionItem.question.grading.whenRight = { text: item.feedbackRight };
+        }
+        if (item.feedbackWrong) {
+          // Pure feedback without double prefix (Fixes Issue #8)
+          questionItem.question.grading.whenWrong = { text: `Mark Scheme: ${item.feedbackWrong}` };
+        }
       }
     } else if (item.type === 'SHORT_ANSWER') {
       // Fix Issue #23: SHORT_ANSWER item type in Forms API
       questionItem.question.textQuestion = {
         paragraph: false,
       };
-      if (item.correctAnswers && item.correctAnswers.length > 0) {
-        questionItem.question.grading.correctAnswers = {
-          answers: item.correctAnswers.map((ans) => ({ value: ans })),
-        };
-      }
-      if (item.feedbackWrong) {
-        questionItem.question.grading.generalFeedback = { text: `Mark Scheme: ${item.feedbackWrong}` };
+      if (isGraded && questionItem.question.grading) {
+        if (item.correctAnswers && item.correctAnswers.length > 0) {
+          questionItem.question.grading.correctAnswers = {
+            answers: item.correctAnswers.map((ans) => ({ value: ans })),
+          };
+        }
+        if (item.feedbackWrong) {
+          questionItem.question.grading.generalFeedback = { text: `Mark Scheme: ${item.feedbackWrong}` };
+        }
       }
     } else {
       // Paragraph question
       questionItem.question.textQuestion = {
         paragraph: true,
       };
-      if (item.feedbackWrong) {
+      if (isGraded && questionItem.question.grading && item.feedbackWrong) {
         questionItem.question.grading.generalFeedback = { text: `Mark Scheme: ${item.feedbackWrong}` };
       }
     }

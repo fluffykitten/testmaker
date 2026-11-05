@@ -11,19 +11,108 @@ import { extractAllMarkdownTables, formatTableToCleanText } from '../../lib/tabl
 export const SUPERSCRIPT_MAP: Record<string, string> = {
   '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
   '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-  '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+  '+': '⁺', '-': '⁻', '−': '⁻', '–': '⁻', '—': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
   'n': 'ⁿ', 'i': 'ⁱ', 'x': 'ˣ',
 };
 
 export const SUBSCRIPT_MAP: Record<string, string> = {
   '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
   '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
-  '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎',
+  '+': '₊', '-': '₋', '−': '₋', '–': '₋', '—': '₋', '=': '₌', '(': '₍', ')': '₎',
   'a': 'ₐ', 'e': 'ₑ', 'o': 'ₒ', 'x': 'ₓ', 'h': 'ₕ',
   'k': 'ₖ', 'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'p': 'ₚ',
   's': 'ₛ', 't': 'ₜ', 'r': 'ᵣ', 'i': 'ᵢ', 'j': 'ⱼ',
   'u': 'ᵤ', 'v': 'ᵥ',
 };
+
+// ─── Chemistry Support (Phase 1) ─────────────────────────────────────────────
+
+/** The 118 element symbols — used to decide whether a token is a chemical formula. */
+const ELEMENT_SYMBOLS = new Set(
+  ('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr ' +
+    'Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu ' +
+    'Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr ' +
+    'Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og').split(' '),
+);
+
+const SUBSCRIPT_DIGITS: Record<string, string> = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+};
+
+function subscriptDigits(value: string): string {
+  return value.replace(/\d/g, (d) => SUBSCRIPT_DIGITS[d] ?? d);
+}
+
+/**
+ * Repairs backslash escapes that JSON serialisation ate: `\text` → TAB + "ext".
+ * Runs before whitespace normalisation so the tab is still distinguishable.
+ */
+function repairCorruptedEscapes(text: string): string {
+  return text
+    .replace(/\t(?=ext\b|imes\b|heta\b|au\b|an\b|o\b)/g, '\\t')
+    .replace(/\r(?=ightarrow|ightleftharpoons|ight)\b/g, '\\r');
+}
+
+/**
+ * Formats the body of a LaTeX `\ce{...}` expression: arrows, charges, subscripts.
+ * Example: `CuSO4(aq) + 2NaOH(aq) -> Cu(OH)2(s)`.
+ */
+export function formatChemicalExpression(body: string): string {
+  let out = body
+    .replace(/<=>|<-->|<->/g, ' ⇌ ')
+    .replace(/<--|-->|->/g, ' → ')
+    .replace(/\\rightleftharpoons|\\leftrightharpoons/g, ' ⇌ ')
+    .replace(/\\rightarrow|\\longrightarrow/g, ' → ')
+    .replace(/\\uparrow|\^/g, '↑')
+    .replace(/\\downarrow|\bv\b/g, '↓')
+    // Charges: ^{2+}, ^2+, ^{+}
+    .replace(/\^\{([^{}]+)\}/g, (_m, p1: string) => toUnicodeSuperscript(p1.trim()))
+    .replace(/\^\s*(\d*[+\-−–—]|[+\-−–—]\d+)/g, (_m, p1: string) => toUnicodeSuperscript(p1))
+    // Stoichiometric counts: only digits that FOLLOW a symbol or bracket are subscripts,
+    // so a leading coefficient ("2NaOH") stays on the baseline.
+    .replace(/([A-Za-z)\]])(\d+)/g, (_m, head: string, digits: string) => `${head}${subscriptDigits(digits)}`)
+    // State symbols read better separated from the formula: CuSO₄ (aq)
+    .replace(/\((aq|s|l|g)\)/gi, ' ($1)')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return out;
+}
+
+/**
+ * Subscripts stoichiometric numbers in plain-text formulas (`CaCO3` → `CaCO₃`),
+ * but only for tokens that really look like a formula: at least two element
+ * symbols, at least one digit, and every letter run a valid element. This keeps
+ * labels such as "Q1", "Paper 2" or "Fig. 1.1" untouched.
+ */
+export function subscriptChemicalFormulas(text: string): string {
+  const HYDRATE = /([A-Z][A-Za-z0-9()]*\d)\s*\.\s*(?=\d*[A-Z][a-z]?)/g;
+  const withHydrate = text.replace(HYDRATE, '$1 · ');
+
+  // Elements whose diatomic form (N2, O2, Cl2) is written with a count but a single symbol.
+  const DIATOMIC = new Set(['H', 'N', 'O', 'F', 'Cl', 'Br', 'I']);
+
+  return withHydrate.replace(/\b([A-Za-z0-9()]+)\b/g, (token) => {
+    // Leading stoichiometric coefficients stay on the baseline: "2NaOH", "5H2O".
+    const lead = token.match(/^\d+/)?.[0] ?? '';
+    const core = token.slice(lead.length);
+    if (!/\d/.test(core) || !/[A-Z]/.test(core)) return token;
+
+    const symbols = core.match(/[A-Z][a-z]?/g) ?? [];
+    if (symbols.length === 0) return token;
+    if (!symbols.every((sym) => ELEMENT_SYMBOLS.has(sym))) return token;
+
+    if (symbols.length === 1) {
+      // Single-symbol formulas only for unambiguous diatomics (N2, O2, H2, Cl2); a count of 1
+      // ("P1", "Q1") is far more likely a label than a formula.
+      const only = symbols[0];
+      if (!DIATOMIC.has(only)) return token;
+      const count = core.replace(/^[A-Z][a-z]?/, '');
+      if (!/^([2-9]|[1-9]\d+)$/.test(count)) return token;
+    }
+
+    return lead + core.replace(/(\d+)/g, (digits) => subscriptDigits(digits));
+  });
+}
 
 export function toUnicodeSuperscript(str: string): string {
   if (!str) return '';
@@ -58,13 +147,30 @@ export function toUnicodeSubscript(str: string): string {
 export function cleanTextForGoogleForms(text: string, options?: { preserveNewlines?: boolean }): string {
   if (!text) return '';
 
-  let cleaned = text
+  let cleaned = repairCorruptedEscapes(text).replace(/[\u2212\u2013]/g, '-')
     // Replace LaTeX decimal comma artifact {,} with standard comma
     .replace(/\\?\{,\}/g, ',')
 
+    // Chemistry: \ce{...} expressions are parsed before generic LaTeX stripping
+    .replace(/\\ce\{([^{}]*)\}/g, (_m, body: string) => ` ${formatChemicalExpression(body)} `)
+
+    // Chemical state symbols: _{ (aq) } -> (aq). Must run before subscript conversion,
+    // otherwise "q" has no Unicode subscript and the result becomes "_((aq))".
+    .replace(/_\{?\s*\(\s*(aq|s|l|g)\s*\)\s*\}?/gi, ' ($1)')
+    // Nested form: _{3(s)} keeps the count and lifts the state symbol out.
+    .replace(/_\{([^{}]*?)\(\s*(aq|s|l|g)\s*\)\s*\}/gi, '_{$1} ($2)')
+    .replace(/_\{?\s*(aq|s|l|g)\s*\}?/gi, ' ($1)')
+
+    // Subscript immediately followed by a charge: SO_4^2-, _{4}^{2-}
+    .replace(/_(\d+)\s*\^\s*\{?(\d*[+-])\}?/g, (_m, sub: string, charge: string) => `${toUnicodeSubscript(sub)}${toUnicodeSuperscript(charge)}`)
+    .replace(/_(?:\{([^{}]+)\})\s*\^\s*\{?([^{}]+)\}?/g, (_m, sub: string, charge: string) => `${toUnicodeSubscript(sub.replace(/\s/g, ''))}${toUnicodeSuperscript(charge.replace(/\s/g, ''))}`)
+
     // Chemistry arrows & reactions
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
-    .replace(/\\rightleftharpoons/g, ' ⇌ ')
+    .replace(/\\rightleftharpoons|\\leftrightharpoons/g, ' ⇌ ')
+    .replace(/<=>|<-->/g, ' ⇌ ')
+    .replace(/<--|-->|->/g, ' → ')
+    .replace(/\\longrightarrow/g, ' → ')
     .replace(/\\leftrightarrow/g, ' ↔ ')
     .replace(/\\rightarrow/g, ' → ')
     .replace(/\\leftarrow/g, ' ← ')
@@ -142,6 +248,8 @@ export function cleanTextForGoogleForms(text: string, options?: { preserveNewlin
     .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
     .replace(/\^\{\\circ\}/g, '°')
     .replace(/\^\\circ/g, '°')
+    .replace(/\^\s*\\ominus\b/g, '⦵')
+    .replace(/\\ominus\b/g, '⦵')
     .replace(/\\degree\b/g, '°')
     .replace(/\\circ\b/g, '°')
 
@@ -216,6 +324,22 @@ export function cleanTextForGoogleForms(text: string, options?: { preserveNewlin
     .replace(/([a-zA-Z0-9)\]])_(\d+)/g, (_m, base, sub) => `${base}${toUnicodeSubscript(sub)}`)
     // 3. Unbraced letter subscripts: M_r, A_r, v_i, v_x, a_n
     .replace(/([a-zA-Z0-9)\]])_([aeoxhklmnpstrijuv])(?![a-zA-Z0-9])/g, (_m, base, sub) => `${base}${toUnicodeSubscript(sub)}`);
+
+  // Bare ionic charges on element symbols (Na+, Cl-, Ca2+, OH- -> Na⁺, Cl⁻, Ca²⁺, OH⁻)
+  const BARE_ION = /(?:^|[\s(,;])([A-Z][a-z]?|OH|NH4|SO4|NO3|CO3)(\d*[+\-−–—]|[+\-−–—]\d+)(?=[\s;,.)\]]|$)/g;
+  cleaned = cleaned.replace(BARE_ION, (match, sym, charge) => {
+    if (ELEMENT_SYMBOLS.has(sym) || ['OH', 'NH4', 'SO4', 'NO3', 'CO3'].includes(sym)) {
+      return match.replace(sym + charge, `${sym}${toUnicodeSuperscript(charge)}`);
+    }
+    return match;
+  });
+
+  // Plain-text chemical formulas (CaCO3 -> CaCO₃, Fe2(SO4)3 -> Fe₂(SO₄)₃).
+  // Conservative: only tokens that are unambiguously formulas are touched.
+  cleaned = subscriptChemicalFormulas(cleaned);
+
+  // Cubic/capacity units written inline: 25 cm3 -> 25 cm³
+  cleaned = cleaned.replace(/\b(cm|dm|mm|m|km|nm)3\b/g, '$1³');
 
   // Strip Markdown & HTML formatting
   cleaned = cleaned

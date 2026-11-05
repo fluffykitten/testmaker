@@ -26,6 +26,14 @@ import {
 } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import {
+  guardEntriesToSeed,
+  isEdgeTouchStart,
+  isRapidPop,
+  shouldBlockTouchMove,
+  shouldBlockWheel,
+  wasRecentlyIntercepted,
+} from '../lib/examGestureGuard';
+import {
   exportIndividualStudentReportPdf,
   exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
@@ -471,6 +479,14 @@ export function StudentQuizRunner({
   >({});
   const isWindowActiveRef = useRef<boolean>(true);
 
+  // Timestamp of the last touch/wheel gesture that was intercepted instead of being
+  // allowed to reach the browser's navigation engine. Used to suppress the
+  // window_blur / tab_switch violations those gestures cause for a frame.
+  const gestureGuardAtRef = useRef<number>(0);
+  const markGestureIntercepted = useCallback(() => {
+    gestureGuardAtRef.current = Date.now();
+  }, []);
+
   // 🔐 Examiner / Teacher Emergency Recovery Action State
   const [showTeacherActionModal, setShowTeacherActionModal] = useState<boolean>(false);
   const [teacherActionType, setTeacherActionType] = useState<'resubmit' | 'unlock' | null>(null);
@@ -840,24 +856,130 @@ export function StudentQuizRunner({
   };
 
   // ─── 2B. Browser History Trap (Prevents 2-finger touchpad horizontal overscroll back/forward) ───
+  // Three stacked guard entries + forward lock. A fast double-swipe pops two entries in one
+  // compositor motion, so a single dummy entry is not enough: the cushion absorbs the second
+  // pop before the app can unmount. See touchscreen_browser_security_plan.md §Layer 3.
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading || !securityEnabled) return;
 
-    try {
-      window.history.pushState({ examGuard: true }, '', window.location.href);
-    } catch { }
-
-    const handlePopState = () => {
-      if (!isSubmittingRef.current && !isSubmitted) {
+    const seedGuardEntries = (count: number) => {
+      for (let i = 0; i < count; i++) {
         try {
           window.history.pushState({ examGuard: true }, '', window.location.href);
-        } catch { }
+        } catch {
+          break;
+        }
+      }
+    };
+
+    seedGuardEntries(3);
+
+    let lastPopAt = 0;
+    const handlePopState = () => {
+      if (isSubmittingRef.current || isSubmitted) return;
+
+      const now = Date.now();
+      const rapid = isRapidPop(now, lastPopAt);
+      lastPopAt = now;
+      // Any popstate here is a navigation attempt the student should not be able to complete.
+      markGestureIntercepted();
+
+      // Re-seed synchronously. On a rapid second pop the cushion is what stops the
+      // browser from landing on the page before the exam.
+      seedGuardEntries(guardEntriesToSeed(rapid));
+      try {
+        window.history.forward();
+      } catch {
+        /* forward lock is best-effort; the seeded entries are the real guard */
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [hasStarted, isSubmitted, isGrading, securityEnabled]);
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled, markGestureIntercepted]);
+
+  // ─── 2C. Hardware Gesture Shield (touchscreen edge swipe + trackpad two-finger) ───
+  // Layer 1 & 2 of the plan: own the gesture before the compositor starts a back-navigation.
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading || !securityEnabled) return;
+
+    let startX = 0;
+    let startY = 0;
+    let startedAtEdge = false;
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        startedAtEdge = false;
+        return;
+      }
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startedAtEdge = isEdgeTouchStart(startX, window.innerWidth);
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+
+      const target = event.target as HTMLElement | null;
+      const insideHorizontalWidget = Boolean(
+        target?.closest(
+          'input[type="range"], .interactive-canvas, .drawing-scratchpad, .sq-scrollable-table, .overflow-x-auto',
+        ),
+      );
+
+      const blocked = shouldBlockTouchMove({
+        startX,
+        startY,
+        currentX: touch.clientX,
+        currentY: touch.clientY,
+        startedAtEdge,
+        insideHorizontalWidget,
+      });
+
+      if (blocked) {
+        if (event.cancelable) event.preventDefault();
+        markGestureIntercepted();
+      }
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      const scroller = target?.closest('.sq-scrollable-table, .overflow-x-auto, pre, code') as HTMLElement | null;
+
+      const blocked = shouldBlockWheel({
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        insideScroller: Boolean(scroller),
+        atLeftEdge: scroller ? scroller.scrollLeft <= 0 : false,
+        atRightEdge: scroller ? scroller.scrollLeft + scroller.clientWidth >= scroller.scrollWidth - 1 : false,
+      });
+
+      if (blocked) {
+        if (event.cancelable) event.preventDefault();
+        markGestureIntercepted();
+      }
+    };
+
+    const handleTouchEnd = () => {
+      startedAtEdge = false;
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+    window.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
+      window.removeEventListener('wheel', handleWheel);
+    };
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled, markGestureIntercepted]);
 
   // ─── 3. Anti-Cheating & Clipboard Event Listeners ───────────────────────────
   useEffect(() => {
@@ -865,16 +987,24 @@ export function StudentQuizRunner({
 
     // A. Tab switch / Visibility change
     const handleVisibilityChange = () => {
-      if (document.hidden && !isSubmittingRef.current && !isSubmitted) {
-        logViolation('tab_switch', 'Switched away from exam tab or minimized window');
-      }
+      if (!document.hidden || isSubmittingRef.current || isSubmitted) return;
+      // A navigation gesture we blocked can flip visibility for a frame — not a cheat attempt.
+      if (wasRecentlyIntercepted(Date.now(), gestureGuardAtRef.current, 600)) return;
+      logViolation('tab_switch', 'Switched away from exam tab or minimized window');
     };
 
     // B. Window Blur & Focus Sanitization (Immediate violation & PIN lock on any focus loss)
     const handleWindowBlur = () => {
-      if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
-        logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
+      if (isSubmittingRef.current || isSubmitted || isGrading) return;
+      // Layer 4: an intercepted edge-swipe / trackpad flick briefly blurs the window while the
+      // browser aborts the gesture. Refocus instead of issuing a false cheating strike.
+      if (wasRecentlyIntercepted(Date.now(), gestureGuardAtRef.current)) {
+        requestAnimationFrame(() => {
+          try { window.focus(); } catch { /* focus may be denied without a user gesture */ }
+        });
+        return;
       }
+      logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
     };
 
     const handleWindowFocus = () => {

@@ -20,6 +20,25 @@
   touch-action: pan-y pinch-zoom;
 }
 
+/* Layer 5 — container containment.
+   Nothing inside the exam may hand a horizontal overscroll back to the browser,
+   because the browser turns that into a history navigation (swipe-to-go-back). */
+.student-runner-root .sq-question-card,
+.student-runner-root .sq-exam-view {
+  overscroll-behavior-x: none !important;
+  overscroll-behavior-y: none !important;
+  touch-action: pan-y pinch-zoom;
+}
+
+/* Wide Cambridge data tables keep their own horizontal panning. The overscroll is
+   contained at the table edge instead of propagating to browser navigation. */
+.student-runner-root .sq-scrollable-table,
+.student-runner-root .overflow-x-auto {
+  overscroll-behavior-x: contain !important;
+  touch-action: pan-x pan-y pinch-zoom;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* Header */
 .sq-runner-header {
   background: var(--color-surface);

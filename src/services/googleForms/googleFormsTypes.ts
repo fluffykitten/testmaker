@@ -3,7 +3,7 @@
 export const FORMS_BODY_SCOPE = 'https://www.googleapis.com/auth/forms.body';
 export const FORMS_API_CONSOLE_URL = 'https://console.cloud.google.com/apis/library/forms.googleapis.com';
 
-export type FormItemType = 'RADIO' | 'CHECKBOX' | 'PARAGRAPH' | 'SHORT_ANSWER' | 'GRID';
+export type FormItemType = 'RADIO' | 'CHECKBOX' | 'PARAGRAPH' | 'SHORT_ANSWER' | 'GRID' | 'CONTEXT';
 
 export interface FormFlattenedItem {
   id: string;
@@ -29,6 +29,12 @@ export interface FormFlattenedItem {
   gridColumns?: string[];
   /** Map of row title -> correct column header */
   gridRowCorrectAnswers?: Record<string, string>;
+  /** Student identification field (Name / Class / Candidate number) — 0 points, not graded */
+  isStudentInfo?: boolean;
+  /** Shared parent context for a Cambridge multi-part question */
+  isContextItem?: boolean;
+  /** Per-item required override (student info fields are required; context items are not). */
+  isRequired?: boolean;
 }
 
 export interface GoogleFormResult {
@@ -50,7 +56,7 @@ export interface GoogleFormsProgress {
   message: string;
 }
 
-export type SectionBreakMode = 'none' | 'by_question' | 'by_style' | 'chunk_10';
+export type SectionBreakMode = 'none' | 'by_question' | 'by_parent_question' | 'by_style' | 'chunk_10';
 
 export interface GoogleFormsExportOptions {
   sectionBreakMode?: SectionBreakMode;
@@ -58,5 +64,7 @@ export interface GoogleFormsExportOptions {
   shuffleQuestions?: boolean;
   isRequired?: boolean;
   diagramMode?: 'cdn' | 'base64';
+  /** Prepend Full Name / Class / Candidate Number fields (0 points, required). */
+  includeStudentInfo?: boolean;
   signal?: AbortSignal;
 }

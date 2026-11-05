@@ -55,10 +55,71 @@ export function splitQuestionPromptAndDetails(
     };
   }
 
+  // A single block can still be structured: numbered steps, bullets, or dual prompts
+  // ("State: ... / Explain: ..."). Keep the ask as the title and the structure below it
+  // instead of flattening everything into one run-on line.
+  const lines = clean.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1) {
+    const [first, ...rest] = lines;
+    const restIsStructured =
+      rest.some((line) => /^(\d+[.)]\s|•|[-*]\s|[a-z][.)]\s)/i.test(line)) ||
+      rest.some((line) => /^(state|explain|describe|give|suggest|deduce|calculate|record|add|heat|measure)\b/i.test(line)) ||
+      rest.length >= 2;
+    if (restIsStructured && first.length >= 12) {
+      return {
+        title: cleanTextForGoogleForms(`${fullQNum} ${first}`, { preserveNewlines: false }),
+        description: cleanTextForGoogleForms(rest.join('\n'), { preserveNewlines: true }),
+      };
+    }
+  }
+
   return {
     title: cleanTextForGoogleForms(`${fullQNum} ${clean}`, { preserveNewlines: false }),
     description: undefined,
   };
+}
+
+/**
+ * Serialises a mark scheme of any shape into plain text.
+ * Replaces `String(markScheme)`, which produced "[object Object]" for object schemes.
+ */
+export function extractMarkSchemeText(markScheme: unknown): string {
+  if (!markScheme) return '';
+  if (typeof markScheme === 'string') {
+    return cleanTextForGoogleForms(markScheme, { preserveNewlines: true });
+  }
+  if (typeof markScheme !== 'object') return '';
+
+  const box = markScheme as Record<string, unknown>;
+  const sections: string[] = [];
+
+  const points = box.marking_points ?? box.markingPoints;
+  if (Array.isArray(points) && points.length > 0) {
+    sections.push(points.map((p) => `• ${cleanTextForGoogleForms(String(p), { preserveNewlines: false })}`).join('\n'));
+  }
+
+  const acceptable = box.acceptable_answers ?? box.acceptableAnswers;
+  if (Array.isArray(acceptable) && acceptable.length > 0) {
+    const list = acceptable.map((a) => cleanTextForGoogleForms(String(a), { preserveNewlines: false })).filter(Boolean);
+    if (list.length) sections.push(`Accept: ${list.join(' / ')}`);
+  }
+
+  const steps = box.steps;
+  if (Array.isArray(steps) && steps.length > 0) {
+    sections.push(steps.map((s) => `• ${cleanTextForGoogleForms(String(s), { preserveNewlines: false })}`).join('\n'));
+  }
+
+  if (box.guidance) {
+    const guidance = cleanTextForGoogleForms(String(box.guidance), { preserveNewlines: false });
+    if (guidance) sections.push(guidance);
+  }
+
+  return sections.filter(Boolean).join('\n');
+}
+
+/** Strips a static "A.", "B)", "C:" option prefix so shuffled choices read cleanly. */
+export function stripOptionPrefix(option: string): string {
+  return option.replace(/^\s*\(?[A-Ea-e]\)?\s*[.):\-]?\s+/, '').trim();
 }
 
 /**
@@ -376,14 +437,36 @@ export function detectGridDetails(
 /**
  * Flattens test questions and nested Cambridge sub-questions into a linear list of Google Forms items.
  */
+export interface FlattenOptions {
+  /** Remove baked-in "A.", "B." prefixes (use when choices are shuffled). */
+  stripOptionPrefixes?: boolean;
+  /** Prepend Full Name / Class / Candidate Number fields (0 points, required). */
+  includeStudentInfo?: boolean;
+}
+
+/** Student identification block — 0 points, required, never graded. */
+export function buildStudentInfoItems(): FormFlattenedItem[] {
+  return [
+    { id: 'student_name', title: 'Full Name', pointValue: 0, type: 'SHORT_ANSWER', isStudentInfo: true, isRequired: true },
+    { id: 'student_class', title: 'Class / Section', pointValue: 0, type: 'SHORT_ANSWER', isStudentInfo: true, isRequired: true },
+    { id: 'student_candidate_number', title: 'Candidate Number / Student ID', pointValue: 0, type: 'SHORT_ANSWER', isStudentInfo: true, isRequired: true },
+  ];
+}
+
 export function flattenQuestionsForForms(
   questions: Question[],
   imageBase64Map?: Record<string, string>,
   imageUrlMap?: Record<string, string>,
-  skipSort?: boolean
+  skipSort?: boolean,
+  options?: FlattenOptions
 ): FormFlattenedItem[] {
   const items: FormFlattenedItem[] = [];
   const orderedQuestions = skipSort ? questions : getOrderedQuestions(questions);
+  const stripPrefixes = options?.stripOptionPrefixes === true;
+
+  if (options?.includeStudentInfo) {
+    items.push(...buildStudentInfoItems());
+  }
 
   orderedQuestions.forEach((q, qIndex) => {
     const testQNum = qIndex + 1;
@@ -407,6 +490,26 @@ export function flattenQuestionsForForms(
       const formattedParentStem = formatMarkdownTablesForPlaintext(rawParentStem, q.data_tables, { hasImageTable: parentHasImage });
       const stemContext = cleanTextForGoogleForms(formattedParentStem, { preserveNewlines: true });
       const isInformativeStem = stemContext.length > 0 && !/^question\s*\d+$/i.test(stemContext);
+
+      // Phase 2: the scenario is printed ONCE, as a shared context item at the head of
+      // the question group, instead of being repeated inside every sub-question.
+      const emitContextItem = isInformativeStem;
+      if (emitContextItem) {
+        items.push({
+          id: `${parentQKey}_context`,
+          title: `Question ${testQNum}: Context & Scenario`,
+          description: stemContext,
+          pointValue: 0,
+          type: 'CONTEXT',
+          imageUrl: imageUrlMap?.[parentQKey] ?? null,
+          imageBase64: imageBase64Map?.[parentQKey] ?? null,
+          altText: `Diagram for Question ${testQNum}`,
+          topic,
+          isSubQuestion: false,
+          isContextItem: true,
+          isRequired: false,
+        });
+      }
 
       q.sub_questions.forEach((sq: SubQuestion, subIdx: number) => {
         const rawSubId = (sq.sub_id || '').trim();
@@ -459,7 +562,7 @@ export function flattenQuestionsForForms(
           imageUrlMap?.[qSubKey] ||
           imageBase64Map?.[qSubKey] ||
           subFallbackTablePng ||
-          (subIdx === 0 && parentHasImage)
+          (subIdx === 0 && parentHasImage && !emitContextItem)
         );
 
         let rawSubText = stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options);
@@ -478,7 +581,10 @@ export function flattenQuestionsForForms(
         let correctAnswers: string[] | undefined;
 
         if (hasOptions && sq.options && !isGrid) {
-          cleanedOptions = sq.options.map((opt) => cleanTextForGoogleForms(opt, { preserveNewlines: false }));
+          cleanedOptions = sq.options.map((opt) => {
+            const text = cleanTextForGoogleForms(opt, { preserveNewlines: false });
+            return stripPrefixes ? stripOptionPrefix(text) : text;
+          });
           const resolvedIndices = resolveAllMcqCorrectIndices(q, subIdx);
           if (resolvedIndices.length > 0) {
             correctOptionIndices = resolvedIndices;
@@ -488,21 +594,15 @@ export function flattenQuestionsForForms(
           correctAnswers = extractCorrectAnswersForTextItem(q, sq);
         }
 
-        // Feedback / Mark Scheme: Store clean text without hardcoded "Mark Scheme: " prefix (Fixes Issue #8)
-        let feedback = '';
-        if (sq.mark_scheme) {
-          feedback = cleanTextForGoogleForms(
-            typeof sq.mark_scheme === 'string' ? sq.mark_scheme : String(sq.mark_scheme),
-            { preserveNewlines: true }
-          );
-        }
+        // Feedback / Mark Scheme: robust object unwrapping (previously String(object) → "[object Object]")
+        const feedback = extractMarkSchemeText(sq.mark_scheme);
 
         // Image resolving (if grid, only attach if an explicit diagram exists)
         const rawDiagram = (sq as any).diagram_url || (sq as any).image_url || (sq as any).diagram_base64 ||
-          (subIdx === 0 ? (q.diagram_url || (q as any).image_url || (q as any).diagram_base64) : null);
+          (subIdx === 0 && !emitContextItem ? (q.diagram_url || (q as any).image_url || (q as any).diagram_base64) : null);
 
         const base64FromMap = imageBase64Map
-          ? (imageBase64Map[qSubKey] || (subIdx === 0 ? imageBase64Map[parentQKey] : null) || (rawDiagram ? imageBase64Map[rawDiagram] : null))
+          ? (imageBase64Map[qSubKey] || (subIdx === 0 && !emitContextItem ? imageBase64Map[parentQKey] : null) || (rawDiagram ? imageBase64Map[rawDiagram] : null))
           : null;
         const isDirectBase64 = typeof rawDiagram === 'string' && rawDiagram.startsWith('data:image/');
         const imageBase64 = (isGrid && !stimulusTable)
@@ -510,14 +610,11 @@ export function flattenQuestionsForForms(
           : (base64FromMap || subFallbackTablePng || (isDirectBase64 ? rawDiagram : null));
 
         const urlFromMap = imageUrlMap
-          ? (imageUrlMap[qSubKey] || (subIdx === 0 ? imageUrlMap[parentQKey] : null) || (rawDiagram ? imageUrlMap[rawDiagram] : null))
+          ? (imageUrlMap[qSubKey] || (subIdx === 0 && !emitContextItem ? imageUrlMap[parentQKey] : null) || (rawDiagram ? imageUrlMap[rawDiagram] : null))
           : null;
         const imageUrl = urlFromMap || ((!isDirectBase64 && typeof rawDiagram === 'string' && rawDiagram.startsWith('http')) ? rawDiagram : null);
 
-        const combinedDescription = [
-          isInformativeStem ? `Context: ${stemContext}` : '',
-          subDesc,
-        ].filter(Boolean).join('\n\n') || undefined;
+        const combinedDescription = subDesc || undefined;
 
         items.push({
           id: qSubKey,
@@ -607,7 +704,10 @@ export function flattenQuestionsForForms(
       let correctAnswers: string[] | undefined;
 
       if (hasOptions && q.options && !isGrid) {
-        cleanedOptions = q.options.map((opt) => cleanTextForGoogleForms(opt, { preserveNewlines: false }));
+        cleanedOptions = q.options.map((opt) => {
+          const text = cleanTextForGoogleForms(opt, { preserveNewlines: false });
+          return stripPrefixes ? stripOptionPrefix(text) : text;
+        });
         const resolvedIndices = resolveAllMcqCorrectIndices(q);
         if (resolvedIndices.length > 0) {
           correctOptionIndices = resolvedIndices;
@@ -617,15 +717,8 @@ export function flattenQuestionsForForms(
         correctAnswers = extractCorrectAnswersForTextItem(q);
       }
 
-      // Feedback / Mark Scheme: Store clean text without hardcoded "Mark Scheme: " prefix (Fixes Issue #8)
-      let feedback = '';
-      if (q.mark_scheme) {
-        if (q.mark_scheme.marking_points && q.mark_scheme.marking_points.length > 0) {
-          feedback = q.mark_scheme.marking_points.map((p) => cleanTextForGoogleForms(p, { preserveNewlines: true })).join('; ');
-        } else if (q.mark_scheme.acceptable_answers && q.mark_scheme.acceptable_answers.length > 0) {
-          feedback = q.mark_scheme.acceptable_answers.map((a) => cleanTextForGoogleForms(a, { preserveNewlines: true })).join('; ');
-        }
-      }
+      // Feedback / Mark Scheme: robust object unwrapping (Phase 3.1)
+      const feedback = extractMarkSchemeText(q.mark_scheme);
 
       const base64FromMap = imageBase64Map ? (imageBase64Map[qKey] || (rawDiagram ? imageBase64Map[rawDiagram] : null)) : null;
       const isDirectBase64 = typeof rawDiagram === 'string' && rawDiagram.startsWith('data:image/');

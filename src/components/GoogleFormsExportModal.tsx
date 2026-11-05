@@ -74,6 +74,7 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
   const [shuffleOptions, setShuffleOptions] = useState(false);
   const [shuffleQuestions, setShuffleQuestions] = useState(false);
   const [sectionBreakMode, setSectionBreakMode] = useState<SectionBreakMode>('none');
+  const [includeStudentInfo, setIncludeStudentInfo] = useState(true);
   const [diagramMode, setDiagramMode] = useState<'cdn' | 'base64'>('cdn');
 
   // Offline status detection (Fixes Issue #25)
@@ -327,9 +328,10 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
       shuffleQuestions,
       isRequired,
       diagramMode,
+      includeStudentInfo,
     };
     return generateGoogleAppsScript(headerConfig, questions, imageBase64Map, imageUrlMap, exportOpts);
-  }, [activeTab, headerConfig, questions, imageBase64Map, imageUrlMap, sectionBreakMode, shuffleOptions, shuffleQuestions, isRequired, diagramMode]);
+  }, [activeTab, headerConfig, questions, imageBase64Map, imageUrlMap, sectionBreakMode, shuffleOptions, shuffleQuestions, isRequired, diagramMode, includeStudentInfo]);
 
   if (!isOpen) return null;
 
@@ -386,6 +388,7 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
       shuffleOptions,
       shuffleQuestions,
       isRequired,
+      includeStudentInfo,
       signal: abortController.signal,
     };
 
@@ -600,6 +603,15 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
                 />
                 <span>Shuffle Question Order</span>
               </label>
+
+              <label className="gf-option-label" title="Prepend Full Name, Class and Candidate Number fields (0 points, required)">
+                <input
+                  type="checkbox"
+                  checked={includeStudentInfo}
+                  onChange={(e) => setIncludeStudentInfo(e.target.checked)}
+                />
+                <span>Include Student Identification</span>
+              </label>
             </div>
 
             <div className="gf-options-row gf-options-row--secondary">
@@ -611,6 +623,7 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
                   className="gf-select-input"
                 >
                   <option value="none">Single Page (No Breaks)</option>
+                  <option value="by_parent_question">Section per Question (Cambridge Layout)</option>
                   <option value="by_question">Page Break per Question</option>
                   <option value="by_style">Separate MCQ &amp; Structured Sections</option>
                   <option value="chunk_10">Every 10 Questions</option>
@@ -638,6 +651,7 @@ export const GoogleFormsExportModal: React.FC<GoogleFormsExportModalProps> = ({
             questions={questions}
             imageBase64Map={imageBase64Map}
             imageUrlMap={imageUrlMap}
+            includeStudentInfo={includeStudentInfo}
           />
 
           {/* TAB 1: 1-Click Native API */}

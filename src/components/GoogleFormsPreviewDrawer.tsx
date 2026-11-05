@@ -10,19 +10,24 @@ interface GoogleFormsPreviewDrawerProps {
   questions: Question[];
   imageBase64Map?: Record<string, string>;
   imageUrlMap?: Record<string, string>;
+  /** Mirrors the export option so the preview shows the student-info block when enabled. */
+  includeStudentInfo?: boolean;
 }
 
 export const GoogleFormsPreviewDrawer: React.FC<GoogleFormsPreviewDrawerProps> = ({
   questions,
   imageBase64Map,
   imageUrlMap,
+  includeStudentInfo = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   const items = useMemo(() => {
-    return flattenQuestionsForForms(questions, imageBase64Map, imageUrlMap);
-  }, [questions, imageBase64Map, imageUrlMap]);
+    return flattenQuestionsForForms(questions, imageBase64Map, imageUrlMap, false, {
+      includeStudentInfo,
+    });
+  }, [questions, imageBase64Map, imageUrlMap, includeStudentInfo]);
 
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return items;
@@ -90,6 +95,14 @@ export const GoogleFormsPreviewDrawer: React.FC<GoogleFormsPreviewDrawerProps> =
               } else if (item.type === 'GRID') {
                 typeBadgeClass = 'gf-badge-mcq';
                 typeLabel = `Multiple Choice Grid (${item.gridRows?.length || 0} rows)`;
+              } else if (item.type === 'CONTEXT') {
+                typeBadgeClass = 'gf-badge-paragraph';
+                typeLabel = 'Shared Context (0 marks)';
+              }
+
+              if (item.isStudentInfo) {
+                typeBadgeClass = 'gf-badge-short';
+                typeLabel = 'Student Info (0 marks)';
               }
 
               return (

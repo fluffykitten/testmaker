@@ -23,7 +23,10 @@ export function generateGoogleAppsScript(
     workingQuestions = [...questions].sort(() => Math.random() - 0.5);
   }
 
-  const flattened = flattenQuestionsForForms(workingQuestions, imageBase64Map, imageUrlMap, exportOptions?.shuffleQuestions);
+  const flattened = flattenQuestionsForForms(workingQuestions, imageBase64Map, imageUrlMap, exportOptions?.shuffleQuestions, {
+    stripOptionPrefixes: Boolean(exportOptions?.shuffleOptions),
+    includeStudentInfo: exportOptions?.includeStudentInfo === true,
+  });
   const { title: cleanTitle, description: cleanInstructions } = formatFormMetadata(headerConfig);
 
   const isRequired = exportOptions?.isRequired !== false;
@@ -76,7 +79,12 @@ export function generateGoogleAppsScript(
     if (exportOptions?.sectionBreakMode === 'chunk_10' && idx > 0 && idx % 10 === 0) {
       shouldInsertBreak = true;
       sectionTitle = `Section ${Math.floor(idx / 10) + 1}`;
-    } else if (exportOptions?.sectionBreakMode === 'by_question' && !item.isSubQuestion && idx > 0) {
+    } else if (exportOptions?.sectionBreakMode === 'by_parent_question') {
+      if (item.isContextItem || (!item.isSubQuestion && !item.isStudentInfo && idx > 0)) {
+        shouldInsertBreak = true;
+        sectionTitle = item.isContextItem ? item.title : `Question ${idx + 1}`;
+      }
+    } else if (exportOptions?.sectionBreakMode === 'by_question' && !item.isSubQuestion && !item.isContextItem && !item.isStudentInfo && idx > 0) {
       shouldInsertBreak = true;
       sectionTitle = item.title;
     } else if (exportOptions?.sectionBreakMode === 'by_style') {
@@ -88,6 +96,11 @@ export function generateGoogleAppsScript(
       lastSectionStyle = currentCategory;
     }
 
+    if (idx === 0 && item.isStudentInfo && exportOptions?.sectionBreakMode && exportOptions.sectionBreakMode !== 'none') {
+      shouldInsertBreak = true;
+      sectionTitle = 'Student Information';
+    }
+
     if (shouldInsertBreak) {
       lines.push(`  // ─── Section Break: ${sectionTitle} ───`);
       lines.push(`  var sec_${idx + 1} = form.addPageBreakItem();`);
@@ -96,6 +109,17 @@ export function generateGoogleAppsScript(
     }
 
     lines.push(`  // Item ${idx + 1}: ${item.title.slice(0, 40)}...`);
+
+    // Shared Cambridge context: a section header carries the scenario + procedure.
+    if (item.type === 'CONTEXT' || item.isContextItem) {
+      lines.push(`  var ${varName} = form.addSectionHeaderItem();`);
+      lines.push(`  ${varName}.setTitle(${JSON.stringify(item.title)});`);
+      if (item.description) {
+        lines.push(`  ${varName}.setHelpText(${JSON.stringify(item.description)});`);
+      }
+      lines.push('');
+      return;
+    }
 
     // Add image if present (diagram or table figure) (Fixes Issue #16: supports diagramMode: 'base64')
     if (item.imageUrl || item.imageBase64) {
@@ -139,7 +163,9 @@ export function generateGoogleAppsScript(
       if (item.description) {
         lines.push(`  ${varName}.setHelpText(${JSON.stringify(item.description)});`);
       }
-      lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      if (!item.isStudentInfo && item.pointValue > 0) {
+        lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      }
       if (isRequired) {
         lines.push(`  ${varName}.setRequired(true);`);
       }
@@ -170,7 +196,9 @@ export function generateGoogleAppsScript(
       if (item.description) {
         lines.push(`  ${varName}.setHelpText(${JSON.stringify(item.description)});`);
       }
-      lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      if (!item.isStudentInfo && item.pointValue > 0) {
+        lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      }
       if (isRequired) {
         lines.push(`  ${varName}.setRequired(true);`);
       }
@@ -199,16 +227,17 @@ export function generateGoogleAppsScript(
       lines.push(`  var ${varName} = form.addTextItem();`);
       lines.push(`  ${varName}.setTitle(${JSON.stringify(item.title)});`);
       lines.push(`  // WARNING: Google Apps Script lacks an API to set auto-grading correct answers for Text items.`);
-      lines.push(`  // The Mark Scheme is provided in the Help Text below, but these will require manual grading.`);
-      const helpParts = [
-        item.description,
-        item.feedbackWrong ? `Mark Scheme: ${item.feedbackWrong}` : '',
-      ].filter(Boolean);
-
-      if (helpParts.length > 0) {
-        lines.push(`  ${varName}.setHelpText(${JSON.stringify(helpParts.join('\n\n'))});`);
+      lines.push(`  // These require manual grading; the mark scheme is kept in this comment, never in the student-facing form.`);
+      if (item.description) {
+        lines.push(`  ${varName}.setHelpText(${JSON.stringify(item.description)});`);
       }
-      lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      if (item.feedbackWrong) {
+        // Phase 3.2: mark scheme must NOT go into setHelpText (students can read it).
+        lines.push(`  // Mark Scheme: ${item.feedbackWrong.replace(/\r?\n/g, ' | ')}`);
+      }
+      if (!item.isStudentInfo && item.pointValue > 0) {
+        lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      }
       if (isRequired) {
         lines.push(`  ${varName}.setRequired(true);`);
       }
@@ -225,26 +254,30 @@ export function generateGoogleAppsScript(
             .map(([r, c]) => `${r} = ${c}`)
             .join('; ')
         : '';
-      const gridHelpParts = [
-        item.description,
-        gridAnswerKeySummary ? `Mark Scheme / Answer Key: ${gridAnswerKeySummary}` : (item.feedbackWrong ? `Mark Scheme: ${item.feedbackWrong}` : ''),
-      ].filter(Boolean);
+      const gridHelpParts = [item.description].filter(Boolean);
       if (gridHelpParts.length > 0) {
         lines.push(`  ${varName}.setHelpText(${JSON.stringify(gridHelpParts.join('\n\n'))});`);
+      }
+      if (gridAnswerKeySummary) {
+        // Answer key stays in the script for the teacher; never in student-facing help text.
+        lines.push(`  // Grid Answer Key: ${gridAnswerKeySummary.replace(/\r?\n/g, ' | ')}`);
+      } else if (item.feedbackWrong) {
+        lines.push(`  // Mark Scheme: ${item.feedbackWrong.replace(/\r?\n/g, ' | ')}`);
       }
     } else {
       // Paragraph / Open-Ended
       lines.push(`  var ${varName} = form.addParagraphTextItem();`);
       lines.push(`  ${varName}.setTitle(${JSON.stringify(item.title)});`);
-      const helpText = [
-        item.description,
-        item.feedbackWrong ? `Mark Scheme: ${item.feedbackWrong}` : '', // Fixes Issue #8: No double prefix
-      ].filter(Boolean).join('\n\n');
-
-      if (helpText) {
-        lines.push(`  ${varName}.setHelpText(${JSON.stringify(helpText)});`);
+      if (item.description) {
+        lines.push(`  ${varName}.setHelpText(${JSON.stringify(item.description)});`);
       }
-      lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      if (item.feedbackWrong) {
+        // Phase 3.2: keep the mark scheme out of the student-visible help text.
+        lines.push(`  // Mark Scheme: ${item.feedbackWrong.replace(/\r?\n/g, ' | ')}`);
+      }
+      if (!item.isStudentInfo && item.pointValue > 0) {
+        lines.push(`  ${varName}.setPoints(${item.pointValue});`);
+      }
       if (isRequired) {
         lines.push(`  ${varName}.setRequired(true);`);
       }
