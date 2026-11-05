@@ -26,7 +26,7 @@ import {
   UnderlineType,
 } from 'docx';
 import { exportFileUniversal } from './fileExportBridge';
-import type { Question, CognitiveLevel } from '../types/database';
+import type { Question, SubQuestion, CognitiveLevel } from '../types/database';
 import { COGNITIVE_LEVEL_META } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
 import { parseFormattedTextToDocxRuns } from './docxExportService';
@@ -57,7 +57,11 @@ interface TosRowItem {
   citationBody: string;
   citationText: string;
   citationUrl?: string;
+  insertCitationUrl?: string;
   pageNumber?: number | null;
+  insertPageNumber?: number | null;
+  resourceRef?: string | null;
+  isInsertResource?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,12 +321,24 @@ function buildNestedDocxTable(tableRows: string[][], fontName: string): Table {
 }
 
 /**
- * Builds formatted past paper citation text and direct page link URL.
+ * Builds formatted past paper citation text and direct page link URL,
+ * accurately extracting and cross-referencing Question Paper and Insert Booklet details.
  */
 function buildCitationInfo(
   q: Question,
+  sq?: SubQuestion,
   subPart?: string
-): { citationPrefix: string; citationBody: string; citationText: string; citationUrl?: string; pageNumber?: number | null } {
+): {
+  citationPrefix: string;
+  citationBody: string;
+  citationText: string;
+  citationUrl?: string;
+  insertCitationUrl?: string;
+  pageNumber?: number | null;
+  insertPageNumber?: number | null;
+  resourceRef?: string | null;
+  isInsertResource: boolean;
+} {
   const parts: string[] = [];
 
   const paper = q.paper_number !== null && q.paper_number !== undefined ? `Paper ${q.paper_number}` : '';
@@ -337,20 +353,54 @@ function buildCitationInfo(
   const citationPrefix = 'IGCSE Level:';
   let citationBody = parts.length > 0 ? parts.join(' ') : 'Past Paper Reference';
 
-  const pageNum = q.page_number ?? (q.mark_scheme as any)?._page_number ?? null;
+  // 1. Question Paper Page Number & Deep Link
+  const pageNum = sq?.page_number ?? q.page_number ?? (q.mark_scheme as any)?._page_number ?? null;
   let citationUrl = q.source_pdf_url || (q.mark_scheme as any)?._source_pdf_url || undefined;
 
   if (citationUrl && pageNum && !citationUrl.includes('#page=')) {
     citationUrl = `${citationUrl}#page=${pageNum}`;
   }
 
-  if (pageNum && !citationBody.includes('p.')) {
+  // 2. Insert / Resource Booklet Metadata Resolution
+  const diagramSource = sq?.diagram_source || q.diagram_source || null;
+  const resourceRef = sq?.resource_ref || q.resource_ref || null;
+  const insertPageNum = sq?.insert_page_number ?? q.insert_page_number ?? (q.mark_scheme as any)?._insert_page_number ?? null;
+  const isInsertResource = diagramSource === 'insert' || Boolean(resourceRef) || Boolean(insertPageNum);
+
+  let insertCitationUrl = q.insert_pdf_url || (q.mark_scheme as any)?._insert_pdf_url || undefined;
+  if (insertCitationUrl && insertPageNum && !insertCitationUrl.includes('#page=')) {
+    insertCitationUrl = `${insertCitationUrl}#page=${insertPageNum}`;
+  }
+
+  // 3. Composite Citation Body Formatting
+  if (isInsertResource) {
+    const insertTags: string[] = [];
+    if (resourceRef) insertTags.push(resourceRef);
+    if (insertPageNum) insertTags.push(`p. ${insertPageNum}`);
+    const insertLabel = insertTags.length > 0 ? `[Insert: ${insertTags.join(', ')}]` : '[Insert Booklet]';
+
+    if (pageNum) {
+      citationBody += ` (QP p. ${pageNum}) • ${insertLabel}`;
+    } else {
+      citationBody += ` • ${insertLabel}`;
+    }
+  } else if (pageNum && !citationBody.includes('p.')) {
     citationBody += ` (p. ${pageNum})`;
   }
 
   const citationText = `${citationPrefix} ${citationBody}`;
 
-  return { citationPrefix, citationBody, citationText, citationUrl, pageNumber: pageNum };
+  return {
+    citationPrefix,
+    citationBody,
+    citationText,
+    citationUrl,
+    insertCitationUrl,
+    pageNumber: pageNum,
+    insertPageNumber: insertPageNum,
+    resourceRef,
+    isInsertResource,
+  };
 }
 
 /**
@@ -400,7 +450,7 @@ async function prepareTosRowsAsync(
         const sq = q.sub_questions![sIdx];
         const subPart = sq.sub_id ? sq.sub_id.replace(/[()]/g, '') : String.fromCharCode(97 + sIdx);
         const cogLevel: CognitiveLevel = sq.cognitive_level || q.cognitive_level || 'C2';
-        const { citationPrefix, citationBody, citationText, citationUrl, pageNumber } = buildCitationInfo(q, subPart);
+        const { citationPrefix, citationBody, citationText, citationUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q, sq, subPart);
 
         const questionElements: (Paragraph | Table)[] = [];
 
@@ -482,13 +532,17 @@ async function prepareTosRowsAsync(
           citationBody,
           citationText,
           citationUrl,
+          insertCitationUrl,
           pageNumber,
+          insertPageNumber,
+          resourceRef,
+          isInsertResource,
         });
       }
     } else {
       // Single row for parent question
       const cogLevel: CognitiveLevel = q.cognitive_level || 'C2';
-      const { citationPrefix, citationBody, citationText, citationUrl, pageNumber } = buildCitationInfo(q);
+      const { citationPrefix, citationBody, citationText, citationUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q);
 
       const questionElements: (Paragraph | Table)[] = [];
 
@@ -639,7 +693,11 @@ async function prepareTosRowsAsync(
         citationBody,
         citationText,
         citationUrl,
+        insertCitationUrl,
         pageNumber,
+        insertPageNumber,
+        resourceRef,
+        isInsertResource,
       });
     }
   }
@@ -1149,16 +1207,18 @@ export async function exportTableOfSpecificationsDocx(
     ];
 
     if (row.citationUrl) {
+      const qpPageLabel = row.pageNumber ? `📄 Question Paper (p. ${row.pageNumber})` : '📄 Question Paper PDF';
       citationChildren.push(
         new Paragraph({
           alignment: AlignmentType.LEFT,
-          spacing: { before: 0, after: 20, line: 220 },
+          spacing: { before: 0, after: row.insertCitationUrl ? 10 : 20, line: 220 },
           children: [
             new ExternalHyperlink({
               children: [
                 new TextRun({
-                  text: row.citationUrl,
-                  size: 12,
+                  text: qpPageLabel,
+                  bold: true,
+                  size: 13,
                   font: fontName,
                   color: '0563C1',
                   underline: { type: UnderlineType.SINGLE },
@@ -1169,7 +1229,36 @@ export async function exportTableOfSpecificationsDocx(
           ],
         })
       );
-    } else {
+    }
+
+    if (row.insertCitationUrl) {
+      const insertPageLabel = row.insertPageNumber
+        ? `🗺️ Insert Booklet (p. ${row.insertPageNumber}${row.resourceRef ? ` - ${row.resourceRef}` : ''})`
+        : `🗺️ Insert Booklet PDF${row.resourceRef ? ` (${row.resourceRef})` : ''}`;
+      citationChildren.push(
+        new Paragraph({
+          alignment: AlignmentType.LEFT,
+          spacing: { before: 0, after: 20, line: 220 },
+          children: [
+            new ExternalHyperlink({
+              children: [
+                new TextRun({
+                  text: insertPageLabel,
+                  bold: true,
+                  size: 13,
+                  font: fontName,
+                  color: '0D9488',
+                  underline: { type: UnderlineType.SINGLE },
+                }),
+              ],
+              link: row.insertCitationUrl,
+            }),
+          ],
+        })
+      );
+    }
+
+    if (!row.citationUrl && !row.insertCitationUrl) {
       citationChildren.push(
         new Paragraph({
           alignment: AlignmentType.LEFT,

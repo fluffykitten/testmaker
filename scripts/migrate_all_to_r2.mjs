@@ -26,6 +26,7 @@ async function getMimeType(fileName) {
   if (fileName.endsWith('.webp')) return 'image/webp';
   if (fileName.endsWith('.png')) return 'image/png';
   if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) return 'image/jpeg';
+  if (fileName.endsWith('.pdf')) return 'application/pdf';
   if (fileName.endsWith('.webm')) return 'audio/webm';
   if (fileName.endsWith('.mp3')) return 'audio/mpeg';
   if (fileName.endsWith('.wav')) return 'audio/wav';
@@ -45,9 +46,15 @@ async function run() {
   const audioCount = audioFiles ? audioFiles.length : 0;
   console.log(`Found ${audioCount} audio files in Supabase Storage.`);
 
+  // 3. Fetch list of past papers & booklets
+  const { data: paperFiles } = await supabase.storage.from('exam-diagrams').list('papers', { limit: 1000 });
+  const paperCount = paperFiles ? paperFiles.length : 0;
+  console.log(`Found ${paperCount} past paper/booklet files in Supabase Storage.`);
+
   const allItems = [
     ...diagrams.filter(d => d.name && !d.name.startsWith('.')).map(d => ({ folder: 'diagrams', name: d.name })),
-    ...(audioFiles || []).filter(a => a.name && !a.name.startsWith('.')).map(a => ({ folder: 'audio', name: a.name }))
+    ...(audioFiles || []).filter(a => a.name && !a.name.startsWith('.')).map(a => ({ folder: 'audio', name: a.name })),
+    ...(paperFiles || []).filter(p => p.name && !p.name.startsWith('.')).map(p => ({ folder: 'papers', name: p.name }))
   ];
 
   console.log(`Total files to migrate: ${allItems.length}`);

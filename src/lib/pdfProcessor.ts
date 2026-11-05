@@ -28,7 +28,7 @@ import {
 import { trimMarkSchemePreamble } from './markSchemeTrim';
 import { tryBuildPaperOutline } from './paperOutline';
 import type { PaperOutline } from './paperOutlineParse';
-import { separatePracticalQuestions } from './practicalPostProcess';
+import { separatePracticalQuestions, enforceTableOwnership } from './practicalPostProcess';
 import {
   cropDiagramsLocally,
   uploadDiagramsToStorage,
@@ -45,7 +45,7 @@ import {
   stitchPassagesToQuestions,
 } from './passageExtractor';
 import { addTagsToQuestions } from '../services/questionTagService';
-import { uploadPastPaperPdf } from '../services/storageService';
+import { uploadPastPaperPdf, uploadInsertBookletPdf } from '../services/storageService';
 
 export { stitchPassagesToQuestions } from './passageExtractor';
 
@@ -150,6 +150,22 @@ export async function saveExtractedQuestions(
     }
   }
 
+  // 2c. Upload source Insert / Resource Booklet PDF to R2 / Supabase Storage for persistent citations
+  let insertPdfUrl: string | null = null;
+  if (_insertFile) {
+    onProgress?.('Uploading Insert / Resource Booklet PDF for citations…');
+    try {
+      insertPdfUrl = await uploadInsertBookletPdf(_insertFile, {
+        subject_code: paper_metadata.subject_code,
+        year: paper_metadata.year,
+        series: paper_metadata.series,
+        paper_number: paper_metadata.paper_number,
+      });
+    } catch (insertErr) {
+      console.warn('Failed to upload insert booklet PDF for citations:', insertErr);
+    }
+  }
+
   // 3. Resolve syllabus
   onProgress?.('Resolving syllabus…');
   const syllabusId = await resolveSyllabus(
@@ -176,10 +192,12 @@ export async function saveExtractedQuestions(
     }
 
     const effectivePdfUrl = q.source_pdf_url || sourcePdfUrl || null;
+    const effectiveInsertPdfUrl = q.insert_pdf_url || insertPdfUrl || null;
     const effectiveCognitiveLevel = q.cognitive_level || null;
     const effectivePageNumber = q.page_number || null;
 
     if (effectivePdfUrl) (ms as any)._source_pdf_url = effectivePdfUrl;
+    if (effectiveInsertPdfUrl) (ms as any)._insert_pdf_url = effectiveInsertPdfUrl;
     if (effectiveCognitiveLevel) (ms as any)._cognitive_level = effectiveCognitiveLevel;
     if (effectivePageNumber) (ms as any)._page_number = effectivePageNumber;
 
@@ -197,6 +215,7 @@ export async function saveExtractedQuestions(
       difficulty: q.estimated_difficulty,
       cognitive_level: effectiveCognitiveLevel,
       source_pdf_url: effectivePdfUrl,
+      insert_pdf_url: effectiveInsertPdfUrl,
       page_number: effectivePageNumber,
       marks: q.total_marks,
       diagram_url: permanentDiagramUrls.get(q.question_number) || null,
@@ -238,13 +257,14 @@ export async function saveExtractedQuestions(
       error.message.includes('paper_number') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
+      error.message.includes('insert_pdf_url') ||
       error.message.includes('page_number') ||
       error.message.includes('schema cache') ||
       error.message.includes('Could not find') ||
       error.message.includes('invalid input syntax for type integer'))
   ) {
     console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
-    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, cognitive_level, source_pdf_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, insert_pdf_url, audio_url, audio_metadata, cognitive_level, source_pdf_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
       const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
       if (audio_url) (ms as any)._audio_url = audio_url;
       if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
@@ -253,6 +273,7 @@ export async function saveExtractedQuestions(
       if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
       if (cognitive_level) (ms as any)._cognitive_level = cognitive_level;
       if (source_pdf_url) (ms as any)._source_pdf_url = source_pdf_url;
+      if (insert_pdf_url) (ms as any)._insert_pdf_url = insert_pdf_url;
       if (page_number) (ms as any)._page_number = page_number;
 
       let safePaperNum: any = paper_number;
@@ -983,7 +1004,7 @@ export async function runExtractionPipeline(
 
       // Propagate reading passages across all questions in each text group
       const propagated = propagateReadingPassages(stitchedQuestions);
-      const separated = separatePracticalQuestions(propagated);
+      const separated = enforceTableOwnership(separatePracticalQuestions(propagated));
       const normalized = normalizePaper4SubQuestions(normalizeQuestionStyles(separated));
       const finalizedQuestions = normalized.map((q) => ({
         ...q,
@@ -1070,7 +1091,7 @@ export async function runExtractionPipeline(
       }
 
       const stitched = stitchPassagesToQuestions(result.questions, verifiedPassages);
-      const separated = separatePracticalQuestions(stitched);
+      const separated = enforceTableOwnership(separatePracticalQuestions(stitched));
       result.questions = normalizePaper4SubQuestions(
         normalizeQuestionStyles(propagateReadingPassages(separated))
       ).map((q) => ({
