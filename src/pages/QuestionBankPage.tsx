@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { lazyWithRetry } from '../lib/lazyWithRetry';
 import {
   fetchQuestions,
   fetchSyllabuses,
@@ -20,13 +21,13 @@ import { QuestionDetailModal } from '../components/QuestionDetailModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import './QuestionBankPage.css';
 
-// Lazy-load heavier modal workflows so the main Question Bank loads instantly
-const QuestionEditorModal = lazy(() => import('../components/QuestionEditorModal').then((m) => ({ default: m.QuestionEditorModal })));
-const QuestionVariantModal = lazy(() => import('../components/QuestionVariantModal').then((m) => ({ default: m.QuestionVariantModal })));
-const SmartTestAssemblerModal = lazy(() => import('../components/SmartTestAssemblerModal').then((m) => ({ default: m.SmartTestAssemblerModal })));
-const ExportModal = lazy(() => import('../components/ExportModal').then((m) => ({ default: m.ExportModal })));
-const PastPaperPdfManagerModal = lazy(() => import('../components/PastPaperPdfManagerModal').then((m) => ({ default: m.PastPaperPdfManagerModal })));
-const BatchCognitiveAnalyzeModal = lazy(() => import('../components/BatchCognitiveAnalyzeModal').then((m) => ({ default: m.BatchCognitiveAnalyzeModal })));
+// Lazy-load heavier modal workflows with stale-chunk reload resilience
+const QuestionEditorModal = lazyWithRetry(() => import('../components/QuestionEditorModal').then((m) => ({ default: m.QuestionEditorModal })));
+const QuestionVariantModal = lazyWithRetry(() => import('../components/QuestionVariantModal').then((m) => ({ default: m.QuestionVariantModal })));
+const SmartTestAssemblerModal = lazyWithRetry(() => import('../components/SmartTestAssemblerModal').then((m) => ({ default: m.SmartTestAssemblerModal })));
+const ExportModal = lazyWithRetry(() => import('../components/ExportModal').then((m) => ({ default: m.ExportModal })));
+const PastPaperPdfManagerModal = lazyWithRetry(() => import('../components/PastPaperPdfManagerModal').then((m) => ({ default: m.PastPaperPdfManagerModal })));
+const BatchCognitiveAnalyzeModal = lazyWithRetry(() => import('../components/BatchCognitiveAnalyzeModal').then((m) => ({ default: m.BatchCognitiveAnalyzeModal })));
 
 const PAGE_SIZE_STORAGE_KEY = 'testmaker_bank_page_size';
 const DEFAULT_PAGE_SIZE = 12;

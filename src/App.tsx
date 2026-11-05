@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import { lazyWithRetry } from './lib/lazyWithRetry';
 import { PinGate } from './components/PinGate';
 import { OnboardingTutorial } from './components/OnboardingTutorial';
 import { SettingsModal } from './components/SettingsModal';
@@ -30,15 +31,15 @@ import { useTeacherProfile } from './hooks/useTeacherProfile';
 import './App.css';
 
 // Lazy-load secondary and teacher pages for rapid initial load & minimal bundle size
-const UploadPage = lazy(() => import('./pages/UploadPage').then((m) => ({ default: m.UploadPage })));
-const QuestionBankPage = lazy(() => import('./pages/QuestionBankPage').then((m) => ({ default: m.QuestionBankPage })));
-const TestBuilderPage = lazy(() => import('./pages/TestBuilderPage').then((m) => ({ default: m.TestBuilderPage })));
-const SavedTestsPage = lazy(() => import('./pages/SavedTestsPage').then((m) => ({ default: m.SavedTestsPage })));
-const QuizManagerPage = lazy(() => import('./pages/QuizManagerPage').then((m) => ({ default: m.QuizManagerPage })));
-const StudentQuizRunner = lazy(() => import('./pages/StudentQuizRunner').then((m) => ({ default: m.StudentQuizRunner })));
-const GameQuizRunner = lazy(() => import('./pages/GameQuizRunner').then((m) => ({ default: m.GameQuizRunner })));
-const GameHostController = lazy(() => import('./pages/GameHostController').then((m) => ({ default: m.GameHostController })));
-const AdvancedSettingsPage = lazy(() => import('./pages/AdvancedSettingsPage').then((m) => ({ default: m.AdvancedSettingsPage })));
+const UploadPage = lazyWithRetry(() => import('./pages/UploadPage').then((m) => ({ default: m.UploadPage })));
+const QuestionBankPage = lazyWithRetry(() => import('./pages/QuestionBankPage').then((m) => ({ default: m.QuestionBankPage })));
+const TestBuilderPage = lazyWithRetry(() => import('./pages/TestBuilderPage').then((m) => ({ default: m.TestBuilderPage })));
+const SavedTestsPage = lazyWithRetry(() => import('./pages/SavedTestsPage').then((m) => ({ default: m.SavedTestsPage })));
+const QuizManagerPage = lazyWithRetry(() => import('./pages/QuizManagerPage').then((m) => ({ default: m.QuizManagerPage })));
+const StudentQuizRunner = lazyWithRetry(() => import('./pages/StudentQuizRunner').then((m) => ({ default: m.StudentQuizRunner })));
+const GameQuizRunner = lazyWithRetry(() => import('./pages/GameQuizRunner').then((m) => ({ default: m.GameQuizRunner })));
+const GameHostController = lazyWithRetry(() => import('./pages/GameHostController').then((m) => ({ default: m.GameHostController })));
+const AdvancedSettingsPage = lazyWithRetry(() => import('./pages/AdvancedSettingsPage').then((m) => ({ default: m.AdvancedSettingsPage })));
 
 function PageLoadingFallback() {
   return (
