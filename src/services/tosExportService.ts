@@ -1207,7 +1207,6 @@ export async function exportTableOfSpecificationsDocx(
     ];
 
     if (row.citationUrl) {
-      const qpPageLabel = row.pageNumber ? `📄 Question Paper (p. ${row.pageNumber})` : '📄 Question Paper PDF';
       citationChildren.push(
         new Paragraph({
           alignment: AlignmentType.LEFT,
@@ -1216,9 +1215,8 @@ export async function exportTableOfSpecificationsDocx(
             new ExternalHyperlink({
               children: [
                 new TextRun({
-                  text: qpPageLabel,
-                  bold: true,
-                  size: 13,
+                  text: row.citationUrl,
+                  size: 12,
                   font: fontName,
                   color: '0563C1',
                   underline: { type: UnderlineType.SINGLE },
@@ -1232,9 +1230,6 @@ export async function exportTableOfSpecificationsDocx(
     }
 
     if (row.insertCitationUrl) {
-      const insertPageLabel = row.insertPageNumber
-        ? `🗺️ Insert Booklet (p. ${row.insertPageNumber}${row.resourceRef ? ` - ${row.resourceRef}` : ''})`
-        : `🗺️ Insert Booklet PDF${row.resourceRef ? ` (${row.resourceRef})` : ''}`;
       citationChildren.push(
         new Paragraph({
           alignment: AlignmentType.LEFT,
@@ -1243,9 +1238,8 @@ export async function exportTableOfSpecificationsDocx(
             new ExternalHyperlink({
               children: [
                 new TextRun({
-                  text: insertPageLabel,
-                  bold: true,
-                  size: 13,
+                  text: row.insertCitationUrl,
+                  size: 12,
                   font: fontName,
                   color: '0D9488',
                   underline: { type: UnderlineType.SINGLE },

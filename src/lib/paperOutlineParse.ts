@@ -59,6 +59,10 @@ export interface PaperProfile {
   family: PaperFamily;
   totalMarks: number | null;
   questionCount: number | null;
+  /** Candidate answers a subset; printed question marks exceed the paper total. */
+  optionalChoice?: boolean;
+  /** Question number → option-group label, for optional-choice papers. */
+  optionGroups?: Record<number, string>;
 }
 
 export interface PaperOutline {
@@ -216,11 +220,7 @@ function detectProfile(coverText: string, hint?: OutlineHint): PaperProfile {
   const m = fromCover ?? fromName ?? null;
   const syllabus = m?.[1] ?? '';
   const paperCode = m?.[2] ?? '';
-  const family = paperCode.startsWith('5') ? 'practical-5x'
-    : paperCode.startsWith('6') ? 'practical-6x'
-    : /^[12]/.test(paperCode) ? 'mcq'
-    : /^[34]/.test(paperCode) ? 'structured'
-    : 'unknown';
+  const family = paperFamily(syllabus, paperCode);
   return {
     key: m ? `${syllabus}/${paperCode}` : 'unknown',
     syllabus,
@@ -229,6 +229,21 @@ function detectProfile(coverText: string, hint?: OutlineHint): PaperProfile {
     totalMarks: null,
     questionCount: null,
   };
+}
+
+/**
+ * Paper 1/2 are multiple choice in the sciences (0620, 0625, 0610) but 80-mark written
+ * papers in Sociology (0495), so the paper-code digit alone cannot decide the family.
+ * With no syllabus on the cover, keep the historical digit heuristic.
+ */
+function paperFamily(syllabus: string, paperCode: string): PaperFamily {
+  const isScience = /^(0620|0625|0610|0653|0654|9701|9702|9700)/.test(syllabus);
+  if (!isScience && syllabus) return 'structured';
+  return paperCode.startsWith('5') ? 'practical-5x'
+    : paperCode.startsWith('6') ? 'practical-6x'
+    : /^[12]/.test(paperCode) ? 'mcq'
+    : /^[34]/.test(paperCode) ? 'structured'
+    : 'unknown';
 }
 
 function idOrder(id: string): [number, number] | null {
@@ -265,6 +280,15 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
   const totalMarkMatch = coverText.match(/total mark for this paper is (\d+)/i);
   const totalMarks = totalMarkMatch ? Number(totalMarkMatch[1]) : null;
   profile.totalMarks = totalMarks;
+
+  // Optional-choice papers let the candidate answer a subset ("Answer two questions in
+  // total: Answer Question 1. Answer either Question 2 or Question 3."), so the printed
+  // question marks legitimately exceed the paper total. That is not a parse failure.
+  const optionalChoice =
+    /Answer\s+either\s+Question\s+\d+\s+or\s+Question\s+\d+/i.test(coverText) ||
+    /Answer\s+(?:one|two|three|four|\d+)\s+questions\b/i.test(coverText) ||
+    /Answer\s+one\s+question\s+from\s+each\s+section/i.test(coverText);
+  profile.optionalChoice = optionalChoice;
 
   // ---- column inference (per paper, never hardcoded) ----
   const qXs: number[] = [];
@@ -336,12 +360,16 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
       if (part) {
         currentPart = part;
         if (!roman) currentLeaf = null;
+      } else if (roman && !currentPart) {
+        // Some papers print "Define the term: (a)" above "(i) …", orphaning the roman
+        // numerals. They belong to part (a), not to a dangling "(i)".
+        currentPart = 'a';
       }
 
       if (part || roman) {
         const id = part
           ? (roman ? `(${part})(${roman})` : `(${part})`)
-          : (currentPart ? `(${currentPart})(${roman})` : `(${roman})`);
+          : `(${currentPart})(${roman})`;
         currentLeaf = { id, page: line.pageIdx, marks, isStem: false };
         current.subs.push(currentLeaf);
         continue;
@@ -364,6 +392,27 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
       leaf.isStem = hasChild;
     }
     q.total = q.stemMarks + q.subs.reduce((sum, s) => sum + (s.marks ?? 0), 0);
+  }
+
+  // ---- optional-choice grouping ----
+  // Record which questions are alternatives so the question bank and test builder do not
+  // silently place two mutually exclusive questions in one paper.
+  if (optionalChoice) {
+    const either = coverText.match(
+      /Answer\s+Question\s+(\d+)[\s\S]{0,60}?either\s+Question\s+(\d+)\s+or\s+Question\s+(\d+)/i,
+    );
+    const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4 };
+    if (either) {
+      const label = `Optional: answer either Question ${either[2]} or Question ${either[3]}`;
+      profile.optionGroups = { [Number(either[2])]: label, [Number(either[3])]: label };
+    } else {
+      const countMatch = coverText.match(/Answer\s+(one|two|three|four|\d+)\s+questions\b/i);
+      const count = countMatch ? words[countMatch[1].toLowerCase()] ?? Number(countMatch[1]) : null;
+      if (count && count < questions.length) {
+        const label = `Optional: answer ${count} of ${questions.length}`;
+        profile.optionGroups = Object.fromEntries(questions.map((q) => [q.number, label]));
+      }
+    }
   }
 
   // ---- gate ----
@@ -391,7 +440,10 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
     }
   }
   const sum = questions.reduce((a, q) => a + q.total, 0);
-  if (totalMarks !== null && sum !== totalMarks) reasons.push(`marks sum ${sum} != printed total ${totalMarks}`);
+  const optionalSumAccepted = optionalChoice && totalMarks !== null && sum > totalMarks;
+  if (totalMarks !== null && sum !== totalMarks && !optionalSumAccepted) {
+    reasons.push(`marks sum ${sum} != printed total ${totalMarks}`);
+  }
   if (profile.family === 'practical-5x' && questions.length !== 3) {
     reasons.push(`expected 3 questions for ${profile.key}, found ${questions.length}`);
   }

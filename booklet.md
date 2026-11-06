@@ -114,13 +114,14 @@ In [`src/services/tosExportService.ts`](file:///c:/testmaker/src/services/tosExp
 #### Case 1: Standard Question Paper Question (No Insert)
 ```text
 IGCSE Level: Paper 11 May/June 2026 Q1(a) (p. 3)
-[QP PDF (p. 3)]
+https://r2-endpoint/papers/0620_2026_s_qp_11.pdf#page=3
 ```
 
 #### Case 2: Question with Insert / Resource Booklet Figure
 ```text
 IGCSE Level: Paper 21 May/June 2026 Q2(b) (QP p. 4) • [Insert: Fig. 2.1, p. 2]
-[QP PDF (p. 4)] | [Insert Booklet (p. 2)]
+https://r2-endpoint/papers/0620_2026_s_qp_21.pdf#page=4
+https://r2-endpoint/papers/0620_2026_s_insert_21.pdf#page=2
 ```
 
 If the Question Paper and Insert Booklet PDFs are both uploaded:
@@ -217,10 +218,10 @@ function buildCitationInfo(
 #### B. Update Row Rendering in [`tosExportService.ts`](file:///c:/testmaker/src/services/tosExportService.ts#L1140-L1180)
 In the table row generator:
 1. Render the bold citation header: `${row.citationPrefix} ${row.citationBody}`.
-2. Render hyperlinked action pills:
-   - If `qpCitationUrl`: `[📄 QP Paper (p. X)]`
-   - If `insertCitationUrl`: `[🗺️ Insert Booklet (p. Y)]`
-   - If neither URL is present yet: `(PDF citation link pending)` in muted italics.
+2. Render clickable full raw links:
+   - If `citationUrl`: Full raw Question Paper link (e.g. `https://r2-endpoint/papers/..._qp_11.pdf#page=3`) in blue (`0563C1`).
+   - If `insertCitationUrl`: Full raw Insert Booklet link (e.g. `https://r2-endpoint/papers/..._insert_11.pdf#page=2`) in teal (`0D9488`).
+   - If neither URL is present yet: `(PDF link pending)` in muted italics.
 
 ---
 

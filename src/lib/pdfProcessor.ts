@@ -27,6 +27,7 @@ import {
 } from './pdfChunker';
 import { trimMarkSchemePreamble } from './markSchemeTrim';
 import { tryBuildPaperOutline } from './paperOutline';
+import { subjectForSyllabus, NEUTRAL_HUMANITIES_PROFILE } from './subjectClassifier';
 import type { PaperOutline } from './paperOutlineParse';
 import { separatePracticalQuestions, enforceTableOwnership } from './practicalPostProcess';
 import {
@@ -653,7 +654,7 @@ export async function runExtractionPipeline(
     if (markSchemeFile) {
       try {
         const msBytes = new Uint8Array(await markSchemeFile.arrayBuffer());
-        const trimmedMs = await trimMarkSchemePreamble(msBytes);
+        const trimmedMs = await trimMarkSchemePreamble(msBytes, { domain: options.domain });
         if (trimmedMs.trimmed) {
           msBase64 = uint8ArrayToBase64(trimmedMs.bytes);
           onStateChange({
@@ -712,11 +713,11 @@ export async function runExtractionPipeline(
 
     let result: ExtractionResult;
 
-    // Deterministic outline for practical papers: build once, hand to the extractor
-    // so it transcribes content into a known skeleton instead of inventing one.
-    // Only for single-chunk runs — a multi-chunk extraction sees a page subset, not the paper.
+    // Deterministic outline: build once. It is a *constraint* only for single-chunk runs
+    // (a chunked extraction sees a page subset), but the cover metadata it recovers —
+    // syllabus, paper code, optional-choice structure — is valid for the whole paper.
     let paperOutline: PaperOutline | null = null;
-    if (chunks.length === 1 && !isSaveMyExams) {
+    if (!isSaveMyExams) {
       try {
         const qpBytes: Uint8Array =
           bytesToChunk instanceof Uint8Array
@@ -725,9 +726,12 @@ export async function runExtractionPipeline(
         paperOutline = await tryBuildPaperOutline(qpBytes);
         if (paperOutline?.usable) {
           const subCount = paperOutline.questions.reduce((a, q) => a + q.subs.filter((s) => !s.isStem).length, 0);
+          const constrained = paperOutline.profile.family === 'practical-5x';
           onStateChange({
             stage: 'extracting',
-            message: `Outline verified (${paperOutline.profile.key}): ${paperOutline.questions.length} questions · ${subCount} sub-parts · Σ${paperOutline.totalMarks ?? '?'} marks — constraining extraction to the printed structure…`,
+            message: `Outline verified (${paperOutline.profile.key}): ${paperOutline.questions.length} questions · ${subCount} sub-parts · Σ${paperOutline.totalMarks ?? '?'} marks${
+              constrained ? ' — constraining extraction to the printed structure…' : '…'
+            }`,
             progress: 40,
             result: null,
             error: null,
@@ -739,6 +743,26 @@ export async function runExtractionPipeline(
         console.warn('[pdfProcessor] outline build failed, using vision-only extraction:', error);
         paperOutline = null;
       }
+    }
+
+    // Which syllabus is this? The outline already read the cover, so prefer what the
+    // paper printed; otherwise stay neutral instead of assuming Geography 0460.
+    const domainChoice = options.domain || 'stem';
+    const outlineSubject = subjectForSyllabus(paperOutline?.profile.syllabus);
+    const detectedSubject =
+      outlineSubject && outlineSubject.domain === domainChoice
+        ? outlineSubject
+        : domainChoice === 'humanities'
+        ? NEUTRAL_HUMANITIES_PROFILE
+        : null;
+    if (detectedSubject && domainChoice === 'humanities') {
+      onStateChange({
+        stage: 'extracting',
+        message: `Subject detected: ${detectedSubject.subjectName}${/^\d{4}$/.test(detectedSubject.syllabusCode) ? ` (${detectedSubject.syllabusCode})` : ''}`,
+        progress: 41,
+        result: null,
+        error: null,
+      });
     }
 
     if (chunks.length > 1) {
@@ -785,6 +809,7 @@ export async function runExtractionPipeline(
               saveMyExamsPackType: chunk.packType || smeMeta?.packType || 'theory',
               targetSection: chunk.targetSection,
               topicHint: chunk.topicHint || smeMeta?.topic,
+              subjectProfile: detectedSubject ?? undefined,
             }
           );
         })
@@ -1033,20 +1058,28 @@ export async function runExtractionPipeline(
       result = {
         paper_metadata: chunkResults[0]?.paper_metadata || {
           subject:
-            options.domain === 'languages'
+            detectedSubject?.subjectName ??
+            (options.domain === 'languages'
               ? 'English'
               : options.domain === 'humanities'
-              ? 'Geography'
-              : 'Chemistry',
+              ? 'Humanities'
+              : 'Chemistry'),
           subject_code:
-            options.domain === 'languages'
+            detectedSubject?.syllabusCode ??
+            (options.domain === 'languages'
               ? 'ENG'
               : options.domain === 'humanities'
-              ? (options.isIgcse !== false ? '0460' : 'GEO')
-              : (options.isIgcse !== false ? '0620' : 'CHEM'),
+              ? 'HUM'
+              : options.isIgcse !== false
+              ? '0620'
+              : 'CHEM'),
           year: new Date().getFullYear(),
           series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
-          paper_number: isSaveMyExams ? (smeMeta?.packType === 'theory' ? 'Theory' : 'MCQ') : 1,
+          paper_number: isSaveMyExams
+            ? smeMeta?.packType === 'theory'
+              ? 'Theory'
+              : 'MCQ'
+            : Number(paperOutline?.profile.paperCode) || 1,
           has_insert_booklet: Boolean(insertFile),
         },
         questions: finalizedQuestions,
@@ -1077,7 +1110,8 @@ export async function runExtractionPipeline(
           saveMyExamsPackType: chunks[0]?.packType || smeMeta?.packType || 'theory',
           targetSection: chunks[0]?.targetSection,
           topicHint: chunks[0]?.topicHint || smeMeta?.topic,
-          paperOutline: paperOutline ?? undefined,
+          paperOutline: chunks.length === 1 ? paperOutline ?? undefined : undefined,
+          subjectProfile: detectedSubject ?? undefined,
         }
       );
       let verifiedPassages = result.passages || [];
@@ -1109,6 +1143,29 @@ export async function runExtractionPipeline(
         })),
       }));
       result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;
+    }
+
+    // Optional-choice papers: record which questions are alternatives, so the test
+    // builder and exports understand that Q2/Q3 are not both required.
+    const optionGroups = paperOutline?.profile.optionGroups;
+    if (optionGroups) {
+      result.questions = result.questions.map((q) => {
+        const number = Number(String(q.question_number).replace(/\D/g, ''));
+        const label = optionGroups[number];
+        if (!label) return q;
+        const existing = (typeof q.mark_scheme === 'object' && q.mark_scheme !== null ? q.mark_scheme : {}) as Record<string, unknown>;
+        return {
+          ...q,
+          mark_scheme: { ...existing, _option_group: label } as unknown as typeof q.mark_scheme,
+        };
+      });
+      onStateChange({
+        stage: 'extracting',
+        message: `Optional-choice paper: ${Object.values(optionGroups)[0] ?? 'alternative questions'} — all questions kept in the bank.`,
+        progress: 66,
+        result: null,
+        error: null,
+      });
     }
 
     // Practical papers: attach the qualitative-analysis notes pages (11–12) as

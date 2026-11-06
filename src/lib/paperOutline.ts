@@ -19,13 +19,18 @@ function ensureWorker() {
   }
 }
 
-/** Read the text layer of every page as positioned runs. */
-export async function readPdfTextLayout(bytes: Uint8Array): Promise<RawPage[]> {
+/**
+ * Read the text layer of every page as positioned runs.
+ * `maxPages` limits the read to the first N pages — enough for cover inspection
+ * (subject classification) without parsing a whole 30-page mark scheme.
+ */
+export async function readPdfTextLayout(bytes: Uint8Array, maxPages?: number): Promise<RawPage[]> {
   ensureWorker();
   const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
   try {
     const pages: RawPage[] = [];
-    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+    const lastPage = maxPages ? Math.min(doc.numPages, maxPages) : doc.numPages;
+    for (let pageNumber = 1; pageNumber <= lastPage; pageNumber++) {
       const page = await doc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();

@@ -1,6 +1,8 @@
 import { useCallback, useState, useRef } from 'react';
 import { getSavedSettings } from '../lib/settings';
 import { getGeminiApiKeys, type SubjectDomain } from '../lib/gemini';
+import { classifySubject, type SubjectMatch } from '../lib/subjectClassifier';
+import { readPdfTextLayout } from '../lib/paperOutline';
 import './PdfUpload.css';
 
 interface PdfUploadProps {
@@ -32,6 +34,8 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [qpFile, setQpFile] = useState<File | null>(null);
   const [msFile, setMsFile] = useState<File | null>(null);
   const [insertFile, setInsertFile] = useState<File | null>(null);
+  const [detected, setDetected] = useState<SubjectMatch | null>(null);
+  const [detecting, setDetecting] = useState(false);
 
   const [includeGuidance, setIncludeGuidance] = useState<boolean>(() => {
     return getSavedSettings().defaultAiGuidanceEnabled ?? false;
@@ -54,6 +58,27 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
     return null;
   }, [MAX_FILE_SIZE]);
 
+  // Identify the syllabus from the cover so the domain toggle and the extraction prompt
+  // follow the paper rather than the previous upload. Detection is only a hint: any
+  // failure leaves the teacher's choice untouched and never blocks the upload.
+  const detectSubject = useCallback(async (file: File) => {
+    setDetecting(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const pages = await readPdfTextLayout(bytes, 2);
+      const match = classifySubject(pages.map((page) => page.items.map((item) => item.s).join(' ')), {
+        fileName: file.name,
+      });
+      setDetected(match);
+      if (match) setDomain((current) => (current === match.profile.domain ? current : match.profile.domain));
+    } catch (err) {
+      console.warn('[PdfUpload] subject detection failed:', err);
+      setDetected(null);
+    } finally {
+      setDetecting(false);
+    }
+  }, []);
+
   // Question Paper Drop Handlers
   const handleQpDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -66,6 +91,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       else {
         setError(null);
         setQpFile(file);
+        void detectSubject(file);
       }
     }
   };
@@ -151,7 +177,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                   if (file) {
                     const err = validateFile(file);
                     if (err) setError(err);
-                    else { setError(null); setQpFile(file); }
+                    else { setError(null); setQpFile(file); void detectSubject(file); }
                   }
                 }}
                 className="upload-hidden-input"
@@ -201,6 +227,15 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                       <span className="upload-staged-name" title={qpFile.name}>{qpFile.name}</span>
                       <span className="upload-staged-meta">
                         {(qpFile.size / 1024 / 1024).toFixed(2)} MB • Main Paper
+                        {detecting
+                          ? ' • Identifying paper…'
+                          : detected
+                          ? ` • ${detected.profile.subjectName}${
+                              /^\d{4}$/.test(detected.syllabusCode)
+                                ? ` (${detected.syllabusCode}${detected.paperCode ? `/${detected.paperCode}` : ''})`
+                                : ''
+                            }`
+                          : ''}
                       </span>
                     </div>
                   </div>
@@ -210,6 +245,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                     onClick={(e) => {
                       e.stopPropagation();
                       setQpFile(null);
+                      setDetected(null);
                       if (qpInputRef.current) qpInputRef.current.value = '';
                     }}
                     title="Remove question paper"
