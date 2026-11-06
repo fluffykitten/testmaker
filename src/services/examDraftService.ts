@@ -3,6 +3,7 @@
 // recover from crashes or transfer to another computer without consuming Supabase storage.
 
 import { supabase } from '../lib/supabase';
+import { normalizeIdentityPart } from '../lib/examSubmissionGuards';
 
 export interface ExamDraftPayload {
   quizCode: string;
@@ -96,13 +97,17 @@ export async function fetchExamDraft(
       const parsed: ExamDraftPayload = JSON.parse(local);
       if (parsed && parsed.status === 'in_progress') {
         if (parsed.quizId !== quizId) {
-          console.warn(`Draft bleed prevented locally: old draft belongs to ${parsed.quizId}, but current exam is ${quizId}`);
-          return null;
-        }
-        // Verify not stale (> 24 hours)
-        const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
-        if (ageHours < 24) {
-          return parsed;
+          // The local copy was written before the published id resolved (or belongs
+          // to an older sitting). Do not trust it, but keep looking in the cloud.
+          console.warn(
+            `Local draft quiz id mismatch (${parsed.quizId} != ${quizId}); checking cloud copy instead.`
+          );
+        } else {
+          // Verify not stale (> 24 hours)
+          const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
+          if (ageHours < 24) {
+            return parsed;
+          }
         }
       }
     }
@@ -174,31 +179,51 @@ export async function checkStudentAttemptSubmitted(
   quizCode: string,
   candidateName: string,
   candidateClass?: string,
-  _studentPin?: string
+  _studentPin?: string,
+  candidateNumber?: string
 ): Promise<{ submitted: boolean; submittedAt?: string; submissionId?: string }> {
   const cleanCode = (quizCode || '').trim().toUpperCase();
-  const cleanName = (candidateName || '').trim().toLowerCase();
-  const cleanClass = (candidateClass || '').trim().toLowerCase();
+  const cleanName = normalizeIdentityPart(candidateName);
+  const cleanClass = normalizeIdentityPart(candidateClass);
+  const cleanNumber = normalizeIdentityPart(candidateNumber);
 
+  // 1. Prefer the exact, server-side RPC (no 100-row truncation, no client-side scan).
   try {
-    // 1. Query Supabase quiz_submissions
-    // Use student_class column matching migration 007
+    const { data, error } = await (supabase as any).rpc('check_student_attempt_submitted', {
+      p_quiz_code: cleanCode,
+      p_student_name: candidateName,
+      p_student_class: candidateClass || null,
+      p_student_number: candidateNumber || null,
+    });
+    if (!error && data && typeof data === 'object') {
+      return {
+        submitted: data.submitted === true,
+        submittedAt: data.submittedAt || undefined,
+        submissionId: data.submissionId || undefined,
+      };
+    }
+  } catch (err) {
+    console.warn('Attempt RPC unavailable, falling back to table query:', err);
+  }
+
+  // 2. Legacy fallback: query the table and normalise in JS.
+  try {
     const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
       .select('id, student_name, student_class, candidate_number, submitted_at')
       .eq('quiz_code', cleanCode)
-      .limit(100);
+      .limit(1000);
 
     if (!error && Array.isArray(data)) {
       for (const row of data) {
-        const rowName = String(row.student_name || '').trim().toLowerCase();
-        // Fallback to candidate_class just in case, but actual column is student_class
-        const rowClass = String(row.student_class || row.candidate_class || '').trim().toLowerCase();
+        const rowName = normalizeIdentityPart(row.student_name);
+        const rowClass = normalizeIdentityPart(row.student_class || row.candidate_class);
+        const rowNumber = normalizeIdentityPart(row.candidate_number);
 
-        // Match exact Name and matching Class (if class was provided)
-        const matchesName = cleanName && rowName === cleanName;
+        const matchesName = Boolean(cleanName) && rowName === cleanName;
         const matchesClass = !cleanClass || !rowClass || cleanClass === rowClass;
+        const matchesNumber = !cleanNumber || !rowNumber || cleanNumber === rowNumber;
 
-        if (matchesName && matchesClass) {
+        if (matchesName && matchesClass && matchesNumber) {
           return {
             submitted: true,
             submittedAt: row.submitted_at,
@@ -211,7 +236,7 @@ export async function checkStudentAttemptSubmitted(
     console.warn('Could not check submission attempt in cloud:', err);
   }
 
-  // 2. Check local outbox / device receipts as fallback
+  // 3. Check local device receipts as the offline fallback.
   try {
     const receiptsRaw = localStorage.getItem('fluffykitten_device_exam_receipts');
     if (receiptsRaw) {
@@ -219,8 +244,13 @@ export async function checkStudentAttemptSubmitted(
       if (Array.isArray(receipts)) {
         const found = receipts.find((r: any) => {
           const rCode = String(r.quizCode || '').trim().toUpperCase();
-          const rName = String(r.studentName || '').trim().toLowerCase();
-          return rCode === cleanCode && rName === cleanName;
+          const rName = normalizeIdentityPart(r.studentName);
+          const rNumber = normalizeIdentityPart(r.candidateNumber);
+          return (
+            rCode === cleanCode &&
+            rName === cleanName &&
+            (!cleanNumber || !rNumber || cleanNumber === rNumber)
+          );
         });
         if (found) {
           return {

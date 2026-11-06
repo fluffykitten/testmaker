@@ -58,9 +58,11 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
     syllabusCode: '0460',
     subjectName: 'Geography',
     domain: 'humanities',
-    hasInsertByDefault: false,
+    hasInsertByDefault: true,
     hasInPaperStimulus: false,
-    isOptionalChoicePaper: false,
+    isOptionalChoicePaper: true,
+    // Paper 1 total mark is 75 (answers 3 of 6, each 25 marks); Paper 2 total mark is 60 (all compulsory).
+    standardTotalMarks: 75,
   },
   '0470': {
     syllabusCode: '0470',
@@ -105,7 +107,7 @@ export interface SubjectMatch {
 }
 
 const CODE_IN_TEXT_RE = /(?:^|[^0-9])(\d{4})\s*\/\s*(\d{1,2})(?![0-9])/;
-const CODE_IN_NAME_RE = /(\d{4})[^0-9]{0,12}?(\d{2})(?:\D|$)/;
+const CODE_IN_NAME_RE = /(\d{4})[^\n\r]{0,60}?(?:_|\s|paper\s*|p)(\d{2})(?:\D|$)/i;
 
 /**
  * Identifies the syllabus from the first pages of a question paper (or its filename).

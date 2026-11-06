@@ -42,6 +42,8 @@ backup/
 .superdesign/tmp/
 geopaper/
 geography paper/
+igcse geography paper/
+economics paper/
 sociology/
 scripts/*.json
 

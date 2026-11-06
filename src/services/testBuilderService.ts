@@ -17,6 +17,11 @@ export interface ExamHeaderConfig {
   additionalMaterials?: string;
   layoutTemplate?: 'cambridge' | 'standard';
   teacherPin?: string;
+  /**
+   * Salted hash of the invigilator PIN. Candidate clients receive only this value
+   * (never the plaintext) so an unlock can still be verified offline.
+   */
+  teacherPinHash?: string;
   questionOverrides?: Record<string, Question>;
 }
 

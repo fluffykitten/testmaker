@@ -4,6 +4,7 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
 import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
+import { hashTeacherPin, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
 
 export interface StudentQuizData {
   publishedId?: string;
@@ -20,7 +21,8 @@ export interface StudentQuizData {
   enableWatermark?: boolean;
   enableMultiMonitorDetection?: boolean;
   requireTeacherUnlock?: boolean;
-  teacherPin?: string;
+  /** Salted hash of the invigilator PIN — the plaintext PIN is never sent to candidates. */
+  teacherPinHash?: string;
   maxViolations?: number;
   showInstantSolutions?: boolean;
   requireStudentPin?: boolean;
@@ -176,17 +178,28 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     }
     const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
     const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
-    const syncedHeader = published.headerConfig
-      ? { ...published.headerConfig, durationMinutes: effectiveDuration, teacherPin: effectiveTeacherPin }
-      : {
-          title: published.title || 'Examination Assessment',
-          schoolName: '',
-          subject: published.subject || 'Assessment',
-          subjectCode: '',
-          durationMinutes: effectiveDuration,
-          instructions: '',
-          teacherPin: effectiveTeacherPin,
-        };
+    const teacherPinHash = await hashTeacherPin(published.quizCode, effectiveTeacherPin);
+
+    // A candidate browser must never receive the invigilator PIN or the test
+    // overrides (they are full Question objects and therefore contain mark schemes).
+    const headerSource = { ...(published.headerConfig || {}) } as ExamHeaderConfig;
+    delete (headerSource as any).teacherPin;
+    delete (headerSource as any).questionOverrides;
+    const syncedHeader: ExamHeaderConfig = {
+      ...headerSource,
+      title: headerSource.title || published.title || 'Examination Assessment',
+      schoolName: headerSource.schoolName || '',
+      subject: headerSource.subject || published.subject || 'Assessment',
+      subjectCode: headerSource.subjectCode || '',
+      durationMinutes: effectiveDuration,
+      instructions: headerSource.instructions || '',
+      teacherPinHash,
+    };
+
+    // In formal Exam Mode the browser is not allowed to see answer keys at all.
+    // (Practice mode keeps them so instant solutions can still be rendered.)
+    const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
+    const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
 
     const result: StudentQuizData = {
       publishedId: published.id,
@@ -194,7 +207,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       quizCode: published.quizCode,
       title: published.title,
       headerConfig: syncedHeader,
-      questions,
+      questions: studentQuestions,
       totalMarks: published.totalMarks,
       durationMinutes: effectiveDuration,
       isExamMode: published.isExamMode,
@@ -203,7 +216,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       enableWatermark: published.enableWatermark ?? false,
       enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
       requireTeacherUnlock: published.requireTeacherUnlock,
-      teacherPin: effectiveTeacherPin,
+      teacherPinHash,
       maxViolations: published.maxViolations,
       showInstantSolutions: published.showInstantSolutions,
       requireStudentPin: published.requireStudentPin ?? false,
@@ -339,6 +352,34 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 
   return null;
+}
+
+/**
+ * Verifies an invigilator unlock PIN without shipping the plaintext PIN to the
+ * candidate. Prefers the server-side `verify_teacher_unlock_pin` RPC and falls
+ * back to comparing the salted hash embedded in the student config (offline).
+ */
+export async function verifyTeacherUnlockPin(
+  quizCode: string,
+  pin: string,
+  expectedHash?: string
+): Promise<boolean> {
+  const cleanCode = (quizCode || '').trim().toUpperCase();
+  const cleanPin = (pin || '').trim();
+  if (!cleanCode || !cleanPin) return false;
+
+  try {
+    const { data, error } = await (supabase as any).rpc('verify_teacher_unlock_pin', {
+      p_quiz_code: cleanCode,
+      p_pin: cleanPin,
+    });
+    if (!error && typeof data === 'boolean') return data;
+  } catch {
+    // RPC not deployed yet — fall through to the offline hash check.
+  }
+
+  if (!expectedHash) return false;
+  return (await hashTeacherPin(cleanCode, cleanPin)) === expectedHash;
 }
 
 /**

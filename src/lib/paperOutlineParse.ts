@@ -218,11 +218,11 @@ function classifyPage(index: number, lines: Line[]): PageKind {
 
 function detectProfile(coverText: string, hint?: OutlineHint): PaperProfile {
   const fromCover = coverText.match(/(\d{4})\s*\/\s*(\d{2})/);
-  const fromName = hint?.fileName?.match(/(\d{4})[^0-9]{0,12}?(\d{2})(?:\D|$)/);
+  const fromName = hint?.fileName?.match(/(\d{4})[^\n\r]{0,60}?(?:_|\s|paper\s*|p)(\d{2})(?:\D|$)/i);
   const m = fromCover ?? fromName ?? null;
   const syllabus = m?.[1] ?? '';
   const paperCode = m?.[2] ?? '';
-  const family = paperFamily(syllabus, paperCode);
+  const family = paperFamily(syllabus, paperCode, coverText, hint);
   return {
     key: m ? `${syllabus}/${paperCode}` : 'unknown',
     syllabus,
@@ -234,18 +234,28 @@ function detectProfile(coverText: string, hint?: OutlineHint): PaperProfile {
 }
 
 /**
- * Paper 1/2 are multiple choice in the sciences (0620, 0625, 0610) but 80-mark written
- * papers in Sociology (0495), so the paper-code digit alone cannot decide the family.
- * With no syllabus on the cover, keep the historical digit heuristic.
+ * Paper 1/2 are multiple choice in the sciences (0620, 0625, 0610) and Economics (0455),
+ * but 80-mark written papers in Sociology (0495), so the paper-code digit alone cannot
+ * decide the family. Explicit cover titles and syllabus registry rules take precedence.
  */
-function paperFamily(syllabus: string, paperCode: string): PaperFamily {
+function paperFamily(syllabus: string, paperCode: string, coverText: string = '', hint?: OutlineHint): PaperFamily {
+  if (paperCode.startsWith('5')) return 'practical-5x';
+  if (paperCode.startsWith('6')) return 'practical-6x';
+  const textHaystack = [coverText, hint?.fileName ?? ''].join(' ');
+  if (/Multiple\s+Choice/i.test(textHaystack) || /four\s+possible\s+answers/i.test(textHaystack) || /\bmcq\b/i.test(textHaystack)) return 'mcq';
+  if (/Structured\s+Questions/i.test(textHaystack)) return 'structured';
+
   const isScience = /^(0620|0625|0610|0653|0654|9701|9702|9700)/.test(syllabus);
-  if (!isScience && syllabus) return 'structured';
-  return paperCode.startsWith('5') ? 'practical-5x'
-    : paperCode.startsWith('6') ? 'practical-6x'
-    : /^[12]/.test(paperCode) ? 'mcq'
-    : /^[34]/.test(paperCode) ? 'structured'
-    : 'unknown';
+  if (isScience) {
+    return /^[12]/.test(paperCode) ? 'mcq' : 'structured';
+  }
+
+  // Commercial / Humanities syllabi where Paper 1 is Multiple Choice
+  const isMcqP1 = /^(0455|0450|0452|2281|7115|7707)/.test(syllabus);
+  if (isMcqP1 && paperCode.startsWith('1')) return 'mcq';
+
+  // Written structured papers (Sociology, Geography, History)
+  return 'structured';
 }
 
 function idOrder(id: string): [number, number] | null {
@@ -299,7 +309,11 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
   for (const { lines } of questionPages) {
     for (const line of lines) {
       const first = line.items[0]?.s.trim() ?? '';
-      if (QUESTION_RE.test(line.text) && line.x < 130) qXs.push(line.x);
+      if (QUESTION_RE.test(line.text) && line.x < 130) {
+        qXs.push(line.x);
+        const second = line.items[1]?.s.trim() ?? '';
+        if (PART_RE.test(second)) partXs.push(line.items[1].x);
+      }
       if (PART_RE.test(first)) partXs.push(line.x);
       if (ROMAN_RE.test(first)) romanXs.push(line.x);
     }
@@ -327,12 +341,13 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
 
       const questionMatch = line.text.match(QUESTION_RE);
       if (questionMatch && near(line.x, questionCol)) {
+        const isMcq = profile.family === 'mcq';
         current = {
           number: Number(questionMatch[1]),
           page: line.pageIdx,
           declaredTotal: null,
-          stemMarks: 0,
-          total: 0,
+          stemMarks: isMcq ? 1 : 0,
+          total: isMcq ? 1 : 0,
           subs: [],
           section: currentSection ?? undefined,
         };
@@ -340,14 +355,21 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
         currentPart = null;
         currentLeaf = null;
 
-        // AS/A Level papers pack the first sub-part onto the question line —
-        // "4 (a) (i) Define … [4]". Consuming the whole line here would drop it.
-        const inline = questionMatch[2].match(/^\(([a-h])\)\s*\(\s*(i{1,3}|iv|v|vi{1,3})\s*\)/);
-        if (inline) {
+        // AS/A Level and Economics papers pack the first sub-part onto the question line —
+        // "4 (a) (i) Define … [4]" (AS Geography) or "1 (a) Calculate … [1]" (Economics).
+        const inlineCompound = questionMatch[2].match(/^\(([a-h])\)\s*\(\s*(i{1,3}|iv|v|vi{1,3})\s*\)/);
+        const inlineSimple = !inlineCompound ? questionMatch[2].match(/^\(([a-h])\)\s+(?!\()/) : null;
+        if (inlineCompound) {
           const inlineMarks = line.text.match(MARK_RE);
           const marks = inlineMarks && line.right > width * 0.86 ? Number(inlineMarks[1]) : null;
-          currentPart = inline[1];
-          currentLeaf = { id: `(${inline[1]})(${inline[2]})`, page: line.pageIdx, marks, isStem: false };
+          currentPart = inlineCompound[1];
+          currentLeaf = { id: `(${inlineCompound[1]})(${inlineCompound[2]})`, page: line.pageIdx, marks, isStem: false };
+          current.subs.push(currentLeaf);
+        } else if (inlineSimple) {
+          const inlineMarks = line.text.match(MARK_RE);
+          const marks = inlineMarks && line.right > width * 0.86 ? Number(inlineMarks[1]) : null;
+          currentPart = inlineSimple[1];
+          currentLeaf = { id: `(${inlineSimple[1]})`, page: line.pageIdx, marks, isStem: false };
           current.subs.push(currentLeaf);
         }
         continue;
@@ -420,20 +442,39 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
   // Record which questions are alternatives so the question bank and test builder do not
   // silently place two mutually exclusive questions in one paper.
   if (optionalChoice) {
-    // Two-tier papers state the rule per section: "Section A: answer all questions.
-    // Section B: answer one question." The section headings printed in the body decide
-    // which questions belong to the optional group.
-    const sectionACompulsory = /Section\s+A\s*:?\s*(?:answer\s+)?all\s+questions/i.test(coverText);
-    const sectionBOptional = /Section\s+B\s*:?\s*(?:answer\s+)?(?:one|1)\s+question/i.test(coverText);
+    // Two-tier papers state the rule per section: "Section A: answer all questions / answer Question 1.
+    // Section B: answer one question / answer three questions." The section headings printed in the body
+    // decide which questions belong to the optional group.
+    const sectionACompulsory =
+      /Section\s+A\s*:?\s*(?:answer\s+)?(?:all\s+questions|Question\s+1\b)/i.test(coverText);
+    const sectionBOptionalMatch = coverText.match(
+      /Section\s+B\s*:?\s*(?:answer\s+)?(one|two|three|four|\d+)\s+question/i,
+    );
     const either = coverText.match(
       /Answer\s+Question\s+(\d+)[\s\S]{0,60}?either\s+Question\s+(\d+)\s+or\s+Question\s+(\d+)/i,
     );
     const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4 };
 
-    if (sectionACompulsory && sectionBOptional) {
+    const oneFromEachSection = /one\s+(?:question\s+)?from\s+each\s+section/i.test(coverText);
+
+    if (oneFromEachSection) {
+      const groups: Record<number, string> = {};
+      const sections = [...new Set(questions.map((q) => q.section).filter(Boolean))];
+      for (const sec of sections) {
+        const secQuestions = questions.filter((q) => q.section === sec);
+        if (secQuestions.length > 1) {
+          const label = `Section ${sec}: choose 1 of ${secQuestions.length} (Q${secQuestions[0].number}–Q${secQuestions[secQuestions.length - 1].number})`;
+          for (const q of secQuestions) {
+            groups[q.number] = label;
+          }
+        }
+      }
+      profile.optionGroups = groups;
+    } else if (sectionACompulsory && sectionBOptionalMatch) {
+      const bCount = words[sectionBOptionalMatch[1].toLowerCase()] ?? Number(sectionBOptionalMatch[1]);
       const optionalQuestions = questions.filter((q) => q.section === 'B');
       if (optionalQuestions.length) {
-        const label = `Section B: choose 1 of ${optionalQuestions.length} (Q${optionalQuestions[0].number}–Q${optionalQuestions[optionalQuestions.length - 1].number})`;
+        const label = `Section B: choose ${bCount} of ${optionalQuestions.length} (Q${optionalQuestions[0].number}–Q${optionalQuestions[optionalQuestions.length - 1].number})`;
         profile.optionGroups = Object.fromEntries(optionalQuestions.map((q) => [q.number, label]));
       }
     } else if (either) {

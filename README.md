@@ -167,6 +167,22 @@ npm run mobile:ios
 
 ## 📜 Changelog
 
+### [v.2.3.5] — Cambridge IGCSE Geography, IGCSE Economics & Proctor/Submission Hardening
+- **Cambridge IGCSE Geography (`0460`) Support**:
+  - Registered syllabus `0460` profile in `subjectClassifier.ts` with insert booklet by default, optional-choice paper rules, and standard total marks (Paper 1: 75 marks, Paper 2: 60 marks).
+  - Enhanced column clustering in `paperOutlineParse.ts` to inspect second tokens (`line.items[1]`) on packed question lines (`1 (a) Study Fig. 1.1...`), ensuring part letter column ($X=72$) correctly wins over roman numeral column ($X=96$) and eliminating false duplicate/unattributed sub-question rejections.
+  - Added 3-tier section option group recognition for Paper 1 ("one from each section"), cleanly partitioning Section A (Q1–Q2), Section B (Q3–Q4), and Section C (Q5–Q6) while preserving 100% compulsory rules for Paper 2.
+  - Added offline verification suite `scripts/verify-igcse-geography.mjs` (7/7 passing across QP, MS, and Insert documents) and multimodal extraction simulation `scripts/simulate-igcse-geography-extraction.mjs` ($150\text{ printed marks}$ sum for Paper 1, $60\text{ printed marks}$ sum for Paper 2).
+- **Cambridge IGCSE Economics (`0455`) Support**:
+  - Full support for Paper 1 30-MCQ papers and Paper 2 structured papers with compulsory Section A (30 marks) and two-tier Section B option groups (`Section B: choose 3 of 4 (Q2–Q5)`).
+  - Added `scripts/verify-economics.mjs` test suite (20/20 passing across 2022–2026 series) and live multimodal simulation.
+- **Exam Mode Submission & Live Proctoring Resilience**:
+  - Unwrapped boolean return on student draft resume (`alreadySubmitted.submitted`), unblocking students from resuming active exam drafts after reload/crash.
+  - Preserved AI and teacher-assigned marks on structured/essay questions during deterministic re-grading (`det.isHandled` check).
+  - Enforced strict deadline preservation on draft resume and candidate-scoped session storage isolation on shared school laptops.
+  - Added offline outbox retry with exponential backoff for failed submissions and isolated student result lookup.
+  - Added proctoring audit log persistence (`018_proctor_audit_events.sql`), host channel cleanup, command deduplication, and presence sweep based on receipt timestamps.
+
 ### [v.2.3.4] — Cambridge AS & A Level Geography & Multimodal Timeout Resilience
 - **Cambridge International AS & A Level Geography (`9696`) Support**:
   - Registered syllabus `9696` profile with automatic insert booklet configuration, two-tier optional-choice paper rules, and 60-mark standard total calculation.

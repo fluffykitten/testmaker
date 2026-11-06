@@ -118,9 +118,86 @@ export async function detectMultiMonitor(): Promise<MultiMonitorCheckResult> {
 }
 
 /**
+ * FNV-1a style 64-bit (two-seed) digest, 12 hex chars.
+ *
+ * `formatSessionHash` is fine for a short display code but unusable as an identity: it takes
+ * the first 6 hex chars of a 32-bit rolling hash, which drops exactly the low bits that make
+ * "…0012" and "…0013" different. Two candidates would collapse onto one proctor row.
+ */
+function stableIdentityHash(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= code + i;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const hex = (value: number) => (value >>> 0).toString(16).padStart(8, '0');
+  return hex(h1) + hex(h2);
+}
+
+/**
+ * Produces a deterministic, collision-resistant canonical student ID for one quiz sitting.
+ *
+ * The live channel and the submitted record used to derive different keys (a session hash
+ * seeded with startTime vs. "name_number"), so the same candidate appeared twice on the
+ * invigilator dashboard and a reload created a third row. This id deliberately excludes
+ * startTime: reloading, resuming and submitting all resolve to the same key.
+ */
+export function getCanonicalProctorStudentId(params: {
+  quizCode?: string;
+  studentName?: string;
+  candidateNumber?: string;
+  studentClass?: string;
+}): string {
+  const norm = (value?: string) => (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const code = (params.quizCode || '').trim().toUpperCase();
+  const name = norm(params.studentName) || 'candidate';
+  const number = norm(params.candidateNumber);
+  const klass = norm(params.studentClass);
+  // candidateNumber is the strongest discriminator; class separates same-name students in
+  // different cohorts when no number was issued.
+  const identity = number ? `${name}#${number}` : klass ? `${name}@${klass}` : name;
+  return `cand_${stableIdentityHash(`${code}::${identity}`).slice(0, 12)}`;
+}
+
+/**
+ * Locks physical keys (like Escape and F11) in supported browsers (Chromium / Chrome / Edge)
+ * using the W3C Keyboard Lock API so they cannot exit fullscreen or trigger browser window toggles.
+ */
+export async function enableKeyboardLock(keys: string[] = ['Escape', 'F11']): Promise<boolean> {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as any;
+  if (nav.keyboard && typeof nav.keyboard.lock === 'function') {
+    try {
+      await nav.keyboard.lock(keys);
+      return true;
+    } catch (err) {
+      console.debug('[Security] Keyboard lock note:', err);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Releases any active hardware keyboard locks.
+ */
+export function releaseKeyboardLock(): void {
+  if (typeof navigator === 'undefined') return;
+  const nav = navigator as any;
+  if (nav.keyboard && typeof nav.keyboard.unlock === 'function') {
+    try {
+      nav.keyboard.unlock();
+    } catch { }
+  }
+}
+
+/**
  * Requests browser fullscreen with navigationUI set to 'hide' (suppresses Windows touchscreen
- * edge-swipe overlays where supported) without invoking navigator.keyboard.lock (which triggers
- * persistent Chromium "Hold Esc to exit fullscreen" browser notifications).
+ * edge-swipe overlays where supported) and engages W3C Keyboard Lock for Escape and F11.
  */
 export async function requestSecureFullscreen(): Promise<boolean> {
   if (typeof document === 'undefined') return false;
@@ -131,6 +208,10 @@ export async function requestSecureFullscreen(): Promise<boolean> {
       } catch {
         await document.documentElement.requestFullscreen();
       }
+    }
+    // Lock Escape and F11 keys using W3C Keyboard Lock API once in fullscreen
+    if (document.fullscreenElement) {
+      await enableKeyboardLock(['Escape', 'F11']);
     }
     return !!document.fullscreenElement;
   } catch (err) {

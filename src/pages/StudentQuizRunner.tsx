@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
-import { resolveStudentQuiz } from '../services/quizCodeService';
+import { resolveStudentQuiz, verifyTeacherUnlockPin } from '../services/quizCodeService';
 import {
   saveQuizSubmissionWithVerification,
   exportSubmissionToFile,
@@ -25,6 +25,12 @@ import {
   ARABIC_OPTION_LETTERS,
 } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
+import {
+  buildAnswersByQuestionId,
+  didSubmitAttempt,
+  resolveResumeClock,
+  shouldResetSessionForCandidate,
+} from '../lib/examSubmissionGuards';
 import {
   guardEntriesToSeed,
   isEdgeTouchStart,
@@ -54,6 +60,8 @@ import {
   detectMultiMonitor,
   formatSessionHash,
   requestSecureFullscreen,
+  enableKeyboardLock,
+  releaseKeyboardLock,
   applyMaskedPinInput,
 } from '../utils/examSecurityUtils';
 import {
@@ -438,12 +446,26 @@ export function StudentQuizRunner({
   const [resolvedTestId, setResolvedTestId] = useState<string>(() => testIdOrCode || 'direct_quiz');
   const [resolvedPublishedId, setResolvedPublishedId] = useState<string | null>(null);
 
+  /**
+   * One canonical draft/attempt id for the whole sitting. The initial and periodic
+   * draft writes used different ids, which made the first 50 s of a published exam
+   * unrecoverable.
+   */
+  const effectiveDraftQuizId = useMemo(
+    () => resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz',
+    [resolvedPublishedId, resolvedTestId, testIdOrCode]
+  );
+
   // 🔒 Security & Anti-Cheating State
   const [securityEnabled, setSecurityEnabled] = useState(() => savedExam?.securityEnabled ?? true);
   const [enableWatermark, setEnableWatermark] = useState<boolean>(() => savedExam?.enableWatermark ?? false);
   const [enableMultiMonitorDetection, setEnableMultiMonitorDetection] = useState<boolean>(() => savedExam?.enableMultiMonitorDetection ?? false);
   const [requireTeacherUnlock, setRequireTeacherUnlock] = useState<boolean>(() => savedExam?.requireTeacherUnlock ?? true);
-  const [teacherPin, setTeacherPin] = useState<string>(() => initialHeaderConfig?.teacherPin || '1234');
+  // The plaintext invigilator PIN is never sent to a candidate browser; only its
+  // salted hash is available for offline verification.
+  const [teacherPinHash, setTeacherPinHash] = useState<string>(
+    () => savedExam?.teacherPinHash || initialHeaderConfig?.teacherPinHash || ''
+  );
   const [isLockedByProctor, setIsLockedByProctor] = useState<boolean>(() => savedExam?.isLockedByProctor || false);
   const [lockReason, setLockReason] = useState<string>(() => savedExam?.lockReason || '');
   const [lockTime, setLockTime] = useState<string>(() => savedExam?.lockTime || '');
@@ -459,6 +481,12 @@ export function StudentQuizRunner({
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => { });
   const sendCurrentHeartbeatRef = useRef<() => void>(() => { });
+
+  // Debounced session autosave: serialize at most once per quiet period, plus an
+  // immediate flush when the tab is hidden (mobile browsers may kill it there).
+  const sessionPayloadRef = useRef<Record<string, unknown> | null>(null);
+  const sessionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistSessionRef = useRef<() => void>(() => { });
 
   // 🕵️ Forensic Telemetry Refs (Answer Change History & Dwell Times)
   const answerChangeHistoryRef = useRef<AnswerChangeLogEntry[]>([]);
@@ -684,10 +712,10 @@ export function StudentQuizRunner({
           if (data.requireTeacherUnlock !== undefined) {
             setRequireTeacherUnlock(data.requireTeacherUnlock);
           }
-          if (data.teacherPin) {
-            setTeacherPin(data.teacherPin);
-          } else if (data.headerConfig?.teacherPin) {
-            setTeacherPin(data.headerConfig.teacherPin);
+          if (data.teacherPinHash) {
+            setTeacherPinHash(data.teacherPinHash);
+          } else if (data.headerConfig?.teacherPinHash) {
+            setTeacherPinHash(data.headerConfig.teacherPinHash);
           }
           if (data.requireStudentPin !== undefined) {
             setRequireStudentPin(data.requireStudentPin);
@@ -822,37 +850,40 @@ export function StudentQuizRunner({
     ]
   );
 
-  const handleUnlockWithPin = (e?: React.FormEvent) => {
+  const handleUnlockWithPin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isUnlocking) return;
     const entered = pinInput.trim();
-    const expected = (teacherPin || '1234').trim();
 
     if (!entered) {
       setPinError('Please enter the Teacher / Proctor PIN.');
       return;
     }
 
-    if (entered.toUpperCase() === expected.toUpperCase()) {
-      // Wipe PIN state immediately before unmounting the modal so no DOM value remains
-      setPinInput('');
-      setPinError(null);
-      setIsUnlocking(true);
-      requestAnimationFrame(() => {
-        setTimeout(async () => {
-          setIsLockedByProctor(false);
-          setLockReason('');
-          setLockTime('');
-          setIsUnlocking(false);
-          setSecurityAlert('✅ Exam unlocked by invigilator. Please remain focused in fullscreen.');
-          setTimeout(() => setSecurityAlert(null), 5000);
-
-          // Re-enter Fullscreen on unlock
-          await requestSecureFullscreen();
-        }, 250);
-      });
-    } else {
+    setIsUnlocking(true);
+    const valid = await verifyTeacherUnlockPin(resolvedQuizCode, entered, teacherPinHash);
+    if (!valid) {
+      setIsUnlocking(false);
       setPinError('❌ Incorrect Teacher PIN. Please have the exam invigilator verify and re-enter.');
+      return;
     }
+
+    // Wipe PIN state immediately before unmounting the modal so no DOM value remains
+    setPinInput('');
+    setPinError(null);
+    requestAnimationFrame(() => {
+      setTimeout(async () => {
+        setIsLockedByProctor(false);
+        setLockReason('');
+        setLockTime('');
+        setIsUnlocking(false);
+        setSecurityAlert('✅ Exam unlocked by invigilator. Please remain focused in fullscreen.');
+        setTimeout(() => setSecurityAlert(null), 5000);
+
+        // Re-enter Fullscreen on unlock
+        await requestSecureFullscreen();
+      }, 250);
+    });
   };
 
   // ─── 2B. Browser History Trap (Prevents 2-finger touchpad horizontal overscroll back/forward) ───
@@ -1015,15 +1046,31 @@ export function StudentQuizRunner({
     const handleFullscreenChange = () => {
       const isFull = !!document.fullscreenElement;
       setIsFullscreenActive(isFull);
-      if (!isFull && hasStarted && !isSubmitted && !isGrading && !isSubmittingRef.current) {
-        logViolation('fullscreen_exit', 'Exited fullscreen secure exam view');
+      if (isFull) {
+        enableKeyboardLock(['Escape', 'F11']).catch(() => { });
+      } else {
+        releaseKeyboardLock();
+        if (hasStarted && !isSubmitted && !isGrading && !isSubmittingRef.current) {
+          logViolation('fullscreen_exit', 'Exited fullscreen secure exam view');
+        }
       }
     };
+
+    // Helper: checks if key event is Escape or F11 across all browser event representations
+    const isEscapeOrF11 = (e: KeyboardEvent) =>
+      e.key === 'Escape' ||
+      e.key === 'F11' ||
+      e.code === 'Escape' ||
+      e.code === 'F11' ||
+      e.keyCode === 27 ||
+      e.keyCode === 122 ||
+      e.which === 27 ||
+      e.which === 122;
 
     // D. Keyboard Shortcut Trapping (Capture Phase)
     const handleKeyDown = (e: KeyboardEvent) => {
       // Disable Escape and F11 keys during exam so they cannot exit fullscreen
-      if (e.key === 'Escape' || e.key === 'F11' || e.code === 'Escape' || e.code === 'F11') {
+      if (isEscapeOrF11(e)) {
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -1054,6 +1101,13 @@ export function StudentQuizRunner({
         e.preventDefault();
         flushClipboard();
         logViolation('blocked_shortcut', 'Copying and pasting is disabled during exam');
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (isEscapeOrF11(e)) {
+        e.preventDefault();
+        e.stopPropagation();
       }
     };
 
@@ -1107,9 +1161,13 @@ export function StudentQuizRunner({
     window.addEventListener('mobile-proctor-violation', handleMobileProctor);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('keydown', handleKeyDown, { capture: true });
+    document.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
+    document.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      releaseKeyboardLock();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
@@ -1119,6 +1177,9 @@ export function StudentQuizRunner({
       window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      document.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
+      document.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, logViolation]);
@@ -1517,6 +1578,9 @@ export function StudentQuizRunner({
     return {
       answerChangeLogs: [...answerChangeHistoryRef.current],
       questionTimeAnalytics,
+      // Stable id-keyed mirror of the positional answers, so a re-grade survives
+      // question reordering or deletion.
+      answersByQuestionId: buildAnswersByQuestionId(questions, answers),
       exceededMaxViolations: maxViolations > 0 && violations.length >= maxViolations,
     };
   }, [questions, answers, maxViolations, violations.length]);
@@ -1527,6 +1591,7 @@ export function StudentQuizRunner({
     isSubmittingRef.current = true;
     setShowSubmitModal(false);
     setIsGrading(true);
+    releaseKeyboardLock();
 
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => { });
@@ -1565,6 +1630,8 @@ export function StudentQuizRunner({
     // Saves raw responses to Supabase immediately with zero AI rate-limit delays.
     if (isExamMode) {
       setGradingProgressText('Submitting examination responses to examiner...');
+      const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
+      const finalQuizId = effectiveDraftQuizId;
       try {
         const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
         const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
@@ -1590,6 +1657,13 @@ export function StudentQuizRunner({
             q.question_style === 'Multiple Select' ||
             (q.options && q.options.length > 0 && q.question_style !== 'Structured');
 
+          // Candidate payloads are sanitized in exam mode, so there is no answer
+          // key to grade against here. Leave every part explicitly "awaiting" and
+          // let the teacher-side grader (which has the full question) score it.
+          const hasAnswerKey = Boolean(
+            q.mark_scheme || (q.sub_questions || []).some((sq) => Boolean(sq.mark_scheme))
+          );
+
           if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
             for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
@@ -1597,6 +1671,19 @@ export function StudentQuizRunner({
               const subKey = `${idx}_${sIdx}`;
               const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
               const subMarks = sq.marks || 1;
+
+              if (!hasAnswerKey) {
+                subResults.push({
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: 0,
+                  maxMarks: subMarks,
+                  isCorrect: false,
+                  feedback: 'Awaiting examiner AI evaluation',
+                });
+                continue;
+              }
 
               const det = gradeDeterministicAnswer(subAns, q, sIdx);
               if (det.isHandled) {
@@ -1626,17 +1713,22 @@ export function StudentQuizRunner({
             isCorrect = qEarned === qMarks;
           } else {
             const userAns = answers[idx] ?? '';
-            const det = gradeDeterministicAnswer(userAns, q);
-            if (det.isHandled) {
-              qEarned = det.earnedMarks;
-              isCorrect = det.isCorrect;
-              aiFeedback = det.feedback;
-              gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
-            } else {
-              qEarned = 0;
-              isCorrect = false;
+            if (!hasAnswerKey) {
               aiFeedback = 'Awaiting examiner AI evaluation';
               gradingMethod = 'deterministic';
+            } else {
+              const det = gradeDeterministicAnswer(userAns, q);
+              if (det.isHandled) {
+                qEarned = det.earnedMarks;
+                isCorrect = det.isCorrect;
+                aiFeedback = det.feedback;
+                gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+              } else {
+                qEarned = 0;
+                isCorrect = false;
+                aiFeedback = 'Awaiting examiner AI evaluation';
+                gradingMethod = 'deterministic';
+              }
             }
           }
 
@@ -1665,9 +1757,6 @@ export function StudentQuizRunner({
           const item = topicBreakdown[top];
           item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
         });
-
-        const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
-        const finalQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
 
         const submission: StudentSubmission = {
           id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -1736,6 +1825,42 @@ export function StudentQuizRunner({
         setIsSubmitted(true);
       } catch (err: any) {
         console.error('Failed to submit exam:', err);
+
+        // Never leave the result screen without a submission object: if grading
+        // or serialization throws, keep a local receipt of the raw responses so the
+        // candidate can still see that the attempt was recorded.
+        const fallbackTotalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+        const fallback: StudentSubmission = {
+          id: `sub_local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          quizId: finalQuizId,
+          quizCode: finalQuizCode,
+          quizTitle: title,
+          subject: headerConfig?.subject || 'Chemistry',
+          studentName: candidateName.trim() || 'Candidate',
+          studentClass: candidateClass.trim() || 'General',
+          candidateNumber: candidateNumber.trim() || undefined,
+          submittedAt: new Date().toISOString(),
+          durationSeconds: Math.max(1, Math.round((Date.now() - startTime) / 1000)),
+          score: 0,
+          totalMarks: fallbackTotalMarks,
+          percentage: 0,
+          violationsCount: violations.length,
+          proctoringLogs: violations.map((v, i) => ({
+            timestamp: v.timestamp,
+            event: v.detail,
+            strike: i + 1,
+            severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+            type: v.type,
+            detail: v.detail,
+            elapsedExamSeconds: v.elapsedExamSeconds,
+          })),
+          questionResults: [],
+          topicBreakdown: {},
+          rawAnswers: { ...answers },
+          status: 'submitted',
+          forensics: { answersByQuestionId: buildAnswersByQuestionId(questions, answers) },
+        };
+        setCompletedSubmission(fallback);
         setSyncStatus('offline_failed');
         setSyncErrorMessage(err?.message || 'Network error occurred during submission.');
         setIsSubmitted(true);
@@ -1884,7 +2009,7 @@ export function StudentQuizRunner({
       });
 
       const finalQuizCode = (resolvedQuizCode || testIdOrCode || 'EXAM').toUpperCase();
-      const finalQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
+      const finalQuizId = effectiveDraftQuizId;
 
       const submission: StudentSubmission = {
         id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -1974,6 +2099,7 @@ export function StudentQuizRunner({
     timeLeft,
     sessionHash,
     buildExamForensics,
+    effectiveDraftQuizId,
   ]);
   submitExamRef.current = handleSubmitExam;
 
@@ -2014,14 +2140,20 @@ export function StudentQuizRunner({
     if (isTeacherActionRunning) return;
 
     const entered = teacherActionPin.trim();
-    const expected = (teacherPin || '1234').trim();
 
     if (!entered) {
       setTeacherActionError('Please enter the Teacher / Proctor PIN.');
       return;
     }
 
-    if (entered.toUpperCase() !== expected.toUpperCase()) {
+    setIsTeacherActionRunning(true);
+    const valid = await verifyTeacherUnlockPin(
+      completedSubmission?.quizCode || resolvedQuizCode,
+      entered,
+      teacherPinHash
+    );
+    if (!valid) {
+      setIsTeacherActionRunning(false);
       setTeacherActionError('❌ Incorrect Teacher PIN. Please check with the exam invigilator.');
       return;
     }
@@ -2091,7 +2223,8 @@ export function StudentQuizRunner({
     }
   }, [
     teacherActionPin,
-    teacherPin,
+    teacherPinHash,
+    resolvedQuizCode,
     teacherActionType,
     completedSubmission,
     sessionKey,
@@ -2115,49 +2248,68 @@ export function StudentQuizRunner({
     };
   }, [isSubmitted, syncStatus, handleRetryCloudSync]);
 
-  // Auto-persist exam state to localStorage (and sessionStorage fallback) across tab & browser reloads
-  useEffect(() => {
-    if (hasStarted && (!isSubmitted || syncStatus === 'offline_failed')) {
-      const payload = JSON.stringify({
-        candidateName,
-        candidateClass,
-        candidateNumber,
-        studentPin: studentPinInput,
-        startTime,
-        targetEndTime,
-        currentIndex,
-        answers,
-        flaggedIndices: Array.from(flaggedIndices),
-        audioProgress,
-        isExamMode,
-        hasStarted,
-        isSubmitted,
-        completedSubmission: syncStatus === 'offline_failed' ? completedSubmission : null,
-        syncStatus,
-        syncErrorMessage,
-        timeLeft,
-        securityEnabled,
-        enableWatermark,
-        enableMultiMonitorDetection,
-        requireTeacherUnlock,
-        requireStudentPin,
-        limitOneAttempt,
-        isLockedByProctor,
-        lockReason,
-        lockTime,
-        violations,
-      });
+  persistSessionRef.current = () => {
+    const payload = sessionPayloadRef.current;
+    if (!payload) return;
+    if (!hasStarted || (isSubmitted && syncStatus !== 'offline_failed')) return;
 
-      try {
-        localStorage.setItem(sessionKey, payload);
-      } catch (e) {
-        console.warn('LocalStorage save error:', e);
-      }
-
-      try {
-        sessionStorage.setItem(sessionKey, payload);
-      } catch { }
+    const serialized = JSON.stringify(payload);
+    try {
+      localStorage.setItem(sessionKey, serialized);
+    } catch (e) {
+      console.warn('LocalStorage save error:', e);
     }
+
+    try {
+      sessionStorage.setItem(sessionKey, serialized);
+    } catch { }
+  };
+
+  // Auto-persist exam state to localStorage (and sessionStorage fallback) across tab & browser reloads.
+  // The write is debounced by 400 ms; a pagehide/visibility flush covers abrupt exits.
+  useEffect(() => {
+    const shouldPersist = hasStarted && (!isSubmitted || syncStatus === 'offline_failed');
+    if (!shouldPersist) return;
+
+    sessionPayloadRef.current = {
+      candidateName,
+      candidateClass,
+      candidateNumber,
+      studentPin: studentPinInput,
+      startTime,
+      targetEndTime,
+      currentIndex,
+      answers,
+      flaggedIndices: Array.from(flaggedIndices),
+      audioProgress,
+      isExamMode,
+      hasStarted,
+      isSubmitted,
+      completedSubmission: syncStatus === 'offline_failed' ? completedSubmission : null,
+      syncStatus,
+      syncErrorMessage,
+      timeLeft,
+      securityEnabled,
+      enableWatermark,
+      enableMultiMonitorDetection,
+      requireTeacherUnlock,
+      teacherPinHash,
+      requireStudentPin,
+      limitOneAttempt,
+      isLockedByProctor,
+      lockReason,
+      lockTime,
+      violations,
+    };
+
+    if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
+    sessionPersistTimerRef.current = setTimeout(() => {
+      persistSessionRef.current();
+    }, 400);
+
+    return () => {
+      if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
+    };
   }, [
     sessionKey,
     candidateName,
@@ -2181,6 +2333,7 @@ export function StudentQuizRunner({
     enableWatermark,
     enableMultiMonitorDetection,
     requireTeacherUnlock,
+    teacherPinHash,
     requireStudentPin,
     limitOneAttempt,
     isLockedByProctor,
@@ -2189,12 +2342,26 @@ export function StudentQuizRunner({
     violations,
   ]);
 
+  // Immediate flush when the tab is backgrounded or the page is being discarded.
+  useEffect(() => {
+    const flush = () => persistSessionRef.current();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
+    };
+  }, []);
+
   // Periodic Cloud Auto-Save (Every 50 seconds in background via UPSERT to app_config)
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading) return;
     const identifier = studentPinInput || candidateName;
     if (!identifier || !resolvedQuizCode) return;
-    const effectiveDraftQuizId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
 
     const performSync = () => {
       saveExamDraft({
@@ -2391,9 +2558,10 @@ export function StudentQuizRunner({
           resolvedQuizCode,
           candidateName,
           candidateClass,
-          requireStudentPin ? studentPinInput.trim() : undefined
+          requireStudentPin ? studentPinInput.trim() : undefined,
+          candidateNumber
         );
-        if (alreadySubmitted) {
+        if (didSubmitAttempt(alreadySubmitted)) {
           setIsCheckingAttempt(false);
           setDetectedDraft(null);
           setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
@@ -2418,15 +2586,23 @@ export function StudentQuizRunner({
       setLockTime(detectedDraft.lockTime || '');
     }
 
-    const rawRemaining =
-      typeof detectedDraft.timeLeftSeconds === 'number' && detectedDraft.timeLeftSeconds > 0
-        ? detectedDraft.timeLeftSeconds
-        : examDurationSec;
-    const remaining = Math.max(60, rawRemaining);
     const now = Date.now();
+    const resumeClock = resolveResumeClock(detectedDraft, now, examDurationSec);
     setStartTime(detectedDraft.startTime || now);
-    setTargetEndTime(now + remaining * 1000);
-    setTimeLeft(remaining);
+    setTargetEndTime(resumeClock.deadline);
+    setTimeLeft(resumeClock.remainingSeconds);
+
+    if (resumeClock.expired) {
+      setSecurityAlert(
+        '⏱️ Examination time expired while this session was closed. Submitting your saved answers now.'
+      );
+    } else if (resumeClock.derivedFromStart) {
+      setSecurityAlert(
+        `🔄 Session resumed. Time is calculated from the original start (${Math.ceil(
+          resumeClock.remainingSeconds / 60
+        )} minutes remaining).`
+      );
+    }
 
     await flushClipboard();
 
@@ -2487,7 +2663,8 @@ export function StudentQuizRunner({
           resolvedQuizCode,
           candidateName,
           candidateClass,
-          studentPinInput
+          studentPinInput,
+          candidateNumber
         );
         if (attempt.submitted) {
           setIsCheckingAttempt(false);
@@ -2509,6 +2686,49 @@ export function StudentQuizRunner({
     // Sanitize clipboard on exam entry
     await flushClipboard();
 
+    // Shared school devices: if the saved sitting belongs to a different candidate,
+    // purge the previous attempt (answers, strikes, receipt) before starting.
+    const previousSession = getSavedExamState();
+    if (
+      previousSession &&
+      shouldResetSessionForCandidate(previousSession, { candidateName, candidateNumber })
+    ) {
+      setAnswers({});
+      setCurrentIndex(0);
+      setFlaggedIndices(new Set());
+      setAudioProgress({});
+      setViolations([]);
+      setIsSubmitted(false);
+      setCompletedSubmission(null);
+      setSyncStatus('idle');
+      setSyncErrorMessage(null);
+      setIsGrading(false);
+      setIsLockedByProctor(false);
+      setLockReason('');
+      setLockTime('');
+
+      // Forensic telemetry belongs to the previous candidate too.
+      answerChangeHistoryRef.current = [];
+      questionTimeMapRef.current = {};
+      currentQuestionEnterTimeRef.current = Date.now();
+      activeQuestionIndexRef.current = 0;
+      lastAnswerActionTimeRef.current = Date.now();
+      try {
+        Object.values(textChangeDebounceRef.current).forEach((timer) => clearTimeout(timer));
+      } catch { }
+      textChangeDebounceRef.current = {};
+      isSubmittingRef.current = false;
+
+      const previousIdentifier = previousSession.studentPin || previousSession.candidateName;
+      if (previousIdentifier) {
+        clearExamDraft(resolvedQuizCode, effectiveDraftQuizId, previousIdentifier).catch(() => { });
+      }
+      try {
+        localStorage.removeItem(sessionKey);
+        sessionStorage.removeItem(sessionKey);
+      } catch { }
+    }
+
     const now = Date.now();
     const durationToUseSec = (headerConfig?.durationMinutes ? headerConfig.durationMinutes * 60 : (timeLeft || 45 * 60));
     const end = now + durationToUseSec * 1000;
@@ -2523,7 +2743,7 @@ export function StudentQuizRunner({
     // Initial draft sync
     saveExamDraft({
       quizCode: resolvedQuizCode,
-      quizId: resolvedTestId,
+      quizId: effectiveDraftQuizId,
       studentName: candidateName,
       candidateNumber,
       candidateClass,
@@ -2929,19 +3149,19 @@ export function StudentQuizRunner({
 
   const isCurrentMcq = Boolean(
     currentQuestion &&
-      (currentQuestion.question_style === 'Multiple Choice' ||
-        currentQuestion.question_style === 'Multiple Select' ||
-        (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
-      currentQuestion.options &&
-      currentQuestion.options.length > 0
+    (currentQuestion.question_style === 'Multiple Choice' ||
+      currentQuestion.question_style === 'Multiple Select' ||
+      (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
+    currentQuestion.options &&
+    currentQuestion.options.length > 0
   );
 
   const hasCurrentSubQuestions = Boolean(
     currentQuestion &&
-      currentQuestion.sub_questions &&
-      currentQuestion.sub_questions.length > 0 &&
-      !currentTable &&
-      !isCurrentMcq
+    currentQuestion.sub_questions &&
+    currentQuestion.sub_questions.length > 0 &&
+    !currentTable &&
+    !isCurrentMcq
   );
 
   const isCurrentInlineGap = Boolean(
@@ -3161,7 +3381,7 @@ export function StudentQuizRunner({
                   if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
                   if (refreshed.enableMultiMonitorDetection !== undefined) setEnableMultiMonitorDetection(refreshed.enableMultiMonitorDetection);
                   if (refreshed.requireTeacherUnlock !== undefined) setRequireTeacherUnlock(refreshed.requireTeacherUnlock);
-                  if (refreshed.teacherPin) setTeacherPin(refreshed.teacherPin);
+                  if (refreshed.teacherPinHash) setTeacherPinHash(refreshed.teacherPinHash);
                 }
               } catch (e) {
                 console.warn('Refresh status check error:', e);
@@ -3710,8 +3930,50 @@ export function StudentQuizRunner({
 
   // ─── Final Score & Solutions Review Screen ─────────────────────────────────
   if (isSubmitted) {
+    // Defensive guard: an old persisted session (or a failed submit before the
+    // fallback receipt was introduced) can mark the attempt submitted with no
+    // submission object. Never dereference null on the receipt screen.
+    if (!completedSubmission) {
+      return (
+        <div className="student-results-wrap animate-fade-in">
+          <div className="student-results-card" style={{ maxWidth: '640px', margin: '0 auto', textAlign: 'center' }}>
+            <div className="results-badge" style={{ background: '#0f172a', color: '#fff' }}>
+              SUBMISSION RECORDED
+            </div>
+            <h1 className="results-title" style={{ marginTop: '8px' }}>
+              Attempt Closed
+            </h1>
+            <p className="results-sub" style={{ color: 'var(--color-text-secondary)' }}>
+              Your responses were preserved on this device, but a full receipt could not be rebuilt.
+              Please notify the invigilator before closing this window.
+            </p>
+            <div
+              style={{
+                background: 'var(--color-surface-sunken, #f8fafc)',
+                border: '1.5px solid var(--color-border, #e2e8f0)',
+                borderRadius: '14px',
+                padding: '16px 20px',
+                margin: '20px 0',
+                textAlign: 'left',
+                fontWeight: 600,
+              }}
+            >
+              <div>Candidate: {candidateName || 'Candidate'}</div>
+              <div style={{ marginTop: 4 }}>Assessment: {title}</div>
+              <div style={{ marginTop: 4 }}>Exam code: {resolvedQuizCode}</div>
+            </div>
+            {onExit && (
+              <button type="button" className="sq-btn sq-btn-primary" onClick={onExit}>
+                Exit Examination
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // In Formal Exam Mode, do not show scores/solutions until released by teacher
-    if (completedSubmission?.status === 'submitted') {
+    if (completedSubmission.status === 'submitted') {
       const durationMin = Math.floor((completedSubmission.durationSeconds || 0) / 60);
       const durationSec = (completedSubmission.durationSeconds || 0) % 60;
       return (
@@ -4428,8 +4690,8 @@ export function StudentQuizRunner({
                           {isTeacherActionRunning
                             ? '⏳ Verifying...'
                             : teacherActionType === 'resubmit'
-                            ? '🚀 Authorize Re-Submit'
-                            : '🔓 Authorize Exam Unlock'}
+                              ? '🚀 Authorize Re-Submit'
+                              : '🔓 Authorize Exam Unlock'}
                         </button>
                       </div>
                     </div>

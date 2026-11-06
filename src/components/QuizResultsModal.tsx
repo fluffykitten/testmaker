@@ -29,6 +29,11 @@ import {
   exportBatchStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { supabase } from '../lib/supabase';
+import {
+  chooseRegradeMarks,
+  partitionAnalyticsSubmissions,
+  resolveStoredAnswer,
+} from '../lib/examSubmissionGuards';
 import { ExamMathText } from './ExamMathText';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { GradeThresholdEditor } from './GradeThresholdEditor';
@@ -311,6 +316,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         });
 
         const rawAnswers = sub.rawAnswers || {};
+        const answersById = sub.forensics?.answersByQuestionId;
         let earnedMarks = 0;
         const qResults: QuestionSubmissionResult[] = [];
         const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
@@ -335,15 +341,26 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             q.question_style === 'Multiple Choice' ||
             q.question_style === 'Multiple Select' ||
             Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
-          let finalStudentAnswer: string | number = rawAnswers[idx] !== undefined ? rawAnswers[idx] : '';
+          let finalStudentAnswer: string | number = resolveStoredAnswer({
+            rawAnswers,
+            answersByQuestionId: answersById,
+            questionId: q.id,
+            index: idx,
+          }) ?? '';
 
           // Case A: Sub-questions (excluding MCQ/Multiple Select)
           if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
-              const subKey = `${idx}_${sqIdx}`;
-              let subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]);
+              let subAns = resolveStoredAnswer({
+                rawAnswers,
+                answersByQuestionId: answersById,
+                questionId: q.id,
+                subId: sq.sub_id,
+                index: idx,
+                subIndex: sqIdx,
+              });
               if (subAns === undefined || subAns === '') {
                 const prevSub = prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) || prevResult?.subQuestionResults?.[sqIdx];
                 if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
@@ -394,7 +411,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           }
           // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
           else {
-            let userAns = rawAnswers[idx];
+            let userAns = resolveStoredAnswer({
+              rawAnswers,
+              answersByQuestionId: answersById,
+              questionId: q.id,
+              index: idx,
+            });
             if (userAns === undefined || userAns === '') {
               if (prevResult?.studentAnswer !== undefined && prevResult.studentAnswer !== '') {
                 userAns = prevResult.studentAnswer;
@@ -480,7 +502,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const handleRegradeAllDeterministic = async () => {
     if (submissions.length === 0) return;
     const confirmed = confirm(
-      `Re-grade all ${submissions.length} submission(s) deterministically from original student raw answers?\n\nThis will re-calculate every question using the official answer key (100% exact math, zero AI variance).`
+      `Re-grade ${submissions.length} submission(s) deterministically from the original student answers?\n\nMCQ and gap-fill answers will be recalculated. Descriptive answers already graded by AI or by hand are preserved (their marks are never overwritten with 0).`
     );
     if (!confirmed) return;
 
@@ -495,6 +517,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         return;
       }
 
+      let totalPreserved = 0;
       for (let sIdx = 0; sIdx < submissions.length; sIdx++) {
         const sub = submissions[sIdx];
         setGradingProgress({
@@ -504,7 +527,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         });
 
         const rawAnswers = sub.rawAnswers || {};
+        const answersById = sub.forensics?.answersByQuestionId;
         let earnedMarks = 0;
+        let preservedCount = 0;
         const qResults: QuestionSubmissionResult[] = [];
         const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
 
@@ -531,8 +556,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
-              const subKey = `${idx}_${sqIdx}`;
-              let subAns = (rawAnswers[subKey] !== undefined ? rawAnswers[subKey] : (rawAnswers[idx] as any)?.[sqIdx]);
+              let subAns = resolveStoredAnswer({
+                rawAnswers,
+                answersByQuestionId: answersById,
+                questionId: q.id,
+                subId: sq.sub_id,
+                index: idx,
+                subIndex: sqIdx,
+              });
               if (subAns === undefined || subAns === '') {
                 const prevSub = prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) || prevResult?.subQuestionResults?.[sqIdx];
                 if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
@@ -544,21 +575,31 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               const subMarks = sq.marks || 1;
 
               const det = gradeDeterministicAnswer(subAns, q, sqIdx);
-              totalSubEarned += det.earnedMarks;
+              const previousSub =
+                prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) ||
+                prevResult?.subQuestionResults?.[sqIdx];
+              const kept = chooseRegradeMarks(det, previousSub);
+              if (kept.preserved && previousSub) preservedCount++;
+              totalSubEarned += kept.earnedMarks;
               subResults.push({
                 subId: sq.sub_id,
                 questionText: sq.question_text,
                 studentAnswer: subAns,
-                earnedMarks: det.earnedMarks,
+                earnedMarks: kept.earnedMarks,
                 maxMarks: subMarks,
-                isCorrect: det.isCorrect,
-                feedback: det.feedback,
+                isCorrect: kept.isCorrect,
+                feedback: kept.feedback ?? det.feedback,
               });
             }
             qEarned = Math.min(totalSubEarned, qMarks);
             isCorrect = qEarned === qMarks;
           } else {
-            let userAns = rawAnswers[idx];
+            let userAns = resolveStoredAnswer({
+              rawAnswers,
+              answersByQuestionId: answersById,
+              questionId: q.id,
+              index: idx,
+            });
             if (userAns === undefined || userAns === '') {
               if (prevResult?.studentAnswer !== undefined && prevResult.studentAnswer !== '') {
                 userAns = prevResult.studentAnswer;
@@ -567,10 +608,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               }
             }
             const det = gradeDeterministicAnswer(userAns, q);
-            qEarned = det.earnedMarks;
-            isCorrect = det.isCorrect;
-            feedback = det.feedback;
-            gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+            const kept = chooseRegradeMarks(det, prevResult);
+            if (kept.preserved && prevResult) preservedCount++;
+            qEarned = kept.earnedMarks;
+            isCorrect = kept.isCorrect;
+            feedback = kept.feedback;
+            gradingMethod = kept.preserved
+              ? (prevResult?.gradingMethod || 'deterministic')
+              : (det.matchType === 'mcq' ? 'mcq' : 'deterministic');
 
             earnedMarks += qEarned;
             topicBreakdown[top].earnedMarks += qEarned;
@@ -606,7 +651,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             maxMarks: qMarks,
             earnedMarks: qEarned,
             isCorrect,
-            studentAnswer: rawAnswers[idx] !== undefined ? rawAnswers[idx] : '',
+            studentAnswer: resolveStoredAnswer({
+              rawAnswers,
+              answersByQuestionId: answersById,
+              questionId: q.id,
+              index: idx,
+            }) ?? '',
             correctAnswer: resolveQuestionModelAnswer(q),
             misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
             aiFeedback: feedback,
@@ -620,6 +670,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
         });
 
+        const hasPendingDescriptive = qResults.some(
+          (r) =>
+            r.aiFeedback === 'Awaiting examiner AI evaluation' ||
+            (r.subQuestionResults || []).some(
+              (sr: any) => sr.feedback === 'Awaiting examiner AI evaluation'
+            )
+        );
+
         const totalQuizMarks = quiz.totalMarks || sub.totalMarks;
         const updatedSub: StudentSubmission = {
           ...sub,
@@ -628,15 +686,22 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           percentage: totalQuizMarks > 0 ? Math.round((earnedMarks / totalQuizMarks) * 100) : 100,
           questionResults: qResults,
           topicBreakdown,
-          status: 'graded',
+          // Do not claim a paper is graded while descriptive parts are still waiting
+          // for AI/teacher evaluation.
+          status: hasPendingDescriptive ? sub.status : 'graded',
           updatedAt: new Date().toISOString(),
         };
 
         await updateSubmission(updatedSub);
+        totalPreserved += preservedCount;
       }
 
       await refreshSubmissions();
-      alert(`✅ Successfully re-graded all ${submissions.length} submission(s) deterministically!`);
+      alert(
+        totalPreserved > 0
+          ? `✅ Re-graded ${submissions.length} submission(s). ${totalPreserved} AI/manual descriptive mark(s) were preserved unchanged.`
+          : `✅ Successfully re-graded all ${submissions.length} submission(s) deterministically!`
+      );
     } catch (err) {
       console.error('Re-grading error:', err);
       alert('An error occurred during re-grading.');
@@ -652,6 +717,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   }, [submissions]);
 
   // ─── Analytics Summary ──────────────────────────────────────────────────────
+  // Exam-mode submissions are stored with `status: 'submitted'` and a provisional
+  // deterministic score (often 0 on structured papers). Averaging those into the
+  // class KPIs made a whole cohort look like it had failed before grading ran.
   const stats = useMemo(() => {
     const activeSubmissions = selectedClass === 'all'
       ? submissions
@@ -662,6 +730,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     if (activeSubmissions.length === 0) {
       return {
         count: 0,
+        gradedCount: 0,
+        pendingGradingCount: 0,
+        isProvisional: false,
         avgScore: 0,
         avgPercentage: 0,
         highestScore: 0,
@@ -673,19 +744,25 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       };
     }
 
+    const split = partitionAnalyticsSubmissions(activeSubmissions);
+    const analyticsSubmissions = split.analytics;
     const count = activeSubmissions.length;
-    const totalScore = activeSubmissions.reduce((s, sub) => s + sub.score, 0);
-    const avgScore = totalScore / count;
+    const gradedCount = analyticsSubmissions.length;
+    const pendingGradingCount = split.pending.length;
+    const isProvisional = split.provisional;
+
+    const totalScore = analyticsSubmissions.reduce((s, sub) => s + sub.score, 0);
+    const avgScore = gradedCount > 0 ? totalScore / gradedCount : 0;
     const avgPercentage = (avgScore / (currentQuiz.totalMarks || 1)) * 100;
-    const highestScore = Math.max(...activeSubmissions.map((s) => s.score));
-    const lowestScore = Math.min(...activeSubmissions.map((s) => s.score));
+    const highestScore = gradedCount > 0 ? Math.max(...analyticsSubmissions.map((s) => s.score)) : 0;
+    const lowestScore = gradedCount > 0 ? Math.min(...analyticsSubmissions.map((s) => s.score)) : 0;
     const cleanCount = activeSubmissions.filter((s) => s.violationsCount === 0).length;
     const flaggedCount = count - cleanCount;
 
     const gradeCounts: Record<GradeLetter, number> = { ...emptyGrades };
     const topicMap = new Map<string, { topic: string; earnedMarks: number; totalMarks: number }>();
 
-    activeSubmissions.forEach((sub) => {
+    analyticsSubmissions.forEach((sub) => {
       const g = deriveGradeFromPercentage(sub.percentage, currentQuiz.gradeThresholds).grade;
       gradeCounts[g] = (gradeCounts[g] || 0) + 1;
 
@@ -710,6 +787,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
     return {
       count,
+      gradedCount,
+      pendingGradingCount,
+      isProvisional,
       avgScore,
       avgPercentage,
       highestScore,
@@ -1311,6 +1391,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     <strong>Class Overview &amp; Analytics</strong>
                     <span>
                       {stats.count} Student{stats.count !== 1 ? 's' : ''} • Avg {stats.avgPercentage.toFixed(0)}%
+                      {stats.pendingGradingCount > 0 ? ` • ${stats.pendingGradingCount} pending` : ''}
                     </span>
                   </div>
                 </div>
@@ -1545,22 +1626,32 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   <div className="qrm-ov-kpi-card">
                     <span className="qrm-ov-kpi-label">Cohort Average</span>
                     <span className="qrm-ov-kpi-val kpi-val--score">
-                      {stats.count > 0 ? `${stats.avgScore.toFixed(1)} / ${currentQuiz.totalMarks}` : '—'}
+                      {stats.gradedCount > 0
+                        ? `${stats.avgScore.toFixed(1)} / ${currentQuiz.totalMarks}`
+                        : stats.count > 0
+                          ? 'Awaiting grading'
+                          : '—'}
                     </span>
                     <span className="qrm-ov-kpi-foot">
-                      {stats.count > 0
-                        ? `${stats.avgPercentage.toFixed(1)}% Mean (${deriveGradeFromPercentage(stats.avgPercentage, currentQuiz.gradeThresholds).grade})`
-                        : 'No submissions yet'}
+                      {stats.gradedCount > 0
+                        ? `${stats.avgPercentage.toFixed(1)}% Mean (${deriveGradeFromPercentage(stats.avgPercentage, currentQuiz.gradeThresholds).grade})${stats.pendingGradingCount > 0 ? ` • ${stats.pendingGradingCount} pending` : ''}`
+                        : stats.isProvisional
+                          ? `Provisional — ${stats.pendingGradingCount} awaiting AI/teacher grading`
+                          : 'No submissions yet'}
                     </span>
                   </div>
 
                   <div className="qrm-ov-kpi-card">
                     <span className="qrm-ov-kpi-label">Score Range</span>
                     <span className="qrm-ov-kpi-val kpi-val--highest">
-                      {stats.count > 0 ? `${stats.highestScore} / ${currentQuiz.totalMarks}` : '—'}
+                      {stats.gradedCount > 0 ? `${stats.highestScore} / ${currentQuiz.totalMarks}` : '—'}
                     </span>
                     <span className="qrm-ov-kpi-foot">
-                      {stats.count > 0 ? `Highest: ${stats.highestScore} • Lowest: ${stats.lowestScore}` : '—'}
+                      {stats.gradedCount > 0
+                        ? `Highest: ${stats.highestScore} • Lowest: ${stats.lowestScore}`
+                        : stats.pendingGradingCount > 0
+                          ? 'Awaiting grading'
+                          : '—'}
                     </span>
                   </div>
 
@@ -1607,7 +1698,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       <div className="qrm-grade-dist-grid">
                         {tiers.map(({ grade, cutoffLabel }) => {
                           const gCount = stats.gradeCounts[grade] || 0;
-                          const gPct = stats.count > 0 ? Math.round((gCount / stats.count) * 100) : 0;
+                          const gPct = stats.gradedCount > 0 ? Math.round((gCount / stats.gradedCount) * 100) : 0;
                           const vis = GRADE_VISUALS[grade];
 
                           return (
@@ -1648,7 +1739,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     <div className="qrm-ov-section-header">
                       <div>
                         <h4>🎯 Cohort Syllabus Topic Mastery</h4>
-                        <p>Aggregated accuracy across all {stats.count} candidates (sorted from lowest to highest mastery).</p>
+                        <p>Aggregated accuracy across {stats.gradedCount} graded candidate{stats.gradedCount !== 1 ? 's' : ''} (sorted from lowest to highest mastery).</p>
                       </div>
                     </div>
                     <div className="topic-bars">

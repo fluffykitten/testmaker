@@ -2142,7 +2142,9 @@ async function callGeminiModel(
     // (e.g. gemini-3.8-flash) require 60–90 seconds to process multimodal PDFs and stream full rubrics.
     const isMultiDoc = Boolean(insertBase64 || markSchemeBase64);
     const timeoutMs = isMultiDoc ? 150000 : 90000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutId = setTimeout(() => {
+      controller.abort(new Error(`Timeout of ${timeoutMs / 1000}s exceeded while waiting for ${modelName}`));
+    }, timeoutMs);
 
     try {
       const res = await fetch(endpoint, {

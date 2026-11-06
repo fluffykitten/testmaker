@@ -9,6 +9,9 @@ import {
   type StudentExamStatus,
 } from '../services/examProctorRealtimeService';
 import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
+import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
+import { clampTelemetry, highWaterViolations } from '../lib/proctorGuards';
+import { recordProctorAuditEvent, loadProctorAuditEvents } from '../services/proctorAuditLogService';
 import { getSchoolClasses } from '../lib/settings';
 import {
   getSchoolRoster,
@@ -24,6 +27,18 @@ export interface LiveInvigilatorModalProps {
 }
 
 export type ProctorSortOption = 'class_seat' | 'status' | 'name' | 'progress' | 'time_left' | 'violations';
+
+const normalizeName = (value?: string) => (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** Two dashboard rows describe the same candidate (used to retire pre-canonical-id keys). */
+function sameCandidate(a: ProctorStudentState, b: ProctorStudentState): boolean {
+  if (normalizeName(a.studentName) !== normalizeName(b.studentName)) return false;
+  const numA = (a.candidateNumber || '').trim().toLowerCase();
+  const numB = (b.candidateNumber || '').trim().toLowerCase();
+  if (numA && numB) return numA === numB;
+  if (!numA && !numB) return (a.candidateClass || '').trim().toLowerCase() === (b.candidateClass || '').trim().toLowerCase();
+  return false;
+}
 
 export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   quizzes,
@@ -72,6 +87,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const pendingHeartbeatsRef = useRef<Record<string, ProctorStudentState>>({});
+  /** Composite key → time the teacher pardoned it; lets the strike high-water mark drop once. */
+  const pardonedAtRef = useRef<Record<string, number>>({});
   const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
@@ -149,11 +166,20 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         const localSubs = getSubmissionsForQuiz(quiz.id, quiz.quizCode);
         if (localSubs && localSubs.length > 0) {
           localSubs.forEach((sub) => {
-            const rawId = (sub.candidateNumber ? `${sub.studentName}_${sub.candidateNumber}` : sub.studentName) || sub.id;
             const qCode = (quiz.quizCode || '').trim().toUpperCase();
-            const compositeKey = `${qCode}::${rawId}`;
+            // Same key the live channel uses, so the submitted row replaces the live row
+            // instead of appearing beside it (P1-B).
+            const canonicalId =
+              sub.forensics?.proctorStudentId ||
+              getCanonicalProctorStudentId({
+                quizCode: qCode,
+                studentName: sub.studentName,
+                candidateNumber: sub.candidateNumber,
+                studentClass: sub.studentClass,
+              });
+            const compositeKey = `${qCode}::${canonicalId}`;
             localLoaded[compositeKey] = {
-              studentId: rawId,
+              studentId: canonicalId,
               studentName: sub.studentName,
               candidateNumber: sub.candidateNumber,
               candidateClass: sub.studentClass,
@@ -187,10 +213,18 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             (s) => s.quizId === quiz.id || s.quizCode.toUpperCase() === qCode
           );
           quizSubs.forEach((sub) => {
-            const rawId = (sub.candidateNumber ? `${sub.studentName}_${sub.candidateNumber}` : sub.studentName) || sub.id;
-            const compositeKey = `${qCode}::${rawId}`;
+            // Same canonical key as the live channel (P1-B).
+            const canonicalId =
+              sub.forensics?.proctorStudentId ||
+              getCanonicalProctorStudentId({
+                quizCode: qCode,
+                studentName: sub.studentName,
+                candidateNumber: sub.candidateNumber,
+                studentClass: sub.studentClass,
+              });
+            const compositeKey = `${qCode}::${canonicalId}`;
             cloudLoaded[compositeKey] = {
-              studentId: rawId,
+              studentId: canonicalId,
               studentName: sub.studentName,
               candidateNumber: sub.candidateNumber,
               candidateClass: sub.studentClass,
@@ -233,16 +267,44 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       pendingHeartbeatsRef.current = {};
       setStudents((prev) => {
         let changed = false;
-        const next = { ...prev };
+        const next: Record<string, ProctorStudentState> = { ...prev };
+
         keys.forEach((compKey) => {
-          const student = pending[compKey];
+          const incoming = pending[compKey];
           const existing = next[compKey];
-          if (existing?.status === 'submitted' && student.status !== 'submitted') {
+          if (existing?.status === 'submitted' && incoming.status !== 'submitted') {
             return;
           }
-          next[compKey] = student;
+
+          // Clamp self-reported numbers; strikes never fall without a teacher pardon.
+          const bounds = clampTelemetry(incoming, incoming.totalQuestions || existing?.totalQuestions || 1);
+          const pardoned = Boolean(pardonedAtRef.current[compKey]);
+          if (pardoned) delete pardonedAtRef.current[compKey];
+
+          next[compKey] = {
+            ...existing,
+            ...incoming,
+            ...bounds,
+            lastHeartbeat: incoming.lastHeartbeat || Date.now(),
+            violationsCount: highWaterViolations(existing?.violationsCount, bounds.violationsCount, pardoned),
+          };
           changed = true;
+
+          // Retire any row left under a legacy or duplicate key for the same candidate.
+          Object.keys(next).forEach((key) => {
+            if (key === compKey) return;
+            const other = next[key];
+            if (!other || other.quizCode !== next[compKey].quizCode) return;
+            if (!sameCandidate(other, next[compKey])) return;
+            next[compKey] = {
+              ...next[compKey],
+              violationsCount: highWaterViolations(next[compKey].violationsCount, other.violationsCount, pardoned),
+            };
+            delete next[key];
+            changed = true;
+          });
         });
+
         return changed ? next : prev;
       });
     }, 300);
@@ -260,12 +322,23 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     const handleHeartbeat = (student: ProctorStudentState) => {
       const qCode = (student.quizCode || '').trim().toUpperCase();
-      const compKey = `${qCode}::${student.studentId}`;
+      // Older clients send a session hash; normalise every beat to the canonical id so one
+      // candidate maps to exactly one dashboard row.
+      const canonicalId = getCanonicalProctorStudentId({
+        quizCode: qCode,
+        studentName: student.studentName,
+        candidateNumber: student.candidateNumber,
+        studentClass: student.candidateClass,
+      });
+      const compKey = `${qCode}::${canonicalId}`;
 
       pendingHeartbeatsRef.current[compKey] = {
         ...student,
+        studentId: canonicalId,
         quizCode: qCode,
         quizTitle: student.quizTitle || quizByCode[qCode]?.title,
+        // Receipt time, not the sender's clock (P1-A).
+        lastHeartbeat: Date.now(),
       };
 
       // Recover activity logs from recentViolations telemetry if missing
@@ -314,11 +387,54 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         quizTitle: event.quizTitle || quizByCode[qCode]?.title,
       };
       setLogEvents((prev) => [enriched, ...prev.slice(0, 249)]);
+
+      // Persist discrete student events so a reload does not erase them (P1-C).
+      recordProctorAuditEvent({
+        id: enriched.id,
+        quizCode: qCode,
+        studentId: getCanonicalProctorStudentId({
+          quizCode: qCode,
+          studentName: enriched.studentName,
+          candidateNumber: enriched.candidateNumber,
+        }),
+        studentName: enriched.studentName,
+        candidateNumber: enriched.candidateNumber,
+        eventType: enriched.type,
+        severity: enriched.severity,
+        detail: enriched.detail,
+        actor: 'student',
+        createdAt: enriched.timestamp,
+      });
     };
 
     subscribeMultiProctorDashboard(codes, {
       onHeartbeat: handleHeartbeat,
       onLogEvent: handleLogEvent,
+    });
+
+    // Rebuild the violation/intervention trail after a reload or on a second invigilator's
+    // machine (P1-C). Events already on screen are skipped by id.
+    void loadProctorAuditEvents(codes).then((events) => {
+      if (!events.length) return;
+      setLogEvents((prev) => {
+        const seen = new Set(prev.map((entry) => entry.id));
+        const restored: ProctorLogEvent[] = events
+          .filter((entry) => !seen.has(entry.id))
+          .map((entry) => ({
+            id: entry.id,
+            timestamp: entry.createdAt,
+            studentName: entry.studentName,
+            candidateNumber: entry.candidateNumber,
+            quizCode: entry.quizCode,
+            type: entry.eventType as ProctorLogEvent['type'],
+            detail: entry.detail,
+            severity: entry.severity,
+          }));
+        if (!restored.length) return prev;
+        return [...restored, ...prev]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, 250);
+      });
     });
 
     return () => {
@@ -694,6 +810,19 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       },
       ...prev,
     ]);
+    recordProctorAuditEvent({
+      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'unlocked',
+      severity: 'info',
+      detail: 'Remotely unlocked by invigilator',
+      actor: 'invigilator',
+      createdAt: new Date().toISOString(),
+    });
   }, [students]);
 
   const handleAddTime = useCallback((compositeKey: string, minutes: number) => {
@@ -724,6 +853,19 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       },
       ...prev,
     ]);
+    recordProctorAuditEvent({
+      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'time_extended',
+      severity: 'info',
+      detail: `Added +${minutes} minutes to exam clock`,
+      actor: 'invigilator',
+      createdAt: new Date().toISOString(),
+    });
   }, [students]);
 
   const handleForceSubmit = useCallback((compositeKey: string) => {
@@ -762,6 +904,19 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       },
       ...prev,
     ]);
+    recordProctorAuditEvent({
+      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'submitted',
+      severity: 'critical',
+      detail: 'Exam submission forced by invigilator',
+      actor: 'invigilator',
+      createdAt: new Date().toISOString(),
+    });
   }, [students]);
 
   const handlePardon = useCallback((compositeKey: string) => {
@@ -770,6 +925,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'pardon');
+    // Lets the strike high-water mark fall once for this candidate.
+    pardonedAtRef.current[compositeKey] = Date.now();
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
       return {
@@ -796,6 +953,19 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       },
       ...prev,
     ]);
+    recordProctorAuditEvent({
+      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'pardon',
+      severity: 'info',
+      detail: 'Security violations cleared and candidate pardoned',
+      actor: 'invigilator',
+      createdAt: new Date().toISOString(),
+    });
   }, [students]);
 
   // Scoped Bulk: Unlock

@@ -7,6 +7,11 @@ import {
   exportAllSubmissionsExcelICM,
   exportSingleSubmissionExcelICM,
 } from './icmExcelExportService';
+import {
+  computeNextRetryAt,
+  isOutboxRetryable,
+  normalizeIdentityPart,
+} from '../lib/examSubmissionGuards';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
@@ -16,6 +21,8 @@ export interface SubmissionOutboxItem {
   queuedAt: string;
   retryCount: number;
   lastError?: string;
+  /** Earliest time a failed item may be retried (exponential backoff). */
+  nextRetryAt?: string;
 }
 
 const OUTBOX_STORAGE_KEY = 'fluffykitten_submission_outbox';
@@ -43,10 +50,25 @@ export function getSubmissionOutbox(): SubmissionOutboxItem[] {
 }
 
 /**
- * Retrieves only pending (un-synced) outbox submissions.
+ * Retrieves only retryable (un-synced) outbox submissions. Failed items are
+ * included until they exhaust their attempt budget and backoff window.
  */
 export function getPendingOutboxSubmissions(): SubmissionOutboxItem[] {
-  return getSubmissionOutbox().filter((item) => item.status === 'pending');
+  const now = Date.now();
+  return getSubmissionOutbox().filter((item) => isOutboxRetryable(item, now));
+}
+
+function pruneOutbox(outbox: SubmissionOutboxItem[]): SubmissionOutboxItem[] {
+  const now = Date.now();
+  const retained = outbox.filter((item) => {
+    if (item.status !== 'synced') return true;
+    const ageHrs = (now - new Date(item.queuedAt).getTime()) / (1000 * 60 * 60);
+    return ageHrs < 24;
+  });
+  // Never let a synced history crowd out an unsynced paper.
+  const unsynced = retained.filter((item) => item.status !== 'synced');
+  const synced = retained.filter((item) => item.status === 'synced').slice(0, 50);
+  return [...unsynced, ...synced].slice(0, 500);
 }
 
 /**
@@ -59,34 +81,35 @@ export function saveToSubmissionOutbox(
 ): void {
   try {
     const outbox = getSubmissionOutbox();
+    const now = Date.now();
     const existingIdx = outbox.findIndex((item) => item.submission.id === submission.id);
+
     if (existingIdx >= 0) {
+      const existing = outbox[existingIdx];
+      const retryCount = status === 'failed'
+        ? (Number(existing.retryCount) || 0) + 1
+        : (Number(existing.retryCount) || 0);
       outbox[existingIdx] = {
         submission,
         status,
-        queuedAt: outbox[existingIdx].queuedAt || new Date().toISOString(),
-        retryCount: (outbox[existingIdx].retryCount || 0) + 1,
-        lastError: lastError || outbox[existingIdx].lastError,
+        queuedAt: existing.queuedAt || new Date().toISOString(),
+        retryCount,
+        lastError: status === 'failed' ? (lastError || existing.lastError) : lastError,
+        nextRetryAt: status === 'failed' ? computeNextRetryAt(retryCount, now) : undefined,
       };
     } else {
+      const retryCount = status === 'failed' ? 1 : 0;
       outbox.unshift({
         submission,
         status,
         queuedAt: new Date().toISOString(),
-        retryCount: 0,
+        retryCount,
         lastError,
+        nextRetryAt: status === 'failed' ? computeNextRetryAt(retryCount, now) : undefined,
       });
     }
 
-    // Prune old synced items to prevent unbounded storage growth
-    const now = Date.now();
-    const pruned = outbox.filter((item) => {
-      if (item.status !== 'synced') return true;
-      const ageHrs = (now - new Date(item.queuedAt).getTime()) / (1000 * 60 * 60);
-      return ageHrs < 24;
-    }).slice(0, 100);
-
-    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruned));
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruneOutbox(outbox)));
   } catch (err) {
     console.warn('Could not save to submission outbox:', err);
   }
@@ -99,17 +122,12 @@ export function markOutboxSynced(submissionId: string): void {
   try {
     const outbox = getSubmissionOutbox();
     const updated = outbox.map((item) =>
-      item.submission.id === submissionId ? { ...item, status: 'synced' as const, lastError: undefined } : item
+      item.submission.id === submissionId
+        ? { ...item, status: 'synced' as const, retryCount: 0, lastError: undefined, nextRetryAt: undefined }
+        : item
     );
-    
-    const now = Date.now();
-    const pruned = updated.filter((item) => {
-      if (item.status !== 'synced') return true;
-      const ageHrs = (now - new Date(item.queuedAt).getTime()) / (1000 * 60 * 60);
-      return ageHrs < 24;
-    }).slice(0, 100);
 
-    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruned));
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruneOutbox(updated)));
   } catch (err) {
     console.warn('Could not mark outbox item synced:', err);
   }
@@ -396,7 +414,16 @@ export interface QuestionTimeAnalytics {
 export interface ExamForensics {
   answerChangeLogs?: AnswerChangeLogEntry[];
   questionTimeAnalytics?: QuestionTimeAnalytics[];
+  /**
+   * Stable answer map keyed by `questionId` / `questionId::subId`. Re-grading
+   * prefers this over the positional `rawAnswers` keys.
+   */
+  answersByQuestionId?: Record<string, string | number>;
   exceededMaxViolations?: boolean;
+  /** Canonical candidate id — ties the live proctor row to this submitted record. */
+  proctorStudentId?: string;
+  /** Every invigilator intervention (unlock, +time, pardon, force submit) in order. */
+  invigilatorActions?: Array<{ id: string; type: string; detail: string; timestamp: string }>;
 }
 
 export interface StudentSubmission {
@@ -633,18 +660,19 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
     console.warn('Error pushing submission to Supabase table:', err);
   }
 
-  // 3. Always mirror to app_config key-value store for resilience
-  try {
-    const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
-    const mergedMap = new Map<string, StudentSubmission>();
-    cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
-    mergedMap.set(submission.id, submission);
-    const appConfigSuccess = await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
-    if (appConfigSuccess && !tableSuccess) {
-      markOutboxSynced(submission.id);
+  // 3. Only use the app_config mirror when the primary table write failed. The
+  // mirror is a read-modify-write of one shared JSON blob, so doing it on every
+  // successful submit made concurrent end-of-exam papers overwrite each other.
+  if (!tableSuccess) {
+    try {
+      const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
+      const mergedMap = new Map<string, StudentSubmission>();
+      cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
+      mergedMap.set(submission.id, submission);
+      await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
+    } catch (err) {
+      console.warn('Could not mirror submission to app_config:', err);
     }
-  } catch (err) {
-    console.warn('Could not mirror submission to app_config:', err);
   }
 
   return tableSuccess;
@@ -1079,8 +1107,53 @@ export async function fetchSubmissionsFromSupabase(
 }
 
 /**
+ * Maps a `quiz_submissions` row (client-shaped JSON) to the app's submission type.
+ */
+function mapRowToSubmission(row: any): StudentSubmission {
+  const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+  const forensics = (row as any).forensics || rawAnswers._forensics || undefined;
+  delete rawAnswers._forensics;
+
+  return {
+    id: row.id,
+    quizId: row.quiz_id,
+    quizCode: row.quiz_code,
+    quizTitle: row.quiz_title,
+    subject: row.subject,
+    studentName: row.student_name,
+    studentClass: row.student_class,
+    candidateNumber: row.candidate_number,
+    submittedAt: row.submitted_at,
+    durationSeconds: row.duration_seconds,
+    score: Number(row.score) || 0,
+    totalMarks: Number(row.total_marks) || 0,
+    percentage: Number(row.percentage) || 0,
+    violationsCount: Number(row.violations_count) || 0,
+    proctoringLogs: row.proctoring_logs || [],
+    rawAnswers,
+    questionResults: row.question_results || [],
+    topicBreakdown: row.topic_breakdown || {},
+    status: (row.status as SubmissionStatus) || 'submitted',
+    teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+    teacherNotes: row.teacher_notes || '',
+    resultPin: row.result_pin || '',
+    updatedAt: row.updated_at || row.submitted_at,
+    forensics,
+  };
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+/**
  * Searches for a student's submissions across cloud and local storage.
  * Requires Quiz Code + exact Name (or Candidate Number) + 3-digit PIN for privacy.
+ *
+ * The scoped `lookup_student_exam_result` RPC is authoritative. The legacy
+ * fallback queries only this candidate's rows, never the whole cohort, and the
+ * last resort is local storage — a student browser must not download the school's
+ * submissions just to open a result receipt.
  */
 export async function fetchStudentResultsCloud(
   quizCode: string,
@@ -1088,84 +1161,81 @@ export async function fetchStudentResultsCloud(
   pin?: string
 ): Promise<{ submissions: StudentSubmission[]; hasUnreleased: boolean; pinMismatch?: boolean }> {
   const cleanCode = quizCode.trim().toUpperCase();
-  const cleanId = identifier.trim().toLowerCase();
+  const cleanQuery = identifier.trim();
+  const cleanId = normalizeIdentityPart(identifier);
   const cleanPin = (pin || '').trim();
 
-  // 1. Try quiz_submissions table
+  // 1. Scoped server-side lookup (migration 019). Falls through if not deployed.
   try {
-    const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
-      .select('*')
-      .eq('quiz_code', cleanCode)
-      .order('submitted_at', { ascending: false });
+    const { data, error } = await (supabase as any).rpc('lookup_student_exam_result', {
+      p_quiz_code: cleanCode,
+      p_student_query: cleanQuery,
+      p_result_pin: cleanPin,
+    });
 
-    if (!error && Array.isArray(data) && data.length > 0) {
-      const matchingRows = data.filter((row: any) => {
-        const sName = (row.student_name || '').toLowerCase().trim();
-        const cNum = (row.candidate_number || '').toLowerCase().trim();
-        return sName === cleanId || cNum === cleanId;
-      });
-
-      if (matchingRows.length > 0) {
-        const storedPin = (matchingRows[0].result_pin || '').trim();
-        if (storedPin && cleanPin !== storedPin) {
-          return { submissions: [], hasUnreleased: false, pinMismatch: true };
-        }
-
-        const published: StudentSubmission[] = [];
-        let hasUnreleased = false;
-
-        matchingRows.forEach((row: any) => {
-          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
-          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
-          delete (rawAnswers as any)._forensics;
-
-          const sub: StudentSubmission = {
-            id: row.id,
-            quizId: row.quiz_id,
-            quizCode: row.quiz_code,
-            quizTitle: row.quiz_title,
-            subject: row.subject,
-            studentName: row.student_name,
-            studentClass: row.student_class,
-            candidateNumber: row.candidate_number,
-            submittedAt: row.submitted_at,
-            durationSeconds: row.duration_seconds,
-            score: Number(row.score) || 0,
-            totalMarks: Number(row.total_marks) || 0,
-            percentage: Number(row.percentage) || 0,
-            violationsCount: Number(row.violations_count) || 0,
-            proctoringLogs: row.proctoring_logs || [],
-            rawAnswers,
-            questionResults: row.question_results || [],
-            topicBreakdown: row.topic_breakdown || {},
-            status: (row.status as SubmissionStatus) || 'submitted',
-            teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-            teacherNotes: row.teacher_notes || '',
-            resultPin: row.result_pin || '',
-            forensics,
-          };
-
-          if (sub.status === 'published') {
-            published.push(sub);
-          } else {
-            hasUnreleased = true;
-          }
-        });
-
-        return { submissions: published, hasUnreleased };
+    if (!error && data && typeof data === 'object') {
+      if (data.status === 'pin_mismatch') {
+        return { submissions: [], hasUnreleased: false, pinMismatch: true };
       }
+      const rows = Array.isArray(data.submissions) ? data.submissions : [];
+      return {
+        submissions: rows.map(mapRowToSubmission),
+        hasUnreleased: data.hasUnreleased === true,
+      };
+    }
+  } catch (err) {
+    console.warn('Scoped result RPC unavailable, using scoped table fallback:', err);
+  }
+
+  // 2. Legacy fallback: fetch only this candidate's rows (never the cohort).
+  try {
+    const escaped = escapeLikePattern(cleanQuery);
+    const [nameRes, numberRes] = await Promise.all([
+      (supabase.from('quiz_submissions' as any) as any)
+        .select('*')
+        .eq('quiz_code', cleanCode)
+        .ilike('student_name', escaped)
+        .limit(20),
+      (supabase.from('quiz_submissions' as any) as any)
+        .select('*')
+        .eq('quiz_code', cleanCode)
+        .ilike('candidate_number', escaped)
+        .limit(20),
+    ]);
+
+    const byId = new Map<string, any>();
+    for (const res of [nameRes, numberRes]) {
+      if (!res?.error && Array.isArray(res.data)) {
+        res.data.forEach((row: any) => byId.set(row.id, row));
+      }
+    }
+
+    if (byId.size > 0) {
+      const matchingRows = Array.from(byId.values());
+      const storedPin = String(matchingRows[0].result_pin || '').trim();
+      if (storedPin && cleanPin !== storedPin) {
+        return { submissions: [], hasUnreleased: false, pinMismatch: true };
+      }
+
+      const published: StudentSubmission[] = [];
+      let hasUnreleased = false;
+      matchingRows.forEach((row) => {
+        const sub = mapRowToSubmission(row);
+        if (sub.status === 'published') published.push(sub);
+        else hasUnreleased = true;
+      });
+      return { submissions: published, hasUnreleased };
     }
   } catch (err) {
     console.warn('Table fetch error for student results:', err);
   }
 
-  // 2. Fallback to app_config / local
+  // 3. Local-only fallback. No network, no school-wide download.
   try {
-    const allSubs = await loadAndSyncAllSubmissions();
-    const matching = allSubs.filter((s) => {
+    const matching = getAllSubmissions().filter((s) => {
       const codeMatch = s.quizCode.trim().toUpperCase() === cleanCode;
-      const sName = (s.studentName || '').toLowerCase().trim();
-      const cNum = (s.candidateNumber || '').toLowerCase().trim();
+      const sName = normalizeIdentityPart(s.studentName);
+      const cNum = normalizeIdentityPart(s.candidateNumber);
       return codeMatch && (sName === cleanId || cNum === cleanId);
     });
 
