@@ -41,6 +41,8 @@ export interface OutlineQuestion {
   stemMarks: number;             // marks attached to the question itself (e.g. Q3 [6])
   total: number;                 // stemMarks + Σ leaf marks
   subs: OutlineLeaf[];
+  /** Printed section ("A", "B"), when the paper groups questions into sections. */
+  section?: string;
 }
 
 export interface OutlinePage {
@@ -312,9 +314,17 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
   let current: OutlineQuestion | null = null;
   let currentPart: string | null = null;
   let currentLeaf: OutlineLeaf | null = null;
+  let currentSection: string | null = null;
 
   for (const { lines, width } of questionPages) {
     for (const line of lines) {
+      // "Section A" / "Section B" headings group questions for optional-choice papers.
+      const sectionMatch = line.text.match(/^Section\s+([A-Z])\b/);
+      if (sectionMatch) {
+        currentSection = sectionMatch[1];
+        continue;
+      }
+
       const questionMatch = line.text.match(QUESTION_RE);
       if (questionMatch && near(line.x, questionCol)) {
         current = {
@@ -324,10 +334,22 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
           stemMarks: 0,
           total: 0,
           subs: [],
+          section: currentSection ?? undefined,
         };
         questions.push(current);
         currentPart = null;
         currentLeaf = null;
+
+        // AS/A Level papers pack the first sub-part onto the question line —
+        // "4 (a) (i) Define … [4]". Consuming the whole line here would drop it.
+        const inline = questionMatch[2].match(/^\(([a-h])\)\s*\(\s*(i{1,3}|iv|v|vi{1,3})\s*\)/);
+        if (inline) {
+          const inlineMarks = line.text.match(MARK_RE);
+          const marks = inlineMarks && line.right > width * 0.86 ? Number(inlineMarks[1]) : null;
+          currentPart = inline[1];
+          currentLeaf = { id: `(${inline[1]})(${inline[2]})`, page: line.pageIdx, marks, isStem: false };
+          current.subs.push(currentLeaf);
+        }
         continue;
       }
       if (!current) continue;
@@ -398,11 +420,23 @@ export function parseOutline(pages: RawPage[], hint?: OutlineHint): PaperOutline
   // Record which questions are alternatives so the question bank and test builder do not
   // silently place two mutually exclusive questions in one paper.
   if (optionalChoice) {
+    // Two-tier papers state the rule per section: "Section A: answer all questions.
+    // Section B: answer one question." The section headings printed in the body decide
+    // which questions belong to the optional group.
+    const sectionACompulsory = /Section\s+A\s*:?\s*(?:answer\s+)?all\s+questions/i.test(coverText);
+    const sectionBOptional = /Section\s+B\s*:?\s*(?:answer\s+)?(?:one|1)\s+question/i.test(coverText);
     const either = coverText.match(
       /Answer\s+Question\s+(\d+)[\s\S]{0,60}?either\s+Question\s+(\d+)\s+or\s+Question\s+(\d+)/i,
     );
     const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4 };
-    if (either) {
+
+    if (sectionACompulsory && sectionBOptional) {
+      const optionalQuestions = questions.filter((q) => q.section === 'B');
+      if (optionalQuestions.length) {
+        const label = `Section B: choose 1 of ${optionalQuestions.length} (Q${optionalQuestions[0].number}–Q${optionalQuestions[optionalQuestions.length - 1].number})`;
+        profile.optionGroups = Object.fromEntries(optionalQuestions.map((q) => [q.number, label]));
+      }
+    } else if (either) {
       const label = `Optional: answer either Question ${either[2]} or Question ${either[3]}`;
       profile.optionGroups = { [Number(either[2])]: label, [Number(either[3])]: label };
     } else {

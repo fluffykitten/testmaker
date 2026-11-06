@@ -41,6 +41,7 @@ backup/
 # Superdesign temporary outputs
 .superdesign/tmp/
 geopaper/
+geography paper/
 sociology/
 scripts/*.json
 

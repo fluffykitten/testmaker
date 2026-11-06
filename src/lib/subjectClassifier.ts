@@ -43,6 +43,17 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
     // paper prints Q1+Q2+Q3 = 120, because candidates answer Q1 and either Q2 or Q3.
     standardTotalMarks: 80,
   },
+  '9696': {
+    syllabusCode: '9696',
+    subjectName: 'Geography (AS/A Level)',
+    domain: 'humanities',
+    hasInsertByDefault: true,
+    hasInPaperStimulus: false,
+    isOptionalChoicePaper: true,
+    // Measured on 9696/11: "The total mark for this paper is 60" while 6 questions print
+    // 120 marks, because Section A is compulsory and Section B requires one of three.
+    standardTotalMarks: 60,
+  },
   '0460': {
     syllabusCode: '0460',
     subjectName: 'Geography',

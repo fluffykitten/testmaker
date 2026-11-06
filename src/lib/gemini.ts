@@ -2138,7 +2138,11 @@ async function callGeminiModel(
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s timeout per model attempt
+    // Multi-document payloads (Question Paper + Insert Booklet + Mark Scheme) and heavier models
+    // (e.g. gemini-3.8-flash) require 60–90 seconds to process multimodal PDFs and stream full rubrics.
+    const isMultiDoc = Boolean(insertBase64 || markSchemeBase64);
+    const timeoutMs = isMultiDoc ? 150000 : 90000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const res = await fetch(endpoint, {
@@ -2150,7 +2154,7 @@ async function callGeminiModel(
           generationConfig: {
             responseMimeType: 'application/json',
             temperature: 0.0,
-            maxOutputTokens: 16384,
+            maxOutputTokens: 32768,
           },
         }),
       });
