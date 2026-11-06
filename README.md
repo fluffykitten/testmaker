@@ -165,5 +165,70 @@ npm run mobile:ios
 
 ---
 
+## 📜 Changelog
+
+### [v.2.3.4] — Cambridge AS & A Level Geography & Multimodal Timeout Resilience
+- **Cambridge International AS & A Level Geography (`9696`) Support**:
+  - Registered syllabus `9696` profile with automatic insert booklet configuration, two-tier optional-choice paper rules, and 60-mark standard total calculation.
+  - Fixed Section B packed question line parsing in `paperOutlineParse.ts` (`4 (a) (i) Define... [4]` now cleanly captures both the question container and the inline sub-part).
+  - Added section-aware option groups (`Section B: choose 1 of 3 (Q4–Q6)`), preventing mutually exclusive questions from being combined into the same test paper.
+- **Adaptive Gemini Timeout & Output Capacity**:
+  - Raised client-side API timeout from 35s to **150s (2.5 minutes)** for multi-document payloads (Question Paper + Insert Booklet + trimmed Mark Scheme), resolving `AbortError: signal is aborted without reason` when running `gemini-3.8-flash`.
+  - Increased `maxOutputTokens` from 16,384 to **32,768** to prevent truncation of detailed mark scheme rubrics on extended humanities papers.
+- **Verification Suites**:
+  - Added `scripts/verify-as-geography.mjs` verifying outline totals (`10/10/10/30/30/30`), section option groups, rubric-safe trimming, and insert resources across May/June 2025 and Oct/Nov 2024 series (6/6 passing).
+  - Added `scripts/simulate-geography-extraction.mjs` for benchmarking multimodal extraction across Gemini models.
+
+### [v.2.3.3] — Cambridge IGCSE Sociology & Safe Rubric Trimming
+- **Cambridge IGCSE Sociology (`0495`) Pipeline**:
+  - Full support for in-paper stimulus `"Source A"`, shared lead-in definition prompts, and 8–14 mark Level 1–4 response grids.
+  - Safe mark scheme preamble trimmer (`detectMarkSchemeTableStart`) with dual boundary detection, preserving Tables A–D criteria while stripping administrative boilerplate.
+  - Added deterministic subject classification engine (`subjectClassifier.ts`).
+  - Added `scripts/verify-sociology.mjs` test suite (24/24 passing across June and November series).
+- **Client Deployment Resilience**:
+  - Intelligent chunk-reload error boundary handling stale production bundles and lazy-loaded assets.
+  - Paginated `fetchDistinctPastPapersSummary` to eliminate truncation in the Source PDF Manager.
+
+### [v.2.3.2] — Google Forms Export & Touchscreen Security Shield
+- **Google Forms Integration**:
+  - Export custom assessments directly to auto-graded Google Forms quizzes with custom answer keys, point values, and Apps Script generation.
+- **Touchscreen & Tablet Exam Lockdown**:
+  - Enhanced student exam runner with pinch-to-zoom controls, touch gesture guards, and focus-loss event logging for iPad and Android tablet proctoring.
+
+### [v.2.3.1] — Configurable AI Models & Architecture Plans
+- **Dynamic Model Selection**:
+  - Configurable Gemini extraction model in Admin Settings (`gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-2.5-pro`) with real-time model discovery and cloud sync.
+- **Standardized Architecture Planning**:
+  - Enforced repository standard for feature blueprints and architectural plans in `Plan/`.
+
+### [v.2.3.0] — Cambridge Science Practical Papers & Cloudflare R2 Storage
+- **Science Practical Examination Pipeline**:
+  - Dedicated parser for Cambridge IGCSE Paper 5 & Paper 6 Practical and Alternative to Practical papers.
+  - Automated qualitative analysis notes extraction, apparatus diagrams, and chemical test reagents catalog.
+- **Cloudflare R2 Storage Bridge**:
+  - High-speed CDN hosting for insert booklet PDFs, high-resolution maps, and Table of Specifications source citations.
+
+### [v.2.2.0] — Multi-Class Live Proctoring & Heartbeat Scalability
+- **Unified School-Wide & Multi-Class Proctoring Cockpit**:
+  - Live proctor dashboard allowing invigilators to monitor multiple concurrent classes with active student progress, time warnings, and violation strike counters.
+- **Heartbeat Jitter & Micro-Batching**:
+  - 300ms heartbeat micro-batching and randomized jitter protection to eliminate server load spikes during high-concurrency school exam sessions.
+  - Dynamic roster reconciliation with automated attendance tracking.
+
+### [v.2.1.0] — Bloom's Taxonomy & Table of Specifications (ToS)
+- **Cognitive Level Tagging**:
+  - Automatic classification of questions into Bloom's Taxonomy levels (C1 Knowledge to C6 Evaluation).
+- **Curriculum Table of Specifications (ToS)**:
+  - One-click export to landscape Microsoft Word (`.docx`) containing question types, cognitive weightings, mark distributions, and Cambridge citation links.
+- **Configurable Grade Thresholds**:
+  - Interactive curve tuner with $A^*$ to $U$ percentage thresholds and exportable diagnostic grade distributions.
+
+### [v.2.0.0] — Platform Redesign & Save My Exams Pack Ingestion
+- Major UI/UX redesign for Insan Cendekia Madani (ICM) Cambridge International School.
+- Ingestion support for Save My Exams structured theory and revision packs.
+- Integrated Web Audio synthesizers (`gameSoundEngine.ts`) for gamified quiz arenas.
+
+---
+
 ## 📄 License
 MIT License. Created with 🐾 by [fluffykitten](https://github.com/fluffykitten).
