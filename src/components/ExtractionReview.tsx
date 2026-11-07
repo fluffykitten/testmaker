@@ -318,6 +318,7 @@ export function ExtractionReview({
       question_style: normalizeQuestionStyle(parentQ.question_style, sub.options),
       total_marks: subMarks,
       estimated_difficulty: parentQ.estimated_difficulty,
+      cognitive_level: sub.cognitive_level || parentQ.cognitive_level || null,
       topic: parentQ.topic,
       sub_topic: parentQ.sub_topic,
       has_diagram: Boolean(inheritedSvg || inheritedDiagramUrl),
@@ -746,34 +747,31 @@ export function ExtractionReview({
                     </span>
                   )}
 
-                  {isFastEditMode ? (
-                    <select
-                      className="review-inline-select"
-                      value={q.cognitive_level || 'C2'}
-                      onChange={(e) => handleUpdateQuestionField(idx, 'cognitive_level', e.target.value)}
-                      title="Bloom's Taxonomy Cognitive Level"
-                    >
-                      <option value="C1">C1 (Remembering)</option>
-                      <option value="C2">C2 (Understanding)</option>
-                      <option value="C3">C3 (Applying)</option>
-                      <option value="C4">C4 (Analyzing)</option>
-                      <option value="C5">C5 (Evaluating)</option>
-                      <option value="C6">C6 (Creating)</option>
-                    </select>
-                  ) : (
-                    <span
-                      className="review-badge"
-                      style={{
-                        background: '#eff6ff',
-                        color: '#1d4ed8',
-                        borderColor: '#bfdbfe',
-                        fontWeight: 600,
-                      }}
-                      title={`Bloom's Taxonomy: ${q.cognitive_level || 'C2'}`}
-                    >
-                      {q.cognitive_level || 'C2'}
-                    </span>
-                  )}
+                  <select
+                    className={isFastEditMode ? 'review-inline-select' : 'review-badge'}
+                    style={
+                      isFastEditMode
+                        ? undefined
+                        : {
+                            background: '#eff6ff',
+                            color: '#1d4ed8',
+                            borderColor: '#bfdbfe',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            paddingRight: '6px',
+                          }
+                    }
+                    value={q.cognitive_level || 'C2'}
+                    onChange={(e) => handleUpdateQuestionField(idx, 'cognitive_level', e.target.value)}
+                    title="Bloom's Taxonomy Cognitive Level (Click to change)"
+                  >
+                    <option value="C1">{isFastEditMode ? 'C1 (Remembering)' : 'C1'}</option>
+                    <option value="C2">{isFastEditMode ? 'C2 (Understanding)' : 'C2'}</option>
+                    <option value="C3">{isFastEditMode ? 'C3 (Applying)' : 'C3'}</option>
+                    <option value="C4">{isFastEditMode ? 'C4 (Analyzing)' : 'C4'}</option>
+                    <option value="C5">{isFastEditMode ? 'C5 (Evaluating)' : 'C5'}</option>
+                    <option value="C6">{isFastEditMode ? 'C6 (Creating)' : 'C6'}</option>
+                  </select>
 
                   {isFastEditMode ? (
                     <select
@@ -983,6 +981,24 @@ export function ExtractionReview({
                             />
                           ) : (
                             <span className="review-sub-id">{sub.sub_id}</span>
+                          )}
+
+                          {sub.cognitive_level && (
+                            <span
+                              style={{
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                color: '#1d4ed8',
+                                background: '#eff6ff',
+                                border: '1px solid #bfdbfe',
+                                borderRadius: '4px',
+                                padding: '1px 6px',
+                                alignSelf: 'center',
+                              }}
+                              title={`Bloom's Taxonomy: ${sub.cognitive_level}`}
+                            >
+                              {sub.cognitive_level}
+                            </span>
                           )}
 
                           <div className="review-sub-text">
@@ -1345,6 +1361,9 @@ export function ExtractionReview({
               topic: curQ.topic || 'General',
               sub_topic: curQ.sub_topic || null,
               difficulty: curQ.estimated_difficulty || 'Medium',
+              cognitive_level: curQ.cognitive_level || 'C2',
+              source_pdf_url: curQ.source_pdf_url || null,
+              page_number: curQ.page_number ?? null,
               marks: Number(curQ.total_marks) || 1,
               diagram_url: diagramUrl,
               options: curQ.options && curQ.options.length > 0 ? curQ.options : null,
@@ -1375,6 +1394,9 @@ export function ExtractionReview({
                   topic: saved.topic,
                   sub_topic: saved.sub_topic,
                   estimated_difficulty: saved.difficulty || 'Medium',
+                  cognitive_level: saved.cognitive_level !== undefined ? saved.cognitive_level : (originalQ.cognitive_level || null),
+                  source_pdf_url: saved.source_pdf_url !== undefined ? saved.source_pdf_url : originalQ.source_pdf_url,
+                  page_number: saved.page_number !== undefined ? (saved.page_number ?? undefined) : originalQ.page_number,
                   total_marks: saved.marks,
                   question_style: resolvedSavedStyle,
                   options: preservedOptions,

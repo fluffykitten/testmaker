@@ -3,6 +3,9 @@ import fs from 'node:fs';
 
 /** React components can't load in Node; expose their named exports as inert bindings. */
 export async function load(url, context, next) {
+  if (url.includes('?url')) {
+    return { format: 'module', shortCircuit: true, source: 'export default "";' };
+  }
   if (url.endsWith('.tsx')) {
     const source = fs.readFileSync(new URL(url), 'utf8');
     const names = [...source.matchAll(/export\s+(?:const|let|var|function|class)\s+([A-Za-z0-9_$]+)/g)].map((m) => m[1]);

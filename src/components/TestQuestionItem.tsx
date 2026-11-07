@@ -134,6 +134,21 @@ function TestQuestionItemComponent({
             </span>
           )}
 
+          {question.cognitive_level && (
+            <span
+              className="q-badge"
+              style={{
+                background: '#eff6ff',
+                color: '#1d4ed8',
+                border: '1px solid #bfdbfe',
+                fontWeight: 600,
+              }}
+              title={`Bloom's Taxonomy Cognitive Level: ${question.cognitive_level}`}
+            >
+              {question.cognitive_level}
+            </span>
+          )}
+
           {isCustomized && (
             <span className="q-badge" style={{ backgroundColor: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
               ✏️ Customised for this test
@@ -339,6 +354,23 @@ function TestQuestionItemComponent({
               <div key={si} className="test-q-sub-card">
                 <div className="test-q-sub-header">
                   <span className="test-q-sub-id">{sub.sub_id}</span>
+                  {sub.cognitive_level && (
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        color: '#1d4ed8',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
+                        borderRadius: '4px',
+                        padding: '1px 6px',
+                        alignSelf: 'center',
+                      }}
+                      title={`Bloom's Taxonomy: ${sub.cognitive_level}`}
+                    >
+                      {sub.cognitive_level}
+                    </span>
+                  )}
                   <div className="test-q-sub-text">
                     <ExamMathText content={stripDuplicateSubIdPrefix(sub.sub_id, sub.question_text)} />
                   </div>

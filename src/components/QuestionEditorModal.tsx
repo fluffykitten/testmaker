@@ -234,6 +234,15 @@ export function QuestionEditorModal({
       setSeries(question.series || 'May/June');
       setPaperNumber(question.paper_number !== undefined && question.paper_number !== null ? question.paper_number : '1');
       setDifficulty(question.difficulty || 'Medium');
+      setCognitiveLevel(
+        ((question.cognitive_level || (question.mark_scheme as any)?._cognitive_level || 'C2') as CognitiveLevel | '')
+      );
+      setSourcePdfUrl(question.source_pdf_url || (question.mark_scheme as any)?._source_pdf_url || '');
+      setPageNumber(
+        question.page_number !== undefined && question.page_number !== null
+          ? question.page_number
+          : ((question.mark_scheme as any)?._page_number ?? '')
+      );
       setTotalMarks(Number(question.marks) || 1);
       setDiagramUrl(question.diagram_url || '');
       setSvgContent(question.svg_content || extractSvgFromDiagramUrl(question.diagram_url) || null);
@@ -263,11 +272,19 @@ export function QuestionEditorModal({
       // Sanitize sub-questions to ensure all fields are safe strings/numbers
       const rawSubs = Array.isArray(question.sub_questions) ? question.sub_questions : [];
       const sanitizedSubs: SubQuestion[] = rawSubs.map((sub: any) => ({
+        ...sub,
         sub_id: String(sub?.sub_id || ''),
         question_text: typeof sub?.question_text === 'string' ? sub.question_text : (sub?.question_text ? JSON.stringify(sub.question_text) : ''),
         marks: Number(sub?.marks) || 1,
+        cognitive_level: (sub?.cognitive_level || sub?.mark_scheme?._cognitive_level || null) as CognitiveLevel | null,
         has_diagram: Boolean(sub?.diagram_url || sub?.has_diagram),
         diagram_url: sub?.diagram_url || null,
+        svg_content: sub?.svg_content || null,
+        ai_diagram_prompt: sub?.ai_diagram_prompt || null,
+        diagram_type: sub?.diagram_type || null,
+        has_embedded_values: sub?.has_embedded_values,
+        depends_on_sub_ids: sub?.depends_on_sub_ids,
+        data_tables: sub?.data_tables,
         diagram_source: sub?.diagram_source || null,
         resource_ref: sub?.resource_ref || null,
         page_number: sub?.page_number || null,
@@ -373,6 +390,9 @@ export function QuestionEditorModal({
       setPaperNumber(41);
       setQuestionStyle('Multiple Choice');
       setDifficulty('Medium');
+      setCognitiveLevel('C2');
+      setSourcePdfUrl('');
+      setPageNumber('');
       setTotalMarks(1);
       setDiagramUrl('');
       setAiDiagramPrompt('');
@@ -777,7 +797,28 @@ export function QuestionEditorModal({
     const filteredGuidance = guidanceList.filter((g) => g.trim().length > 0);
     const filteredMisconceptions = misconceptionsList.filter((m) => m.trim().length > 0);
 
+    const existingMarkSchemeMeta: Record<string, any> = {};
+    if (question?.mark_scheme && typeof question.mark_scheme === 'object') {
+      for (const [k, v] of Object.entries(question.mark_scheme)) {
+        if (k.startsWith('_')) {
+          existingMarkSchemeMeta[k] = v;
+        }
+      }
+    }
+    if (cognitiveLevel) {
+      existingMarkSchemeMeta._cognitive_level = cognitiveLevel;
+    } else {
+      delete existingMarkSchemeMeta._cognitive_level;
+    }
+    if (sourcePdfUrl.trim()) {
+      existingMarkSchemeMeta._source_pdf_url = sourcePdfUrl.trim();
+    }
+    if (pageNumber !== '') {
+      existingMarkSchemeMeta._page_number = Number(pageNumber);
+    }
+
     const markSchemePayload = {
+      ...existingMarkSchemeMeta,
       marking_points: filteredMarkingPoints.length > 0 ? filteredMarkingPoints : ['See marking criteria'],
       acceptable_answers: acceptableAnswers.filter((a) => a.trim().length > 0),
       guidance: filteredGuidance.length > 0 ? filteredGuidance : undefined,
@@ -845,6 +886,9 @@ export function QuestionEditorModal({
       topic: topic.trim() || 'General',
       sub_topic: subTopic.trim() || null,
       difficulty: difficulty,
+      cognitive_level: (cognitiveLevel as CognitiveLevel) || null,
+      source_pdf_url: sourcePdfUrl.trim() || null,
+      page_number: pageNumber !== '' ? Number(pageNumber) : null,
       marks: finalMarks,
       diagram_url: diagramUrl.trim() || null,
       svg_content: svgContent || (diagramUrl.startsWith('data:image/svg') ? extractSvgFromDiagramUrl(diagramUrl) : (question?.svg_content || null)),
@@ -936,14 +980,41 @@ export function QuestionEditorModal({
             </div>
           </div>
 
-          <button
-            type="button"
-            className="q-editor-close-btn"
-            onClick={onClose}
-            aria-label="Close editor"
-          >
-            ✕
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <label
+                htmlFor="q-header-cognitive-select"
+                style={{ fontSize: '0.78rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}
+              >
+                Main Bloom:
+              </label>
+              <select
+                id="q-header-cognitive-select"
+                className="q-editor-select"
+                style={{ padding: '4px 8px', fontSize: '0.8rem', minWidth: '148px' }}
+                value={cognitiveLevel}
+                onChange={(e) => setCognitiveLevel(e.target.value as CognitiveLevel | '')}
+                title="Main Question Bloom's Taxonomy Cognitive Level"
+              >
+                <option value="">Unassigned</option>
+                <option value="C1">C1 - Remembering</option>
+                <option value="C2">C2 - Understanding</option>
+                <option value="C3">C3 - Applying</option>
+                <option value="C4">C4 - Analyzing</option>
+                <option value="C5">C5 - Evaluating</option>
+                <option value="C6">C6 - Creating</option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              className="q-editor-close-btn"
+              onClick={onClose}
+              aria-label="Close editor"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* ─── Tabs Navigation ────────────────────────────────────────────── */}
@@ -1545,6 +1616,28 @@ export function QuestionEditorModal({
                                 value={sub.marks}
                                 onChange={(e) => handleUpdateSubQuestion(si, { marks: parseInt(e.target.value, 10) || ('' as any) })}
                               />
+                            </div>
+                            <div className="q-editor-sub-marks-wrap">
+                              <label>Bloom:</label>
+                              <select
+                                className="q-editor-select"
+                                style={{ padding: '4px 8px', fontSize: '0.8rem', minWidth: '145px' }}
+                                value={sub.cognitive_level || ''}
+                                onChange={(e) =>
+                                  handleUpdateSubQuestion(si, {
+                                    cognitive_level: (e.target.value as CognitiveLevel) || null,
+                                  })
+                                }
+                                title="Sub-question Bloom's Taxonomy Cognitive Level"
+                              >
+                                <option value="">Unassigned</option>
+                                <option value="C1">C1 - Remembering</option>
+                                <option value="C2">C2 - Understanding</option>
+                                <option value="C3">C3 - Applying</option>
+                                <option value="C4">C4 - Analyzing</option>
+                                <option value="C5">C5 - Evaluating</option>
+                                <option value="C6">C6 - Creating</option>
+                              </select>
                             </div>
                             <button
                               type="button"
@@ -2434,8 +2527,9 @@ export function QuestionEditorModal({
                     id="q-cognitive-select"
                     className="q-editor-select"
                     value={cognitiveLevel}
-                    onChange={(e) => setCognitiveLevel(e.target.value as CognitiveLevel)}
+                    onChange={(e) => setCognitiveLevel(e.target.value as CognitiveLevel | '')}
                   >
+                    <option value="">Unassigned</option>
                     <option value="C1">C1 - Remembering (Recall facts, State, Define, Name)</option>
                     <option value="C2">C2 - Understanding (Describe, Explain, Classify, Outline)</option>
                     <option value="C3">C3 - Applying (Calculate, Solve, Determine, Demonstrate)</option>

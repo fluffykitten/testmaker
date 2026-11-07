@@ -267,6 +267,23 @@ export function QuestionDetailModal({
                   <div key={si} className="modal-sub-card">
                     <div className="modal-sub-header">
                       <span className="modal-sub-id">{sub.sub_id}</span>
+                      {sub.cognitive_level && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: '#1d4ed8',
+                            background: '#eff6ff',
+                            border: '1px solid #bfdbfe',
+                            borderRadius: '4px',
+                            padding: '1px 6px',
+                            alignSelf: 'center',
+                          }}
+                          title={`Bloom's Taxonomy: ${sub.cognitive_level}`}
+                        >
+                          {sub.cognitive_level}
+                        </span>
+                      )}
                       <div className="modal-sub-text">
                         <ExamMathText content={sub.question_text} />
                       </div>

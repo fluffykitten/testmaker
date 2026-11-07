@@ -226,7 +226,7 @@ export async function saveExtractedQuestions(
       options: (q.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
       sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
         ...sub,
-        cognitive_level: sub.cognitive_level || effectiveCognitiveLevel || null,
+        cognitive_level: sub.cognitive_level || null,
         question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
         options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
         diagram_source: sub.diagram_source || null,

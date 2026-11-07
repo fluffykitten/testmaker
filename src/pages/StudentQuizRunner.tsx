@@ -58,7 +58,7 @@ import { CandidateWatermark } from '../components/CandidateWatermark';
 import {
   flushClipboard,
   detectMultiMonitor,
-  formatSessionHash,
+  getCanonicalProctorStudentId,
   requestSecureFullscreen,
   enableKeyboardLock,
   releaseKeyboardLock,
@@ -480,7 +480,7 @@ export function StudentQuizRunner({
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
   const submitExamRef = useRef<() => void>(() => { });
-  const sendCurrentHeartbeatRef = useRef<() => void>(() => { });
+  const sendCurrentHeartbeatRef = useRef<(fullSync?: boolean) => void>(() => { });
 
   // Debounced session autosave: serialize at most once per quiet period, plus an
   // immediate flush when the tab is hidden (mobile browsers may kill it there).
@@ -551,8 +551,13 @@ export function StudentQuizRunner({
   }, []);
 
   const sessionHash = useMemo(() => {
-    return formatSessionHash(`${candidateName}_${candidateNumber}_${resolvedQuizCode}_${startTime}`);
-  }, [candidateName, candidateNumber, resolvedQuizCode, startTime]);
+    return getCanonicalProctorStudentId({
+      quizCode: resolvedQuizCode,
+      studentName: candidateName,
+      candidateNumber,
+      studentClass: candidateClass,
+    });
+  }, [candidateName, candidateNumber, resolvedQuizCode, candidateClass]);
 
   // Diagram Zoom
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
@@ -1317,7 +1322,7 @@ export function StudentQuizRunner({
         // Distribute response bursts across 100ms - 2500ms to protect Supabase message rate limit
         const jitterMs = Math.floor(Math.random() * 2400) + 100;
         setTimeout(() => {
-          sendCurrentHeartbeatRef.current();
+          sendCurrentHeartbeatRef.current(true);
         }, jitterMs);
       },
     });
@@ -1360,7 +1365,7 @@ export function StudentQuizRunner({
     };
   });
 
-  const sendCurrentHeartbeat = useCallback(() => {
+  const sendCurrentHeartbeat = useCallback((fullSync = false) => {
     if (!hasStarted || !resolvedQuizCode) return;
     const s = latestStateForHeartbeat.current;
     const isSubmittingOrFinished = s.isSubmitted || s.isGrading || s.isSubmitting;
@@ -1374,6 +1379,7 @@ export function StudentQuizRunner({
           : 'active';
 
     const isExceeded = s.maxViolations > 0 && s.violations.length >= s.maxViolations;
+    const violationsList = fullSync ? s.violations : s.violations.slice(-5);
 
     sendStudentHeartbeat({
       studentId: sessionHash,
@@ -1395,7 +1401,7 @@ export function StudentQuizRunner({
       maxViolations: s.maxViolations,
       quizCode: resolvedQuizCode,
       quizTitle: title,
-      recentViolations: s.violations.map((v) => ({
+      recentViolations: violationsList.map((v) => ({
         timestamp: v.timestamp,
         detail: v.detail,
         type: v.type,
@@ -1582,8 +1588,9 @@ export function StudentQuizRunner({
       // question reordering or deletion.
       answersByQuestionId: buildAnswersByQuestionId(questions, answers),
       exceededMaxViolations: maxViolations > 0 && violations.length >= maxViolations,
+      proctorStudentId: sessionHash,
     };
-  }, [questions, answers, maxViolations, violations.length]);
+  }, [questions, answers, maxViolations, violations.length, sessionHash]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {

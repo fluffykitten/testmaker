@@ -1176,7 +1176,7 @@ export function normalizeQuestionRecord(q: any): Question {
   const normalizedSubs = Array.isArray(q.sub_questions)
     ? q.sub_questions.map((sub: any) => ({
         ...sub,
-        cognitive_level: sub.cognitive_level || sub.mark_scheme?._cognitive_level || cognitiveLevel || null,
+        cognitive_level: sub.cognitive_level || sub.mark_scheme?._cognitive_level || null,
         svg_content: sub.svg_content || extractSvgFromDiagramUrl(sub.diagram_url) || null,
         ai_diagram_prompt: sub.ai_diagram_prompt || sub.mark_scheme?._ai_diagram_prompt || null,
       }))
@@ -1220,6 +1220,7 @@ export async function updateQuestion(
   if (Array.isArray(payload.sub_questions)) {
     payload.sub_questions = payload.sub_questions.map((sub: any) => ({
       ...sub,
+      cognitive_level: sub.cognitive_level || null,
       diagram_url:
         sub.diagram_url ||
         (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
@@ -1260,7 +1261,11 @@ export async function updateQuestion(
     if (payload.has_embedded_values !== undefined) baseMarkScheme._has_embedded_values = payload.has_embedded_values;
     if (payload.data_tables) baseMarkScheme._data_tables = payload.data_tables;
     if (payload.scratchpad) baseMarkScheme._scratchpad = payload.scratchpad;
-    if (payload.cognitive_level) baseMarkScheme._cognitive_level = payload.cognitive_level;
+    if (payload.cognitive_level) {
+      baseMarkScheme._cognitive_level = payload.cognitive_level;
+    } else if (payload.cognitive_level === null) {
+      delete baseMarkScheme._cognitive_level;
+    }
     if (payload.source_pdf_url) baseMarkScheme._source_pdf_url = payload.source_pdf_url;
     if (payload.page_number !== undefined) baseMarkScheme._page_number = payload.page_number;
 
@@ -1398,6 +1403,15 @@ export async function createQuestion(
   if ((questionData as any).ai_diagram_prompt && baseMarkScheme) {
     (baseMarkScheme as any)._ai_diagram_prompt = (questionData as any).ai_diagram_prompt;
   }
+  if (questionData.cognitive_level && baseMarkScheme) {
+    (baseMarkScheme as any)._cognitive_level = questionData.cognitive_level;
+  }
+  if (questionData.source_pdf_url && baseMarkScheme) {
+    (baseMarkScheme as any)._source_pdf_url = questionData.source_pdf_url;
+  }
+  if (questionData.page_number !== undefined && questionData.page_number !== null && baseMarkScheme) {
+    (baseMarkScheme as any)._page_number = questionData.page_number;
+  }
 
   const payload: any = {
     syllabus_id: validSyllabusId,
@@ -1431,6 +1445,7 @@ export async function createQuestion(
     sub_questions: Array.isArray(questionData.sub_questions)
       ? questionData.sub_questions.map((sub: any) => ({
           ...sub,
+          cognitive_level: sub.cognitive_level || null,
           diagram_url:
             sub.diagram_url ||
             (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),

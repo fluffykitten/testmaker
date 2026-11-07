@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.3.5",
+  "version": "2.3.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,8 @@
     "verify:phase4": "node scripts/verify-phase4.mjs",
     "test:gforms": "node --import ./scripts/register-ts.mjs scripts/test-gforms-phase1.mjs && node --import ./scripts/register-ts.mjs scripts/test-gforms-phase234.mjs",
     "test:gestures": "node --import ./scripts/register-ts.mjs scripts/test-exam-gestures.mjs",
+    "test:blooms": "node --import ./scripts/register-ts.mjs scripts/test-blooms-parity.mjs",
+    "test:sorting": "node --import ./scripts/register-ts.mjs scripts/test-builder-sorting.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",
     "deploy:draft": "npm run build && npx netlify deploy --dir=dist",

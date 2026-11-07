@@ -1,5 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { Question, Syllabus } from '../types/database';
+import {
+  TEST_SORT_PRESETS,
+  sortTestBuilderQuestions,
+  getSortPresetMeta,
+  type TestSortPreset,
+} from '../utils/testSortingUtils';
 import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import {
   saveCustomTest,
@@ -225,6 +231,36 @@ export function TestBuilderPage({
   const [variantQuestion, setVariantQuestion] = useState<Question | null>(null);
   const [isAssemblerOpen, setIsAssemblerOpen] = useState(false);
   const [isBatchAudioModalOpen, setIsBatchAudioModalOpen] = useState(false);
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
+  const [undoSortSnapshot, setUndoSortSnapshot] = useState<Question[] | null>(null);
+  const [undoSortLabel, setUndoSortLabel] = useState<string | null>(null);
+  const sortDropdownRef = useRef<HTMLDivElement>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Close sort dropdown on click-outside or Escape key
+  useEffect(() => {
+    if (!isSortMenuOpen) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target as Node)) {
+        setIsSortMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsSortMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSortMenuOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
 
   // Load syllabuses from Supabase
   useEffect(() => {
@@ -355,6 +391,35 @@ export function TestBuilderPage({
     next[index + 1] = temp;
     setQuestions(next);
     onUpdateQuestions?.(next);
+  };
+
+  const handleApplySort = (preset: TestSortPreset) => {
+    setIsSortMenuOpen(false);
+    if (questions.length <= 1) return;
+
+    const previousSnapshot = [...questions];
+    const sorted = sortTestBuilderQuestions(questions, preset);
+    const meta = getSortPresetMeta(preset);
+
+    setUndoSortSnapshot(previousSnapshot);
+    setUndoSortLabel(meta.shortLabel);
+    setQuestions(sorted);
+    onUpdateQuestions?.(sorted);
+
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => {
+      setUndoSortSnapshot(null);
+      setUndoSortLabel(null);
+    }, 6000);
+  };
+
+  const handleUndoSort = () => {
+    if (!undoSortSnapshot) return;
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setQuestions(undoSortSnapshot);
+    onUpdateQuestions?.(undoSortSnapshot);
+    setUndoSortSnapshot(null);
+    setUndoSortLabel(null);
   };
 
   const handleRemove = (qid: string) => {
@@ -591,10 +656,78 @@ export function TestBuilderPage({
                     <h3 className="builder-section-title">
                       Exam Questions ({questions.length} items • {totalMarks} marks)
                     </h3>
-                    <span className="builder-section-hint">
-                      Use ▲ ▼ to reorder questions
-                    </span>
+
+                    <div className="builder-section-header-right">
+                      <span className="builder-section-hint">
+                        Use ▲ ▼ to reorder questions
+                      </span>
+
+                      <div className="builder-sort-dropdown-wrap" ref={sortDropdownRef}>
+                        <button
+                          type="button"
+                          className="builder-sort-trigger-btn"
+                          onClick={() => setIsSortMenuOpen((prev) => !prev)}
+                          disabled={questions.length <= 1}
+                          aria-expanded={isSortMenuOpen}
+                          aria-haspopup="menu"
+                          title="Sort exam questions by Topic, Difficulty, or Randomize"
+                        >
+                          <span>⇅ Sort Questions</span>
+                          <span style={{ fontSize: '0.7rem', opacity: 0.75 }}>{isSortMenuOpen ? '▴' : '▾'}</span>
+                        </button>
+
+                        {isSortMenuOpen && (
+                          <div className="builder-sort-menu animate-scale-up" role="menu">
+                            <div className="builder-sort-menu-header">
+                              Sort Order (MCQ First • Essays Second)
+                            </div>
+                            {TEST_SORT_PRESETS.map((preset) => (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                className="builder-sort-option"
+                                role="menuitem"
+                                onClick={() => handleApplySort(preset.id)}
+                              >
+                                <span className="builder-sort-option-icon">{preset.icon}</span>
+                                <span className="builder-sort-option-body">
+                                  <span className="builder-sort-option-label">{preset.label}</span>
+                                  <span className="builder-sort-option-desc">{preset.description}</span>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
+
+                  {undoSortSnapshot && (
+                    <div className="builder-undo-sort-banner animate-fade-in">
+                      <span>✓ Questions sorted by {undoSortLabel}.</span>
+                      <div className="builder-undo-sort-actions">
+                        <button
+                          type="button"
+                          className="builder-undo-sort-btn"
+                          onClick={handleUndoSort}
+                        >
+                          ↩ Undo
+                        </button>
+                        <button
+                          type="button"
+                          className="builder-undo-sort-dismiss"
+                          onClick={() => {
+                            if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+                            setUndoSortSnapshot(null);
+                            setUndoSortLabel(null);
+                          }}
+                          aria-label="Dismiss sort notification"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="builder-questions-list">
                     {questions.map((q, idx) => (

@@ -241,6 +241,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 0 4px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .builder-section-title {
@@ -250,9 +252,171 @@
   margin: 0;
 }
 
+.builder-section-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .builder-section-hint {
   font-size: 0.8125rem;
   color: var(--color-text-tertiary);
+}
+
+/* Sort Questions Dropdown */
+.builder-sort-dropdown-wrap {
+  position: relative;
+}
+
+.builder-sort-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.04));
+}
+
+.builder-sort-trigger-btn:hover:not(:disabled) {
+  border-color: var(--color-primary-400, #818cf8);
+  background: var(--color-surface-hover, #f8fafc);
+}
+
+.builder-sort-trigger-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.builder-sort-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 280px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 10px -2px rgba(15, 23, 42, 0.06);
+  padding: 6px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.builder-sort-menu-header {
+  padding: 6px 10px 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary, #64748b);
+  border-bottom: 1px solid var(--color-border, #f1f5f9);
+  margin-bottom: 2px;
+}
+
+.builder-sort-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md, 6px);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.builder-sort-option:hover {
+  background: var(--color-surface-hover, #f1f5f9);
+}
+
+.builder-sort-option-icon {
+  font-size: 0.95rem;
+  line-height: 1.25;
+  flex-shrink: 0;
+}
+
+.builder-sort-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.builder-sort-option-label {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.builder-sort-option-desc {
+  font-size: 0.72rem;
+  line-height: 1.3;
+  color: var(--color-text-tertiary, #64748b);
+}
+
+/* Undo Sort Toast Banner */
+.builder-undo-sort-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-lg, 8px);
+  color: #1e40af;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.builder-undo-sort-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.builder-undo-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #ffffff;
+  border: 1px solid #93c5fd;
+  border-radius: var(--radius-md, 6px);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.builder-undo-sort-btn:hover {
+  background: #dbeafe;
+  border-color: #60a5fa;
+}
+
+.builder-undo-sort-dismiss {
+  background: transparent;
+  border: none;
+  color: #3b82f6;
+  font-size: 0.85rem;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.builder-undo-sort-dismiss:hover {
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .builder-questions-list {

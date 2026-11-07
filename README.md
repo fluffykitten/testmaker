@@ -167,6 +167,22 @@ npm run mobile:ios
 
 ## 📜 Changelog
 
+### [v.2.3.6] — Bloom's Taxonomy Parity, Test Builder Question Sorting & Proctor Finalization
+- **Bloom's Taxonomy Parity & Persistence**:
+  - Unified Bloom's taxonomy (C1–C6) editing and persistence across Question Bank (`QuestionDetailModal`), Test Builder (`TestQuestionItem`), and Paper Extraction (`ExtractionReview`, `QuestionEditorModal`).
+  - Enabled independent editing for sub-questions without cascading to siblings or overwriting main question levels.
+  - Added deterministic unit verification suite `scripts/test-blooms-parity.mjs` (21/21 passed).
+- **Test Builder Question Sorting & Section A/B Preservation**:
+  - Added question sorting toolbar with 5 presets: Difficulty (Easy → Hard, Hard → Easy), Topic (A → Z), Topic + Difficulty, and Original Order.
+  - Strictly preserves Cambridge paper architecture: Section A (MCQs) always precedes Section B (Structured & Essay questions) across all sorting modes.
+  - Integrated quick Undo banner toast to instantly restore the previous question order.
+  - Added deterministic sorting test suite `scripts/test-builder-sorting.mjs` (11/11 passed).
+- **Live Proctoring & Exam Mode Runner Finalization**:
+  - Wired canonical candidate identity (`getCanonicalProctorStudentId`) in `StudentQuizRunner.tsx` and attached `proctorStudentId` to `ExamForensics`, guaranteeing single-row cockpit identity across reloads (`P1-B`).
+  - Configured bounded heartbeat payloads with 5-violation history window on routine beats and full history on sync/submission (`P3-2`).
+  - Verified proctor hardening test suite `test-proctor-p1-p2-p3.mjs` (48/48 passed).
+  - Formulated comprehensive multi-class proctoring and exam submission test plan in `Plan/proctor_and_exam_mode_testing_plan.md`.
+
 ### [v.2.3.5] — Cambridge IGCSE Geography, IGCSE Economics & Proctor/Submission Hardening
 - **Cambridge IGCSE Geography (`0460`) Support**:
   - Registered syllabus `0460` profile in `subjectClassifier.ts` with insert booklet by default, optional-choice paper rules, and standard total marks (Paper 1: 75 marks, Paper 2: 60 marks).
