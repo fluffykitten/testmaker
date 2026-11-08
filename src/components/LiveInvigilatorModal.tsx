@@ -8,7 +8,12 @@ import {
   type ProctorLogEvent,
   type StudentExamStatus,
 } from '../services/examProctorRealtimeService';
-import { getSubmissionsForQuiz, loadAndSyncAllSubmissions } from '../services/quizSubmissionService';
+import {
+  getSubmissionsForQuiz,
+  loadAndSyncAllSubmissions,
+  ingestEmergencySubmissionBatch,
+  type BatchEmergencyIngestionSummary,
+} from '../services/quizSubmissionService';
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
 import { clampTelemetry, highWaterViolations } from '../lib/proctorGuards';
 import { recordProctorAuditEvent, loadProctorAuditEvents } from '../services/proctorAuditLogService';
@@ -93,6 +98,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
   const [showLogDrawer, setShowLogDrawer] = useState(false);
+
+  // ─── Air-Gapped Emergency Offline Paper Ingestion State ────────────────────
+  const [showEmergencyIngestModal, setShowEmergencyIngestModal] = useState(false);
+  const [isIngestingEmergency, setIsIngestingEmergency] = useState(false);
+  const [isDragOverEmergency, setIsDragOverEmergency] = useState(false);
+  const [emergencyIngestionSummary, setEmergencyIngestionSummary] =
+    useState<BatchEmergencyIngestionSummary | null>(null);
+  const emergencyFileInputRef = useRef<HTMLInputElement>(null);
 
   // ─── Monitored Quizzes Directory ───────────────────────────────────────────
   const quizByCode = useMemo(() => {
@@ -1145,6 +1158,109 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     }, 1200);
   };
 
+  // Batch Ingest Emergency Offline Papers (.exam) directly into the Live Cockpit
+  const handleEmergencyFilesIngest = useCallback(
+    async (fileList: FileList | File[]) => {
+      const filesArray = Array.from(fileList);
+      if (filesArray.length === 0) return;
+
+      setIsIngestingEmergency(true);
+      setEmergencyIngestionSummary(null);
+
+      try {
+        const loadedFiles = await Promise.all(
+          filesArray.map(
+            (file) =>
+              new Promise<{ fileName: string; content: string }>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                  resolve({
+                    fileName: file.name,
+                    content: (evt.target?.result as string) || '',
+                  });
+                };
+                reader.onerror = () => {
+                  resolve({ fileName: file.name, content: '' });
+                };
+                reader.readAsText(file);
+              })
+          )
+        );
+
+        const allowedCodes = monitoredQuizzes
+          .map((q) => (q.quizCode || '').trim().toUpperCase())
+          .filter(Boolean);
+
+        const summary = await ingestEmergencySubmissionBatch(loadedFiles, {
+          allowedQuizCodes: allowedCodes,
+        });
+
+        setEmergencyIngestionSummary(summary);
+
+        // Immediately reconcile cockpit student cards for every newly ingested or updated paper
+        const ingestedSubmissions = summary.results
+          .filter((r) => (r.status === 'inserted' || r.status === 'updated') && r.submission)
+          .map((r) => r.submission!);
+
+        if (ingestedSubmissions.length > 0) {
+          setStudents((prev) => {
+            const next = { ...prev };
+            ingestedSubmissions.forEach((sub) => {
+              const qCode = (sub.quizCode || '').trim().toUpperCase();
+              const quizMeta = quizByCode[qCode];
+              const canonicalId =
+                sub.forensics?.proctorStudentId ||
+                getCanonicalProctorStudentId({
+                  quizCode: qCode,
+                  studentName: sub.studentName,
+                  candidateNumber: sub.candidateNumber,
+                  studentClass: sub.studentClass,
+                });
+              const compKey = `${qCode}::${canonicalId}`;
+              const existing = next[compKey];
+
+              next[compKey] = {
+                studentId: canonicalId,
+                studentName: sub.studentName,
+                candidateNumber: sub.candidateNumber || existing?.candidateNumber || '',
+                candidateClass: sub.studentClass || existing?.candidateClass || '',
+                status: 'submitted',
+                answeredCount: sub.questionResults?.length || quizMeta?.questionCount || existing?.answeredCount || 0,
+                totalQuestions: quizMeta?.questionCount || sub.questionResults?.length || existing?.totalQuestions || 0,
+                currentIndex: quizMeta?.questionCount || existing?.currentIndex || 1,
+                timeLeftSeconds: 0,
+                violationsCount: sub.violationsCount || existing?.violationsCount || 0,
+                multiMonitorDetected: false,
+                deviceOS: existing?.deviceOS || 'Emergency File (.exam)',
+                lastHeartbeat: Date.now(),
+                exceededMaxViolations: Boolean(sub.forensics?.exceededMaxViolations),
+                quizCode: qCode,
+                quizTitle: quizMeta?.title || sub.quizTitle,
+              };
+            });
+            return next;
+          });
+
+          setLogEvents((prev) => [
+            ...ingestedSubmissions.map((sub) => ({
+              id: `evt-emerg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              studentName: sub.studentName,
+              quizCode: sub.quizCode,
+              type: 'submitted' as const,
+              detail: `📥 Emergency offline paper (.exam) decrypted and ingested`,
+              severity: 'info' as const,
+            })),
+            ...prev,
+          ]);
+        }
+      } finally {
+        setIsIngestingEmergency(false);
+      }
+    },
+    [monitoredQuizzes, quizByCode]
+  );
+
   const formatClock = (seconds: number) => {
     if (seconds <= 0) return '00:00';
     const mins = Math.floor(seconds / 60);
@@ -1235,6 +1351,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           </div>
 
           <div className="lip-header-actions">
+            <button
+              type="button"
+              className="lip-btn-log-toggle"
+              style={{
+                background: 'rgba(16, 185, 129, 0.14)',
+                borderColor: 'rgba(16, 185, 129, 0.4)',
+                color: '#34d399',
+              }}
+              onClick={() => {
+                setEmergencyIngestionSummary(null);
+                setShowEmergencyIngestModal(true);
+              }}
+              title="Batch ingest encrypted .exam emergency files collected via USB or device file transfer"
+            >
+              📥 Ingest Emergency Papers
+            </button>
             <button
               type="button"
               className={`lip-btn-log-toggle ${showLogDrawer ? 'lip-btn-log-toggle--active' : ''}`}
@@ -1994,6 +2126,164 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Air-Gapped Emergency Offline Paper Batch Ingestion Modal */}
+        {showEmergencyIngestModal && (
+          <div
+            className="lip-announcement-dialog animate-fade-in"
+            role="dialog"
+            onClick={() => setShowEmergencyIngestModal(false)}
+          >
+            <div
+              className="lip-announcement-card"
+              style={{ maxWidth: '640px', width: '100%' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <h3 style={{ margin: 0 }}>📥 Ingest Emergency Offline Papers (.exam)</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowEmergencyIngestModal(false)}
+                  style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '1.1rem', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
+              <p style={{ marginBottom: '14px' }}>
+                Drop one or multiple AES-256-GCM encrypted <code>.exam</code> files collected from candidates in{' '}
+                <strong>{scopeLabel}</strong>. Ingested candidates immediately transition to <strong>SUBMITTED</strong> on the live roster.
+              </p>
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragOverEmergency(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragOverEmergency(false);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragOverEmergency(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleEmergencyFilesIngest(e.dataTransfer.files);
+                  }
+                }}
+                style={{
+                  border: isDragOverEmergency
+                    ? '2px dashed #10b981'
+                    : '2px dashed rgba(255, 255, 255, 0.25)',
+                  borderRadius: '14px',
+                  padding: '24px 18px',
+                  textAlign: 'center',
+                  marginBottom: '16px',
+                  background: isDragOverEmergency
+                    ? 'rgba(16, 185, 129, 0.1)'
+                    : 'rgba(255, 255, 255, 0.03)',
+                }}
+              >
+                <input
+                  ref={emergencyFileInputRef}
+                  type="file"
+                  multiple
+                  accept=".exam,.json"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      handleEmergencyFilesIngest(e.target.files);
+                    }
+                    e.target.value = '';
+                  }}
+                  style={{ display: 'none' }}
+                />
+                <div style={{ fontSize: '1.85rem', marginBottom: '6px' }}>
+                  {isIngestingEmergency ? '⏳' : isDragOverEmergency ? '📂' : '🛡️'}
+                </div>
+                <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#f8fafc', marginBottom: '10px' }}>
+                  {isIngestingEmergency
+                    ? 'Decrypting & reconciling candidate papers...'
+                    : 'Drag & drop .exam files here from USB drive'}
+                </div>
+                <button
+                  type="button"
+                  disabled={isIngestingEmergency}
+                  onClick={() => emergencyFileInputRef.current?.click()}
+                  style={{
+                    background: '#10b981',
+                    color: '#ffffff',
+                    border: 'none',
+                    padding: '9px 18px',
+                    borderRadius: '8px',
+                    fontWeight: 700,
+                    fontSize: '0.84rem',
+                    cursor: isIngestingEmergency ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  📁 Select .exam Files (Batch Supported)
+                </button>
+              </div>
+
+              {emergencyIngestionSummary && (
+                <div
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.75)',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    borderRadius: '10px',
+                    padding: '12px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '0.78rem', fontWeight: 700, marginBottom: '8px' }}>
+                    <span style={{ color: '#94a3b8' }}>Total: {emergencyIngestionSummary.totalFiles}</span>
+                    <span style={{ color: '#22c55e' }}>✅ New: {emergencyIngestionSummary.insertedCount}</span>
+                    <span style={{ color: '#38bdf8' }}>🔄 Updated: {emergencyIngestionSummary.updatedCount}</span>
+                    <span style={{ color: '#f59e0b' }}>⏭️ Skipped (Older): {emergencyIngestionSummary.skippedOlderCount}</span>
+                    {emergencyIngestionSummary.failedCount > 0 && (
+                      <span style={{ color: '#ef4444' }}>❌ Failed: {emergencyIngestionSummary.failedCount}</span>
+                    )}
+                  </div>
+                  <div style={{ maxHeight: '160px', overflowY: 'auto', fontSize: '0.76rem' }}>
+                    {emergencyIngestionSummary.results.map((r, idx) => (
+                      <div
+                        key={`${r.fileName}_${idx}`}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          padding: '5px 4px',
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                        }}
+                      >
+                        <span>
+                          <strong>{r.studentName || r.fileName}</strong>
+                          {r.candidateNumber ? ` (#${r.candidateNumber})` : ''}
+                        </span>
+                        <span>
+                          {r.status === 'inserted' && <span style={{ color: '#22c55e' }}>✅ Submitted</span>}
+                          {r.status === 'updated' && <span style={{ color: '#38bdf8' }}>🔄 Updated</span>}
+                          {r.status === 'skipped_older' && <span style={{ color: '#f59e0b' }}>⏭️ Skipped (Older)</span>}
+                          {r.status === 'failed' && <span style={{ color: '#ef4444' }}>❌ {r.error}</span>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="lip-announcement-actions">
+                <button
+                  type="button"
+                  className="lip-btn-cancel"
+                  onClick={() => setShowEmergencyIngestModal(false)}
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         )}

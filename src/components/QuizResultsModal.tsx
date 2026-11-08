@@ -10,6 +10,7 @@ import {
   clearSubmissionsForQuiz,
   updateSubmission,
   importSubmissionToken,
+  ingestEmergencySubmissionBatch,
   exportAllSubmissionsExcel,
   exportSingleSubmissionExcel,
   formatProctorTimestamp,
@@ -17,6 +18,7 @@ import {
   formatCandidateAnswer,
   type StudentSubmission,
   type QuestionSubmissionResult,
+  type BatchEmergencyIngestionSummary,
 } from '../services/quizSubmissionService';
 import { fetchQuestionsByIds } from '../services/quizCodeService';
 import { fetchCustomTestWithQuestions } from '../services/testBuilderService';
@@ -101,12 +103,15 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   // Live Connection State
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(true);
 
-  // Manual Paper Import State
+  // Manual / Batch Emergency Paper Import State
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [importTokenInput, setImportTokenInput] = useState<string>('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState<boolean>(false);
+  const [isDragOverDropzone, setIsDragOverDropzone] = useState<boolean>(false);
+  const [batchIngestionSummary, setBatchIngestionSummary] =
+    useState<BatchEmergencyIngestionSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importModalDismiss = useBackdropDismiss(() => setIsImportModalOpen(false));
 
@@ -222,18 +227,21 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setIsImporting(true);
     setImportError(null);
     setImportSuccessMsg(null);
+    setBatchIngestionSummary(null);
     try {
-      const res = await importSubmissionToken(clean);
+      const res = await importSubmissionToken(clean, quiz.quizCode);
       if (res.success && res.submission) {
-        setImportSuccessMsg(
-          `✅ Successfully imported paper for candidate: ${res.submission.studentName} (${res.submission.score}/${res.submission.totalMarks} marks)!`
-        );
+        if (res.status === 'skipped_older') {
+          setImportSuccessMsg(
+            `⏭️ Skipped older offline file for ${res.submission.studentName} — newer cloud record preserved.`
+          );
+        } else {
+          setImportSuccessMsg(
+            `✅ Successfully ${res.status === 'updated' ? 'updated' : 'imported'} paper for candidate: ${res.submission.studentName} (${res.submission.score}/${res.submission.totalMarks} marks)!`
+          );
+        }
         setImportTokenInput('');
         await refreshSubmissions();
-        setTimeout(() => {
-          setIsImportModalOpen(false);
-          setImportSuccessMsg(null);
-        }, 1800);
       } else {
         setImportError(res.error || 'Failed to import exam submission.');
       }
@@ -244,17 +252,67 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const text = evt.target?.result as string;
-      if (text) {
-        handleImportSubmit(text);
+  const handleBatchFilesProcess = async (fileList: FileList | File[]) => {
+    const filesArray = Array.from(fileList);
+    if (filesArray.length === 0) return;
+
+    setIsImporting(true);
+    setImportError(null);
+    setImportSuccessMsg(null);
+    setBatchIngestionSummary(null);
+
+    try {
+      const loadedFiles = await Promise.all(
+        filesArray.map(
+          (file) =>
+            new Promise<{ fileName: string; content: string }>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (evt) => {
+                resolve({
+                  fileName: file.name,
+                  content: (evt.target?.result as string) || '',
+                });
+              };
+              reader.onerror = () => {
+                resolve({ fileName: file.name, content: '' });
+              };
+              reader.readAsText(file);
+            })
+        )
+      );
+
+      const summary = await ingestEmergencySubmissionBatch(loadedFiles, {
+        expectedQuizCode: quiz.quizCode,
+        existingSubmissions: submissions,
+      });
+
+      setBatchIngestionSummary(summary);
+      await refreshSubmissions();
+
+      if (summary.failedCount === 0) {
+        setImportSuccessMsg(
+          `✅ Batch ingestion complete: ${summary.insertedCount} new, ${summary.updatedCount} updated, ${summary.skippedOlderCount} skipped (newer in cloud).`
+        );
+      } else if (summary.insertedCount + summary.updatedCount > 0) {
+        setImportSuccessMsg(
+          `⚠️ Partial batch ingestion: ${summary.insertedCount + summary.updatedCount} succeeded, ${summary.failedCount} failed verification.`
+        );
+      } else {
+        setImportError(
+          `❌ All ${summary.failedCount} file(s) failed AES-GCM verification or belonged to a different exam.`
+        );
       }
-    };
-    reader.readAsText(file);
+    } catch (err: any) {
+      setImportError(err?.message || 'Batch emergency file ingestion failed.');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleBatchFilesProcess(e.target.files);
+    }
     e.target.value = '';
   };
 
@@ -1522,6 +1580,22 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                           <span className={`qrm-sc-status ${sub.status || 'submitted'}`}>
                             {sub.status === 'published' ? 'Released' : sub.status === 'graded' ? 'Graded' : 'Awaiting AI'}
                           </span>
+                          {sub.forensics?.ingestionSource === 'emergency_offline' && (
+                            <span
+                              style={{
+                                fontSize: '0.68rem',
+                                fontWeight: 700,
+                                padding: '2px 6px',
+                                borderRadius: '6px',
+                                background: 'rgba(16, 185, 129, 0.16)',
+                                color: '#34d399',
+                                border: '1px solid rgba(16, 185, 129, 0.35)',
+                              }}
+                              title={`Emergency offline package ingested at ${sub.forensics?.ingestedAt || 'hand-in'}`}
+                            >
+                              📥 Offline Ingested
+                            </span>
+                          )}
                           {!isClean && (
                             <span className="qrm-sc-strike-tag" title={`${sub.violationsCount} security strike(s)`}>
                               ⚠️ {sub.violationsCount} Strike{sub.violationsCount !== 1 ? 's' : ''}
@@ -2401,16 +2475,18 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               background: '#0f172a',
               border: '1px solid rgba(255, 255, 255, 0.15)',
               borderRadius: '16px',
-              maxWidth: '560px',
+              maxWidth: '680px',
               width: '100%',
+              maxHeight: '88vh',
+              overflowY: 'auto',
               padding: '24px',
               boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
               color: '#f8fafc',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>📥</span> Import Student Exam Submission
+                <span>📥</span> Batch Ingest Emergency Offline Papers (.exam)
               </h3>
               <button
                 type="button"
@@ -2421,30 +2497,63 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               </button>
             </div>
 
-            <p style={{ fontSize: '0.875rem', color: '#94a3b8', marginTop: 0, marginBottom: '16px', lineHeight: 1.5 }}>
-              Recover or manually upload candidate papers saved offline on student laptops or tablets.
+            <p style={{ fontSize: '0.84rem', color: '#94a3b8', marginTop: 0, marginBottom: '16px', lineHeight: 1.5 }}>
+              Drag and drop one or multiple <strong>AES-256-GCM encrypted <code>.exam</code></strong> files collected via USB or device file transfer. Conflict resolution automatically applies <strong>Newest Timestamp Wins</strong>.
             </p>
 
-            {/* Option 1: File Upload */}
+            {/* Option 1: Multi-File Batch Drag & Drop Zone */}
             <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragOverDropzone(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragOverDropzone(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragOverDropzone(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  handleBatchFilesProcess(e.dataTransfer.files);
+                }
+              }}
               style={{
-                border: '2px dashed rgba(255, 255, 255, 0.2)',
-                borderRadius: '12px',
-                padding: '20px',
+                border: isDragOverDropzone
+                  ? '2px dashed #10b981'
+                  : '2px dashed rgba(255, 255, 255, 0.25)',
+                borderRadius: '14px',
+                padding: '24px 20px',
                 textAlign: 'center',
                 marginBottom: '16px',
-                background: 'rgba(255, 255, 255, 0.03)',
+                background: isDragOverDropzone
+                  ? 'rgba(16, 185, 129, 0.1)'
+                  : 'rgba(255, 255, 255, 0.03)',
+                transition: 'all 0.15s ease',
               }}
             >
               <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 accept=".exam,.json"
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
               />
+              <div style={{ fontSize: '2rem', marginBottom: '8px' }}>
+                {isImporting ? '⏳' : isDragOverDropzone ? '📂' : '🛡️'}
+              </div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#f1f5f9', marginBottom: '8px' }}>
+                {isImporting
+                  ? 'Decrypting & verifying emergency packages...'
+                  : 'Drag & drop multiple .exam files here'}
+              </div>
               <button
                 type="button"
+                disabled={isImporting}
                 onClick={() => fileInputRef.current?.click()}
                 style={{
                   background: '#3b82f6',
@@ -2454,29 +2563,114 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   borderRadius: '8px',
                   fontWeight: 700,
                   fontSize: '0.875rem',
-                  cursor: 'pointer',
+                  cursor: isImporting ? 'not-allowed' : 'pointer',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '8px',
                 }}
               >
-                📁 Select .exam or .json File
+                📁 Select .exam Files (Batch Supported)
               </button>
               <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '8px' }}>
-                Uploads backup file downloaded by candidate upon exam completion
+                Verifies AES-GCM authentication tags &bull; Syncs directly to Supabase cloud
               </div>
             </div>
 
+            {/* Batch Ingestion Results & Audit Table */}
+            {batchIngestionSummary && (
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.65)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  borderRadius: '12px',
+                  padding: '14px',
+                  marginBottom: '16px',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    marginBottom: '12px',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  <span style={{ color: '#94a3b8' }}>
+                    Files Processed: <strong style={{ color: '#fff' }}>{batchIngestionSummary.totalFiles}</strong>
+                  </span>
+                  <span style={{ color: '#22c55e' }}>
+                    ✅ New: {batchIngestionSummary.insertedCount}
+                  </span>
+                  <span style={{ color: '#38bdf8' }}>
+                    🔄 Updated: {batchIngestionSummary.updatedCount}
+                  </span>
+                  <span style={{ color: '#f59e0b' }}>
+                    ⏭️ Skipped (Older): {batchIngestionSummary.skippedOlderCount}
+                  </span>
+                  {batchIngestionSummary.failedCount > 0 && (
+                    <span style={{ color: '#ef4444' }}>
+                      ❌ Failed: {batchIngestionSummary.failedCount}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)', textAlign: 'left', color: '#94a3b8' }}>
+                        <th style={{ padding: '6px 8px' }}>Candidate</th>
+                        <th style={{ padding: '6px 8px' }}>File</th>
+                        <th style={{ padding: '6px 8px' }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchIngestionSummary.results.map((r, idx) => (
+                        <tr key={`${r.fileName}_${idx}`} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                          <td style={{ padding: '6px 8px', fontWeight: 600 }}>
+                            {r.studentName || 'Unknown'}
+                            {r.candidateNumber ? ` (#${r.candidateNumber})` : ''}
+                          </td>
+                          <td style={{ padding: '6px 8px', color: '#94a3b8', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                            {r.fileName}
+                          </td>
+                          <td style={{ padding: '6px 8px' }}>
+                            {r.status === 'inserted' && (
+                              <span style={{ color: '#22c55e', fontWeight: 700 }}>✅ Valid New Paper</span>
+                            )}
+                            {r.status === 'updated' && (
+                              <span style={{ color: '#38bdf8', fontWeight: 700 }}>🔄 Updated (Newer than Cloud)</span>
+                            )}
+                            {r.status === 'skipped_older' && (
+                              <span style={{ color: '#f59e0b', fontWeight: 700 }} title={r.reason}>
+                                ⏭️ Skipped (Older than Cloud)
+                              </span>
+                            )}
+                            {r.status === 'failed' && (
+                              <span style={{ color: '#ef4444', fontWeight: 700 }} title={r.error}>
+                                ❌ {r.error || 'Decryption Failed'}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div style={{ textAlign: 'center', margin: '12px 0', color: '#64748b', fontSize: '0.8125rem', fontWeight: 700 }}>
-              — OR PASTE EXAM TOKEN STRING —
+              — OR PASTE SINGLE EXAM TOKEN / JSON —
             </div>
 
             {/* Option 2: Paste Token / JSON */}
             <textarea
-              placeholder="Paste EXAM_TOKEN:... or raw JSON payload here"
+              placeholder="Paste EXAM_TOKEN:... or encrypted .exam JSON payload here"
               value={importTokenInput}
               onChange={(e) => setImportTokenInput(e.target.value)}
-              rows={4}
+              rows={3}
               style={{
                 width: '100%',
                 background: '#1e293b',
@@ -2517,7 +2711,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   cursor: 'pointer',
                 }}
               >
-                Cancel
+                Close
               </button>
               <button
                 type="button"
@@ -2535,7 +2729,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                   opacity: isImporting || !importTokenInput.trim() ? 0.6 : 1,
                 }}
               >
-                {isImporting ? 'Importing...' : '📥 Import Submission'}
+                {isImporting ? 'Importing...' : '📥 Import Pasted Token'}
               </button>
             </div>
           </div>

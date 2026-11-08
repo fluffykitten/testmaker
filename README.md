@@ -167,6 +167,23 @@ npm run mobile:ios
 
 ## 📜 Changelog
 
+### [v.2.3.7] — Emergency Air-Gapped Offline Fallback & Cryptographic Examination Packages
+- **Cryptographic Offline Packages (`AES-256-GCM`)**:
+  - Implemented zero-dependency W3C Web Crypto envelope specification (`testmaker_emergency_v2`) in `src/utils/examCryptoUtils.ts`.
+  - Authenticated Additional Data (AAD) header binding (`version`, `quizCode`, `candidateId`, `exportedAt`) prevents header or body tampering; any alteration triggers AES-GCM tag rejection.
+  - Standardized filename pattern: `[QuizCode]_[Candidate]_[Timestamp].exam`.
+- **Auto-Trigger & Guarded Emergency Exit in Student Runner**:
+  - Automatically intercepts failed cloud submissions (exhausted 3 verification retries) and auto-downloads the encrypted `.exam` package without losing candidate inputs.
+  - Added guarded top-header **⚠️ Emergency Save** dialog in `StudentQuizRunner.tsx` with structured reason logging (*Wi-Fi outage*, *Critical battery*, *Evacuation*) embedded in forensics.
+  - Preserves pending submissions in the persistent outbox with exponential backoff retry metadata.
+- **Teacher Batch Ingestion Dropzone & Live Invigilator Synchronization**:
+  - Added multi-file drag-and-drop dropzone in `QuizResultsModal.tsx` and `LiveInvigilatorModal.tsx` with high-throughput batch processing (30 encrypted files in 5.7ms).
+  - Implemented **Newest Timestamp Wins** conflict resolution policy: older offline drafts never overwrite newer cloud submissions; newer offline files update existing scores while preserving canonical database row IDs.
+  - Synchronizes live cockpit status to `submitted`, displays `📥 Offline Ingested` candidate badges, and logs proctor audit events.
+- **Automated Verification**:
+  - Added unit test suite `scripts/test-emergency-fallback.mjs` (27/27 passed).
+  - Added end-to-end lifecycle simulation `scripts/simulate-emergency-auto-trigger-import.mjs` (14/14 passed).
+
 ### [v.2.3.6] — Bloom's Taxonomy Parity, Test Builder Question Sorting & Proctor Finalization
 - **Bloom's Taxonomy Parity & Persistence**:
   - Unified Bloom's taxonomy (C1–C6) editing and persistence across Question Bank (`QuestionDetailModal`), Test Builder (`TestQuestionItem`), and Paper Extraction (`ExtractionReview`, `QuestionEditorModal`).

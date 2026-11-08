@@ -12,6 +12,17 @@ import {
   isOutboxRetryable,
   normalizeIdentityPart,
 } from '../lib/examSubmissionGuards';
+import {
+  encryptEmergencyPackage,
+  decryptEmergencyPackage,
+  validateEmergencyEnvelope,
+  formatEmergencyExamFileName,
+  resolveEmergencySubmissionConflict,
+  normalizeEmergencyQuizCode,
+  type EmergencyPackageEnvelope,
+} from '../utils/examCryptoUtils';
+import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
+import { recordProctorAuditEvent } from './proctorAuditLogService';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
@@ -41,6 +52,7 @@ export interface DeviceExamReceipt {
  */
 export function getSubmissionOutbox(): SubmissionOutboxItem[] {
   try {
+    if (typeof localStorage === 'undefined') return [];
     const raw = localStorage.getItem(OUTBOX_STORAGE_KEY);
     return raw ? JSON.parse(raw) : [];
   } catch (err) {
@@ -80,6 +92,7 @@ export function saveToSubmissionOutbox(
   lastError?: string
 ): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     const outbox = getSubmissionOutbox();
     const now = Date.now();
     const existingIdx = outbox.findIndex((item) => item.submission.id === submission.id);
@@ -120,6 +133,7 @@ export function saveToSubmissionOutbox(
  */
 export function markOutboxSynced(submissionId: string): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     const outbox = getSubmissionOutbox();
     const updated = outbox.map((item) =>
       item.submission.id === submissionId
@@ -134,30 +148,68 @@ export function markOutboxSynced(submissionId: string): void {
 }
 
 /**
- * Exports a student submission to a signed, downloadable .exam JSON file for emergency offline backups.
+ * Creates a tamper-evident AES-256-GCM encrypted `.exam` emergency file package.
  */
-export function exportSubmissionToFile(submission: StudentSubmission): void {
-  try {
-    const payload = {
-      _format: 'fluffykitten_exam_v1',
-      exportedAt: new Date().toISOString(),
-      submission,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const cleanStudent = (submission.studentName || 'candidate').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const cleanCode = (submission.quizCode || 'EXAM').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const fileName = `${cleanCode}_${cleanStudent}_exam_backup.exam`;
+export async function createEncryptedEmergencyFileContent(
+  submission: StudentSubmission
+): Promise<{
+  fileName: string;
+  content: string;
+  envelope: EmergencyPackageEnvelope;
+}> {
+  const canonicalId =
+    submission.forensics?.proctorStudentId ||
+    getCanonicalProctorStudentId({
+      quizCode: submission.quizCode,
+      studentName: submission.studentName,
+      candidateNumber: submission.candidateNumber,
+      studentClass: submission.studentClass,
+    });
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const enrichedSubmission: StudentSubmission = {
+    ...submission,
+    forensics: {
+      ...(submission.forensics || {}),
+      proctorStudentId: canonicalId,
+    },
+  };
+
+  const { envelope, serialized } = await encryptEmergencyPackage(
+    enrichedSubmission.quizCode,
+    enrichedSubmission
+  );
+  const fileName = formatEmergencyExamFileName(enrichedSubmission);
+
+  return {
+    fileName,
+    content: serialized,
+    envelope,
+  };
+}
+
+/**
+ * Exports a student submission to a tamper-evident AES-256-GCM encrypted downloadable `.exam` file
+ * for air-gapped emergency offline hand-in.
+ */
+export async function exportSubmissionToFile(submission: StudentSubmission): Promise<string> {
+  try {
+    const { fileName, content } = await createEncryptedEmergencyFileContent(submission);
+
+    if (typeof document !== 'undefined' && typeof URL !== 'undefined') {
+      const blob = new Blob([content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+    return content;
   } catch (err) {
-    console.error('Failed to export submission file:', err);
+    console.error('Failed to export encrypted submission file:', err);
+    return '';
   }
 }
 
@@ -183,15 +235,104 @@ export function exportSubmissionToken(submission: StudentSubmission): string {
   }
 }
 
+export interface EmergencyFileIngestionItemResult {
+  fileName: string;
+  status: 'inserted' | 'updated' | 'skipped_older' | 'failed';
+  studentName?: string;
+  candidateNumber?: string;
+  candidateClass?: string;
+  quizCode?: string;
+  submittedAt?: string;
+  score?: number;
+  totalMarks?: number;
+  submission?: StudentSubmission;
+  reason?: string;
+  error?: string;
+}
+
+export interface BatchEmergencyIngestionSummary {
+  totalFiles: number;
+  insertedCount: number;
+  updatedCount: number;
+  skippedOlderCount: number;
+  failedCount: number;
+  results: EmergencyFileIngestionItemResult[];
+}
+
 /**
- * Decodes, validates, and imports a student submission from a token string or JSON string.
+ * Finds an existing submission for the same candidate within the same quiz cohort.
  */
-export async function importSubmissionToken(
-  tokenOrJson: string
-): Promise<{ success: boolean; submission?: StudentSubmission; error?: string }> {
+function findMatchingCandidateSubmission(
+  cohort: StudentSubmission[],
+  incoming: StudentSubmission
+): StudentSubmission | undefined {
+  const incomingCode = normalizeEmergencyQuizCode(incoming.quizCode);
+  const incomingCanonicalId =
+    incoming.forensics?.proctorStudentId ||
+    getCanonicalProctorStudentId({
+      quizCode: incomingCode,
+      studentName: incoming.studentName,
+      candidateNumber: incoming.candidateNumber,
+      studentClass: incoming.studentClass,
+    });
+
+  const normName = normalizeIdentityPart(incoming.studentName);
+  const normNumber = normalizeIdentityPart(incoming.candidateNumber);
+
+  return cohort.find((existing) => {
+    if (normalizeEmergencyQuizCode(existing.quizCode) !== incomingCode) return false;
+    if (existing.id === incoming.id) return true;
+
+    const existingCanonicalId =
+      existing.forensics?.proctorStudentId ||
+      getCanonicalProctorStudentId({
+        quizCode: existing.quizCode,
+        studentName: existing.studentName,
+        candidateNumber: existing.candidateNumber,
+        studentClass: existing.studentClass,
+      });
+
+    if (existingCanonicalId === incomingCanonicalId) return true;
+
+    // Fallback identity match when candidate number + name match
+    const exName = normalizeIdentityPart(existing.studentName);
+    const exNum = normalizeIdentityPart(existing.candidateNumber);
+    if (normName && exName === normName) {
+      if (normNumber && exNum) return normNumber === exNum;
+      if (!normNumber && !exNum) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Decodes, decrypts, verifies, and ingests a single emergency `.exam` file or token string,
+ * applying the "Newest Timestamp Wins + Audit Flag" conflict resolution policy.
+ */
+export async function ingestEmergencySubmissionContent(
+  rawContent: string,
+  options: {
+    fileName?: string;
+    expectedQuizCode?: string;
+    allowedQuizCodes?: string[];
+    existingSubmissions?: StudentSubmission[];
+    skipCloudSync?: boolean;
+  } = {}
+): Promise<EmergencyFileIngestionItemResult> {
+  const fileName = options.fileName || 'emergency_submission.exam';
   try {
-    const raw = tokenOrJson.trim();
-    if (!raw) return { success: false, error: 'Empty token input' };
+    const raw = (rawContent || '').trim();
+    if (!raw) {
+      return { fileName, status: 'failed', error: 'Empty file or token input.' };
+    }
+
+    const allowedSet =
+      options.allowedQuizCodes && options.allowedQuizCodes.length > 0
+        ? new Set(options.allowedQuizCodes.map((c) => normalizeEmergencyQuizCode(c)))
+        : null;
+    const expectedCode = options.expectedQuizCode
+      ? normalizeEmergencyQuizCode(options.expectedQuizCode)
+      : undefined;
 
     let parsedSub: StudentSubmission | null = null;
 
@@ -205,24 +346,265 @@ export async function importSubmissionToken(
       const parsed = JSON.parse(decoded);
       parsedSub = parsed.s || parsed;
     } else if (raw.startsWith('{')) {
-      const parsed = JSON.parse(raw);
-      parsedSub = parsed.submission || parsed;
+      let jsonObj: any;
+      try {
+        jsonObj = JSON.parse(raw);
+      } catch {
+        return { fileName, status: 'failed', error: 'Malformed JSON file.' };
+      }
+
+      if (jsonObj && jsonObj._format === 'testmaker_emergency_v2') {
+        if (!validateEmergencyEnvelope(jsonObj)) {
+          return {
+            fileName,
+            status: 'failed',
+            studentName: jsonObj.studentName,
+            quizCode: jsonObj.quizCode,
+            error: 'Tamper detected: invalid emergency v2 envelope structure or checksum format.',
+          };
+        }
+
+        const envCode = normalizeEmergencyQuizCode(jsonObj.quizCode);
+        if (expectedCode && envCode !== expectedCode) {
+          return {
+            fileName,
+            status: 'failed',
+            studentName: jsonObj.studentName,
+            candidateNumber: jsonObj.candidateNumber,
+            quizCode: envCode,
+            error: `Wrong exam code: file belongs to "${envCode}", expected "${expectedCode}".`,
+          };
+        }
+        if (allowedSet && !allowedSet.has(envCode)) {
+          return {
+            fileName,
+            status: 'failed',
+            studentName: jsonObj.studentName,
+            candidateNumber: jsonObj.candidateNumber,
+            quizCode: envCode,
+            error: `Exam code "${envCode}" is not in the currently monitored exam scope.`,
+          };
+        }
+
+        parsedSub = await decryptEmergencyPackage(expectedCode || envCode, jsonObj);
+      } else {
+        // Legacy fluffykitten_exam_v1 or raw submission JSON
+        parsedSub = jsonObj.submission || jsonObj;
+      }
+    } else {
+      return { fileName, status: 'failed', error: 'Unrecognized file format.' };
     }
 
     if (!parsedSub || !parsedSub.id || !parsedSub.studentName || !parsedSub.quizCode) {
-      return { success: false, error: 'Invalid exam token structure. Missing required student identifiers.' };
+      return {
+        fileName,
+        status: 'failed',
+        error: 'Invalid exam submission payload: missing candidate or quiz identifiers.',
+      };
     }
 
-    // Save locally and push to cloud
-    saveQuizSubmission(parsedSub);
-    markOutboxSynced(parsedSub.id);
-    await saveQuizSubmissionCloud(parsedSub);
-    window.dispatchEvent(new Event('submissions_updated'));
+    const subQuizCode = normalizeEmergencyQuizCode(parsedSub.quizCode);
+    if (expectedCode && subQuizCode !== expectedCode) {
+      return {
+        fileName,
+        status: 'failed',
+        studentName: parsedSub.studentName,
+        candidateNumber: parsedSub.candidateNumber,
+        quizCode: subQuizCode,
+        error: `Wrong exam code: file belongs to "${subQuizCode}", expected "${expectedCode}".`,
+      };
+    }
+    if (allowedSet && !allowedSet.has(subQuizCode)) {
+      return {
+        fileName,
+        status: 'failed',
+        studentName: parsedSub.studentName,
+        candidateNumber: parsedSub.candidateNumber,
+        quizCode: subQuizCode,
+        error: `Exam code "${subQuizCode}" is not in the currently monitored exam scope.`,
+      };
+    }
 
-    return { success: true, submission: parsedSub };
+    const canonicalId =
+      parsedSub.forensics?.proctorStudentId ||
+      getCanonicalProctorStudentId({
+        quizCode: subQuizCode,
+        studentName: parsedSub.studentName,
+        candidateNumber: parsedSub.candidateNumber,
+        studentClass: parsedSub.studentClass,
+      });
+
+    const normalizedIncoming: StudentSubmission = {
+      ...parsedSub,
+      quizCode: subQuizCode,
+      forensics: {
+        ...(parsedSub.forensics || {}),
+        proctorStudentId: canonicalId,
+      },
+    };
+
+    const currentPool = options.existingSubmissions ?? getAllSubmissions();
+    const existingMatch = findMatchingCandidateSubmission(currentPool, normalizedIncoming);
+    const decision = resolveEmergencySubmissionConflict(existingMatch, normalizedIncoming);
+
+    if (decision.action === 'skip_older') {
+      return {
+        fileName,
+        status: 'skipped_older',
+        studentName: normalizedIncoming.studentName,
+        candidateNumber: normalizedIncoming.candidateNumber,
+        candidateClass: normalizedIncoming.studentClass,
+        quizCode: subQuizCode,
+        submittedAt: normalizedIncoming.submittedAt,
+        score: decision.winner.score,
+        totalMarks: decision.winner.totalMarks,
+        submission: decision.winner,
+        reason: decision.reason,
+      };
+    }
+
+    const finalSub = decision.winner;
+
+    if (!options.skipCloudSync) {
+      saveQuizSubmission(finalSub);
+      markOutboxSynced(finalSub.id);
+      await saveQuizSubmissionCloud(finalSub);
+
+      recordProctorAuditEvent({
+        id: `audit-emerg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        quizCode: subQuizCode,
+        studentId: canonicalId,
+        studentName: finalSub.studentName,
+        candidateNumber: finalSub.candidateNumber,
+        candidateClass: finalSub.studentClass,
+        eventType: 'emergency_offline_imported',
+        severity: 'info',
+        detail:
+          decision.action === 'update'
+            ? `Updated candidate paper from encrypted emergency file (${fileName})`
+            : `Ingested new candidate paper from encrypted emergency file (${fileName})`,
+        actor: 'invigilator',
+        createdAt: new Date().toISOString(),
+      });
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('submissions_updated'));
+      }
+    }
+
+    return {
+      fileName,
+      status: decision.action === 'update' ? 'updated' : 'inserted',
+      studentName: finalSub.studentName,
+      candidateNumber: finalSub.candidateNumber,
+      candidateClass: finalSub.studentClass,
+      quizCode: subQuizCode,
+      submittedAt: finalSub.submittedAt,
+      score: finalSub.score,
+      totalMarks: finalSub.totalMarks,
+      submission: finalSub,
+      reason: decision.reason,
+    };
   } catch (err: any) {
-    return { success: false, error: err?.message || 'Failed to decode exam token' };
+    return {
+      fileName,
+      status: 'failed',
+      error: err?.message || 'Failed to decrypt or validate emergency submission file.',
+    };
   }
+}
+
+/**
+ * Processes a batch of emergency `.exam` files sequentially, maintaining an updated cohort view
+ * so even multiple files for the same candidate in the same batch resolve deterministically
+ * ("Newest Timestamp Wins").
+ */
+export async function ingestEmergencySubmissionBatch(
+  files: Array<{ fileName: string; content: string }>,
+  options: {
+    expectedQuizCode?: string;
+    allowedQuizCodes?: string[];
+    existingSubmissions?: StudentSubmission[];
+    skipCloudSync?: boolean;
+  } = {}
+): Promise<BatchEmergencyIngestionSummary> {
+  const workingPool: StudentSubmission[] = [
+    ...(options.existingSubmissions ?? getAllSubmissions()),
+  ];
+
+  const results: EmergencyFileIngestionItemResult[] = [];
+  let insertedCount = 0;
+  let updatedCount = 0;
+  let skippedOlderCount = 0;
+  let failedCount = 0;
+
+  for (const file of files) {
+    const res = await ingestEmergencySubmissionContent(file.content, {
+      fileName: file.fileName,
+      expectedQuizCode: options.expectedQuizCode,
+      allowedQuizCodes: options.allowedQuizCodes,
+      existingSubmissions: workingPool,
+      skipCloudSync: options.skipCloudSync,
+    });
+
+    results.push(res);
+
+    if (res.status === 'inserted' && res.submission) {
+      insertedCount++;
+      workingPool.push(res.submission);
+    } else if (res.status === 'updated' && res.submission) {
+      updatedCount++;
+      const idx = workingPool.findIndex((s) => s.id === res.submission!.id);
+      if (idx >= 0) {
+        workingPool[idx] = res.submission;
+      } else {
+        workingPool.push(res.submission);
+      }
+    } else if (res.status === 'skipped_older') {
+      skippedOlderCount++;
+    } else {
+      failedCount++;
+    }
+  }
+
+  return {
+    totalFiles: files.length,
+    insertedCount,
+    updatedCount,
+    skippedOlderCount,
+    failedCount,
+    results,
+  };
+}
+
+/**
+ * Decodes, validates, and imports a student submission from a token string or `.exam` JSON string.
+ */
+export async function importSubmissionToken(
+  tokenOrJson: string,
+  expectedQuizCode?: string
+): Promise<{
+  success: boolean;
+  submission?: StudentSubmission;
+  status?: EmergencyFileIngestionItemResult['status'];
+  reason?: string;
+  error?: string;
+}> {
+  const res = await ingestEmergencySubmissionContent(tokenOrJson, {
+    fileName: 'pasted_token.exam',
+    expectedQuizCode,
+  });
+
+  if (res.status === 'failed') {
+    return { success: false, status: 'failed', error: res.error };
+  }
+
+  return {
+    success: true,
+    submission: res.submission,
+    status: res.status,
+    reason: res.reason,
+  };
 }
 
 /**
@@ -424,6 +806,12 @@ export interface ExamForensics {
   proctorStudentId?: string;
   /** Every invigilator intervention (unlock, +time, pardon, force submit) in order. */
   invigilatorActions?: Array<{ id: string; type: string; detail: string; timestamp: string }>;
+  /** Origin of the submission when recovered via air-gapped emergency file. */
+  ingestionSource?: 'online' | 'emergency_offline';
+  /** ISO timestamp when the teacher ingested the emergency package. */
+  ingestedAt?: string;
+  /** Reason recorded when triggered via mid-exam Emergency Save & Exit. */
+  emergencyExitReason?: string;
 }
 
 export interface StudentSubmission {

@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.3.6",
+  "version": "2.3.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,8 @@
     "test:gestures": "node --import ./scripts/register-ts.mjs scripts/test-exam-gestures.mjs",
     "test:blooms": "node --import ./scripts/register-ts.mjs scripts/test-blooms-parity.mjs",
     "test:sorting": "node --import ./scripts/register-ts.mjs scripts/test-builder-sorting.mjs",
+    "test:emergency": "node --import ./scripts/register-ts.mjs scripts/test-emergency-fallback.mjs",
+    "test:emergency:sim": "node --import ./scripts/register-ts.mjs scripts/simulate-emergency-auto-trigger-import.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",
     "deploy:draft": "npm run build && npx netlify deploy --dir=dist",

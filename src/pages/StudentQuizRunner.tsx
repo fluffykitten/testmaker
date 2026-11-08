@@ -4,7 +4,9 @@ import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz, verifyTeacherUnlockPin } from '../services/quizCodeService';
 import {
+  saveQuizSubmission,
   saveQuizSubmissionWithVerification,
+  saveToSubmissionOutbox,
   exportSubmissionToFile,
   exportSubmissionToken,
   saveDeviceReceipt,
@@ -476,6 +478,10 @@ export function StudentQuizRunner({
   const [maxViolations, setMaxViolations] = useState<number>(() => savedExam?.maxViolations ?? 0);
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const [showEmergencyExitModal, setShowEmergencyExitModal] = useState<boolean>(false);
+  const [emergencyExitReason, setEmergencyExitReason] = useState<string>(
+    'Wi-Fi outage / Network unreachable'
+  );
   const [multiMonitorDetected, setMultiMonitorDetected] = useState<boolean>(false);
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
@@ -569,6 +575,7 @@ export function StudentQuizRunner({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
+  const emergencyModalDismiss = useBackdropDismiss(() => setShowEmergencyExitModal(false));
   const zoomModalDismiss = useBackdropDismiss(() => setZoomedImage(null));
   const mobileNavDismiss = useBackdropDismiss(() => setShowMobileNav(false));
   const teacherActionModalDismiss = useBackdropDismiss(() => {
@@ -1825,8 +1832,9 @@ export function StudentQuizRunner({
         } else {
           setSyncStatus('offline_failed');
           setSyncErrorMessage(
-            syncResult.error || 'Server did not acknowledge upload. Responses are safely preserved in this browser.'
+            syncResult.error || 'Server did not acknowledge upload. Encrypted .exam backup downloaded to device.'
           );
+          exportSubmissionToFile(submission).catch(() => {});
         }
 
         setIsSubmitted(true);
@@ -1865,11 +1873,15 @@ export function StudentQuizRunner({
           topicBreakdown: {},
           rawAnswers: { ...answers },
           status: 'submitted',
-          forensics: { answersByQuestionId: buildAnswersByQuestionId(questions, answers) },
+          forensics: {
+            answersByQuestionId: buildAnswersByQuestionId(questions, answers),
+            proctorStudentId: sessionHash,
+          },
         };
         setCompletedSubmission(fallback);
         setSyncStatus('offline_failed');
-        setSyncErrorMessage(err?.message || 'Network error occurred during submission.');
+        setSyncErrorMessage(err?.message || 'Network error occurred during submission. Encrypted .exam backup downloaded.');
+        exportSubmissionToFile(fallback).catch(() => {});
         setIsSubmitted(true);
       } finally {
         isSubmittingRef.current = false;
@@ -2068,8 +2080,9 @@ export function StudentQuizRunner({
       } else {
         setSyncStatus('offline_failed');
         setSyncErrorMessage(
-          syncResult.error || 'Server did not acknowledge upload. Responses are safely preserved in this browser.'
+          syncResult.error || 'Server did not acknowledge upload. Encrypted .exam backup downloaded to device.'
         );
+        exportSubmissionToFile(submission).catch(() => {});
       }
 
       setIsSubmitted(true);
@@ -2132,6 +2145,188 @@ export function StudentQuizRunner({
       setIsRetryingSync(false);
     }
   }, [completedSubmission, isRetryingSync, sessionKey, resolvedQuizCode, studentPinInput, candidateName]);
+
+  /**
+   * Guarded Mid-Exam Emergency Save & Exit:
+   * Immediately compiles all current answers, grades deterministic items, seals the payload
+   * into an AES-256-GCM encrypted `.exam` file, triggers browser download, and queues in outbox.
+   */
+  const handleEmergencySaveAndExit = useCallback(async () => {
+    if (isSubmitted || isGrading || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setShowEmergencyExitModal(false);
+    releaseKeyboardLock();
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+
+    try {
+      const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+      let totalMarks = 0;
+      let earnedMarks = 0;
+      const qResults: QuestionSubmissionResult[] = [];
+      const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+
+      for (let idx = 0; idx < questions.length; idx++) {
+        const q = questions[idx];
+        const qMarks = q.marks || 1;
+        totalMarks += qMarks;
+        const top = q.topic || 'General';
+        if (!topicBreakdown[top]) {
+          topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+        }
+        topicBreakdown[top].totalMarks += qMarks;
+
+        let qEarned = 0;
+        let isCorrect = false;
+        let aiFeedback = 'Emergency offline package — awaiting examiner review';
+        let gradingMethod: 'mcq' | 'deterministic' | 'ai' = 'deterministic';
+
+        const subs = q.sub_questions || [];
+        const hasSubQuestions = subs.length > 0;
+        const subResults: NonNullable<QuestionSubmissionResult['subQuestionResults']> = [];
+
+        if (hasSubQuestions) {
+          for (let sIdx = 0; sIdx < subs.length; sIdx++) {
+            const sub = subs[sIdx];
+            const subMax = sub.marks || 1;
+            const studentVal = answers[`${idx}_${sIdx}`] !== undefined ? answers[`${idx}_${sIdx}`] : '';
+            const det = gradeDeterministicAnswer(studentVal, q, sIdx);
+            const sEarned = det.isHandled ? det.earnedMarks : 0;
+            qEarned += sEarned;
+            subResults.push({
+              subId: sub.sub_id || `(${String.fromCharCode(97 + sIdx)})`,
+              questionText: sub.question_text,
+              studentAnswer: studentVal,
+              earnedMarks: sEarned,
+              maxMarks: subMax,
+              isCorrect: det.isHandled ? det.isCorrect : false,
+              feedback: det.isHandled ? det.feedback : 'Awaiting examiner evaluation',
+            });
+          }
+          qEarned = Math.min(qEarned, qMarks);
+          isCorrect = qEarned >= qMarks;
+        } else {
+          const studentVal = answers[idx] !== undefined ? answers[idx] : '';
+          const det = gradeDeterministicAnswer(studentVal, q);
+          if (det.isHandled) {
+            qEarned = det.earnedMarks;
+            isCorrect = det.isCorrect;
+            aiFeedback = det.feedback;
+            gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+          }
+        }
+
+        earnedMarks += qEarned;
+        topicBreakdown[top].earnedMarks += qEarned;
+
+        qResults.push({
+          questionId: q.id,
+          questionNumber: idx + 1,
+          questionText: q.question_text,
+          options: q.options || undefined,
+          topic: top,
+          maxMarks: qMarks,
+          earnedMarks: qEarned,
+          isCorrect,
+          studentAnswer: answers[idx] !== undefined ? answers[idx] : '',
+          correctAnswer: resolveQuestionModelAnswer(q),
+          misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || [],
+          aiFeedback,
+          gradingMethod,
+          subQuestionResults: subResults.length > 0 ? subResults : undefined,
+        });
+      }
+
+      Object.keys(topicBreakdown).forEach((top) => {
+        const item = topicBreakdown[top];
+        item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+      });
+
+      const finalQuizCode = resolvedQuizCode || (testIdOrCode || 'EXAM').toUpperCase();
+      const finalQuizId = effectiveDraftQuizId;
+      const baseForensics = buildExamForensics();
+
+      const emergencySubmission: StudentSubmission = {
+        id: `sub_emerg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        quizId: finalQuizId,
+        quizCode: finalQuizCode,
+        quizTitle: title,
+        subject: headerConfig?.subject || 'Chemistry',
+        studentName: candidateName.trim() || 'Candidate',
+        studentClass: candidateClass.trim() || 'General',
+        candidateNumber: candidateNumber.trim() || undefined,
+        submittedAt: new Date().toISOString(),
+        durationSeconds: durationSec,
+        score: earnedMarks,
+        totalMarks,
+        percentage: totalMarks > 0 ? Math.round((earnedMarks / totalMarks) * 100) : 100,
+        violationsCount: violations.length,
+        proctoringLogs: violations.map((v, i) => ({
+          timestamp: v.timestamp,
+          event: v.detail,
+          strike: i + 1,
+          severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+          type: v.type,
+          detail: v.detail,
+          elapsedExamSeconds: v.elapsedExamSeconds,
+        })),
+        rawAnswers: { ...answers },
+        questionResults: qResults,
+        topicBreakdown,
+        status: 'submitted',
+        resultPin: generateResultPin(),
+        forensics: {
+          ...baseForensics,
+          emergencyExitReason,
+        },
+      };
+
+      saveQuizSubmission(emergencySubmission);
+      saveToSubmissionOutbox(
+        emergencySubmission,
+        'pending',
+        `Emergency Save & Exit (${emergencyExitReason})`
+      );
+      saveDeviceReceipt({
+        quizCode: finalQuizCode,
+        quizTitle: title,
+        studentName: candidateName.trim() || 'Candidate',
+        candidateNumber: candidateNumber.trim() || undefined,
+        submittedAt: emergencySubmission.submittedAt,
+        resultPin: emergencySubmission.resultPin,
+      });
+
+      setCompletedSubmission(emergencySubmission);
+      setSyncStatus('offline_failed');
+      setSyncErrorMessage(
+        `Emergency Save & Exit completed (${emergencyExitReason}). Your encrypted .exam file has been downloaded.`
+      );
+      setIsSubmitted(true);
+
+      await exportSubmissionToFile(emergencySubmission);
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  }, [
+    isSubmitted,
+    isGrading,
+    startTime,
+    questions,
+    answers,
+    resolvedQuizCode,
+    testIdOrCode,
+    effectiveDraftQuizId,
+    buildExamForensics,
+    title,
+    headerConfig,
+    candidateName,
+    candidateClass,
+    candidateNumber,
+    violations,
+    emergencyExitReason,
+  ]);
 
   const handleOpenTeacherActionModal = useCallback((type: 'resubmit' | 'unlock') => {
     setTeacherActionType(type);
@@ -4236,32 +4431,10 @@ export function StudentQuizRunner({
                     lineHeight: '1.5',
                   }}
                 >
-                  🛡️ <strong>Safety Instructions:</strong> Please click <strong>Retry Cloud Sync</strong> once your internet reconnects, or click <strong>Download Backup File</strong> and hand it to your teacher.
+                  🛡️ <strong>Air-Gapped Emergency Hand-In:</strong> Your answers are sealed with <strong>AES-256-GCM encryption</strong>. Hand the downloaded <code>.exam</code> file to your invigilator via USB or device file transfer, or click <strong>Retry Cloud Sync</strong> when Wi-Fi reconnects.
                 </div>
 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                  <button
-                    type="button"
-                    onClick={handleRetryCloudSync}
-                    disabled={isRetryingSync}
-                    style={{
-                      background: '#3b82f6',
-                      border: 'none',
-                      color: '#ffffff',
-                      padding: '10px 18px',
-                      borderRadius: '8px',
-                      fontSize: '0.875rem',
-                      fontWeight: 700,
-                      cursor: isRetryingSync ? 'not-allowed' : 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
-                    }}
-                  >
-                    {isRetryingSync ? '⏳ Syncing...' : '🔄 Retry Cloud Sync'}
-                  </button>
-
                   <button
                     type="button"
                     onClick={() => {
@@ -4282,7 +4455,29 @@ export function StudentQuizRunner({
                       boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
                     }}
                   >
-                    📥 Download Backup File (.exam)
+                    📥 Download Emergency Backup (.exam)
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRetryCloudSync}
+                    disabled={isRetryingSync}
+                    style={{
+                      background: '#3b82f6',
+                      border: 'none',
+                      color: '#ffffff',
+                      padding: '10px 18px',
+                      borderRadius: '8px',
+                      fontSize: '0.875rem',
+                      fontWeight: 700,
+                      cursor: isRetryingSync ? 'not-allowed' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      boxShadow: '0 2px 8px rgba(59, 130, 246, 0.3)',
+                    }}
+                  >
+                    {isRetryingSync ? '⏳ Syncing...' : '🔄 Retry Cloud Sync'}
                   </button>
 
                   <button
@@ -5368,6 +5563,30 @@ export function StudentQuizRunner({
             </div>
           )}
 
+          {/* Guarded Mid-Exam Emergency Save & Exit */}
+          <button
+            type="button"
+            className="sq-btn sq-btn-emergency-exit"
+            style={{
+              background: 'rgba(245, 158, 11, 0.14)',
+              color: '#fbbf24',
+              border: '1px solid rgba(245, 158, 11, 0.35)',
+              borderRadius: '8px',
+              fontSize: '0.8125rem',
+              fontWeight: 700,
+              padding: '6px 12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              cursor: 'pointer',
+            }}
+            onClick={() => setShowEmergencyExitModal(true)}
+            title="Emergency Save & Exit (Use only if Wi-Fi is permanently down, device battery is critically low, or room evacuation is ordered)"
+          >
+            <span>⚠️</span>
+            <span>Emergency Save</span>
+          </button>
+
           {/* Submit Action */}
           <button
             type="button"
@@ -6396,6 +6615,113 @@ export function StudentQuizRunner({
                 }}
               >
                 🚀 Confirm & Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Guarded Mid-Exam Emergency Save & Exit Confirmation Modal */}
+      {showEmergencyExitModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            background: 'rgba(15, 23, 42, 0.88)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+          {...emergencyModalDismiss}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface, #1e293b)',
+              border: '2px solid rgba(245, 158, 11, 0.5)',
+              borderRadius: '20px',
+              maxWidth: '480px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.65)',
+              textAlign: 'left',
+              color: 'var(--color-text-primary, #ffffff)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+              <div style={{ fontSize: '2rem' }}>⚠️</div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: '#fbbf24' }}>
+                  Emergency Save & Exit
+                </h3>
+                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary, #94a3b8)', marginTop: '2px' }}>
+                  AES-256-GCM Sealed Air-Gapped Hand-In
+                </div>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.84rem', color: 'var(--color-text-secondary, #cbd5e1)', lineHeight: 1.55, margin: '0 0 14px' }}>
+              Are you sure you want to emergency save? Use this <strong>ONLY</strong> if your device battery is dying, school Wi-Fi has permanently dropped, or the invigilator instructed a room evacuation. Your current answers ({quizStats.answeredItems}/{quizStats.totalItems} answered) will be downloaded as a sealed <code>.exam</code> file.
+            </p>
+
+            <div style={{ marginBottom: '18px' }}>
+              <label
+                htmlFor="sq-emergency-reason"
+                style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', marginBottom: '6px' }}
+              >
+                Reason for Emergency Save:
+              </label>
+              <select
+                id="sq-emergency-reason"
+                value={emergencyExitReason}
+                onChange={(e) => setEmergencyExitReason(e.target.value)}
+                style={{
+                  width: '100%',
+                  background: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  borderRadius: '10px',
+                  padding: '10px 12px',
+                  color: '#ffffff',
+                  fontSize: '0.84rem',
+                  fontWeight: 600,
+                }}
+              >
+                <option value="Wi-Fi outage / Network unreachable">Wi-Fi outage / Network unreachable</option>
+                <option value="Critical battery / Device power failure">Critical battery / Device power failure</option>
+                <option value="Invigilator room evacuation / Hardware swap">Invigilator room evacuation / Hardware swap</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="sq-btn sq-btn-secondary"
+                style={{ flex: 1, padding: '10px 14px', fontWeight: 700 }}
+                onClick={() => setShowEmergencyExitModal(false)}
+              >
+                Cancel (Return to Exam)
+              </button>
+              <button
+                type="button"
+                className="sq-btn"
+                style={{
+                  flex: 1.3,
+                  padding: '10px 16px',
+                  fontWeight: 800,
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => {
+                  handleEmergencySaveAndExit();
+                }}
+              >
+                📥 Seal & Download (.exam)
               </button>
             </div>
           </div>
