@@ -186,6 +186,7 @@ export interface PreviousMarkLike {
   earnedMarks: number;
   isCorrect: boolean;
   feedback?: string;
+  aiFeedback?: string;
 }
 
 export interface RegradeChoice {
@@ -218,7 +219,7 @@ export function chooseRegradeMarks(
     return {
       earnedMarks: Number(previous.earnedMarks) || 0,
       isCorrect: Boolean(previous.isCorrect),
-      feedback: previous.feedback,
+      feedback: previous.feedback ?? previous.aiFeedback,
       preserved: true,
     };
   }

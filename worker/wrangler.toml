@@ -11,4 +11,9 @@ bucket_name = "testmaker-diagrams"
 
 [vars]
 UPLOAD_SECRET = "tm_r2_uploader_secret_2026"
+# Configure Gemini API keys in Cloudflare Dashboard (Variables & Secrets) or via CLI:
+#   npx wrangler secret put GEMINI_PAID_KEY
+#   npx wrangler secret put GEMINI_FREE_KEY
+# (Legacy fallback names GEMINI_API_KEY and GEMINI_API_KEY_2 are also supported)
+
 

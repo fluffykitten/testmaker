@@ -37,6 +37,7 @@ const read = (path) => fs.readFileSync(path, 'utf8');
 
 const runnerSource = read('src/pages/StudentQuizRunner.tsx');
 const resultsSource = read('src/components/QuizResultsModal.tsx');
+const detServiceSource = read('src/services/deterministicGradingService.ts');
 const submissionSource = read('src/services/quizSubmissionService.ts');
 const codeSource = read('src/services/quizCodeService.ts');
 const draftSource = read('src/services/examDraftService.ts');
@@ -96,8 +97,17 @@ const draftSource = read('src/services/examDraftService.ts');
   const noPrevious = chooseRegradeMarks(unhandled, undefined);
   check('T4 unhandled with no previous mark stays pending at 0', noPrevious.earnedMarks === 0 && /Awaiting/.test(noPrevious.feedback));
 
-  check('T4 grading modal uses chooseRegradeMarks', resultsSource.includes('chooseRegradeMarks(det'));
-  check('T4 grading modal no longer marks pending descriptive papers as graded', resultsSource.includes("hasPendingDescriptive ? sub.status : 'graded'"));
+  check(
+    'T4 grading modal uses chooseRegradeMarks',
+    resultsSource.includes('chooseRegradeMarks(det') ||
+      (resultsSource.includes('gradeSubmissionDeterministically(') && detServiceSource.includes('chooseRegradeMarks(det'))
+  );
+  check(
+    'T4 grading modal no longer marks pending descriptive papers as graded',
+    resultsSource.includes("hasPendingDescriptive ? sub.status : 'graded'") ||
+      (resultsSource.includes('gradeSubmissionDeterministically(') &&
+        /hasPendingDescriptive\s*\?\s*\(sub\.status\s*\|\|\s*'submitted'\)\s*:\s*'graded'/.test(detServiceSource))
+  );
 }
 
 // ─── T5: H7 — question-id answer lookup survives reordering ──────────────────

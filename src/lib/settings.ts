@@ -4,6 +4,7 @@ export type ThemeMode = 'light' | 'dark' | 'system';
 export type AccentColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'sky';
 export type FontSize = 'small' | 'normal' | 'medium' | 'large';
 export type Density = 'comfortable' | 'compact';
+export type GeminiApiKeyTier = 'auto' | 'paid' | 'free';
 
 export interface AppSettings {
   theme: ThemeMode;
@@ -28,6 +29,7 @@ export interface AppSettings {
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
   hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
   geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
+  geminiApiKeyTier?: GeminiApiKeyTier;    // Active Cloudflare-configured API Key Tier: 'auto' | 'paid' | 'free'
 }
 
 const STORAGE_KEY = 'testmaker_user_settings';
@@ -78,6 +80,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableQuizizzMode: false,
   hideCreativeModeOnLanding: false,
   geminiExtractionModel: 'gemini-3.5-flash-lite',
+  geminiApiKeyTier: 'auto',
 };
 
 // Accent palette color mappings for --color-primary tokens
@@ -615,6 +618,105 @@ export async function loadAndSyncGeminiExtractionModel(): Promise<string> {
     }
   } catch (err) {
     console.warn('Could not fetch Gemini extraction model from cloud:', err);
+  }
+
+  return localVal;
+}
+
+/**
+ * Normalizes any raw value into a valid GeminiApiKeyTier ('auto' | 'paid' | 'free')
+ */
+export function normalizeGeminiApiKeyTier(val: unknown): GeminiApiKeyTier {
+  const clean = typeof val === 'string' ? val.trim().toLowerCase() : '';
+  if (clean === 'paid' || clean === 'free' || clean === 'auto') {
+    return clean;
+  }
+  return 'auto';
+}
+
+/**
+ * Gets the configured Gemini API key tier from local settings ('auto' | 'paid' | 'free')
+ */
+export function getGeminiApiKeyTier(): GeminiApiKeyTier {
+  const current = getSavedSettings();
+  return normalizeGeminiApiKeyTier(current.geminiApiKeyTier);
+}
+
+/**
+ * Saves and syncs the configured Gemini API key tier to local settings & Supabase cloud app_config
+ */
+export function saveGeminiApiKeyTier(tier: GeminiApiKeyTier): void {
+  const current = getSavedSettings();
+  const normalized = normalizeGeminiApiKeyTier(tier);
+  const updated: AppSettings = {
+    ...current,
+    geminiApiKeyTier: normalized,
+  };
+
+  saveSettings(updated);
+  syncGeminiApiKeyTierToCloud(normalized).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('gemini_api_key_tier_updated', {
+        detail: { geminiApiKeyTier: normalized },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs the configured Gemini API key tier to Supabase app_config store
+ */
+export async function syncGeminiApiKeyTierToCloud(tier: GeminiApiKeyTier): Promise<boolean> {
+  const normalized = normalizeGeminiApiKeyTier(tier);
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'gemini_api_key_tier',
+      value: JSON.stringify(normalized),
+    });
+    if (error) {
+      console.warn('Gemini API key tier cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for Gemini API key tier:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads the configured Gemini API key tier from local storage, fetches from Supabase cloud app_config if available,
+ * and updates local cache.
+ */
+export async function loadAndSyncGeminiApiKeyTier(): Promise<GeminiApiKeyTier> {
+  const current = getSavedSettings();
+  const localVal = normalizeGeminiApiKeyTier(current.geminiApiKeyTier);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'gemini_api_key_tier')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = normalizeGeminiApiKeyTier(parsed);
+      if (current.geminiApiKeyTier !== cloudVal) {
+        const updated = { ...current, geminiApiKeyTier: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('gemini_api_key_tier_updated', {
+              detail: { geminiApiKeyTier: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch Gemini API key tier from cloud:', err);
   }
 
   return localVal;

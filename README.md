@@ -238,6 +238,16 @@ npm run mobile:ios
   - Intelligent chunk-reload error boundary handling stale production bundles and lazy-loaded assets.
   - Paginated `fetchDistinctPastPapersSummary` to eliminate truncation in the Source PDF Manager.
 
+### [v.2.3.8] — Gemini API Key Tier Selection & Deterministic Exam Grading Ingestion
+- **Cloudflare-Configured Gemini API Key Selection**:
+  - Choose between **Paid Key** (High Quota), **Free Key** (Zero Cost), or **Auto-Failover** (Paid Primary + Free Backup) directly in Admin Settings.
+  - Secret keys remain shielded inside Cloudflare Worker / environment variables with zero raw-key exposure in web bundles.
+  - Live model and API key availability diagnostics with ping latency and quota checks.
+- **Deterministic Exam Mode MCQ Grading & Sync**:
+  - Automatically scores sanitized Exam Mode submissions against teacher master answer keys upon receipt without manual re-grade button clicks.
+  - Live candidate inspection detail pane synchronization in `QuizResultsModal` without requiring page reloads (`F5`).
+  - Fallback model answer resolution so candidate response review cards always show authentic mark scheme solutions.
+
 ### [v.2.3.2] — Google Forms Export & Touchscreen Security Shield
 - **Google Forms Integration**:
   - Export custom assessments directly to auto-graded Google Forms quizzes with custom answer keys, point values, and Apps Script generation.

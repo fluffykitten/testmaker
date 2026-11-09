@@ -1,11 +1,41 @@
 import { PhotonImage } from "@cf-wasm/photon";
 
+/**
+ * Resolves the requested Gemini API key pool based on keyTier ('paid' | 'free' | 'auto').
+ * Supports GEMINI_PAID_KEY / GEMINI_API_KEY (Paid) and GEMINI_FREE_KEY / GEMINI_API_KEY_2 (Free).
+ */
+export function resolveWorkerGeminiKeys(env, request, bodyTier) {
+  const headerTier = request?.headers?.get ? request.headers.get("x-gemini-key-tier") : "";
+  const rawTier = String(bodyTier || headerTier || "auto").trim().toLowerCase();
+  const keyTier = rawTier === "paid" || rawTier === "free" ? rawTier : "auto";
+
+  const paidKey = env?.GEMINI_PAID_KEY || env?.GEMINI_API_KEY || "";
+  const freeKey = env?.GEMINI_FREE_KEY || env?.GEMINI_API_KEY_2 || "";
+  const fallbackClientKey = request?.headers?.get ? request.headers.get("x-gemini-key") || "" : "";
+
+  let keys = [];
+  if (keyTier === "paid") {
+    keys = [paidKey, fallbackClientKey].filter(Boolean);
+  } else if (keyTier === "free") {
+    keys = [freeKey, fallbackClientKey].filter(Boolean);
+  } else {
+    keys = [paidKey, freeKey, fallbackClientKey].filter(Boolean);
+  }
+
+  return {
+    keyTier,
+    keys: Array.from(new Set(keys)),
+    hasPaidConfigured: Boolean(paidKey),
+    hasFreeConfigured: Boolean(freeKey),
+  };
+}
+
 export default {
   async fetch(request, env) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, HEAD, PUT, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, x-gemini-key, cf-turnstile-token",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, x-gemini-key, x-gemini-key-tier, cf-turnstile-token",
       "Access-Control-Max-Age": "86400",
     };
 
@@ -55,21 +85,91 @@ export default {
       }
     }
 
-    // ─── API Route 2: Gemini AI Generation Proxy (Secret Shield & Failover) ──
+    // ─── API Route 2A: Gemini AI Key & Model Diagnostic Ping ─────────────────
+    if (url.pathname === "/api/gemini/ping" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const { targetModel, keyTier } = body || {};
+        const resolved = resolveWorkerGeminiKeys(env, request, keyTier);
+
+        if (resolved.keys.length === 0) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              keyTier: resolved.keyTier,
+              hasPaidConfigured: resolved.hasPaidConfigured,
+              hasFreeConfigured: resolved.hasFreeConfigured,
+              error: `No Gemini API key configured on Cloudflare Worker for tier "${resolved.keyTier}".`,
+            }),
+            {
+              status: 404,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        const cleanModel = String(targetModel || "gemini-3.5-flash-lite").trim();
+        const normalizedModel = cleanModel.startsWith("gemini-") ? cleanModel : `gemini-${cleanModel}`;
+        const activeKey = resolved.keys[0];
+        const infoRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}?key=${activeKey}`
+        );
+
+        if (infoRes.ok) {
+          const data = await infoRes.json();
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              keyTier: resolved.keyTier,
+              model: normalizedModel,
+              displayName: data.displayName || normalizedModel,
+              inputTokenLimit: data.inputTokenLimit || null,
+              hasPaidConfigured: resolved.hasPaidConfigured,
+              hasFreeConfigured: resolved.hasFreeConfigured,
+            }),
+            {
+              status: 200,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            keyTier: resolved.keyTier,
+            model: normalizedModel,
+            status: infoRes.status,
+            error: `Gemini API returned status ${infoRes.status}: ${infoRes.statusText}`,
+          }),
+          {
+            status: infoRes.status,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ─── API Route 2B: Gemini AI Generation Proxy (Secret Shield & Failover) ──
     if (url.pathname === "/api/gemini/generate" && request.method === "POST") {
       try {
         const body = await request.json();
-        const { prompt, contents, generationConfig, targetModel } = body;
+        const { prompt, contents, generationConfig, targetModel, keyTier } = body;
 
-        // Resolve API keys (Worker secret primary, secondary, or fallback header)
-        const primaryKey = env.GEMINI_API_KEY;
-        const secondaryKey = env.GEMINI_API_KEY_2;
-        const fallbackClientKey = request.headers.get("x-gemini-key");
-        const keys = [primaryKey, secondaryKey, fallbackClientKey].filter(Boolean);
+        // Resolve API keys by requested tier ('paid' | 'free' | 'auto')
+        const resolved = resolveWorkerGeminiKeys(env, request, keyTier);
+        const keys = resolved.keys;
 
         if (keys.length === 0) {
           return new Response(
-            JSON.stringify({ error: "Gemini API key not configured on worker and no client key provided" }),
+            JSON.stringify({
+              error: `Gemini API key for tier "${resolved.keyTier}" not configured on worker and no client key provided`,
+            }),
             {
               status: 500,
               headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -79,8 +179,8 @@ export default {
 
         // Candidate models priority with automatic fallback on 404/429/503
         const candidateModels = targetModel
-          ? [targetModel, "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"]
-          : ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"];
+          ? [targetModel, "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"]
+          : ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash", "gemini-1.5-flash"];
 
         const payload = contents
           ? { contents, generationConfig }
@@ -110,6 +210,7 @@ export default {
                 const data = await res.json();
                 successResult = {
                   model,
+                  keyTier: resolved.keyTier,
                   data,
                 };
                 break modelLoop;

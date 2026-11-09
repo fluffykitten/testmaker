@@ -2,8 +2,10 @@
 // Evaluates exact chemical formulas, numerical calculations, units, single keywords,
 // and tick-box classifications without requiring external AI API calls.
 
-import { expandFormulaSearch } from '../lib/formulaSearch';
+import { expandFormulaSearch } from '../lib/formulaSearch.ts';
+import { chooseRegradeMarks, resolveStoredAnswer } from '../lib/examSubmissionGuards.ts';
 import type { Question } from '../types/database';
+import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissionService';
 
 export interface DeterministicGradeResult {
   isHandled: boolean;          // true if evaluation was confidently performed deterministically
@@ -1530,5 +1532,312 @@ export function gradeDeterministicAnswer(
     matchType: 'unhandled',
     feedback: 'Complex descriptive question: requires mark scheme criteria evaluation.',
     acceptedAnswers: acceptableList,
+  };
+}
+
+// ─── Full Submission Deterministic Re-Grading & Auto-Grading ──────────────────
+
+export interface DeterministicSubmissionGradeOptions {
+  /**
+   * When true (used by automatic background grading on ingestion), questions that
+   * have already been resolved (i.e. have a resolved correctAnswer and are no longer
+   * 'Awaiting examiner AI evaluation') keep their existing result so manual teacher
+   * overrides on MCQ/deterministic items are never overwritten automatically.
+   */
+  onlyUnresolved?: boolean;
+}
+
+export interface DeterministicSubmissionGradeSummary {
+  updatedSub: StudentSubmission;
+  preservedCount: number;
+  changed: boolean;
+}
+
+/**
+ * Pure, idempotent deterministic submission grader shared by manual "Re-Grade MCQ"
+ * and automatic background grading on teacher-side results ingestion.
+ *
+ * When a student submits in Exam Mode, `sanitizeQuestionsForStudent()` strips
+ * `mark_scheme` from the candidate payload so `StudentQuizRunner` saves provisional
+ * 0-mark rows with `correctAnswer: 'See mark scheme'` and
+ * `aiFeedback: 'Awaiting examiner AI evaluation'`. Evaluating the submission against
+ * the teacher's full master `questions` scores all MCQ and deterministic items,
+ * populates the true model answers, preserves any existing AI/manual descriptive
+ * marks via `chooseRegradeMarks()`, and reports `changed: boolean` so callers only
+ * persist to Supabase when marks, model answers, or status actually change.
+ */
+export function gradeSubmissionDeterministically(
+  sub: StudentSubmission,
+  questions: Question[],
+  quizTotalMarks?: number,
+  options?: DeterministicSubmissionGradeOptions
+): DeterministicSubmissionGradeSummary {
+  const onlyUnresolved = Boolean(options?.onlyUnresolved);
+  const rawAnswers = sub.rawAnswers || {};
+  const answersById = sub.forensics?.answersByQuestionId;
+  let earnedMarks = 0;
+  let preservedCount = 0;
+  const qResults: QuestionSubmissionResult[] = [];
+  const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
+
+  for (let idx = 0; idx < questions.length; idx++) {
+    const q = questions[idx];
+    const top = q.topic || 'General';
+    if (!topicBreakdown[top]) topicBreakdown[top] = { totalMarks: 0, earnedMarks: 0, percentage: 0 };
+    const qMarks = q.marks || 1;
+    topicBreakdown[top].totalMarks += qMarks;
+
+    let isCorrect = false;
+    let qEarned = 0;
+    let feedback: string | undefined;
+    let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+    const subResults: any[] = [];
+
+    const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
+    const resolvedModelAnswer = resolveQuestionModelAnswer(q);
+    const isMcq =
+      q.question_style === 'Multiple Choice' ||
+      q.question_style === 'Multiple Select' ||
+      Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
+
+    if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
+      let totalSubEarned = 0;
+      for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
+        const sq = q.sub_questions[sqIdx];
+        let subAns = resolveStoredAnswer({
+          rawAnswers,
+          answersByQuestionId: answersById,
+          questionId: q.id,
+          subId: sq.sub_id,
+          index: idx,
+          subIndex: sqIdx,
+        });
+        const previousSub =
+          prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) ||
+          prevResult?.subQuestionResults?.[sqIdx];
+        if (subAns === undefined || subAns === '') {
+          if (previousSub?.studentAnswer !== undefined && previousSub.studentAnswer !== '') {
+            subAns = previousSub.studentAnswer;
+          } else {
+            subAns = '';
+          }
+        }
+        const subMarks = sq.marks || 1;
+
+        const isSubUnresolved =
+          !previousSub ||
+          previousSub.feedback === 'Awaiting examiner AI evaluation' ||
+          !prevResult?.correctAnswer ||
+          prevResult.correctAnswer === 'See mark scheme';
+
+        if (onlyUnresolved && !isSubUnresolved && previousSub) {
+          preservedCount++;
+          const keptEarned = Number(previousSub.earnedMarks) || 0;
+          totalSubEarned += keptEarned;
+          subResults.push({
+            ...previousSub,
+            subId: sq.sub_id,
+            questionText: sq.question_text,
+            studentAnswer: subAns,
+            earnedMarks: keptEarned,
+            maxMarks: subMarks,
+            isCorrect: Boolean(previousSub.isCorrect),
+            feedback: previousSub.feedback,
+          });
+          continue;
+        }
+
+        const det = gradeDeterministicAnswer(subAns, q, sqIdx);
+        const kept = chooseRegradeMarks(det, previousSub);
+        if (kept.preserved && previousSub) preservedCount++;
+        totalSubEarned += kept.earnedMarks;
+        subResults.push({
+          ...(previousSub || {}),
+          subId: sq.sub_id,
+          questionText: sq.question_text,
+          studentAnswer: subAns,
+          earnedMarks: kept.earnedMarks,
+          maxMarks: subMarks,
+          isCorrect: kept.isCorrect,
+          feedback: kept.feedback ?? det.feedback,
+        });
+      }
+      qEarned = Math.min(totalSubEarned, qMarks);
+      isCorrect = qEarned === qMarks;
+      feedback = prevResult?.aiFeedback === 'Awaiting examiner AI evaluation' ? undefined : prevResult?.aiFeedback;
+      gradingMethod = prevResult?.gradingMethod || 'deterministic';
+
+      earnedMarks += qEarned;
+      topicBreakdown[top].earnedMarks += qEarned;
+
+      qResults.push({
+        ...(prevResult || {}),
+        questionId: q.id,
+        questionNumber: idx + 1,
+        questionText: q.question_text,
+        options: q.options || undefined,
+        topic: top,
+        maxMarks: qMarks,
+        earnedMarks: qEarned,
+        isCorrect,
+        studentAnswer:
+          resolveStoredAnswer({
+            rawAnswers,
+            answersByQuestionId: answersById,
+            questionId: q.id,
+            index: idx,
+          }) ?? prevResult?.studentAnswer ?? '',
+        correctAnswer: resolvedModelAnswer,
+        misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || prevResult?.misconceptions || [],
+        aiFeedback: feedback,
+        gradingMethod,
+        subQuestionResults: subResults.length > 0 ? subResults : undefined,
+      });
+    } else {
+      let userAns = resolveStoredAnswer({
+        rawAnswers,
+        answersByQuestionId: answersById,
+        questionId: q.id,
+        index: idx,
+      });
+      if (userAns === undefined || userAns === '') {
+        if (prevResult?.studentAnswer !== undefined && prevResult.studentAnswer !== '') {
+          userAns = prevResult.studentAnswer;
+        } else {
+          userAns = '';
+        }
+      }
+
+      const isQuestionUnresolved =
+        !prevResult ||
+        prevResult.aiFeedback === 'Awaiting examiner AI evaluation' ||
+        !prevResult.correctAnswer ||
+        prevResult.correctAnswer === 'See mark scheme';
+
+      if (onlyUnresolved && !isQuestionUnresolved && prevResult) {
+        preservedCount++;
+        qEarned = Number(prevResult.earnedMarks) || 0;
+        isCorrect = Boolean(prevResult.isCorrect);
+        feedback = prevResult.aiFeedback;
+        gradingMethod = prevResult.gradingMethod || (isMcq ? 'mcq' : 'deterministic');
+      } else {
+        const det = gradeDeterministicAnswer(userAns, q);
+        const kept = chooseRegradeMarks(det, prevResult);
+        if (kept.preserved && prevResult) preservedCount++;
+        qEarned = kept.earnedMarks;
+        isCorrect = kept.isCorrect;
+        feedback = kept.feedback;
+        gradingMethod = kept.preserved
+          ? (prevResult?.gradingMethod || 'deterministic')
+          : (det.matchType === 'mcq' ? 'mcq' : 'deterministic');
+      }
+
+      earnedMarks += qEarned;
+      topicBreakdown[top].earnedMarks += qEarned;
+
+      qResults.push({
+        ...(prevResult || {}),
+        questionId: q.id,
+        questionNumber: idx + 1,
+        questionText: q.question_text,
+        options: q.options || undefined,
+        topic: top,
+        maxMarks: qMarks,
+        earnedMarks: qEarned,
+        isCorrect,
+        studentAnswer: userAns,
+        correctAnswer: resolvedModelAnswer,
+        misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || prevResult?.misconceptions || [],
+        aiFeedback: feedback,
+        gradingMethod,
+        subQuestionResults: undefined,
+      });
+    }
+  }
+
+  Object.keys(topicBreakdown).forEach((top) => {
+    const item = topicBreakdown[top];
+    item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
+  });
+
+  const hasPendingDescriptive = qResults.some(
+    (r) =>
+      r.aiFeedback === 'Awaiting examiner AI evaluation' ||
+      (r.subQuestionResults || []).some(
+        (sr: any) => sr.feedback === 'Awaiting examiner AI evaluation'
+      )
+  );
+
+  const totalQuizMarks = quizTotalMarks || sub.totalMarks;
+  const nextPercentage = totalQuizMarks > 0 ? Math.round((earnedMarks / totalQuizMarks) * 100) : 100;
+  const nextStatus =
+    sub.status === 'published'
+      ? 'published'
+      : hasPendingDescriptive
+        ? (sub.status || 'submitted')
+        : 'graded';
+
+  const prevResults = sub.questionResults || [];
+  let changed =
+    sub.score !== earnedMarks ||
+    sub.totalMarks !== totalQuizMarks ||
+    sub.percentage !== nextPercentage ||
+    (sub.status || 'submitted') !== nextStatus ||
+    prevResults.length !== qResults.length;
+
+  if (!changed) {
+    for (let i = 0; i < qResults.length; i++) {
+      const prev = prevResults[i];
+      const next = qResults[i];
+      if (
+        !prev ||
+        prev.questionId !== next.questionId ||
+        Number(prev.earnedMarks || 0) !== Number(next.earnedMarks || 0) ||
+        Boolean(prev.isCorrect) !== Boolean(next.isCorrect) ||
+        String(prev.correctAnswer || '') !== String(next.correctAnswer || '') ||
+        String(prev.aiFeedback || '') !== String(next.aiFeedback || '') ||
+        String(prev.gradingMethod || '') !== String(next.gradingMethod || '')
+      ) {
+        changed = true;
+        break;
+      }
+      const prevSubs = prev.subQuestionResults || [];
+      const nextSubs = next.subQuestionResults || [];
+      if (prevSubs.length !== nextSubs.length) {
+        changed = true;
+        break;
+      }
+      for (let j = 0; j < nextSubs.length; j++) {
+        const ps = prevSubs[j];
+        const ns = nextSubs[j];
+        if (
+          !ps ||
+          Number(ps.earnedMarks || 0) !== Number(ns.earnedMarks || 0) ||
+          Boolean(ps.isCorrect) !== Boolean(ns.isCorrect) ||
+          String(ps.feedback || '') !== String(ns.feedback || '')
+        ) {
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+
+  const updatedSub: StudentSubmission = {
+    ...sub,
+    score: earnedMarks,
+    totalMarks: totalQuizMarks,
+    percentage: nextPercentage,
+    questionResults: qResults,
+    topicBreakdown,
+    status: nextStatus,
+    updatedAt: changed ? new Date().toISOString() : sub.updatedAt,
+  };
+
+  return {
+    updatedSub,
+    preservedCount,
+    changed,
   };
 }

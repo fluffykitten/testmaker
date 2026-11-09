@@ -8,62 +8,156 @@ import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import type { SubjectProfile } from './subjectClassifier';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
-import { getSavedSettings, getGeminiExtractionModel } from './settings';
+import {
+  getSavedSettings,
+  getGeminiExtractionModel,
+  getGeminiApiKeyTier,
+  normalizeGeminiApiKeyTier,
+  type GeminiApiKeyTier,
+} from './settings';
+
+function readEnvVar(key: string): string | undefined {
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+    return import.meta.env[key];
+  }
+  if (typeof process !== 'undefined' && process.env && process.env[key]) {
+    return process.env[key];
+  }
+  return undefined;
+}
+
+function isValidEnvKey(val: string | undefined): val is string {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  return (
+    trimmed.length > 5 &&
+    !trimmed.includes('your-gemini-api-key') &&
+    !trimmed.includes('your-paid-gemini-api-key') &&
+    !trimmed.includes('your-free-gemini-api-key') &&
+    !trimmed.includes('your-second-gemini-api-key')
+  );
+}
 
 /**
- * Collects and deduplicates all available Gemini API keys from environment variables.
- * Supports:
- * - VITE_GEMINI_API_KEYS (comma or space separated list of keys)
- * - VITE_GEMINI_API_KEY (primary key)
- * - VITE_GEMINI_API_KEY_2, VITE_GEMINI_API_KEY_3... (secondary/additional keys)
+ * Resolves the Paid Gemini API key from Cloudflare / environment variables.
+ * Priority: VITE_GEMINI_PAID_API_KEY -> VITE_GEMINI_API_KEY -> first item in VITE_GEMINI_API_KEYS
  */
-export function getGeminiApiKeys(): string[] {
-  const keys: string[] = [];
+export function getGeminiPaidApiKey(): string {
+  const explicitPaid = readEnvVar('VITE_GEMINI_PAID_API_KEY');
+  if (isValidEnvKey(explicitPaid)) return explicitPaid.trim();
 
-  const getEnv = (key: string): string | undefined => {
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
-      return import.meta.env[key];
-    }
-    if (typeof process !== 'undefined' && process.env && process.env[key]) {
-      return process.env[key];
-    }
-    return undefined;
+  const primary = readEnvVar('VITE_GEMINI_API_KEY');
+  if (isValidEnvKey(primary)) return primary.trim();
+
+  const rawList = readEnvVar('VITE_GEMINI_API_KEYS');
+  if (typeof rawList === 'string') {
+    const first = rawList
+      .split(/[,;\s]+/)
+      .map((k) => k.trim())
+      .find((k) => isValidEnvKey(k));
+    if (first) return first;
+  }
+
+  return '';
+}
+
+/**
+ * Resolves the Free Gemini API key from Cloudflare / environment variables.
+ * Priority: VITE_GEMINI_FREE_API_KEY -> VITE_GEMINI_API_KEY_2 -> second item in VITE_GEMINI_API_KEYS
+ */
+export function getGeminiFreeApiKey(): string {
+  const explicitFree = readEnvVar('VITE_GEMINI_FREE_API_KEY');
+  if (isValidEnvKey(explicitFree)) return explicitFree.trim();
+
+  const secondary = readEnvVar('VITE_GEMINI_API_KEY_2');
+  if (isValidEnvKey(secondary)) return secondary.trim();
+
+  const rawList = readEnvVar('VITE_GEMINI_API_KEYS');
+  if (typeof rawList === 'string') {
+    const list = rawList
+      .split(/[,;\s]+/)
+      .map((k) => k.trim())
+      .filter((k) => isValidEnvKey(k));
+    if (list.length >= 2) return list[1];
+  }
+
+  return '';
+}
+
+/**
+ * Returns non-sensitive status metadata about configured API key slots for Admin Settings UI
+ * (never exposes raw API key strings).
+ */
+export function getConfiguredApiKeyStatus(tierOverride?: GeminiApiKeyTier): {
+  paidConfigured: boolean;
+  freeConfigured: boolean;
+  activeTier: GeminiApiKeyTier;
+  activeKeyCount: number;
+} {
+  const paidKey = getGeminiPaidApiKey();
+  const freeKey = getGeminiFreeApiKey();
+  const activeTier = tierOverride ? normalizeGeminiApiKeyTier(tierOverride) : getGeminiApiKeyTier();
+  const activePool = getGeminiApiKeys(activeTier);
+  return {
+    paidConfigured: Boolean(paidKey),
+    freeConfigured: Boolean(freeKey),
+    activeTier,
+    activeKeyCount: activePool.length,
   };
+}
 
-  const rawList = getEnv('VITE_GEMINI_API_KEYS');
+/**
+ * Collects and deduplicates available Gemini API keys respecting the active API Key Tier ('paid' | 'free' | 'auto').
+ * - 'paid': Uses only the Paid API key (falls back if Paid is unconfigured).
+ * - 'free': Uses only the Free API key (falls back if Free is unconfigured).
+ * - 'auto': Pools Paid (primary) + Free (secondary) + any additional keys for parallel extraction and failover.
+ */
+export function getGeminiApiKeys(tierOverride?: GeminiApiKeyTier): string[] {
+  const tier = tierOverride ? normalizeGeminiApiKeyTier(tierOverride) : getGeminiApiKeyTier();
+  const paidKey = getGeminiPaidApiKey();
+  const freeKey = getGeminiFreeApiKey();
+
+  const allKeys: string[] = [];
+  if (paidKey) allKeys.push(paidKey);
+  if (freeKey) allKeys.push(freeKey);
+
+  const rawList = readEnvVar('VITE_GEMINI_API_KEYS');
   if (typeof rawList === 'string') {
     rawList
       .split(/[,;\s]+/)
       .map((k) => k.trim())
-      .filter((k) => k.length > 5 && !k.includes('your-gemini-api-key'))
-      .forEach((k) => keys.push(k));
+      .filter((k) => isValidEnvKey(k))
+      .forEach((k) => allKeys.push(k));
   }
 
-  const primary = getEnv('VITE_GEMINI_API_KEY');
-  if (typeof primary === 'string' && primary.trim().length > 5 && !primary.includes('your-gemini-api-key')) {
-    keys.push(primary.trim());
+  const tertiary = readEnvVar('VITE_GEMINI_API_KEY_3');
+  if (isValidEnvKey(tertiary)) {
+    allKeys.push(tertiary.trim());
   }
 
-  const secondary = getEnv('VITE_GEMINI_API_KEY_2');
-  if (typeof secondary === 'string' && secondary.trim().length > 5 && !secondary.includes('your-gemini-api-key')) {
-    keys.push(secondary.trim());
+  const uniqueAll = Array.from(new Set(allKeys));
+
+  if (tier === 'paid') {
+    if (paidKey) return [paidKey];
+    return uniqueAll.slice(0, 1);
   }
 
-  const tertiary = getEnv('VITE_GEMINI_API_KEY_3');
-  if (typeof tertiary === 'string' && tertiary.trim().length > 5 && !tertiary.includes('your-gemini-api-key')) {
-    keys.push(tertiary.trim());
+  if (tier === 'free') {
+    if (freeKey) return [freeKey];
+    return uniqueAll.slice(0, 1);
   }
 
-  return Array.from(new Set(keys));
+  return uniqueAll;
 }
 
 /**
- * Returns a specific API key by index (round-robin / deterministic chunk sharding).
+ * Returns a specific API key by index (round-robin / deterministic chunk sharding),
+ * respecting the active API key tier ('paid' | 'free' | 'auto').
  */
-export function getApiKeyForChunk(chunkIndex: number = 0): string {
-  const pool = getGeminiApiKeys();
+export function getApiKeyForChunk(chunkIndex: number = 0, tierOverride?: GeminiApiKeyTier): string {
+  const pool = getGeminiApiKeys(tierOverride);
   if (pool.length === 0) {
-    return import.meta.env.VITE_GEMINI_API_KEY || '';
+    return getGeminiPaidApiKey() || getGeminiFreeApiKey() || '';
   }
   return pool[chunkIndex % pool.length];
 }
@@ -2020,12 +2114,14 @@ export function getConfiguredGeminiModel(): string | undefined {
 }
 
 /**
- * Pings Google AI Studio to verify whether a specified model identifier exists and is reachable
- * with the active API key. Used in Admin Settings before saving.
+ * Pings Google AI Studio (or Cloudflare Worker Proxy) to verify whether a specified model identifier
+ * exists and is reachable with the selected API key tier ('paid' | 'free' | 'auto').
+ * Used in Admin Settings before saving.
  */
 export async function testGeminiModelConnectivity(
   modelName: string,
-  targetApiKey?: string
+  targetApiKey?: string,
+  keyTierOverride?: GeminiApiKeyTier
 ): Promise<{ ok: boolean; message: string; details?: any }> {
   const cleanName = modelName?.trim();
   if (!cleanName) {
@@ -2033,12 +2129,52 @@ export async function testGeminiModelConnectivity(
   }
 
   const normalized = cleanName.startsWith('gemini-') ? cleanName : `gemini-${cleanName}`;
-  const apiKey = targetApiKey || getApiKeyForChunk(0);
+  const activeTier = keyTierOverride ? normalizeGeminiApiKeyTier(keyTierOverride) : getGeminiApiKeyTier();
+  const tierLabel =
+    activeTier === 'paid'
+      ? 'Paid Key'
+      : activeTier === 'free'
+        ? 'Free Key'
+        : 'Auto-Failover (Paid + Free)';
+  const apiKey = targetApiKey || getApiKeyForChunk(0, activeTier);
 
   if (!apiKey) {
+    // Try Cloudflare Worker diagnostic ping if keys are stored only on Worker
+    const workerUrl =
+      readEnvVar('VITE_CLOUDFLARE_WORKER_URL') ||
+      readEnvVar('VITE_R2_MEDIA_ENDPOINT') ||
+      getSavedSettings().r2MediaEndpoint;
+    if (workerUrl) {
+      try {
+        const startTime = performance.now();
+        const pingRes = await fetch(`${workerUrl.replace(/\/+$/, '')}/api/gemini/ping`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-gemini-key-tier': activeTier,
+          },
+          body: JSON.stringify({ targetModel: normalized, keyTier: activeTier }),
+        });
+        const latency = Math.round(performance.now() - startTime);
+        const pingData = await pingRes.json().catch(() => ({}));
+        if (pingRes.ok && pingData?.ok) {
+          return {
+            ok: true,
+            message: `Connected via Cloudflare Worker (${latency}ms, ${tierLabel}) — "${pingData.displayName || normalized}"`,
+            details: pingData,
+          };
+        }
+        return {
+          ok: false,
+          message: pingData?.error || `Cloudflare Worker returned status ${pingRes.status}.`,
+        };
+      } catch {
+        // Fall through to standard message
+      }
+    }
     return {
       ok: false,
-      message: 'No Gemini API key found. Please configure VITE_GEMINI_API_KEY in environment or settings.',
+      message: `No Gemini API key configured for ${tierLabel}. Configure the key in Cloudflare environment variables.`,
     };
   }
 
@@ -2053,7 +2189,7 @@ export async function testGeminiModelConnectivity(
       const data = await infoRes.json();
       return {
         ok: true,
-        message: `Connected successfully (${latency}ms) — "${data.displayName || normalized}" (Input limit: ${data.inputTokenLimit ? Number(data.inputTokenLimit).toLocaleString() : '1M'} tokens)`,
+        message: `Connected successfully (${latency}ms, ${tierLabel}) — "${data.displayName || normalized}" (Input limit: ${data.inputTokenLimit ? Number(data.inputTokenLimit).toLocaleString() : '1M'} tokens)`,
         details: data,
       };
     }
@@ -2068,18 +2204,18 @@ export async function testGeminiModelConnectivity(
     if (infoRes.status === 403) {
       return {
         ok: false,
-        message: `Permission denied (403): Your Gemini API key does not have access to model "${normalized}".`,
+        message: `Permission denied (403): Your ${tierLabel} does not have access to model "${normalized}".`,
       };
     }
 
     return {
       ok: false,
-      message: `Gemini API returned status ${infoRes.status}: ${infoRes.statusText}`,
+      message: `Gemini API (${tierLabel}) returned status ${infoRes.status}: ${infoRes.statusText}`,
     };
   } catch (err: any) {
     return {
       ok: false,
-      message: `Network error connecting to Gemini API: ${err?.message || 'Failed to fetch'}`,
+      message: `Network error connecting to Gemini API (${tierLabel}): ${err?.message || 'Failed to fetch'}`,
     };
   }
 }
@@ -2087,7 +2223,7 @@ export async function testGeminiModelConnectivity(
 /**
  * Helper to call a specific Gemini model endpoint with a custom prompt, target API key, and timeout.
  * Accepts optional markSchemeBase64 and insertBase64 (for Geography / Humanities insert booklets).
- * Supports automatic key failover if a 429 / 503 limit is encountered!
+ * Respects the active API Key Tier ('paid' | 'free' | 'auto') and supports automatic failover in 'auto' mode.
  */
 async function callGeminiModel(
   modelName: string,
@@ -2098,10 +2234,10 @@ async function callGeminiModel(
   targetApiKey?: string
 ): Promise<Response> {
   const keyPool = getGeminiApiKeys();
-  const primaryKey = targetApiKey || keyPool[0] || import.meta.env.VITE_GEMINI_API_KEY || '';
+  const primaryKey = targetApiKey || keyPool[0] || getApiKeyForChunk(0);
 
-  // Order candidate keys starting with primaryKey, followed by others in the pool
-  const candidateKeys = [primaryKey, ...keyPool.filter((k) => k !== primaryKey)].filter(Boolean);
+  // Order candidate keys starting with primaryKey, followed by others in the active tier pool
+  const candidateKeys = Array.from(new Set([primaryKey, ...keyPool].filter(Boolean)));
 
   let lastRes: Response | null = null;
   let lastErr: any = null;

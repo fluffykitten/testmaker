@@ -19,9 +19,14 @@ import {
   saveGeminiExtractionModel,
   syncGeminiExtractionModelToCloud,
   loadAndSyncGeminiExtractionModel,
+  getGeminiApiKeyTier,
+  saveGeminiApiKeyTier,
+  syncGeminiApiKeyTierToCloud,
+  loadAndSyncGeminiApiKeyTier,
+  type GeminiApiKeyTier,
 } from '../lib/settings';
 import { testR2Connection } from '../services/storageService';
-import { testGeminiModelConnectivity } from '../lib/gemini';
+import { testGeminiModelConnectivity, getConfiguredApiKeyStatus } from '../lib/gemini';
 import {
   type RosterStudent,
   getSchoolRoster,
@@ -118,16 +123,18 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [isTestingR2, setIsTestingR2] = useState(false);
   const [r2TestResult, setR2TestResult] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
 
-  // Gemini AI Extraction Model State
+  // Gemini AI Extraction Model & Key Tier State
   const initialModel = getGeminiExtractionModel();
   const isInitialPreset = initialModel === 'gemini-3.5-flash-lite' || initialModel === 'gemini-3.8-flash';
   const [geminiModelPreset, setGeminiModelPreset] = useState<'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | 'custom'>(
     () => (isInitialPreset ? (initialModel as 'gemini-3.5-flash-lite' | 'gemini-3.8-flash') : 'custom')
   );
   const [customModelInput, setCustomModelInput] = useState(() => (isInitialPreset ? '' : initialModel));
+  const [geminiKeyTier, setGeminiKeyTier] = useState<GeminiApiKeyTier>(() => getGeminiApiKeyTier());
   const [isTestingModel, setIsTestingModel] = useState(false);
   const [modelTestFeedback, setModelTestFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [isSavingModel, setIsSavingModel] = useState(false);
+  const keySlotStatus = getConfiguredApiKeyStatus(geminiKeyTier);
 
   // Focus first pin digit on load if locked
   useEffect(() => {
@@ -164,6 +171,12 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
           setSettingsState((prev) => ({ ...prev, geminiExtractionModel: cloudModel }));
         }
       });
+      loadAndSyncGeminiApiKeyTier().then((cloudTier) => {
+        if (cloudTier) {
+          setGeminiKeyTier(cloudTier);
+          setSettingsState((prev) => ({ ...prev, geminiApiKeyTier: cloudTier }));
+        }
+      });
     }
   }, [isUnlocked]);
 
@@ -197,12 +210,28 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     setIsSavingModel(true);
     try {
       saveGeminiExtractionModel(finalModel);
-      updateSetting('geminiExtractionModel', finalModel);
-      const synced = await syncGeminiExtractionModelToCloud(finalModel);
-      if (synced) {
-        showNotice(`✓ Gemini model saved and synced to cloud: "${finalModel}"`);
+      saveGeminiApiKeyTier(geminiKeyTier);
+      const updated = {
+        ...settings,
+        geminiExtractionModel: finalModel,
+        geminiApiKeyTier: geminiKeyTier,
+      };
+      setSettingsState(updated);
+      saveSettings(updated);
+      const [modelSynced, tierSynced] = await Promise.all([
+        syncGeminiExtractionModelToCloud(finalModel),
+        syncGeminiApiKeyTierToCloud(geminiKeyTier),
+      ]);
+      const tierLabel =
+        geminiKeyTier === 'paid'
+          ? 'Paid Key'
+          : geminiKeyTier === 'free'
+            ? 'Free Key'
+            : 'Auto-Failover (Paid + Free)';
+      if (modelSynced || tierSynced) {
+        showNotice(`✓ Gemini config saved & synced to cloud: "${finalModel}" (${tierLabel})`);
       } else {
-        showNotice(`✓ Gemini model saved locally: "${finalModel}"`);
+        showNotice(`✓ Gemini config saved locally: "${finalModel}" (${tierLabel})`);
       }
     } finally {
       setIsSavingModel(false);
@@ -218,7 +247,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     setIsTestingModel(true);
     setModelTestFeedback(null);
     try {
-      const res = await testGeminiModelConnectivity(targetModel);
+      const res = await testGeminiModelConnectivity(targetModel, undefined, geminiKeyTier);
       setModelTestFeedback({ ok: res.ok, message: res.message });
     } catch (err: any) {
       setModelTestFeedback({ ok: false, message: err?.message || 'Failed to ping Gemini API.' });
@@ -1123,55 +1152,74 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                 </select>
               </div>
 
-              {/* Gemini AI Model for Paper Extraction */}
+              {/* Gemini AI Model & API Key Tier for Paper Extraction */}
               <div className="adv-setting-card adv-setting-card--vertical">
                 <div className="adv-setting-info" style={{ width: '100%' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', width: '100%' }}>
-                    <strong className="adv-setting-title">⚡ Gemini Model for Paper Extraction</strong>
-                    <span className="adv-tab-counter" style={{ background: 'rgba(99, 102, 241, 0.15)', color: 'var(--color-primary-500, #6366f1)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
-                      Active: {geminiModelPreset === 'custom' ? (customModelInput || 'Custom') : (geminiModelPreset === 'gemini-3.5-flash-lite' ? '3.5 Flash Lite' : '3.8 Flash')}
-                    </span>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', width: '100%', flexWrap: 'wrap', gap: '8px' }}>
+                    <strong className="adv-setting-title">⚡ Gemini Model & API Key Selection</strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span className="adv-tab-counter" style={{ background: 'rgba(99, 102, 241, 0.15)', color: 'var(--color-primary-500, #6366f1)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
+                        Model: {geminiModelPreset === 'custom' ? (customModelInput || 'Custom') : (geminiModelPreset === 'gemini-3.5-flash-lite' ? '3.5 Flash Lite' : '3.8 Flash')}
+                      </span>
+                      <span
+                        className="adv-tab-counter"
+                        style={{
+                          background: geminiKeyTier === 'paid' ? 'rgba(16, 185, 129, 0.15)' : geminiKeyTier === 'free' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                          color: geminiKeyTier === 'paid' ? '#059669' : geminiKeyTier === 'free' ? '#0284c7' : '#d97706',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Key: {geminiKeyTier === 'paid' ? '💳 Paid Key' : geminiKeyTier === 'free' ? '🆓 Free Key' : '🔄 Auto (Paid + Free)'}
+                      </span>
+                    </div>
                   </div>
                   <p className="adv-setting-desc">
-                    Choose the primary Gemini AI model utilized for parsing question papers, mark schemes, resource booklets, and teacher guidance. Synchronized across all school devices via cloud config.
+                    Choose the primary Gemini AI model and which Cloudflare-configured API key tier to utilize for parsing question papers, mark schemes, resource booklets, and AI grading. Keys remain unexposed in the web UI.
                   </p>
                 </div>
 
-                {/* Preset Options */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px', marginBottom: '12px' }}>
-                  <button
-                    type="button"
-                    className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.5-flash-lite' ? 'adv-tab-btn--active' : ''}`}
-                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
-                    onClick={() => {
-                      setGeminiModelPreset('gemini-3.5-flash-lite');
-                      setModelTestFeedback(null);
-                    }}
-                  >
-                    ⚡ Gemini 3.5 Flash Lite <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(Ultra-Fast ~5s)</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.8-flash' ? 'adv-tab-btn--active' : ''}`}
-                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
-                    onClick={() => {
-                      setGeminiModelPreset('gemini-3.8-flash');
-                      setModelTestFeedback(null);
-                    }}
-                  >
-                    🧠 Gemini 3.8 Flash <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(High Visual Reasoning)</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`adv-tab-btn ${geminiModelPreset === 'custom' ? 'adv-tab-btn--active' : ''}`}
-                    style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
-                    onClick={() => {
-                      setGeminiModelPreset('custom');
-                      setModelTestFeedback(null);
-                    }}
-                  >
-                    🛠️ Custom Model...
-                  </button>
+                {/* 1. Model Preset Options */}
+                <div style={{ width: '100%', marginTop: '10px' }}>
+                  <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted, #64748b)', marginBottom: '6px' }}>
+                    1. Select Gemini Model
+                  </span>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.5-flash-lite' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiModelPreset('gemini-3.5-flash-lite');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      ⚡ Gemini 3.5 Flash Lite <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(Ultra-Fast ~5s)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiModelPreset === 'gemini-3.8-flash' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiModelPreset('gemini-3.8-flash');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      🧠 Gemini 3.8 Flash <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(High Visual Reasoning)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiModelPreset === 'custom' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiModelPreset('custom');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      🛠️ Custom Model...
+                    </button>
+                  </div>
                 </div>
 
                 {/* Custom Model Input if custom preset selected */}
@@ -1193,6 +1241,53 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     />
                   </div>
                 )}
+
+                {/* 2. API Key Tier Selection (Cloudflare Configured — Never Exposes Raw Keys) */}
+                <div style={{ width: '100%', marginTop: '4px', marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted, #64748b)' }}>
+                      2. Select Cloudflare API Key Tier
+                    </span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted, #64748b)' }}>
+                      🔒 Keys configured in Cloudflare ({keySlotStatus.paidConfigured ? 'Paid ✓' : 'Paid —'} · {keySlotStatus.freeConfigured ? 'Free ✓' : 'Free —'})
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiKeyTier === 'paid' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiKeyTier('paid');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      💳 Paid API Key <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(High Quota / Bulk Extraction)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiKeyTier === 'free' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiKeyTier('free');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      🆓 Free API Key <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(Zero Cost / Standard Quota)</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`adv-tab-btn ${geminiKeyTier === 'auto' ? 'adv-tab-btn--active' : ''}`}
+                      style={{ padding: '8px 16px', fontSize: '13px', borderRadius: '8px' }}
+                      onClick={() => {
+                        setGeminiKeyTier('auto');
+                        setModelTestFeedback(null);
+                      }}
+                    >
+                      🔄 Auto-Failover <span style={{ opacity: 0.75, fontSize: '11px', marginLeft: '4px' }}>(Paid Primary + Free Backup)</span>
+                    </button>
+                  </div>
+                </div>
 
                 {/* Test Feedback Notice */}
                 {modelTestFeedback && (
@@ -1224,7 +1319,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     onClick={handleTestGeminiModel}
                     disabled={isTestingModel || (geminiModelPreset === 'custom' && !customModelInput.trim())}
                   >
-                    {isTestingModel ? 'Testing Model API…' : '🔍 Test Model Availability'}
+                    {isTestingModel ? 'Testing Model & Key…' : '🔍 Test Model & Key Availability'}
                   </button>
                   <button
                     type="button"
@@ -1232,7 +1327,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     onClick={handleSaveGeminiModel}
                     disabled={isSavingModel || (geminiModelPreset === 'custom' && !customModelInput.trim())}
                   >
-                    {isSavingModel ? 'Saving…' : '💾 Save & Sync Model to Cloud'}
+                    {isSavingModel ? 'Saving…' : '💾 Save & Sync AI Config to Cloud'}
                   </button>
                 </div>
               </div>

@@ -11,6 +11,8 @@ import {
   loadAndSyncSchoolSubjects,
   loadAndSyncGoogleDriveClientId,
   loadAndSyncCreativeModeLandingVisibility,
+  loadAndSyncGeminiExtractionModel,
+  loadAndSyncGeminiApiKeyTier,
 } from './lib/settings';
 import { PortalLandingPage } from './pages/PortalLandingPage';
 import { resolveStudentQuiz } from './services/quizCodeService';
@@ -143,6 +145,8 @@ function App() {
     loadAndSyncSchoolSubjects().catch(() => {});
     loadAndSyncGoogleDriveClientId().catch(() => {});
     loadAndSyncCreativeModeLandingVisibility().catch(() => {});
+    loadAndSyncGeminiExtractionModel().catch(() => {});
+    loadAndSyncGeminiApiKeyTier().catch(() => {});
 
     // Proactively pre-warm Question Bank chunk and database cache in background
     const prewarmTimer = setTimeout(() => {
