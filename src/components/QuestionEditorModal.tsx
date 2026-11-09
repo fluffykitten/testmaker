@@ -3,7 +3,15 @@ import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { normalizeQuestionStyle, type Question, type Syllabus, type QuestionStyle, type QuestionDifficulty, type SubQuestion } from '../types/database';
 import { ExamMathText } from './ExamMathText';
-import { updateQuestion, createQuestion, fetchSyllabuses, batchAttachPastPaperPdf } from '../services/questionBankService';
+import {
+  updateQuestion,
+  createQuestion,
+  fetchSyllabuses,
+  batchAttachPastPaperPdf,
+  batchAttachCambridgeHubUrl,
+  batchAttachCambridgeMsHubUrl,
+  validateCambridgeHubUrl,
+} from '../services/questionBankService';
 import { uploadPastPaperPdf } from '../services/storageService';
 import type { CognitiveLevel } from '../types/database';
 import { DiagramCropModal } from './DiagramCropModal';
@@ -107,9 +115,12 @@ export function QuestionEditorModal({
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>('Medium');
   const [cognitiveLevel, setCognitiveLevel] = useState<CognitiveLevel | ''>((question?.cognitive_level as CognitiveLevel) || 'C2');
   const [sourcePdfUrl, setSourcePdfUrl] = useState<string>(question?.source_pdf_url || '');
+  const [cambridgeHubUrl, setCambridgeHubUrl] = useState<string>(question?.cambridge_hub_url || '');
+  const [cambridgeMsHubUrl, setCambridgeMsHubUrl] = useState<string>(question?.cambridge_ms_hub_url || '');
   const [pageNumber, setPageNumber] = useState<number | ''>(question?.page_number !== undefined && question?.page_number !== null ? question.page_number : '');
   const [isUploadingQpPdf, setIsUploadingQpPdf] = useState(false);
   const [applyPdfToPaper, setApplyPdfToPaper] = useState(false);
+  const [applyHubToPaper, setApplyHubToPaper] = useState(false);
   const qpPdfInputRef = useRef<HTMLInputElement>(null);
   const [totalMarks, setTotalMarks] = useState(4);
   const [diagramUrl, setDiagramUrl] = useState('');
@@ -238,6 +249,8 @@ export function QuestionEditorModal({
         ((question.cognitive_level || (question.mark_scheme as any)?._cognitive_level || 'C2') as CognitiveLevel | '')
       );
       setSourcePdfUrl(question.source_pdf_url || (question.mark_scheme as any)?._source_pdf_url || '');
+      setCambridgeHubUrl(question.cambridge_hub_url || (question.mark_scheme as any)?._cambridge_hub_url || '');
+      setCambridgeMsHubUrl(question.cambridge_ms_hub_url || (question.mark_scheme as any)?._cambridge_ms_hub_url || '');
       setPageNumber(
         question.page_number !== undefined && question.page_number !== null
           ? question.page_number
@@ -812,6 +825,18 @@ export function QuestionEditorModal({
     }
     if (sourcePdfUrl.trim()) {
       existingMarkSchemeMeta._source_pdf_url = sourcePdfUrl.trim();
+    } else {
+      delete existingMarkSchemeMeta._source_pdf_url;
+    }
+    if (cambridgeHubUrl.trim()) {
+      existingMarkSchemeMeta._cambridge_hub_url = cambridgeHubUrl.trim();
+    } else {
+      delete existingMarkSchemeMeta._cambridge_hub_url;
+    }
+    if (cambridgeMsHubUrl.trim()) {
+      existingMarkSchemeMeta._cambridge_ms_hub_url = cambridgeMsHubUrl.trim();
+    } else {
+      delete existingMarkSchemeMeta._cambridge_ms_hub_url;
     }
     if (pageNumber !== '') {
       existingMarkSchemeMeta._page_number = Number(pageNumber);
@@ -888,6 +913,8 @@ export function QuestionEditorModal({
       difficulty: difficulty,
       cognitive_level: (cognitiveLevel as CognitiveLevel) || null,
       source_pdf_url: sourcePdfUrl.trim() || null,
+      cambridge_hub_url: cambridgeHubUrl.trim() || null,
+      cambridge_ms_hub_url: cambridgeMsHubUrl.trim() || null,
       page_number: pageNumber !== '' ? Number(pageNumber) : null,
       marks: finalMarks,
       diagram_url: diagramUrl.trim() || null,
@@ -914,6 +941,20 @@ export function QuestionEditorModal({
           { syllabusId, year, series, paperNumber: paperNumber || 1 },
           sourcePdfUrl.trim()
         ).catch((err) => console.warn('Failed to batch attach PDF:', err));
+      }
+
+      if (applyHubToPaper && syllabusId) {
+        const paperFilter = { syllabusId, year, series, paperNumber: paperNumber || 1 };
+        if (cambridgeHubUrl.trim()) {
+          batchAttachCambridgeHubUrl(paperFilter, cambridgeHubUrl.trim()).catch((err) =>
+            console.warn('Failed to batch attach Cambridge QP Hub URL:', err)
+          );
+        }
+        if (cambridgeMsHubUrl.trim()) {
+          batchAttachCambridgeMsHubUrl(paperFilter, cambridgeMsHubUrl.trim()).catch((err) =>
+            console.warn('Failed to batch attach Cambridge MS Hub URL:', err)
+          );
+        }
       }
 
       if (isDbRecord && question?.id) {
@@ -2610,6 +2651,86 @@ export function QuestionEditorModal({
                       <span>Also attach this QP PDF to all other questions in this paper ({series} {year} Paper {paperNumber})</span>
                     </label>
                   )}
+
+                  {/* Official Cambridge School Support Hub Links (QP & Mark Scheme) */}
+                  <div
+                    style={{
+                      marginTop: '12px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                    }}
+                  >
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#1e3a8a' }}>
+                      Official Cambridge School Support Hub Citation Links (for ToS Export)
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label className="q-editor-label" style={{ fontSize: '11.5px', marginBottom: '4px', display: 'block' }}>
+                          Cambridge Support Hub QP URL (Paper Title Hyperlink):
+                        </label>
+                        <input
+                          type="url"
+                          className="q-editor-input"
+                          placeholder="https://schoolsupporthub.cambridge.org/item/..."
+                          value={cambridgeHubUrl}
+                          onChange={(e) => setCambridgeHubUrl(e.target.value)}
+                          style={{ width: '100%' }}
+                        />
+                        {cambridgeHubUrl.trim() && (() => {
+                          const v = validateCambridgeHubUrl(cambridgeHubUrl);
+                          if (!v.isValid) {
+                            return <div style={{ fontSize: '11px', color: '#dc2626', marginTop: '3px' }}>{v.error}</div>;
+                          }
+                          if (v.warning) {
+                            return <div style={{ fontSize: '11px', color: '#d97706', marginTop: '3px' }}>{v.warning}</div>;
+                          }
+                          return null;
+                        })()}
+                      </div>
+
+                      <div>
+                        <label className="q-editor-label" style={{ fontSize: '11.5px', marginBottom: '4px', display: 'block' }}>
+                          Cambridge Support Hub Mark Scheme URL:
+                        </label>
+                        <input
+                          type="url"
+                          className="q-editor-input"
+                          placeholder="https://schoolsupporthub.cambridge.org/item/..."
+                          value={cambridgeMsHubUrl}
+                          onChange={(e) => setCambridgeMsHubUrl(e.target.value)}
+                          style={{ width: '100%' }}
+                        />
+                        {cambridgeMsHubUrl.trim() && (() => {
+                          const v = validateCambridgeHubUrl(cambridgeMsHubUrl);
+                          if (!v.isValid) {
+                            return <div style={{ fontSize: '11px', color: '#dc2626', marginTop: '3px' }}>{v.error}</div>;
+                          }
+                          if (v.warning) {
+                            return <div style={{ fontSize: '11px', color: '#d97706', marginTop: '3px' }}>{v.warning}</div>;
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </div>
+
+                    {(cambridgeHubUrl.trim() || cambridgeMsHubUrl.trim()) && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#475569', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={applyHubToPaper}
+                          onChange={(e) => setApplyHubToPaper(e.target.checked)}
+                          style={{ accentColor: '#2563eb' }}
+                        />
+                        <span>Also attach these Cambridge Hub links to all other questions in this paper ({series} {year} Paper {paperNumber})</span>
+                      </label>
+                    )}
+                  </div>
                 </div>
 
                 <div className="q-editor-field">

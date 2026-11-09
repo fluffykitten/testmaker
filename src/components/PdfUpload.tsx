@@ -10,7 +10,15 @@ interface PdfUploadProps {
     questionPaper: File,
     markScheme: File | null,
     insertFile: File | null,
-    options: { includeGuidance: boolean; domain: SubjectDomain; isIgcse: boolean; isSaveMyExams?: boolean; tags?: string }
+    options: {
+      includeGuidance: boolean;
+      domain: SubjectDomain;
+      isIgcse: boolean;
+      isSaveMyExams?: boolean;
+      tags?: string;
+      cambridgeHubUrl?: string;
+      cambridgeMsHubUrl?: string;
+    }
   ) => void;
   isProcessing: boolean;
 }
@@ -26,6 +34,8 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [isIgcse, setIsIgcse] = useState<boolean>(true);
   const [isSaveMyExams, setIsSaveMyExams] = useState<boolean>(false);
   const [tags, setTags] = useState<string>('');
+  const [cambridgeHubUrl, setCambridgeHubUrl] = useState<string>('');
+  const [cambridgeMsHubUrl, setCambridgeMsHubUrl] = useState<string>('');
 
   const [qpDragOver, setQpDragOver] = useState(false);
   const [msDragOver, setMsDragOver] = useState(false);
@@ -140,6 +150,8 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       isIgcse,
       isSaveMyExams: domain === 'stem' ? isSaveMyExams : false,
       tags: tags.trim() || undefined,
+      cambridgeHubUrl: cambridgeHubUrl.trim() || undefined,
+      cambridgeMsHubUrl: cambridgeMsHubUrl.trim() || undefined,
     });
   };
 
@@ -565,6 +577,34 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                 onChange={(e) => setTags(e.target.value)}
               />
               <span className="upload-param-help">Optional tags for filtering in Question Bank</span>
+            </div>
+
+            {/* 4. Official Cambridge Support Hub Links (Optional) */}
+            <div className="upload-param-group">
+              <label className="upload-param-label" htmlFor="upload-qp-hub-link">
+                Cambridge Hub Links
+                <span style={{ fontSize: '0.72rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                  (Optional • For ToS Citations)
+                </span>
+              </label>
+              <input
+                id="upload-qp-hub-link"
+                type="url"
+                className="upload-input"
+                placeholder="QP Link: https://schoolsupporthub.cambridge.org/item/..."
+                value={cambridgeHubUrl}
+                onChange={(e) => setCambridgeHubUrl(e.target.value)}
+                style={{ marginBottom: '6px' }}
+              />
+              <input
+                id="upload-ms-hub-link"
+                type="url"
+                className="upload-input"
+                placeholder="MS Link: https://schoolsupporthub.cambridge.org/item/..."
+                value={cambridgeMsHubUrl}
+                onChange={(e) => setCambridgeMsHubUrl(e.target.value)}
+              />
+              <span className="upload-param-help">Can also be filled on the next review page</span>
             </div>
 
             {/* Engine Status Indicator */}

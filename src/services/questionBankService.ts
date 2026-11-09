@@ -129,11 +129,15 @@ export function getCachedPaperTypes(syllabusId?: string): PaperTypesSummary {
   return { seriesOptions: [], paperNumberOptions: [] };
 }
 
-export function clearQuestionBankCache(): void {
+export function clearQuestionBankCache(options: { preservePastPapersSummary?: boolean } = {}): void {
   syllabusesCache = null;
   topicsCache.clear();
   paperTypesCache.clear();
   questionsQueryCache.clear();
+  if (!options.preservePastPapersSummary) {
+    pastPapersSummaryCache = {};
+    inFlightPastPapersSummary = {};
+  }
   inFlightSyllabuses = null;
   inFlightFacets.clear();
   inFlightQuestions.clear();
@@ -150,9 +154,9 @@ export function clearQuestionBankCache(): void {
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('questions_updated', clearQuestionBankCache);
-  window.addEventListener('tags_updated', clearQuestionBankCache);
-  window.addEventListener('bookmarks_updated', clearQuestionBankCache);
+  window.addEventListener('questions_updated', () => clearQuestionBankCache({ preservePastPapersSummary: true }));
+  window.addEventListener('tags_updated', () => clearQuestionBankCache({ preservePastPapersSummary: true }));
+  window.addEventListener('bookmarks_updated', () => clearQuestionBankCache({ preservePastPapersSummary: true }));
 }
 
 /**
@@ -1171,6 +1175,8 @@ export function normalizeQuestionRecord(q: any): Question {
   const scratchpad = q.scratchpad || q.mark_scheme?._scratchpad;
   const cognitiveLevel = q.cognitive_level || q.mark_scheme?._cognitive_level || null;
   const sourcePdfUrl = q.source_pdf_url || q.mark_scheme?._source_pdf_url || null;
+  const cambridgeHubUrl = q.cambridge_hub_url || q.mark_scheme?._cambridge_hub_url || null;
+  const cambridgeMsHubUrl = q.cambridge_ms_hub_url || q.mark_scheme?._cambridge_ms_hub_url || null;
   const pageNumber = q.page_number !== undefined && q.page_number !== null ? q.page_number : (q.mark_scheme?._page_number ?? null);
 
   const normalizedSubs = Array.isArray(q.sub_questions)
@@ -1186,6 +1192,8 @@ export function normalizeQuestionRecord(q: any): Question {
     ...q,
     cognitive_level: cognitiveLevel,
     source_pdf_url: sourcePdfUrl,
+    cambridge_hub_url: cambridgeHubUrl,
+    cambridge_ms_hub_url: cambridgeMsHubUrl,
     page_number: pageNumber,
     svg_content: svgContent,
     ai_diagram_prompt: aiDiagramPrompt,
@@ -1238,6 +1246,8 @@ export async function updateQuestion(
     payload.scratchpad !== undefined ||
     payload.cognitive_level !== undefined ||
     payload.source_pdf_url !== undefined ||
+    payload.cambridge_hub_url !== undefined ||
+    payload.cambridge_ms_hub_url !== undefined ||
     payload.page_number !== undefined
   ) {
     const baseMarkScheme =
@@ -1266,7 +1276,21 @@ export async function updateQuestion(
     } else if (payload.cognitive_level === null) {
       delete baseMarkScheme._cognitive_level;
     }
-    if (payload.source_pdf_url) baseMarkScheme._source_pdf_url = payload.source_pdf_url;
+    if (payload.source_pdf_url) {
+      baseMarkScheme._source_pdf_url = payload.source_pdf_url;
+    } else if (payload.source_pdf_url === null) {
+      delete baseMarkScheme._source_pdf_url;
+    }
+    if (payload.cambridge_hub_url) {
+      baseMarkScheme._cambridge_hub_url = payload.cambridge_hub_url;
+    } else if (payload.cambridge_hub_url === null) {
+      delete baseMarkScheme._cambridge_hub_url;
+    }
+    if (payload.cambridge_ms_hub_url) {
+      baseMarkScheme._cambridge_ms_hub_url = payload.cambridge_ms_hub_url;
+    } else if (payload.cambridge_ms_hub_url === null) {
+      delete baseMarkScheme._cambridge_ms_hub_url;
+    }
     if (payload.page_number !== undefined) baseMarkScheme._page_number = payload.page_number;
 
     payload.mark_scheme = baseMarkScheme;
@@ -1302,6 +1326,8 @@ export async function updateQuestion(
       error.message.includes('paper_number') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
+      error.message.includes('cambridge_hub_url') ||
+      error.message.includes('cambridge_ms_hub_url') ||
       error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('svg_content') ||
@@ -1322,6 +1348,8 @@ export async function updateQuestion(
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
     if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
     if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
+    if (fallbackPayload.cambridge_hub_url) markScheme._cambridge_hub_url = fallbackPayload.cambridge_hub_url;
+    if (fallbackPayload.cambridge_ms_hub_url) markScheme._cambridge_ms_hub_url = fallbackPayload.cambridge_ms_hub_url;
     if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
@@ -1330,6 +1358,8 @@ export async function updateQuestion(
     delete fallbackPayload.svg_content;
     delete fallbackPayload.cognitive_level;
     delete fallbackPayload.source_pdf_url;
+    delete fallbackPayload.cambridge_hub_url;
+    delete fallbackPayload.cambridge_ms_hub_url;
     delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
@@ -1409,6 +1439,12 @@ export async function createQuestion(
   if (questionData.source_pdf_url && baseMarkScheme) {
     (baseMarkScheme as any)._source_pdf_url = questionData.source_pdf_url;
   }
+  if (questionData.cambridge_hub_url && baseMarkScheme) {
+    (baseMarkScheme as any)._cambridge_hub_url = questionData.cambridge_hub_url;
+  }
+  if (questionData.cambridge_ms_hub_url && baseMarkScheme) {
+    (baseMarkScheme as any)._cambridge_ms_hub_url = questionData.cambridge_ms_hub_url;
+  }
   if (questionData.page_number !== undefined && questionData.page_number !== null && baseMarkScheme) {
     (baseMarkScheme as any)._page_number = questionData.page_number;
   }
@@ -1429,6 +1465,8 @@ export async function createQuestion(
     difficulty: questionData.difficulty || 'Medium',
     cognitive_level: questionData.cognitive_level || null,
     source_pdf_url: questionData.source_pdf_url || null,
+    cambridge_hub_url: questionData.cambridge_hub_url || null,
+    cambridge_ms_hub_url: questionData.cambridge_ms_hub_url || null,
     page_number: questionData.page_number || null,
     marks: Number(questionData.marks) || 1,
     diagram_url:
@@ -1478,6 +1516,8 @@ export async function createQuestion(
       error.message.includes('resource_ref') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
+      error.message.includes('cambridge_hub_url') ||
+      error.message.includes('cambridge_ms_hub_url') ||
       error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('insert_page_number'))
@@ -1496,6 +1536,8 @@ export async function createQuestion(
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
     if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
     if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
+    if (fallbackPayload.cambridge_hub_url) markScheme._cambridge_hub_url = fallbackPayload.cambridge_hub_url;
+    if (fallbackPayload.cambridge_ms_hub_url) markScheme._cambridge_ms_hub_url = fallbackPayload.cambridge_ms_hub_url;
     if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
@@ -1503,6 +1545,8 @@ export async function createQuestion(
     delete fallbackPayload.ai_diagram_prompt;
     delete fallbackPayload.cognitive_level;
     delete fallbackPayload.source_pdf_url;
+    delete fallbackPayload.cambridge_hub_url;
+    delete fallbackPayload.cambridge_ms_hub_url;
     delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
@@ -1548,59 +1592,18 @@ export interface PastPaperGroupSummary {
   totalQuestions: number;
   hasPdfUrl: boolean;
   samplePdfUrl: string | null;
+  linkedHubCount: number;
+  hasHubUrl: boolean;
+  sampleHubUrl: string | null;
+  linkedMsHubCount: number;
+  hasMsHubUrl: boolean;
+  sampleMsHubUrl: string | null;
 }
 
 /**
- * Fetches an aggregated summary of all distinct past papers in the Question Bank,
- * including how many questions are linked to a Question Paper PDF.
+ * Pure helper to aggregate question rows into distinct PastPaperGroupSummary objects.
  */
-export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promise<PastPaperGroupSummary[]> {
-  const allRows: any[] = [];
-  const pageSize = 1000;
-  let from = 0;
-
-  while (true) {
-    let query = (supabase as any)
-      .from('questions')
-      .select('id, syllabus_id, year, series, paper_number, mark_scheme, source_pdf_url, syllabuses ( id, subject_name, subject_code )')
-      .range(from, from + pageSize - 1);
-
-    if (syllabusId) {
-      query = query.eq('syllabus_id', syllabusId);
-    }
-
-    let { data, error } = await query;
-    if (error && (error.message?.includes('source_pdf_url') || error.code === '42703')) {
-      let fallbackQuery = (supabase as any)
-        .from('questions')
-        .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )')
-        .range(from, from + pageSize - 1);
-      if (syllabusId) {
-        fallbackQuery = fallbackQuery.eq('syllabus_id', syllabusId);
-      }
-      const res = await fallbackQuery;
-      data = res.data;
-      error = res.error;
-    }
-
-    if (error) {
-      console.error('Failed to fetch distinct past papers page:', error);
-      break;
-    }
-
-    if (!data || data.length === 0) {
-      break;
-    }
-
-    allRows.push(...data);
-    if (data.length < pageSize) {
-      break;
-    }
-    from += pageSize;
-  }
-
-  const data = allRows;
-
+export function aggregatePastPapersSummaryFromRows(data: any[]): PastPaperGroupSummary[] {
   const groups = new Map<string, PastPaperGroupSummary>();
 
   data.forEach((row: any) => {
@@ -1612,6 +1615,8 @@ export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promi
 
     const key = `${sId}_${yr}_${ser}_${pNum}`;
     const pdfUrl = row.source_pdf_url || row.mark_scheme?._source_pdf_url || null;
+    const hubUrl = row.cambridge_hub_url || row.mark_scheme?._cambridge_hub_url || null;
+    const msHubUrl = row.cambridge_ms_hub_url || row.mark_scheme?._cambridge_ms_hub_url || null;
 
     if (!groups.has(key)) {
       groups.set(key, {
@@ -1627,6 +1632,12 @@ export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promi
         totalQuestions: 0,
         hasPdfUrl: false,
         samplePdfUrl: null,
+        linkedHubCount: 0,
+        hasHubUrl: false,
+        sampleHubUrl: null,
+        linkedMsHubCount: 0,
+        hasMsHubUrl: false,
+        sampleMsHubUrl: null,
       });
     }
 
@@ -1640,12 +1651,157 @@ export async function fetchDistinctPastPapersSummary(syllabusId?: string): Promi
         group.samplePdfUrl = pdfUrl;
       }
     }
+    if (hubUrl) {
+      group.linkedHubCount += 1;
+      group.hasHubUrl = true;
+      if (!group.sampleHubUrl) {
+        group.sampleHubUrl = hubUrl;
+      }
+    }
+    if (msHubUrl) {
+      group.linkedMsHubCount += 1;
+      group.hasMsHubUrl = true;
+      if (!group.sampleMsHubUrl) {
+        group.sampleMsHubUrl = msHubUrl;
+      }
+    }
   });
 
   return Array.from(groups.values()).sort((a, b) => {
     if (b.year !== a.year) return b.year - a.year;
     return a.series.localeCompare(b.series) || String(a.paperNumber).localeCompare(String(b.paperNumber));
   });
+}
+
+// Cache for past paper groups summary (TTL 5 minutes)
+let pastPapersSummaryCache: Record<string, { data: PastPaperGroupSummary[]; timestamp: number } | undefined> = {};
+let inFlightPastPapersSummary: Record<string, Promise<PastPaperGroupSummary[]> | undefined> = {};
+
+export function clearPastPapersSummaryCache(syllabusId?: string): void {
+  if (syllabusId) {
+    delete pastPapersSummaryCache[syllabusId];
+    delete pastPapersSummaryCache['all'];
+  } else {
+    pastPapersSummaryCache = {};
+  }
+}
+
+/**
+ * Optimistically updates the in-memory past paper summary cache for a paper group.
+ */
+export function updatePastPapersSummaryCache(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number },
+  updates: Partial<PastPaperGroupSummary>
+): void {
+  const applyUpdates = (list: PastPaperGroupSummary[]) => {
+    return list.map((paper) => {
+      const matches =
+        paper.syllabusId === filter.syllabusId &&
+        paper.year === filter.year &&
+        paper.series.toLowerCase() === filter.series.toLowerCase() &&
+        String(paper.paperNumber) === String(filter.paperNumber);
+
+      if (!matches) return paper;
+      return { ...paper, ...updates };
+    });
+  };
+
+  const allCache = pastPapersSummaryCache['all'];
+  if (allCache?.data) {
+    allCache.data = applyUpdates(allCache.data);
+  }
+  if (filter.syllabusId) {
+    const sylCache = pastPapersSummaryCache[filter.syllabusId];
+    if (sylCache?.data) {
+      sylCache.data = applyUpdates(sylCache.data);
+    }
+  }
+}
+
+/**
+ * Fetches an aggregated summary of all distinct past papers in the Question Bank,
+ * including how many questions are linked to a Question Paper PDF and Cambridge Support Hub URLs.
+ * Results are cached in-memory with automatic cache busting on updates.
+ */
+export async function fetchDistinctPastPapersSummary(
+  syllabusId?: string,
+  options: { forceRefresh?: boolean } = {}
+): Promise<PastPaperGroupSummary[]> {
+  const cacheKey = syllabusId || 'all';
+
+  const cached = pastPapersSummaryCache[cacheKey];
+  if (!options.forceRefresh && cached) {
+    if (Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
+  const inFlight = inFlightPastPapersSummary[cacheKey];
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const fetchPromise = (async () => {
+    const allRows: any[] = [];
+    const pageSize = 1000;
+    let from = 0;
+
+    while (true) {
+      let query = (supabase as any)
+        .from('questions')
+        .select('id, syllabus_id, year, series, paper_number, mark_scheme, source_pdf_url, cambridge_hub_url, cambridge_ms_hub_url, syllabuses ( id, subject_name, subject_code )')
+        .range(from, from + pageSize - 1);
+
+      if (syllabusId) {
+        query = query.eq('syllabus_id', syllabusId);
+      }
+
+      let { data, error } = await query;
+      if (
+        error &&
+        (error.message?.includes('source_pdf_url') ||
+          error.message?.includes('cambridge_hub_url') ||
+          error.message?.includes('cambridge_ms_hub_url') ||
+          error.code === '42703')
+      ) {
+        let fallbackQuery = (supabase as any)
+          .from('questions')
+          .select('id, syllabus_id, year, series, paper_number, mark_scheme, syllabuses ( id, subject_name, subject_code )')
+          .range(from, from + pageSize - 1);
+        if (syllabusId) {
+          fallbackQuery = fallbackQuery.eq('syllabus_id', syllabusId);
+        }
+        const res = await fallbackQuery;
+        data = res.data;
+        error = res.error;
+      }
+
+      if (error) {
+        console.error('Failed to fetch distinct past papers page:', error);
+        break;
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      allRows.push(...data);
+      if (data.length < pageSize) {
+        break;
+      }
+      from += pageSize;
+    }
+
+    const aggregated = aggregatePastPapersSummaryFromRows(allRows);
+    pastPapersSummaryCache[cacheKey] = { data: aggregated, timestamp: Date.now() };
+    return aggregated;
+  })()
+    .finally(() => {
+      delete inFlightPastPapersSummary[cacheKey];
+    });
+
+  inFlightPastPapersSummary[cacheKey] = fetchPromise;
+  return fetchPromise;
 }
 
 /**
@@ -1656,7 +1812,7 @@ export async function batchAttachPastPaperPdf(
   filter: { syllabusId: string; year: number; series: string; paperNumber: string | number },
   pdfUrl: string
 ): Promise<{ success: boolean; updatedCount: number }> {
-  clearQuestionBankCache();
+  clearQuestionBankCache({ preservePastPapersSummary: true });
 
   if (!filter.syllabusId || !filter.syllabusId.trim()) {
     throw new Error('batchAttachPastPaperPdf requires a valid, non-empty syllabusId to prevent cross-subject contamination.');
@@ -1727,6 +1883,324 @@ export async function batchAttachPastPaperPdf(
     if (!msErr) successCount += 1;
   }
 
+  updatePastPapersSummaryCache(filter, {
+    hasPdfUrl: true,
+    samplePdfUrl: pdfUrl,
+    linkedPdfCount: data.length,
+  });
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
+/**
+ * Validates an external URL (e.g. Cambridge School Support Hub item link)
+ * and checks whether it points to `schoolsupporthub.cambridge.org`.
+ */
+export function validateCambridgeHubUrl(rawUrl: string): {
+  isValid: boolean;
+  isCambridgeHubDomain: boolean;
+  normalizedUrl: string;
+  warning?: string;
+  error?: string;
+} {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    return {
+      isValid: false,
+      isCambridgeHubDomain: false,
+      normalizedUrl: '',
+      error: 'URL cannot be empty.',
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      isValid: false,
+      isCambridgeHubDomain: false,
+      normalizedUrl: trimmed,
+      error: 'Please enter a valid http:// or https:// URL.',
+    };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      isValid: false,
+      isCambridgeHubDomain: false,
+      normalizedUrl: trimmed,
+      error: 'URL must start with http:// or https://.',
+    };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isCambridgeHubDomain =
+    host === 'schoolsupporthub.cambridge.org' || host.endsWith('.cambridge.org');
+
+  return {
+    isValid: true,
+    isCambridgeHubDomain,
+    normalizedUrl: trimmed,
+    warning: isCambridgeHubDomain
+      ? undefined
+      : 'Tip: This link is not from schoolsupporthub.cambridge.org, but it will still be saved and linked.',
+  };
+}
+
+/**
+ * Helper to query question rows belonging to a specific past paper group.
+ */
+async function fetchQuestionsForPaperGroup(filter: {
+  syllabusId: string;
+  year: number;
+  series: string;
+  paperNumber: string | number;
+}): Promise<{ data: any[]; error: any }> {
+  let query = (supabase as any)
+    .from('questions')
+    .select('id, mark_scheme')
+    .eq('syllabus_id', filter.syllabusId.trim())
+    .eq('year', filter.year);
+
+  if (filter.series) {
+    query = query.eq('series', filter.series);
+  }
+
+  const pNum = Number(filter.paperNumber);
+  if (!isNaN(pNum) && /^\d+$/.test(String(filter.paperNumber).trim())) {
+    query = query.or(`paper_number.eq.${pNum},paper_number.eq.${String(filter.paperNumber).trim()}`);
+  } else {
+    query = query.eq('paper_number', String(filter.paperNumber).trim());
+  }
+
+  const { data, error } = await query;
+  return { data: data || [], error };
+}
+
+/**
+ * Attaches an official Cambridge School Support Hub Question Paper (QP) URL
+ * to all questions belonging to a specific past paper group.
+ */
+export async function batchAttachCambridgeHubUrl(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number },
+  hubUrl: string
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache({ preservePastPapersSummary: true });
+
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchAttachCambridgeHubUrl requires a valid, non-empty syllabusId.');
+  }
+
+  const check = validateCambridgeHubUrl(hubUrl);
+  if (!check.isValid) {
+    throw new Error(check.error || 'Invalid Cambridge Support Hub URL.');
+  }
+
+  const { data, error } = await fetchQuestionsForPaperGroup(filter);
+  if (error || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Try native column update if present (ignore schema error if column not migrated yet)
+  await (supabase as any)
+    .from('questions')
+    .update({ cambridge_hub_url: check.normalizedUrl })
+    .in('id', ids);
+
+  // 2. Keep mark_scheme JSONB in sync for maximum schema resilience
+  let successCount = 0;
+  for (const row of data) {
+    const ms =
+      typeof row.mark_scheme === 'object' && row.mark_scheme !== null
+        ? { ...row.mark_scheme }
+        : { marking_points: ['See mark scheme'] };
+    ms._cambridge_hub_url = check.normalizedUrl;
+
+    const { error: msErr } = await (supabase as any)
+      .from('questions')
+      .update({ mark_scheme: ms })
+      .eq('id', row.id);
+
+    if (!msErr) successCount += 1;
+  }
+
+  updatePastPapersSummaryCache(filter, {
+    hasHubUrl: true,
+    sampleHubUrl: check.normalizedUrl,
+    linkedHubCount: data.length,
+  });
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
+/**
+ * Detaches / clears the Cambridge School Support Hub Question Paper (QP) URL
+ * from all questions belonging to a specific past paper group.
+ */
+export async function batchDetachCambridgeHubUrl(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number }
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache({ preservePastPapersSummary: true });
+
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchDetachCambridgeHubUrl requires a valid, non-empty syllabusId.');
+  }
+
+  const { data, error } = await fetchQuestionsForPaperGroup(filter);
+  if (error || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Clear native column if present
+  await (supabase as any)
+    .from('questions')
+    .update({ cambridge_hub_url: null })
+    .in('id', ids);
+
+  // 2. Clear from mark_scheme JSONB
+  let successCount = 0;
+  for (const row of data) {
+    if (typeof row.mark_scheme === 'object' && row.mark_scheme !== null && row.mark_scheme._cambridge_hub_url) {
+      const ms = { ...row.mark_scheme };
+      delete ms._cambridge_hub_url;
+
+      const { error: msErr } = await (supabase as any)
+        .from('questions')
+        .update({ mark_scheme: ms })
+        .eq('id', row.id);
+
+      if (!msErr) successCount += 1;
+    } else {
+      successCount += 1;
+    }
+  }
+
+  updatePastPapersSummaryCache(filter, {
+    hasHubUrl: false,
+    sampleHubUrl: null,
+    linkedHubCount: 0,
+  });
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
+/**
+ * Attaches an official Cambridge School Support Hub Mark Scheme (MS) URL
+ * to all questions belonging to a specific past paper group.
+ */
+export async function batchAttachCambridgeMsHubUrl(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number },
+  msHubUrl: string
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache({ preservePastPapersSummary: true });
+
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchAttachCambridgeMsHubUrl requires a valid, non-empty syllabusId.');
+  }
+
+  const check = validateCambridgeHubUrl(msHubUrl);
+  if (!check.isValid) {
+    throw new Error(check.error || 'Invalid Cambridge Mark Scheme Hub URL.');
+  }
+
+  const { data, error } = await fetchQuestionsForPaperGroup(filter);
+  if (error || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Try native column update if present
+  await (supabase as any)
+    .from('questions')
+    .update({ cambridge_ms_hub_url: check.normalizedUrl })
+    .in('id', ids);
+
+  // 2. Keep mark_scheme JSONB in sync for maximum schema resilience
+  let successCount = 0;
+  for (const row of data) {
+    const ms =
+      typeof row.mark_scheme === 'object' && row.mark_scheme !== null
+        ? { ...row.mark_scheme }
+        : { marking_points: ['See mark scheme'] };
+    ms._cambridge_ms_hub_url = check.normalizedUrl;
+
+    const { error: msErr } = await (supabase as any)
+      .from('questions')
+      .update({ mark_scheme: ms })
+      .eq('id', row.id);
+
+    if (!msErr) successCount += 1;
+  }
+
+  updatePastPapersSummaryCache(filter, {
+    hasMsHubUrl: true,
+    sampleMsHubUrl: check.normalizedUrl,
+    linkedMsHubCount: data.length,
+  });
+
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
+  return { success: true, updatedCount: successCount };
+}
+
+/**
+ * Detaches / clears the Cambridge School Support Hub Mark Scheme (MS) URL
+ * from all questions belonging to a specific past paper group.
+ */
+export async function batchDetachCambridgeMsHubUrl(
+  filter: { syllabusId: string; year: number; series: string; paperNumber: string | number }
+): Promise<{ success: boolean; updatedCount: number }> {
+  clearQuestionBankCache({ preservePastPapersSummary: true });
+
+  if (!filter.syllabusId || !filter.syllabusId.trim()) {
+    throw new Error('batchDetachCambridgeMsHubUrl requires a valid, non-empty syllabusId.');
+  }
+
+  const { data, error } = await fetchQuestionsForPaperGroup(filter);
+  if (error || data.length === 0) {
+    return { success: !error, updatedCount: 0 };
+  }
+
+  const ids = data.map((d: any) => d.id);
+
+  // 1. Clear native column if present
+  await (supabase as any)
+    .from('questions')
+    .update({ cambridge_ms_hub_url: null })
+    .in('id', ids);
+
+  // 2. Clear from mark_scheme JSONB
+  let successCount = 0;
+  for (const row of data) {
+    if (typeof row.mark_scheme === 'object' && row.mark_scheme !== null && row.mark_scheme._cambridge_ms_hub_url) {
+      const ms = { ...row.mark_scheme };
+      delete ms._cambridge_ms_hub_url;
+
+      const { error: msErr } = await (supabase as any)
+        .from('questions')
+        .update({ mark_scheme: ms })
+        .eq('id', row.id);
+
+      if (!msErr) successCount += 1;
+    } else {
+      successCount += 1;
+    }
+  }
+
+  updatePastPapersSummaryCache(filter, {
+    hasMsHubUrl: false,
+    sampleMsHubUrl: null,
+    linkedMsHubCount: 0,
+  });
+
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return { success: true, updatedCount: successCount };
 }
@@ -1737,7 +2211,7 @@ export async function batchAttachPastPaperPdf(
 export async function batchDetachPastPaperPdf(
   filter: { syllabusId: string; year: number; series: string; paperNumber: string | number }
 ): Promise<{ success: boolean; updatedCount: number }> {
-  clearQuestionBankCache();
+  clearQuestionBankCache({ preservePastPapersSummary: true });
 
   if (!filter.syllabusId || !filter.syllabusId.trim()) {
     throw new Error('batchDetachPastPaperPdf requires a valid, non-empty syllabusId.');
@@ -1790,6 +2264,12 @@ export async function batchDetachPastPaperPdf(
       successCount += 1;
     }
   }
+
+  updatePastPapersSummaryCache(filter, {
+    hasPdfUrl: false,
+    samplePdfUrl: null,
+    linkedPdfCount: 0,
+  });
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
   return { success: true, updatedCount: successCount };

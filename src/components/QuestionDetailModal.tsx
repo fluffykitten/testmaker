@@ -160,6 +160,52 @@ export function QuestionDetailModal({
                 <span>↗</span>
               </a>
             )}
+            {(question.cambridge_hub_url || (question.mark_scheme as any)?._cambridge_hub_url) && (
+              <a
+                href={question.cambridge_hub_url || (question.mark_scheme as any)?._cambridge_hub_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="q-badge"
+                style={{
+                  background: '#eff6ff',
+                  color: '#1d4ed8',
+                  border: '1px solid #bfdbfe',
+                  fontWeight: 600,
+                  fontSize: '0.75rem',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+                title="View Question Paper on Cambridge School Support Hub"
+              >
+                <span>Cambridge QP Hub</span>
+                <span>↗</span>
+              </a>
+            )}
+            {(question.cambridge_ms_hub_url || (question.mark_scheme as any)?._cambridge_ms_hub_url) && (
+              <a
+                href={question.cambridge_ms_hub_url || (question.mark_scheme as any)?._cambridge_ms_hub_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="q-badge"
+                style={{
+                  background: '#f5f3ff',
+                  color: '#6d28d9',
+                  border: '1px solid #ddd6fe',
+                  fontWeight: 600,
+                  fontSize: '0.75rem',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+                title="View Mark Scheme on Cambridge School Support Hub"
+              >
+                <span>Cambridge MS Hub</span>
+                <span>↗</span>
+              </a>
+            )}
             {question.question_style && (
               <span className="q-badge q-badge--style">
                 {question.question_style}

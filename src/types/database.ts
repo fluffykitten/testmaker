@@ -201,6 +201,8 @@ export interface Question {
   difficulty: QuestionDifficulty | null;
   cognitive_level?: CognitiveLevel | null; // Bloom's Taxonomy cognitive level (C1-C6)
   source_pdf_url?: string | null;          // Permanent public URL of the source Question Paper PDF
+  cambridge_hub_url?: string | null;       // Official Cambridge School Support Hub QP resource item URL
+  cambridge_ms_hub_url?: string | null;    // Official Cambridge School Support Hub Mark Scheme resource item URL
   insert_pdf_url?: string | null;          // Permanent public URL of the source Insert / Resource Booklet PDF
   page_number?: number | null;             // 1-indexed page in the QP PDF where this question appears
   marks: number;
@@ -315,6 +317,8 @@ export interface PaperMetadata {
   series: string;
   paper_number: string | number;
   has_insert_booklet?: boolean;
+  cambridge_hub_url?: string | null;
+  cambridge_ms_hub_url?: string | null;
 }
 
 export interface ExtractedQuestion {
@@ -330,6 +334,8 @@ export interface ExtractedQuestion {
   estimated_difficulty: QuestionDifficulty;
   cognitive_level?: CognitiveLevel | null;
   source_pdf_url?: string | null;
+  cambridge_hub_url?: string | null;
+  cambridge_ms_hub_url?: string | null;
   insert_pdf_url?: string | null;
   topic: string;
   sub_topic: string | null;

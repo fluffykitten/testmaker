@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.3.8",
+  "version": "2.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,8 @@
     "test:sorting": "node --import ./scripts/register-ts.mjs scripts/test-builder-sorting.mjs",
     "test:emergency": "node --import ./scripts/register-ts.mjs scripts/test-emergency-fallback.mjs",
     "test:emergency:sim": "node --import ./scripts/register-ts.mjs scripts/simulate-emergency-auto-trigger-import.mjs",
+    "test:tos-citations": "node --import ./scripts/register-ts.mjs scripts/test-tos-citations-dual-links.mjs",
+    "test:cambridge-links": "node --import ./scripts/register-ts.mjs scripts/test-post-upload-cambridge-links.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",
     "deploy:draft": "npm run build && npx netlify deploy --dir=dist",

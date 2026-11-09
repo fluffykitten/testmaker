@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabase';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
 import { propagateReadingPassages, stitchPassagesToQuestions } from '../lib/pdfProcessor';
 import { formatPaperLabel } from '../utils/paperUtils';
+import { validateCambridgeHubUrl } from '../services/questionBankService';
 import './ExtractionReview.css';
 
 interface ExtractionReviewProps {
@@ -23,6 +24,7 @@ interface ExtractionReviewProps {
   isSaving: boolean;
   initialTags?: string;
   onUpdateTags?: (tags: string) => void;
+  onUpdateMetadata?: (metadata: PaperMetadata) => void;
 }
 
 interface CropTarget {
@@ -75,6 +77,7 @@ export function ExtractionReview({
   isSaving,
   initialTags = '',
   onUpdateTags,
+  onUpdateMetadata,
 }: ExtractionReviewProps) {
   const [questions, setQuestions] = useState<ExtractedQuestion[]>(() => cleanExtractedQuestions(result.questions, result.passages));
   const [tags, setTags] = useState<string>(initialTags);
@@ -114,6 +117,14 @@ export function ExtractionReview({
   // Duplicate paper check states
   const [existingDuplicates, setExistingDuplicates] = useState<Set<string>>(new Set());
 
+  // Real-time Cambridge Support Hub URL validations
+  const qpValidation = paperMetadata.cambridge_hub_url
+    ? validateCambridgeHubUrl(paperMetadata.cambridge_hub_url)
+    : null;
+  const msValidation = paperMetadata.cambridge_ms_hub_url
+    ? validateCambridgeHubUrl(paperMetadata.cambridge_ms_hub_url)
+    : null;
+
   // Sync questions & metadata if external result changes
   useEffect(() => {
     if (result?.questions) {
@@ -139,7 +150,22 @@ export function ExtractionReview({
     setCustomTargetMarks(!isNaN(Number(parsedTarget)) && (parsedTarget || 0) > 0 ? parsedTarget : null);
     setTags(tagsDraft);
     onUpdateTags?.(tagsDraft);
+    onUpdateMetadata?.(metadataDraft);
     setIsEditingMetadata(false);
+  };
+
+  const handleUpdateCambridgeLink = (target: 'qp' | 'ms', value: string) => {
+    const trimmed = value.trim();
+    const updatedMeta: PaperMetadata = {
+      ...paperMetadata,
+      [target === 'qp' ? 'cambridge_hub_url' : 'cambridge_ms_hub_url']: trimmed ? trimmed : null,
+    };
+    setPaperMetadata(updatedMeta);
+    setMetadataDraft((prev) => ({
+      ...prev,
+      [target === 'qp' ? 'cambridge_hub_url' : 'cambridge_ms_hub_url']: trimmed ? trimmed : null,
+    }));
+    onUpdateMetadata?.(updatedMeta);
   };
 
   // ─── Duplicate Paper & Question Check ──────────────────────────────────────
@@ -462,6 +488,8 @@ export function ExtractionReview({
           year: paperMetadata.year,
           series: paperMetadata.series,
           paper_number: paperMetadata.paper_number,
+          cambridge_hub_url: q.cambridge_hub_url || paperMetadata.cambridge_hub_url || null,
+          cambridge_ms_hub_url: q.cambridge_ms_hub_url || paperMetadata.cambridge_ms_hub_url || null,
         })),
       },
       tags
@@ -614,6 +642,18 @@ export function ExtractionReview({
             onClick={handleOpenMetadataModal}
             isClickable
           />
+          <MetaBadge
+            label="Cambridge QP Link"
+            value={paperMetadata.cambridge_hub_url ? '✓ Linked' : '+ Add QP Link'}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
+          <MetaBadge
+            label="Cambridge MS Link"
+            value={paperMetadata.cambridge_ms_hub_url ? '✓ Linked' : '+ Add MS Link'}
+            onClick={handleOpenMetadataModal}
+            isClickable
+          />
           <MetaBadge label="Extracted" value={`${questions.length} Questions`} />
           
           {/* Dynamic Mark Tally Validator Badge */}
@@ -639,6 +679,130 @@ export function ExtractionReview({
           <div className="meta-badge meta-badge--selected">
             <span className="meta-badge-label">Selected to Save</span>
             <span className="meta-badge-value">{selectedIndices.size} of {questions.length} ({totalSelectedMarks} marks)</span>
+          </div>
+        </div>
+
+        {/* ─── Cambridge Support Hub Links Card (for ToS Citations) ─────────────── */}
+        <div className="review-cambridge-links-card">
+          <div className="review-cambridge-links-header">
+            <div className="review-cambridge-links-title-wrap">
+              <span className="review-cambridge-links-icon">🔗</span>
+              <div>
+                <strong className="review-cambridge-links-title">
+                  Official Cambridge School Support Hub Links
+                </strong>
+                <span className="review-cambridge-links-badge">Table of Specifications (ToS) Citations</span>
+                <p className="review-cambridge-links-desc">
+                  Attach Cambridge Hub links to power official hyperlinks in exported assessment specifications. Links will be applied to all {questions.length} questions when saved.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="review-cambridge-links-grid">
+            {/* Question Paper Hub Link */}
+            <div className="review-cambridge-input-block">
+              <div className="review-cambridge-label-row">
+                <label htmlFor="review-qp-hub-url">
+                  📄 Cambridge Question Paper (QP) Link
+                </label>
+                {qpValidation && (
+                  <span
+                    className={`review-cambridge-status-pill ${
+                      qpValidation.isCambridgeHubDomain
+                        ? 'review-cambridge-status--valid'
+                        : qpValidation.isValid
+                        ? 'review-cambridge-status--warning'
+                        : 'review-cambridge-status--error'
+                    }`}
+                  >
+                    {qpValidation.isCambridgeHubDomain
+                      ? '✓ Cambridge Hub'
+                      : qpValidation.isValid
+                      ? 'ℹ️ Custom Link'
+                      : '⚠️ Invalid URL'}
+                  </span>
+                )}
+              </div>
+              <div className="review-cambridge-input-wrapper">
+                <input
+                  id="review-qp-hub-url"
+                  type="url"
+                  className="review-cambridge-url-input"
+                  placeholder="https://schoolsupporthub.cambridge.org/item/..."
+                  value={paperMetadata.cambridge_hub_url || ''}
+                  onChange={(e) => handleUpdateCambridgeLink('qp', e.target.value)}
+                />
+                {paperMetadata.cambridge_hub_url && (
+                  <button
+                    type="button"
+                    className="review-cambridge-clear-btn"
+                    onClick={() => handleUpdateCambridgeLink('qp', '')}
+                    title="Clear Question Paper Hub Link"
+                    aria-label="Clear Question Paper Hub Link"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {qpValidation?.warning && (
+                <span className="review-cambridge-hint-text review-cambridge-hint--warning">
+                  {qpValidation.warning}
+                </span>
+              )}
+            </div>
+
+            {/* Mark Scheme Hub Link */}
+            <div className="review-cambridge-input-block">
+              <div className="review-cambridge-label-row">
+                <label htmlFor="review-ms-hub-url">
+                  📝 Cambridge Mark Scheme (MS) Link
+                </label>
+                {msValidation && (
+                  <span
+                    className={`review-cambridge-status-pill ${
+                      msValidation.isCambridgeHubDomain
+                        ? 'review-cambridge-status--valid'
+                        : msValidation.isValid
+                        ? 'review-cambridge-status--warning'
+                        : 'review-cambridge-status--error'
+                    }`}
+                  >
+                    {msValidation.isCambridgeHubDomain
+                      ? '✓ Cambridge Hub'
+                      : msValidation.isValid
+                      ? 'ℹ️ Custom Link'
+                      : '⚠️ Invalid URL'}
+                  </span>
+                )}
+              </div>
+              <div className="review-cambridge-input-wrapper">
+                <input
+                  id="review-ms-hub-url"
+                  type="url"
+                  className="review-cambridge-url-input"
+                  placeholder="https://schoolsupporthub.cambridge.org/item/..."
+                  value={paperMetadata.cambridge_ms_hub_url || ''}
+                  onChange={(e) => handleUpdateCambridgeLink('ms', e.target.value)}
+                />
+                {paperMetadata.cambridge_ms_hub_url && (
+                  <button
+                    type="button"
+                    className="review-cambridge-clear-btn"
+                    onClick={() => handleUpdateCambridgeLink('ms', '')}
+                    title="Clear Mark Scheme Hub Link"
+                    aria-label="Clear Mark Scheme Hub Link"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {msValidation?.warning && (
+                <span className="review-cambridge-hint-text review-cambridge-hint--warning">
+                  {msValidation.warning}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1363,6 +1527,8 @@ export function ExtractionReview({
               difficulty: curQ.estimated_difficulty || 'Medium',
               cognitive_level: curQ.cognitive_level || 'C2',
               source_pdf_url: curQ.source_pdf_url || null,
+              cambridge_hub_url: curQ.cambridge_hub_url || null,
+              cambridge_ms_hub_url: curQ.cambridge_ms_hub_url || null,
               page_number: curQ.page_number ?? null,
               marks: Number(curQ.total_marks) || 1,
               diagram_url: diagramUrl,
@@ -1396,6 +1562,8 @@ export function ExtractionReview({
                   estimated_difficulty: saved.difficulty || 'Medium',
                   cognitive_level: saved.cognitive_level !== undefined ? saved.cognitive_level : (originalQ.cognitive_level || null),
                   source_pdf_url: saved.source_pdf_url !== undefined ? saved.source_pdf_url : originalQ.source_pdf_url,
+                  cambridge_hub_url: saved.cambridge_hub_url !== undefined ? saved.cambridge_hub_url : originalQ.cambridge_hub_url,
+                  cambridge_ms_hub_url: saved.cambridge_ms_hub_url !== undefined ? saved.cambridge_ms_hub_url : originalQ.cambridge_ms_hub_url,
                   page_number: saved.page_number !== undefined ? (saved.page_number ?? undefined) : originalQ.page_number,
                   total_marks: saved.marks,
                   question_style: resolvedSavedStyle,
@@ -1576,6 +1744,36 @@ export function ExtractionReview({
                       value={targetMarksDraft}
                       onChange={(e) => setTargetMarksDraft(e.target.value)}
                       placeholder="e.g. 25, 50, 100 (auto if empty)"
+                    />
+                  </div>
+
+                  <div className="review-meta-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>
+                      📄 Cambridge Question Paper (QP) Link
+                      <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                        (schoolsupporthub.cambridge.org item link for ToS citations)
+                      </span>
+                    </label>
+                    <input
+                      type="url"
+                      value={metadataDraft.cambridge_hub_url || ''}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, cambridge_hub_url: e.target.value.trim() || null })}
+                      placeholder="https://schoolsupporthub.cambridge.org/item/..."
+                    />
+                  </div>
+
+                  <div className="review-meta-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>
+                      📝 Cambridge Mark Scheme (MS) Link
+                      <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                        (Official mark scheme item link for ToS citations)
+                      </span>
+                    </label>
+                    <input
+                      type="url"
+                      value={metadataDraft.cambridge_ms_hub_url || ''}
+                      onChange={(e) => setMetadataDraft({ ...metadataDraft, cambridge_ms_hub_url: e.target.value.trim() || null })}
+                      placeholder="https://schoolsupporthub.cambridge.org/item/..."
                     />
                   </div>
 

@@ -145,6 +145,8 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
         isIgcse: boolean;
         isSaveMyExams?: boolean;
         tags?: string;
+        cambridgeHubUrl?: string;
+        cambridgeMsHubUrl?: string;
       } = {
         includeGuidance: true,
         domain: 'stem',
@@ -382,6 +384,21 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
             isSaving={isSaving}
             initialTags={pendingTags}
             onUpdateTags={(newTags) => setPendingTags(newTags)}
+            onUpdateMetadata={(newMeta) => {
+              setExtractionResult((prev) => {
+                if (!prev) return prev;
+                const next = { ...prev, paper_metadata: newMeta };
+                saveUploadDraft(
+                  uploadedQpFile?.name || 'Exam Paper',
+                  next,
+                  diagramData,
+                  uploadedQpFile,
+                  uploadedInsertFile,
+                  pendingTags
+                );
+                return next;
+              });
+            }}
           />
         )}
 

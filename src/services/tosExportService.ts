@@ -57,6 +57,8 @@ interface TosRowItem {
   citationBody: string;
   citationText: string;
   citationUrl?: string;
+  cambridgeHubUrl?: string;
+  cambridgeMsHubUrl?: string;
   insertCitationUrl?: string;
   pageNumber?: number | null;
   insertPageNumber?: number | null;
@@ -322,17 +324,20 @@ function buildNestedDocxTable(tableRows: string[][], fontName: string): Table {
 
 /**
  * Builds formatted past paper citation text and direct page link URL,
- * accurately extracting and cross-referencing Question Paper and Insert Booklet details.
+ * accurately extracting and cross-referencing Question Paper, Cambridge Support Hub (QP & MS),
+ * and Insert Booklet details.
  */
-function buildCitationInfo(
+export function buildCitationInfo(
   q: Question,
   sq?: SubQuestion,
-  subPart?: string
+  _subPart?: string
 ): {
   citationPrefix: string;
   citationBody: string;
   citationText: string;
   citationUrl?: string;
+  cambridgeHubUrl?: string;
+  cambridgeMsHubUrl?: string;
   insertCitationUrl?: string;
   pageNumber?: number | null;
   insertPageNumber?: number | null;
@@ -344,22 +349,25 @@ function buildCitationInfo(
   const paper = q.paper_number !== null && q.paper_number !== undefined ? `Paper ${q.paper_number}` : '';
   const season = q.series || '';
   const year = q.year ? String(q.year) : '';
-  const qNum = q.question_number ? `Q${q.question_number}${subPart ? `(${subPart})` : ''}` : '';
 
   if (paper) parts.push(paper);
   if (season || year) parts.push([season, year].filter(Boolean).join(' '));
-  if (qNum) parts.push(qNum);
 
   const citationPrefix = 'IGCSE Level:';
   let citationBody = parts.length > 0 ? parts.join(' ') : 'Past Paper Reference';
 
-  // 1. Question Paper Page Number & Deep Link
+  // 1. Question Paper Page Number, Server Deep Link, and Cambridge Support Hub Links
   const pageNum = sq?.page_number ?? q.page_number ?? (q.mark_scheme as any)?._page_number ?? null;
   let citationUrl = q.source_pdf_url || (q.mark_scheme as any)?._source_pdf_url || undefined;
 
   if (citationUrl && pageNum && !citationUrl.includes('#page=')) {
     citationUrl = `${citationUrl}#page=${pageNum}`;
   }
+
+  const cambridgeHubUrl =
+    (q.cambridge_hub_url || (q.mark_scheme as any)?._cambridge_hub_url || '').trim() || undefined;
+  const cambridgeMsHubUrl =
+    (q.cambridge_ms_hub_url || (q.mark_scheme as any)?._cambridge_ms_hub_url || '').trim() || undefined;
 
   // 2. Insert / Resource Booklet Metadata Resolution
   const diagramSource = sq?.diagram_source || q.diagram_source || null;
@@ -395,6 +403,8 @@ function buildCitationInfo(
     citationBody,
     citationText,
     citationUrl,
+    cambridgeHubUrl,
+    cambridgeMsHubUrl,
     insertCitationUrl,
     pageNumber: pageNum,
     insertPageNumber: insertPageNum,
@@ -450,7 +460,7 @@ async function prepareTosRowsAsync(
         const sq = q.sub_questions![sIdx];
         const subPart = sq.sub_id ? sq.sub_id.replace(/[()]/g, '') : String.fromCharCode(97 + sIdx);
         const cogLevel: CognitiveLevel = sq.cognitive_level || q.cognitive_level || 'C2';
-        const { citationPrefix, citationBody, citationText, citationUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q, sq, subPart);
+        const { citationPrefix, citationBody, citationText, citationUrl, cambridgeHubUrl, cambridgeMsHubUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q, sq, subPart);
 
         const questionElements: (Paragraph | Table)[] = [];
 
@@ -532,6 +542,8 @@ async function prepareTosRowsAsync(
           citationBody,
           citationText,
           citationUrl,
+          cambridgeHubUrl,
+          cambridgeMsHubUrl,
           insertCitationUrl,
           pageNumber,
           insertPageNumber,
@@ -542,7 +554,7 @@ async function prepareTosRowsAsync(
     } else {
       // Single row for parent question
       const cogLevel: CognitiveLevel = q.cognitive_level || 'C2';
-      const { citationPrefix, citationBody, citationText, citationUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q);
+      const { citationPrefix, citationBody, citationText, citationUrl, cambridgeHubUrl, cambridgeMsHubUrl, insertCitationUrl, pageNumber, insertPageNumber, resourceRef, isInsertResource } = buildCitationInfo(q);
 
       const questionElements: (Paragraph | Table)[] = [];
 
@@ -693,6 +705,8 @@ async function prepareTosRowsAsync(
         citationBody,
         citationText,
         citationUrl,
+        cambridgeHubUrl,
+        cambridgeMsHubUrl,
         insertCitationUrl,
         pageNumber,
         insertPageNumber,
@@ -1107,13 +1121,245 @@ function buildCognitiveSummaryTable(rows: TosRowItem[], fontName: string): Table
 }
 
 /**
- * Generates and downloads the Table of Specifications Word (.docx) document.
+ * Builds an elegant shaded callout box placed right above the Item Specifications & Citations Table
+ * instructing assessors and reviewers on how to use the Cambridge Support Hub and School Server links.
  */
-export async function exportTableOfSpecificationsDocx(
+export function buildAccessInstructionCalloutTable(fontName = 'Calibri'): Table {
+  const borderAccent = { style: BorderStyle.SINGLE, size: 24, color: '002D62' };
+  const borderThin = { style: BorderStyle.SINGLE, size: 4, color: 'CBD5E1' };
+
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            shading: { fill: 'F8FAFC' },
+            borders: {
+              top: borderThin,
+              bottom: borderThin,
+              right: borderThin,
+              left: borderAccent,
+            },
+            margins: { top: 100, bottom: 100, left: 160, right: 160 },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 0, after: 40, line: 240 },
+                children: [
+                  new TextRun({
+                    text: 'Past Paper Citation & Verification Guide',
+                    bold: true,
+                    size: 17,
+                    font: fontName,
+                    color: '002D62',
+                  }),
+                ],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 0, after: 30, line: 230 },
+                children: [
+                  new TextRun({
+                    text: 'Access Note: ',
+                    bold: true,
+                    size: 16,
+                    font: fontName,
+                    color: '1E293B',
+                  }),
+                  new TextRun({
+                    text: "Paper titles link directly to official Cambridge School Support Hub resources (authorized login required). The 'Server Copy' links below provide direct, login-free page access to archived PDF copies on the school server.",
+                    size: 16,
+                    font: fontName,
+                    color: '334155',
+                  }),
+                ],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                spacing: { before: 0, after: 0, line: 230 },
+                children: [
+                  new TextRun({
+                    text: 'Mark Scheme Reference: ',
+                    bold: true,
+                    size: 16,
+                    font: fontName,
+                    color: '1E293B',
+                  }),
+                  new TextRun({
+                    text: "Click 'Official Mark Scheme (Hub) \u2197' in the Citation column to open the official Cambridge Mark Scheme resource.",
+                    size: 16,
+                    font: fontName,
+                    color: '334155',
+                  }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Builds the paragraph elements inside a Citation table cell:
+ * 1. Paper Title (hyperlinked to Cambridge QP Hub URL if present, otherwise bold plain text)
+ * 2. Server Copy raw deep-link URL (if present)
+ * 3. Insert Copy raw deep-link URL (if present)
+ * 4. Concise "Official Mark Scheme (Hub) ↗" hyperlink (if present)
+ */
+export function buildCitationCellChildren(
+  row: Pick<
+    TosRowItem,
+    'citationPrefix' | 'citationBody' | 'citationUrl' | 'cambridgeHubUrl' | 'cambridgeMsHubUrl' | 'insertCitationUrl'
+  >,
+  fontName = 'Calibri'
+): Paragraph[] {
+  const fullTitle = `${row.citationPrefix} ${row.citationBody}`;
+
+  const citationChildren: Paragraph[] = [
+    new Paragraph({
+      alignment: AlignmentType.LEFT,
+      spacing: { before: 20, after: 20, line: 240 },
+      children: [
+        row.cambridgeHubUrl
+          ? new ExternalHyperlink({
+              children: [
+                new TextRun({
+                  text: fullTitle,
+                  bold: true,
+                  size: 16,
+                  font: fontName,
+                  color: '0563C1',
+                  underline: { type: UnderlineType.SINGLE },
+                }),
+              ],
+              link: row.cambridgeHubUrl,
+            })
+          : new TextRun({
+              text: fullTitle,
+              bold: true,
+              size: 16,
+              font: fontName,
+              color: '111827',
+            }),
+      ],
+    }),
+  ];
+
+  if (row.citationUrl) {
+    citationChildren.push(
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: {
+          before: 0,
+          after: row.insertCitationUrl || row.cambridgeMsHubUrl ? 10 : 20,
+          line: 220,
+        },
+        children: [
+          new TextRun({
+            text: 'Server Copy: ',
+            bold: true,
+            size: 12,
+            font: fontName,
+            color: '6B7280',
+          }),
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: row.citationUrl,
+                size: 12,
+                font: fontName,
+                color: '0563C1',
+                underline: { type: UnderlineType.SINGLE },
+              }),
+            ],
+            link: row.citationUrl,
+          }),
+        ],
+      })
+    );
+  }
+
+  if (row.insertCitationUrl) {
+    citationChildren.push(
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { before: 0, after: row.cambridgeMsHubUrl ? 10 : 20, line: 220 },
+        children: [
+          new TextRun({
+            text: 'Insert Copy: ',
+            bold: true,
+            size: 12,
+            font: fontName,
+            color: '0D9488',
+          }),
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: row.insertCitationUrl,
+                size: 12,
+                font: fontName,
+                color: '0D9488',
+                underline: { type: UnderlineType.SINGLE },
+              }),
+            ],
+            link: row.insertCitationUrl,
+          }),
+        ],
+      })
+    );
+  }
+
+  if (row.cambridgeMsHubUrl) {
+    citationChildren.push(
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { before: 10, after: 20, line: 220 },
+        children: [
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: 'Official Mark Scheme (Hub) \u2197',
+                bold: true,
+                size: 13,
+                font: fontName,
+                color: '7C3AED',
+                underline: { type: UnderlineType.SINGLE },
+              }),
+            ],
+            link: row.cambridgeMsHubUrl,
+          }),
+        ],
+      })
+    );
+  }
+
+  if (!row.citationUrl && !row.insertCitationUrl && !row.cambridgeHubUrl && !row.cambridgeMsHubUrl) {
+    citationChildren.push(
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { before: 0, after: 20 },
+        children: [
+          new TextRun({ text: '(PDF link pending)', italics: true, size: 13, font: fontName, color: '9CA3AF' }),
+        ],
+      })
+    );
+  }
+
+  return citationChildren;
+}
+
+/**
+ * Constructs the Word Document instance for the Table of Specifications.
+ */
+export async function buildTableOfSpecificationsDocument(
   headerConfig: ExamHeaderConfig,
   questions: Question[],
   options: TosExportOptions = {}
-): Promise<void> {
+): Promise<Document> {
   const fontName = options.fontName || 'Calibri';
   const expandSubQuestions = options.expandSubQuestions ?? true;
   const includeCognitiveSummary = options.includeCognitiveSummary ?? true;
@@ -1189,80 +1435,7 @@ export async function exportTableOfSpecificationsDocx(
 
   // 3. Build Question Item Rows
   rows.forEach((row) => {
-    // Citation cell children: shows source reference and the raw clickable URL
-    const citationChildren: Paragraph[] = [
-      new Paragraph({
-        alignment: AlignmentType.LEFT,
-        spacing: { before: 20, after: 20, line: 240 },
-        children: [
-          new TextRun({
-            text: `${row.citationPrefix} ${row.citationBody}`,
-            bold: true,
-            size: 16,
-            font: fontName,
-            color: '111827',
-          }),
-        ],
-      }),
-    ];
-
-    if (row.citationUrl) {
-      citationChildren.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          spacing: { before: 0, after: row.insertCitationUrl ? 10 : 20, line: 220 },
-          children: [
-            new ExternalHyperlink({
-              children: [
-                new TextRun({
-                  text: row.citationUrl,
-                  size: 12,
-                  font: fontName,
-                  color: '0563C1',
-                  underline: { type: UnderlineType.SINGLE },
-                }),
-              ],
-              link: row.citationUrl,
-            }),
-          ],
-        })
-      );
-    }
-
-    if (row.insertCitationUrl) {
-      citationChildren.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          spacing: { before: 0, after: 20, line: 220 },
-          children: [
-            new ExternalHyperlink({
-              children: [
-                new TextRun({
-                  text: row.insertCitationUrl,
-                  size: 12,
-                  font: fontName,
-                  color: '0D9488',
-                  underline: { type: UnderlineType.SINGLE },
-                }),
-              ],
-              link: row.insertCitationUrl,
-            }),
-          ],
-        })
-      );
-    }
-
-    if (!row.citationUrl && !row.insertCitationUrl) {
-      citationChildren.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          spacing: { before: 0, after: 20 },
-          children: [
-            new TextRun({ text: '(PDF link pending)', italics: true, size: 13, font: fontName, color: '9CA3AF' }),
-          ],
-        })
-      );
-    }
+    const citationChildren = buildCitationCellChildren(row, fontName);
 
     mainTableRows.push(
       new TableRow({
@@ -1460,6 +1633,10 @@ export async function exportTableOfSpecificationsDocx(
     })
   );
 
+  // E2. Access Instruction Callout Note Box right above the Main Specifications Table
+  docChildren.push(buildAccessInstructionCalloutTable(fontName));
+  docChildren.push(new Paragraph({ text: '', spacing: { before: 60, after: 80 } }));
+
   // F. Main ToS Table
   docChildren.push(tosTable);
 
@@ -1512,7 +1689,7 @@ export async function exportTableOfSpecificationsDocx(
           color: '374151',
         }),
         new TextRun({
-          text: 'Cambridge past paper source reference with clickable deep-link to the exact question page in the Question Paper PDF',
+          text: 'Paper titles link to official Cambridge School Support Hub Question Paper items (login required); Server Copy links open exact question pages directly on the school server; Official Mark Scheme (Hub) links open the official Cambridge Mark Scheme resource.',
           size: 16,
           font: fontName,
           color: '4B5563',
@@ -1522,7 +1699,7 @@ export async function exportTableOfSpecificationsDocx(
   );
 
   // 5. Construct complete Word Document in Landscape A4
-  const doc = new Document({
+  return new Document({
     sections: [
       {
         properties: {
@@ -1585,7 +1762,17 @@ export async function exportTableOfSpecificationsDocx(
       },
     ],
   });
+}
 
+/**
+ * Generates and downloads the Table of Specifications Word (.docx) document.
+ */
+export async function exportTableOfSpecificationsDocx(
+  headerConfig: ExamHeaderConfig,
+  questions: Question[],
+  options: TosExportOptions = {}
+): Promise<void> {
+  const doc = await buildTableOfSpecificationsDocument(headerConfig, questions, options);
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam').replace(/[^a-zA-Z0-9_-]/g, '_');
   await exportFileUniversal(

@@ -14,7 +14,7 @@
   background: #ffffff;
   border-radius: 12px;
   width: 100%;
-  max-width: 820px;
+  max-width: 1040px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
@@ -111,6 +111,28 @@
   background: rgba(245, 158, 11, 0.12);
   color: #d97706;
   border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.past-paper-badge-hub {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(37, 99, 235, 0.25);
+}
+
+.past-paper-badge-ms-hub {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(124, 58, 237, 0.12);
+  color: #6d28d9;
+  border: 1px solid rgba(124, 58, 237, 0.25);
 }
 
 .past-paper-btn {

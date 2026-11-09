@@ -10,7 +10,7 @@ export async function load(url, context, next) {
     const source = fs.readFileSync(new URL(url), 'utf8');
     const names = [...source.matchAll(/export\s+(?:const|let|var|function|class)\s+([A-Za-z0-9_$]+)/g)].map((m) => m[1]);
     const hasDefault = /export\s+default/.test(source);
-    const stub = names.map((name) => `export const ${name} = undefined;`).join('\n') + (hasDefault ? '\nexport default undefined;' : '');
+    const stub = names.map((name) => `export const ${name} = (x) => x;`).join('\n') + (hasDefault ? '\nexport default (x) => x;' : '');
     return { format: 'module', shortCircuit: true, source: stub };
   }
   return next(url, context);

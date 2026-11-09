@@ -76,6 +76,8 @@ export interface ExtractionPipelineOptions {
   isIgcse?: boolean;
   isSaveMyExams?: boolean;
   tags?: string;
+  cambridgeHubUrl?: string;
+  cambridgeMsHubUrl?: string;
 }
 
 // ─── Step 2: Resolve or create syllabus ────────────────────────────────────────
@@ -193,11 +195,23 @@ export async function saveExtractedQuestions(
     }
 
     const effectivePdfUrl = q.source_pdf_url || sourcePdfUrl || null;
+    const effectiveHubUrl =
+      q.cambridge_hub_url ||
+      paper_metadata.cambridge_hub_url ||
+      (q.mark_scheme as any)?._cambridge_hub_url ||
+      null;
+    const effectiveMsHubUrl =
+      q.cambridge_ms_hub_url ||
+      paper_metadata.cambridge_ms_hub_url ||
+      (q.mark_scheme as any)?._cambridge_ms_hub_url ||
+      null;
     const effectiveInsertPdfUrl = q.insert_pdf_url || insertPdfUrl || null;
     const effectiveCognitiveLevel = q.cognitive_level || null;
     const effectivePageNumber = q.page_number || null;
 
     if (effectivePdfUrl) (ms as any)._source_pdf_url = effectivePdfUrl;
+    if (effectiveHubUrl) (ms as any)._cambridge_hub_url = effectiveHubUrl;
+    if (effectiveMsHubUrl) (ms as any)._cambridge_ms_hub_url = effectiveMsHubUrl;
     if (effectiveInsertPdfUrl) (ms as any)._insert_pdf_url = effectiveInsertPdfUrl;
     if (effectiveCognitiveLevel) (ms as any)._cognitive_level = effectiveCognitiveLevel;
     if (effectivePageNumber) (ms as any)._page_number = effectivePageNumber;
@@ -216,6 +230,8 @@ export async function saveExtractedQuestions(
       difficulty: q.estimated_difficulty,
       cognitive_level: effectiveCognitiveLevel,
       source_pdf_url: effectivePdfUrl,
+      cambridge_hub_url: effectiveHubUrl,
+      cambridge_ms_hub_url: effectiveMsHubUrl,
       insert_pdf_url: effectiveInsertPdfUrl,
       page_number: effectivePageNumber,
       marks: q.total_marks,
@@ -258,6 +274,8 @@ export async function saveExtractedQuestions(
       error.message.includes('paper_number') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
+      error.message.includes('cambridge_hub_url') ||
+      error.message.includes('cambridge_ms_hub_url') ||
       error.message.includes('insert_pdf_url') ||
       error.message.includes('page_number') ||
       error.message.includes('schema cache') ||
@@ -265,7 +283,7 @@ export async function saveExtractedQuestions(
       error.message.includes('invalid input syntax for type integer'))
   ) {
     console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
-    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, insert_pdf_url, audio_url, audio_metadata, cognitive_level, source_pdf_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, insert_pdf_url, audio_url, audio_metadata, cognitive_level, source_pdf_url, cambridge_hub_url, cambridge_ms_hub_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
       const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
       if (audio_url) (ms as any)._audio_url = audio_url;
       if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
@@ -274,6 +292,8 @@ export async function saveExtractedQuestions(
       if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
       if (cognitive_level) (ms as any)._cognitive_level = cognitive_level;
       if (source_pdf_url) (ms as any)._source_pdf_url = source_pdf_url;
+      if (cambridge_hub_url) (ms as any)._cambridge_hub_url = cambridge_hub_url;
+      if (cambridge_ms_hub_url) (ms as any)._cambridge_ms_hub_url = cambridge_ms_hub_url;
       if (insert_pdf_url) (ms as any)._insert_pdf_url = insert_pdf_url;
       if (page_number) (ms as any)._page_number = page_number;
 
@@ -1055,32 +1075,38 @@ export async function runExtractionPipeline(
         return true;
       });
 
+      const baseMeta = chunkResults[0]?.paper_metadata || {
+        subject:
+          detectedSubject?.subjectName ??
+          (options.domain === 'languages'
+            ? 'English'
+            : options.domain === 'humanities'
+            ? 'Humanities'
+            : 'Chemistry'),
+        subject_code:
+          detectedSubject?.syllabusCode ??
+          (options.domain === 'languages'
+            ? 'ENG'
+            : options.domain === 'humanities'
+            ? 'HUM'
+            : options.isIgcse !== false
+            ? '0620'
+            : 'CHEM'),
+        year: new Date().getFullYear(),
+        series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
+        paper_number: isSaveMyExams
+          ? smeMeta?.packType === 'theory'
+            ? 'Theory'
+            : 'MCQ'
+          : Number(paperOutline?.profile.paperCode) || 1,
+        has_insert_booklet: Boolean(insertFile),
+      };
+
       result = {
-        paper_metadata: chunkResults[0]?.paper_metadata || {
-          subject:
-            detectedSubject?.subjectName ??
-            (options.domain === 'languages'
-              ? 'English'
-              : options.domain === 'humanities'
-              ? 'Humanities'
-              : 'Chemistry'),
-          subject_code:
-            detectedSubject?.syllabusCode ??
-            (options.domain === 'languages'
-              ? 'ENG'
-              : options.domain === 'humanities'
-              ? 'HUM'
-              : options.isIgcse !== false
-              ? '0620'
-              : 'CHEM'),
-          year: new Date().getFullYear(),
-          series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
-          paper_number: isSaveMyExams
-            ? smeMeta?.packType === 'theory'
-              ? 'Theory'
-              : 'MCQ'
-            : Number(paperOutline?.profile.paperCode) || 1,
-          has_insert_booklet: Boolean(insertFile),
+        paper_metadata: {
+          ...baseMeta,
+          cambridge_hub_url: options.cambridgeHubUrl || baseMeta.cambridge_hub_url || null,
+          cambridge_ms_hub_url: options.cambridgeMsHubUrl || baseMeta.cambridge_ms_hub_url || null,
         },
         questions: finalizedQuestions,
         insert_resources: uniqueInsertResources.length > 0 ? uniqueInsertResources : undefined,

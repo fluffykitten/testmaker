@@ -3,8 +3,14 @@ import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import {
   fetchDistinctPastPapersSummary,
+  updatePastPapersSummaryCache,
   batchAttachPastPaperPdf,
   batchDetachPastPaperPdf,
+  batchAttachCambridgeHubUrl,
+  batchDetachCambridgeHubUrl,
+  batchAttachCambridgeMsHubUrl,
+  batchDetachCambridgeMsHubUrl,
+  validateCambridgeHubUrl,
   fetchSyllabuses,
   type PastPaperGroupSummary,
 } from '../services/questionBankService';
@@ -20,6 +26,8 @@ interface PastPaperPdfManagerModalProps {
   onPdfsUpdated?: () => void;
 }
 
+type EditingTarget = 'pdf' | 'qp_hub' | 'ms_hub';
+
 export function PastPaperPdfManagerModal({
   isOpen,
   onClose,
@@ -33,6 +41,7 @@ export function PastPaperPdfManagerModal({
   const [isLoading, setIsLoading] = useState(true);
   const [activeUploadKey, setActiveUploadKey] = useState<string | null>(null);
   const [editingUrlKey, setEditingUrlKey] = useState<string | null>(null);
+  const [editingTarget, setEditingTarget] = useState<EditingTarget>('pdf');
   const [customUrlInput, setCustomUrlInput] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -55,18 +64,42 @@ export function PastPaperPdfManagerModal({
     }
   }, [isOpen]);
 
-  const loadPapers = async (filterSylId?: string) => {
+  const loadPapers = async (filterSylId?: string, forceRefresh = false) => {
     setIsLoading(true);
     try {
       const activeSyl = filterSylId !== undefined ? filterSylId : selectedSyllabusId;
       const targetSylId = activeSyl && activeSyl !== 'all' ? activeSyl : undefined;
-      const data = await fetchDistinctPastPapersSummary(targetSylId);
+      const data = await fetchDistinctPastPapersSummary(targetSylId, { forceRefresh });
       setPapers(data);
     } catch (err) {
       console.error('Failed to load past papers summary:', err);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const updateLocalPaper = (
+    paper: PastPaperGroupSummary,
+    updates: Partial<PastPaperGroupSummary>
+  ) => {
+    const filter = {
+      syllabusId: paper.syllabusId,
+      year: paper.year,
+      series: paper.series,
+      paperNumber: paper.paperNumber,
+    };
+    setPapers((prev) =>
+      prev.map((p) => {
+        const matches =
+          p.syllabusId === filter.syllabusId &&
+          p.year === filter.year &&
+          p.series.toLowerCase() === filter.series.toLowerCase() &&
+          String(p.paperNumber) === String(filter.paperNumber);
+        if (!matches) return p;
+        return { ...p, ...updates };
+      })
+    );
+    updatePastPapersSummaryCache(filter, updates);
   };
 
   useEffect(() => {
@@ -110,8 +143,13 @@ export function PastPaperPdfManagerModal({
         url
       );
 
+      updateLocalPaper(paper, {
+        hasPdfUrl: true,
+        samplePdfUrl: url,
+        linkedPdfCount: res.updatedCount || paper.totalQuestions,
+      });
+
       setStatusMessage(`Attached PDF to ${res.updatedCount} questions in ${paper.subjectName} (${paper.subjectCode}).`);
-      await loadPapers();
       onPdfsUpdated?.();
     } catch (err: any) {
       setStatusMessage(`Error: ${err?.message || 'Upload failed'}`);
@@ -131,23 +169,46 @@ export function PastPaperPdfManagerModal({
 
     const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
     setActiveUploadKey(key);
-    setStatusMessage('Attaching PDF URL…');
 
     try {
-      const res = await batchAttachPastPaperPdf(
-        {
-          syllabusId: paper.syllabusId,
-          year: paper.year,
-          series: paper.series,
-          paperNumber: paper.paperNumber,
-        },
-        url
-      );
+      const filter = {
+        syllabusId: paper.syllabusId,
+        year: paper.year,
+        series: paper.series,
+        paperNumber: paper.paperNumber,
+      };
 
-      setStatusMessage(`Attached URL to ${res.updatedCount} questions in ${paper.subjectName}.`);
+      if (editingTarget === 'pdf') {
+        setStatusMessage('Attaching Server PDF URL…');
+        const res = await batchAttachPastPaperPdf(filter, url);
+        updateLocalPaper(paper, {
+          hasPdfUrl: true,
+          samplePdfUrl: url,
+          linkedPdfCount: res.updatedCount || paper.totalQuestions,
+        });
+        setStatusMessage(`Attached Server PDF URL to ${res.updatedCount} questions in ${paper.subjectName}.`);
+      } else if (editingTarget === 'qp_hub') {
+        setStatusMessage('Attaching Cambridge QP Hub URL…');
+        const res = await batchAttachCambridgeHubUrl(filter, url);
+        updateLocalPaper(paper, {
+          hasHubUrl: true,
+          sampleHubUrl: url,
+          linkedHubCount: res.updatedCount || paper.totalQuestions,
+        });
+        setStatusMessage(`Attached Cambridge QP Hub URL to ${res.updatedCount} questions in ${paper.subjectName}.`);
+      } else if (editingTarget === 'ms_hub') {
+        setStatusMessage('Attaching Cambridge Mark Scheme Hub URL…');
+        const res = await batchAttachCambridgeMsHubUrl(filter, url);
+        updateLocalPaper(paper, {
+          hasMsHubUrl: true,
+          sampleMsHubUrl: url,
+          linkedMsHubCount: res.updatedCount || paper.totalQuestions,
+        });
+        setStatusMessage(`Attached Cambridge Mark Scheme Hub URL to ${res.updatedCount} questions in ${paper.subjectName}.`);
+      }
+
       setEditingUrlKey(null);
       setCustomUrlInput('');
-      await loadPapers();
       onPdfsUpdated?.();
     } catch (err: any) {
       setStatusMessage(`Error: ${err?.message || 'Failed to attach URL'}`);
@@ -160,13 +221,13 @@ export function PastPaperPdfManagerModal({
     if (!paper.syllabusId) return;
 
     const confirmed = window.confirm(
-      `Remove PDF link from ${paper.subjectName} (${paper.subjectCode}) ${paper.year} Paper ${paper.paperNumber}?\n\nThis will remove the past paper citation link from ${paper.linkedPdfCount} questions.`
+      `Remove Server PDF link from ${paper.subjectName} (${paper.subjectCode}) ${paper.year} Paper ${paper.paperNumber}?\n\nThis will remove the server PDF citation link from ${paper.linkedPdfCount} questions.`
     );
     if (!confirmed) return;
 
     const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
     setActiveUploadKey(key);
-    setStatusMessage('Unlinking PDF…');
+    setStatusMessage('Unlinking Server PDF…');
 
     try {
       const res = await batchDetachPastPaperPdf({
@@ -176,11 +237,66 @@ export function PastPaperPdfManagerModal({
         paperNumber: paper.paperNumber,
       });
 
-      setStatusMessage(`Unlinked PDF from ${res.updatedCount} questions in ${paper.subjectName}.`);
-      await loadPapers();
+      updateLocalPaper(paper, {
+        hasPdfUrl: false,
+        samplePdfUrl: null,
+        linkedPdfCount: 0,
+      });
+
+      setStatusMessage(`Unlinked Server PDF from ${res.updatedCount} questions in ${paper.subjectName}.`);
       onPdfsUpdated?.();
     } catch (err: any) {
       setStatusMessage(`Error: ${err?.message || 'Failed to unlink PDF'}`);
+    } finally {
+      setActiveUploadKey(null);
+    }
+  };
+
+  const handleUnlinkHubUrl = async (paper: PastPaperGroupSummary, target: 'qp_hub' | 'ms_hub') => {
+    if (!paper.syllabusId) return;
+
+    const label = target === 'qp_hub' ? 'Cambridge QP Hub' : 'Cambridge Mark Scheme Hub';
+    const confirmed = window.confirm(
+      `Remove ${label} link from ${paper.subjectName} (${paper.subjectCode}) ${paper.year} Paper ${paper.paperNumber}?`
+    );
+    if (!confirmed) return;
+
+    const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
+    setActiveUploadKey(key);
+    setStatusMessage(`Unlinking ${label}…`);
+
+    try {
+      const filter = {
+        syllabusId: paper.syllabusId,
+        year: paper.year,
+        series: paper.series,
+        paperNumber: paper.paperNumber,
+      };
+      const res =
+        target === 'qp_hub'
+          ? await batchDetachCambridgeHubUrl(filter)
+          : await batchDetachCambridgeMsHubUrl(filter);
+
+      if (target === 'qp_hub') {
+        updateLocalPaper(paper, {
+          hasHubUrl: false,
+          sampleHubUrl: null,
+          linkedHubCount: 0,
+        });
+      } else {
+        updateLocalPaper(paper, {
+          hasMsHubUrl: false,
+          sampleMsHubUrl: null,
+          linkedMsHubCount: 0,
+        });
+      }
+
+      setStatusMessage(`Removed ${label} link from ${res.updatedCount} questions in ${paper.subjectName}.`);
+      setEditingUrlKey(null);
+      setCustomUrlInput('');
+      onPdfsUpdated?.();
+    } catch (err: any) {
+      setStatusMessage(`Error: ${err?.message || 'Failed to unlink Hub URL'}`);
     } finally {
       setActiveUploadKey(null);
     }
@@ -199,10 +315,10 @@ export function PastPaperPdfManagerModal({
         <div className="past-paper-modal-header">
           <div>
             <h2 id="past-paper-manager-title" className="past-paper-modal-title">
-              Past Paper Source PDF Manager
+              Past Paper Source PDF & Cambridge Hub Link Manager
             </h2>
             <div className="past-paper-modal-subtitle">
-              Link Question Paper PDFs to past papers in your bank to power Table of Specifications citation links
+              Link School Server PDFs and official Cambridge School Support Hub (QP & Mark Scheme) links to power Table of Specifications citations
             </div>
           </div>
           <button
@@ -235,6 +351,16 @@ export function PastPaperPdfManagerModal({
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                className="past-paper-btn past-paper-btn-secondary"
+                style={{ padding: '4px 10px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                onClick={() => loadPapers(selectedSyllabusId, true)}
+                title="Force refresh database paper summary"
+                disabled={isLoading}
+              >
+                {isLoading ? 'Refreshing…' : '↻ Refresh'}
+              </button>
             </div>
             <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
               {papers.length} {papers.length === 1 ? 'paper' : 'papers'} found
@@ -284,7 +410,7 @@ export function PastPaperPdfManagerModal({
                 <tr>
                   <th>Paper</th>
                   <th>Questions</th>
-                  <th>PDF Link Status</th>
+                  <th>Citation Links Status</th>
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
@@ -293,6 +419,11 @@ export function PastPaperPdfManagerModal({
                   const key = `${paper.syllabusId}_${paper.year}_${paper.series}_${paper.paperNumber}`;
                   const isUploading = activeUploadKey === key;
                   const isEditingUrl = editingUrlKey === key;
+
+                  const hubValidation =
+                    isEditingUrl && (editingTarget === 'qp_hub' || editingTarget === 'ms_hub') && customUrlInput.trim()
+                      ? validateCambridgeHubUrl(customUrlInput)
+                      : null;
 
                   return (
                     <tr key={key} className="past-paper-row">
@@ -311,59 +442,160 @@ export function PastPaperPdfManagerModal({
                         {paper.totalQuestions} questions
                       </td>
                       <td>
-                        {paper.hasPdfUrl ? (
-                          <span className="past-paper-badge-linked">
-                            Linked ({paper.linkedPdfCount}/{paper.totalQuestions})
-                          </span>
-                        ) : (
-                          <span className="past-paper-badge-missing">
-                            Missing PDF
-                          </span>
-                        )}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                          {paper.hasPdfUrl ? (
+                            <span className="past-paper-badge-linked" title="School Server PDF linked">
+                              Server PDF ({paper.linkedPdfCount}/{paper.totalQuestions})
+                            </span>
+                          ) : (
+                            <span className="past-paper-badge-missing" title="No School Server PDF linked yet">
+                              Missing PDF
+                            </span>
+                          )}
+
+                          {paper.hasHubUrl ? (
+                            <span className="past-paper-badge-hub" title="Cambridge Support Hub QP linked">
+                              QP Hub ({paper.linkedHubCount}/{paper.totalQuestions})
+                            </span>
+                          ) : (
+                            <span className="past-paper-badge-missing" title="No Cambridge Support Hub QP URL set">
+                              No QP Hub
+                            </span>
+                          )}
+
+                          {paper.hasMsHubUrl ? (
+                            <span className="past-paper-badge-ms-hub" title="Cambridge Support Hub Mark Scheme linked">
+                              MS Hub ({paper.linkedMsHubCount}/{paper.totalQuestions})
+                            </span>
+                          ) : (
+                            <span className="past-paper-badge-missing" title="No Cambridge Support Hub Mark Scheme URL set">
+                              No MS Hub
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         {isEditingUrl ? (
-                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
-                            <input
-                              type="text"
-                              value={customUrlInput}
-                              onChange={(e) => setCustomUrlInput(e.target.value)}
-                              placeholder="https://.../paper.pdf"
-                              style={{
-                                padding: '4px 8px',
-                                fontSize: '0.8rem',
-                                border: '1px solid #cbd5e1',
-                                borderRadius: '4px',
-                                width: '200px',
-                              }}
-                            />
-                            <button
-                              type="button"
-                              className="past-paper-btn past-paper-btn-primary"
-                              disabled={isUploading || !customUrlInput.trim()}
-                              onClick={() => handleSaveCustomUrl(paper)}
-                            >
-                              Save
-                            </button>
-                            <button
-                              type="button"
-                              className="past-paper-btn"
-                              onClick={() => setEditingUrlKey(null)}
-                            >
-                              Cancel
-                            </button>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#334155' }}>
+                                {editingTarget === 'pdf'
+                                  ? 'Server PDF URL:'
+                                  : editingTarget === 'qp_hub'
+                                  ? 'Cambridge QP Hub URL:'
+                                  : 'Cambridge MS Hub URL:'}
+                              </span>
+                              <input
+                                type="url"
+                                value={customUrlInput}
+                                onChange={(e) => setCustomUrlInput(e.target.value)}
+                                placeholder={
+                                  editingTarget === 'pdf'
+                                    ? 'https://.../paper.pdf'
+                                    : 'https://schoolsupporthub.cambridge.org/item/...'
+                                }
+                                style={{
+                                  padding: '5px 8px',
+                                  fontSize: '0.8rem',
+                                  border: '1px solid #cbd5e1',
+                                  borderRadius: '4px',
+                                  width: '260px',
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="past-paper-btn past-paper-btn-primary"
+                                disabled={
+                                  isUploading ||
+                                  !customUrlInput.trim() ||
+                                  (hubValidation !== null && !hubValidation.isValid)
+                                }
+                                onClick={() => handleSaveCustomUrl(paper)}
+                              >
+                                Save
+                              </button>
+                              {editingTarget === 'qp_hub' && paper.hasHubUrl && (
+                                <button
+                                  type="button"
+                                  className="past-paper-btn past-paper-btn-danger"
+                                  disabled={isUploading}
+                                  onClick={() => handleUnlinkHubUrl(paper, 'qp_hub')}
+                                >
+                                  Clear
+                                </button>
+                              )}
+                              {editingTarget === 'ms_hub' && paper.hasMsHubUrl && (
+                                <button
+                                  type="button"
+                                  className="past-paper-btn past-paper-btn-danger"
+                                  disabled={isUploading}
+                                  onClick={() => handleUnlinkHubUrl(paper, 'ms_hub')}
+                                >
+                                  Clear
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="past-paper-btn"
+                                onClick={() => {
+                                  setEditingUrlKey(null);
+                                  setCustomUrlInput('');
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {hubValidation && !hubValidation.isValid && (
+                              <div style={{ fontSize: '0.73rem', color: '#dc2626' }}>
+                                {hubValidation.error}
+                              </div>
+                            )}
+                            {hubValidation && hubValidation.isValid && hubValidation.warning && (
+                              <div style={{ fontSize: '0.73rem', color: '#d97706' }}>
+                                {hubValidation.warning}
+                              </div>
+                            )}
+                            {(editingTarget === 'qp_hub' || editingTarget === 'ms_hub') && !customUrlInput.trim() && (
+                              <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                Tip: Paste the official resource URL from schoolsupporthub.cambridge.org/item/...
+                              </div>
+                            )}
                           </div>
                         ) : (
-                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
                             {paper.samplePdfUrl && (
                               <a
                                 href={paper.samplePdfUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="past-paper-btn"
-                                title="Open current PDF link in new tab"
+                                title="Open Server PDF in new tab"
                               >
-                                View PDF ↗
+                                PDF ↗
+                              </a>
+                            )}
+                            {paper.sampleHubUrl && (
+                              <a
+                                href={paper.sampleHubUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="past-paper-btn"
+                                title="Open Cambridge Support Hub QP in new tab"
+                                style={{ color: '#1d4ed8', borderColor: '#bfdbfe' }}
+                              >
+                                QP Hub ↗
+                              </a>
+                            )}
+                            {paper.sampleMsHubUrl && (
+                              <a
+                                href={paper.sampleMsHubUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="past-paper-btn"
+                                title="Open Cambridge Support Hub Mark Scheme in new tab"
+                                style={{ color: '#6d28d9', borderColor: '#ddd6fe' }}
+                              >
+                                MS Hub ↗
                               </a>
                             )}
                             <label className="past-paper-btn past-paper-btn-primary" style={{ cursor: isUploading ? 'not-allowed' : 'pointer', margin: 0 }}>
@@ -382,23 +614,48 @@ export function PastPaperPdfManagerModal({
                             <button
                               type="button"
                               className="past-paper-btn"
-                              title="Paste URL manually"
+                              title="Paste Server PDF URL manually"
                               onClick={() => {
                                 setEditingUrlKey(key);
+                                setEditingTarget('pdf');
                                 setCustomUrlInput(paper.samplePdfUrl || '');
                               }}
                             >
-                              Paste URL
+                              Server URL
+                            </button>
+                            <button
+                              type="button"
+                              className="past-paper-btn"
+                              title="Set official Cambridge Support Hub Question Paper link"
+                              onClick={() => {
+                                setEditingUrlKey(key);
+                                setEditingTarget('qp_hub');
+                                setCustomUrlInput(paper.sampleHubUrl || '');
+                              }}
+                            >
+                              {paper.hasHubUrl ? 'Edit QP Hub' : 'Link QP Hub'}
+                            </button>
+                            <button
+                              type="button"
+                              className="past-paper-btn"
+                              title="Set official Cambridge Support Hub Mark Scheme link"
+                              onClick={() => {
+                                setEditingUrlKey(key);
+                                setEditingTarget('ms_hub');
+                                setCustomUrlInput(paper.sampleMsHubUrl || '');
+                              }}
+                            >
+                              {paper.hasMsHubUrl ? 'Edit MS Hub' : 'Link MS Hub'}
                             </button>
                             {paper.hasPdfUrl && (
                               <button
                                 type="button"
                                 className="past-paper-btn past-paper-btn-danger"
-                                title="Unlink PDF from this paper"
+                                title="Unlink Server PDF from this paper"
                                 disabled={isUploading}
                                 onClick={() => handleUnlinkPdf(paper)}
                               >
-                                Unlink
+                                Unlink PDF
                               </button>
                             )}
                           </div>

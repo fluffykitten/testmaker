@@ -189,6 +189,52 @@ function QuestionCardComponent({
             </a>
           )}
 
+          {(question.cambridge_hub_url || (question.mark_scheme as any)?._cambridge_hub_url) && (
+            <a
+              href={question.cambridge_hub_url || (question.mark_scheme as any)?._cambridge_hub_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="q-badge"
+              style={{
+                background: '#eff6ff',
+                color: '#1d4ed8',
+                borderColor: '#bfdbfe',
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              title="Open Question Paper on Cambridge School Support Hub"
+            >
+              <span>QP Hub</span>
+              <span style={{ fontSize: '11px' }}>↗</span>
+            </a>
+          )}
+
+          {(question.cambridge_ms_hub_url || (question.mark_scheme as any)?._cambridge_ms_hub_url) && (
+            <a
+              href={question.cambridge_ms_hub_url || (question.mark_scheme as any)?._cambridge_ms_hub_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="q-badge"
+              style={{
+                background: '#f5f3ff',
+                color: '#6d28d9',
+                borderColor: '#ddd6fe',
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              title="Open Mark Scheme on Cambridge School Support Hub"
+            >
+              <span>MS Hub</span>
+              <span style={{ fontSize: '11px' }}>↗</span>
+            </a>
+          )}
+
           {question.question_style && (
             <span className="q-badge q-badge--style">
               {question.question_style}
