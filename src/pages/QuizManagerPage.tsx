@@ -517,6 +517,7 @@ export function QuizManagerPage({
       quizMode: quiz.quizMode || 'exam',
       enableWatermark: currentSettings.defaultEnableWatermark ? (quiz.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (quiz.enableMultiMonitorDetection ?? false) : false,
+      hideEmergencyExamButton: quiz.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
     });
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
@@ -615,6 +616,7 @@ export function QuizManagerPage({
       quizMode: activeQuizDraft.quizMode || 'exam',
       enableWatermark: currentSettings.defaultEnableWatermark ? (activeQuizDraft.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (activeQuizDraft.enableMultiMonitorDetection ?? false) : false,
+      hideEmergencyExamButton: activeQuizDraft.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
       showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
       updatedAt: new Date().toISOString(),
     };
@@ -2293,6 +2295,26 @@ export function QuizManagerPage({
                                 setActiveQuizDraft({
                                   ...activeQuizDraft,
                                   enableMultiMonitorDetection: e.target.checked,
+                                })
+                              }
+                            />
+                            <span className="qm-slider" />
+                          </label>
+                        </div>
+
+                        <div className="qm-studio-card-row">
+                          <div>
+                            <span className="qm-studio-sub-label">Hide Emergency Save Button</span>
+                            <p className="qm-studio-card-sub">Hides the mid-exam emergency save & exit button for students</p>
+                          </div>
+                          <label className="qm-switch" title="Toggle emergency save button visibility">
+                            <input
+                              type="checkbox"
+                              checked={activeQuizDraft.hideEmergencyExamButton ?? false}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  hideEmergencyExamButton: e.target.checked,
                                 })
                               }
                             />

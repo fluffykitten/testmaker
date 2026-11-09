@@ -75,7 +75,12 @@ import {
   type ProctorCommand,
   type StudentExamStatus,
 } from '../services/examProctorRealtimeService';
-import { getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
+import {
+  getSchoolClasses,
+  loadAndSyncSchoolClasses,
+  getSavedSettings,
+  loadAndSyncEmergencyExamButtonVisibility,
+} from '../lib/settings';
 import {
   saveExamDraft,
   fetchExamDraft,
@@ -89,6 +94,12 @@ import {
   type PublicRosterStudent,
 } from '../services/studentRosterService';
 import { CandidateNameAutocomplete } from '../components/CandidateNameAutocomplete';
+import {
+  ICM_LOGO_PATH,
+  CAMBRIDGE_LOGO_PATH,
+  DEFAULT_SCHOOL_LOGO,
+  DEFAULT_CAMBRIDGE_LOGO,
+} from '../assets/logoConstants';
 import './StudentQuizRunner.css';
 
 interface StudentQuizRunnerProps {
@@ -479,12 +490,19 @@ export function StudentQuizRunner({
   const [securityAlert, setSecurityAlert] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
   const [showEmergencyExitModal, setShowEmergencyExitModal] = useState<boolean>(false);
+  const [hideEmergencyExamButton, setHideEmergencyExamButton] = useState<boolean>(
+    () => (savedExam as any)?.hideEmergencyExamButton ?? getSavedSettings().hideEmergencyExamButton ?? false
+  );
   const [emergencyExitReason, setEmergencyExitReason] = useState<string>(
     'Wi-Fi outage / Network unreachable'
   );
   const [multiMonitorDetected, setMultiMonitorDetected] = useState<boolean>(false);
+  const [keyboardLockAvailable, setKeyboardLockAvailable] = useState<boolean | null>(null);
+  const lastBlockedExitAtRef = useRef<number>(0);
   const [teacherAnnouncement, setTeacherAnnouncement] = useState<string | null>(null);
   const isSubmittingRef = useRef<boolean>(false);
+  const isSubmittedRef = useRef<boolean>(isSubmitted);
+  isSubmittedRef.current = isSubmitted;
   const submitExamRef = useRef<() => void>(() => { });
   const sendCurrentHeartbeatRef = useRef<(fullSync?: boolean) => void>(() => { });
 
@@ -538,9 +556,20 @@ export function StudentQuizRunner({
     return true;
   });
 
+  // 1-Time 5-Second Grace Recovery for Accidental Esc / Fullscreen Exit
+  const [fullscreenExitCount, setFullscreenExitCount] = useState<number>(
+    () => (savedExam as any)?.fullscreenExitCount || 0
+  );
+  const [isFullscreenGraceActive, setIsFullscreenGraceActive] = useState<boolean>(false);
+  const [fullscreenGraceSecondsLeft, setFullscreenGraceSecondsLeft] = useState<number>(5);
+  const fullscreenExitCountRef = useRef<number>(fullscreenExitCount);
+  fullscreenExitCountRef.current = fullscreenExitCount;
+
   const handleResumeFullscreen = useCallback(async () => {
     await requestSecureFullscreen();
     setIsFullscreenActive(true);
+    setIsFullscreenGraceActive(false);
+    setFullscreenGraceSecondsLeft(5);
   }, []);
 
   // Timer warning latches to prevent missed alerts during background tab throttling
@@ -584,6 +613,30 @@ export function StudentQuizRunner({
       setTeacherActionPin('');
       setTeacherActionError(null);
     }
+  });
+
+  // Track open reference modals/drawers in a ref so keydown handlers can dismiss them cleanly
+  const activeModalsRef = useRef({
+    zoomedImage,
+    showCalculator,
+    showPeriodicTable,
+    showAttachmentModal,
+    showScratchpad,
+    showResourceBooklet,
+    showSubmitModal,
+    showEmergencyExitModal,
+  });
+  useEffect(() => {
+    activeModalsRef.current = {
+      zoomedImage,
+      showCalculator,
+      showPeriodicTable,
+      showAttachmentModal,
+      showScratchpad,
+      showResourceBooklet,
+      showSubmitModal,
+      showEmergencyExitModal,
+    };
   });
 
   // Accurate Sub-Questions and Answered Items Counting
@@ -721,6 +774,11 @@ export function StudentQuizRunner({
           if (data.enableMultiMonitorDetection !== undefined) {
             setEnableMultiMonitorDetection(data.enableMultiMonitorDetection);
           }
+          if (data.hideEmergencyExamButton !== undefined) {
+            setHideEmergencyExamButton(data.hideEmergencyExamButton);
+          } else {
+            setHideEmergencyExamButton(getSavedSettings().hideEmergencyExamButton ?? false);
+          }
           if (data.requireTeacherUnlock !== undefined) {
             setRequireTeacherUnlock(data.requireTeacherUnlock);
           }
@@ -765,10 +823,30 @@ export function StudentQuizRunner({
     load();
   }, [testIdOrCode, initialQuestions, initialHeaderConfig]);
 
+  // ─── Sync Admin Emergency Save Button Visibility from Cloud & Custom Events ──
+  useEffect(() => {
+    loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
+      setHideEmergencyExamButton((prev) => prev || hide);
+    });
+
+    const handleVisibilityUpdate = (e: Event) => {
+      const custom = e as CustomEvent<{ hideEmergencyExamButton?: boolean }>;
+      if (custom.detail?.hideEmergencyExamButton !== undefined) {
+        setHideEmergencyExamButton(custom.detail.hideEmergencyExamButton);
+      }
+    };
+    window.addEventListener('emergency_exam_button_visibility_updated', handleVisibilityUpdate);
+    return () => window.removeEventListener('emergency_exam_button_visibility_updated', handleVisibilityUpdate);
+  }, []);
+
   // ─── 2. Violation Logger & Invigilator Lock Gate ─────────────────────────
   const logViolation = useCallback(
-    (type: ViolationRecord['type'], detail: string) => {
-      if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
+    (
+      type: ViolationRecord['type'],
+      detail: string,
+      options?: { skipLock?: boolean; customStatus?: StudentExamStatus }
+    ) => {
+      if (!hasStarted || isSubmitted || isSubmittedRef.current || isGrading || isSubmittingRef.current || !securityEnabled) return;
       const nowIso = new Date().toISOString();
       const elapsedExamSeconds = startTime ? Math.max(0, Math.floor((Date.now() - startTime) / 1000)) : 0;
       const rec: ViolationRecord = { type, timestamp: nowIso, detail, elapsedExamSeconds };
@@ -776,6 +854,9 @@ export function StudentQuizRunner({
       const isExceeded = maxViolations > 0 && newCount >= maxViolations;
 
       setViolations((prev) => [...prev, rec]);
+
+      const shouldLock = requireTeacherUnlock && isExamMode && !options?.skipLock;
+      const computedStatus: StudentExamStatus = options?.customStatus || (shouldLock ? 'locked' : 'warning');
 
       // Broadcast to live invigilator cockpit stream
       if (resolvedQuizCode) {
@@ -786,7 +867,7 @@ export function StudentQuizRunner({
             studentName: candidateName || 'Candidate',
             candidateNumber,
             candidateClass,
-            status: requireTeacherUnlock && isExamMode ? 'locked' : 'warning',
+            status: computedStatus,
             answeredCount: quizStats.answeredItems,
             totalQuestions: quizStats.totalItems,
             currentIndex: currentIndex + 1,
@@ -813,12 +894,12 @@ export function StudentQuizRunner({
             detail: isExceeded
               ? `🚨 EXCEEDED LIMIT (${newCount}/${maxViolations}) - ${detail}`
               : detail,
-            severity: isExceeded || type === 'multi_monitor' || type === 'tab_switch' ? 'critical' : 'warning',
+            severity: isExceeded || type === 'multi_monitor' || type === 'tab_switch' || (shouldLock && !options?.skipLock) ? 'critical' : 'warning',
           }
         );
       }
 
-      if (requireTeacherUnlock && isExamMode) {
+      if (shouldLock) {
         setIsLockedByProctor(true);
         setLockReason(
           isExceeded
@@ -861,6 +942,54 @@ export function StudentQuizRunner({
       multiMonitorDetected,
     ]
   );
+
+  const logViolationRef = useRef(logViolation);
+  logViolationRef.current = logViolation;
+
+  // ─── Dedicated 1-Time 5-Second Grace Recovery Countdown ───────────────────
+  useEffect(() => {
+    if (!isFullscreenGraceActive || isFullscreenActive) {
+      return;
+    }
+
+    const durationMs = 5000;
+    const startTime = Date.now();
+    setFullscreenGraceSecondsLeft(5);
+
+    const interval = setInterval(() => {
+      const elapsedMs = Date.now() - startTime;
+      const remainingSec = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
+      setFullscreenGraceSecondsLeft(remainingSec);
+      if (remainingSec <= 0) {
+        clearInterval(interval);
+      }
+    }, 250);
+
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      setIsFullscreenGraceActive(false);
+
+      // If still not in fullscreen after 5 seconds, enforce hard teacher PIN lock
+      if (!document.fullscreenElement && requireTeacherUnlock) {
+        const nowIso = new Date().toISOString();
+        setIsLockedByProctor(true);
+        setLockReason('Fullscreen grace period (5s) expired without returning. Invigilator PIN required.');
+        setLockTime(nowIso);
+        setPinError(null);
+        setPinInput('');
+        logViolationRef.current(
+          'fullscreen_exit',
+          'Fullscreen grace period (5s) expired without returning. Invigilator PIN required.',
+          { skipLock: false, customStatus: 'locked' }
+        );
+      }
+    }, durationMs);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [isFullscreenGraceActive, isFullscreenActive, requireTeacherUnlock]);
 
   const handleUnlockWithPin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -919,7 +1048,7 @@ export function StudentQuizRunner({
 
     let lastPopAt = 0;
     const handlePopState = () => {
-      if (isSubmittingRef.current || isSubmitted) return;
+      if (isSubmittingRef.current || isSubmitted || isSubmittedRef.current) return;
 
       const now = Date.now();
       const rapid = isRapidPop(now, lastPopAt);
@@ -1028,17 +1157,35 @@ export function StudentQuizRunner({
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading || isSubmittingRef.current || !securityEnabled) return;
 
+    // Assert hardware keyboard lock on mount if fullscreen is active
+    const assertKeyboardLock = async () => {
+      try {
+        const ok = await enableKeyboardLock(['Escape', 'F11']);
+        setKeyboardLockAvailable(ok);
+      } catch {
+        setKeyboardLockAvailable(false);
+      }
+    };
+
+    if (document.fullscreenElement) {
+      assertKeyboardLock();
+    }
+
+    const recordViolation = (type: ViolationRecord['type'], detail: string) => {
+      logViolationRef.current(type, detail);
+    };
+
     // A. Tab switch / Visibility change
     const handleVisibilityChange = () => {
-      if (!document.hidden || isSubmittingRef.current || isSubmitted) return;
+      if (!document.hidden || isSubmittingRef.current || isSubmitted || isSubmittedRef.current) return;
       // A navigation gesture we blocked can flip visibility for a frame — not a cheat attempt.
       if (wasRecentlyIntercepted(Date.now(), gestureGuardAtRef.current, 600)) return;
-      logViolation('tab_switch', 'Switched away from exam tab or minimized window');
+      recordViolation('tab_switch', 'Switched away from exam tab or minimized window');
     };
 
     // B. Window Blur & Focus Sanitization (Immediate violation & PIN lock on any focus loss)
     const handleWindowBlur = () => {
-      if (isSubmittingRef.current || isSubmitted || isGrading) return;
+      if (isSubmittingRef.current || isSubmitted || isSubmittedRef.current || isGrading) return;
       // Layer 4: an intercepted edge-swipe / trackpad flick briefly blurs the window while the
       // browser aborts the gesture. Refocus instead of issuing a false cheating strike.
       if (wasRecentlyIntercepted(Date.now(), gestureGuardAtRef.current)) {
@@ -1047,7 +1194,7 @@ export function StudentQuizRunner({
         });
         return;
       }
-      logViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
+      recordViolation('window_blur', 'Exam window lost focus (Alt+Tab / App switch)');
     };
 
     const handleWindowFocus = () => {
@@ -1059,11 +1206,35 @@ export function StudentQuizRunner({
       const isFull = !!document.fullscreenElement;
       setIsFullscreenActive(isFull);
       if (isFull) {
-        enableKeyboardLock(['Escape', 'F11']).catch(() => { });
+        assertKeyboardLock();
+        setIsFullscreenGraceActive(false);
+        setFullscreenGraceSecondsLeft(5);
+        sendCurrentHeartbeatRef.current(true);
       } else {
         releaseKeyboardLock();
-        if (hasStarted && !isSubmitted && !isGrading && !isSubmittingRef.current) {
-          logViolation('fullscreen_exit', 'Exited fullscreen secure exam view');
+        if (hasStarted && !isSubmitted && !isSubmittedRef.current && !isGrading && !isSubmittingRef.current && isExamMode && securityEnabled) {
+          const nextCount = (fullscreenExitCountRef.current || 0) + 1;
+          fullscreenExitCountRef.current = nextCount;
+          setFullscreenExitCount(nextCount);
+
+          if (nextCount === 1) {
+            // ── FIRST INCIDENT: Activate 5-Second Grace Recovery Window ──
+            // Log as warning strike to proctor cockpit without immediate hard PIN lockout
+            logViolationRef.current(
+              'fullscreen_exit',
+              'Exited fullscreen (1st incident — 5s grace period active)',
+              { skipLock: true, customStatus: 'warning' }
+            );
+            setIsFullscreenGraceActive(true);
+          } else {
+            // ── SECOND OR SUBSEQUENT INCIDENT: Immediate Hard PIN Lockout ──
+            setIsFullscreenGraceActive(false);
+            logViolationRef.current(
+              'fullscreen_exit',
+              `Exited fullscreen (${nextCount}nd incident — invigilator PIN required)`,
+              { skipLock: false, customStatus: 'locked' }
+            );
+          }
         }
       }
     };
@@ -1081,10 +1252,62 @@ export function StudentQuizRunner({
 
     // D. Keyboard Shortcut Trapping (Capture Phase)
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Disable Escape and F11 keys during exam so they cannot exit fullscreen
+      // Rapid 1-key fullscreen recovery on overlay (Enter, Space, or F11)
+      if (!isFullscreenActive && hasStarted && !isSubmitted && !isGrading) {
+        if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space' || e.key === 'F11' || e.code === 'F11') {
+          e.preventDefault();
+          e.stopPropagation();
+          handleResumeFullscreen();
+          return;
+        }
+      }
+
+      // Handle Escape and F11 keys
       if (isEscapeOrF11(e)) {
         e.preventDefault();
         e.stopPropagation();
+
+        // 1. If any reference modal, drawer, or dialog is open, Escape closes it cleanly without exiting fullscreen
+        const modals = activeModalsRef.current;
+        if (modals.zoomedImage) {
+          setZoomedImage(null);
+          return;
+        }
+        if (modals.showCalculator) {
+          setShowCalculator(false);
+          return;
+        }
+        if (modals.showPeriodicTable) {
+          setShowPeriodicTable(false);
+          return;
+        }
+        if (modals.showAttachmentModal) {
+          setShowAttachmentModal(false);
+          return;
+        }
+        if (modals.showScratchpad) {
+          setShowScratchpad(false);
+          return;
+        }
+        if (modals.showResourceBooklet) {
+          setShowResourceBooklet(false);
+          return;
+        }
+        if (modals.showSubmitModal) {
+          setShowSubmitModal(false);
+          return;
+        }
+        if (modals.showEmergencyExitModal) {
+          setShowEmergencyExitModal(false);
+          return;
+        }
+
+        // 2. If no modal is open, candidate is attempting to leave the exam view with Esc/F11
+        const now = Date.now();
+        if (now - lastBlockedExitAtRef.current > 3000) {
+          lastBlockedExitAtRef.current = now;
+          recordViolation('blocked_shortcut', 'Attempted to leave the exam view (Escape / F11 intercepted)');
+        }
         return;
       }
       // Block Alt+Left / Alt+Right (browser back/forward keyboard navigation)
@@ -1096,23 +1319,23 @@ export function StudentQuizRunner({
       // Block F12 (DevTools)
       if (e.key === 'F12') {
         e.preventDefault();
-        logViolation('blocked_shortcut', 'Attempted to open Developer Tools (F12)');
+        recordViolation('blocked_shortcut', 'Attempted to open Developer Tools (F12)');
       }
       // Block Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C
       if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) {
         e.preventDefault();
-        logViolation('blocked_shortcut', 'Attempted to inspect page elements');
+        recordViolation('blocked_shortcut', 'Attempted to inspect page elements');
       }
       // Block Ctrl+P (Print), Ctrl+S (Save), Ctrl+U (View source)
       if (e.ctrlKey && (e.key === 'p' || e.key === 'P' || e.key === 's' || e.key === 'S' || e.key === 'u' || e.key === 'U')) {
         e.preventDefault();
-        logViolation('blocked_shortcut', `Attempted browser action (Ctrl+${e.key.toUpperCase()})`);
+        recordViolation('blocked_shortcut', `Attempted browser action (Ctrl+${e.key.toUpperCase()})`);
       }
       // Block Ctrl+C (Copy), Ctrl+V (Paste) in Exam Mode
       if (isExamMode && e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'v' || e.key === 'V')) {
         e.preventDefault();
         flushClipboard();
-        logViolation('blocked_shortcut', 'Copying and pasting is disabled during exam');
+        recordViolation('blocked_shortcut', 'Copying and pasting is disabled during exam');
       }
     };
 
@@ -1128,7 +1351,7 @@ export function StudentQuizRunner({
       if (isExamMode) {
         e.preventDefault();
         flushClipboard();
-        logViolation('blocked_shortcut', 'Copying question content is disabled during exam');
+        recordViolation('blocked_shortcut', 'Copying question content is disabled during exam');
       }
     };
 
@@ -1136,7 +1359,7 @@ export function StudentQuizRunner({
       if (isExamMode) {
         e.preventDefault();
         flushClipboard();
-        logViolation('blocked_shortcut', 'Cutting text is disabled during exam');
+        recordViolation('blocked_shortcut', 'Cutting text is disabled during exam');
       }
     };
 
@@ -1144,21 +1367,21 @@ export function StudentQuizRunner({
       if (isExamMode) {
         e.preventDefault();
         flushClipboard();
-        logViolation('blocked_shortcut', 'Pasting external content into exam is disabled');
+        recordViolation('blocked_shortcut', 'Pasting external content into exam is disabled');
       }
     };
 
     // F. Native Mobile App Minimize / Background Event
     const handleMobileProctor = (e: Event) => {
       const customEvt = e as CustomEvent<{ reason?: string }>;
-      if (!isSubmittingRef.current && !isSubmitted && !isGrading) {
-        logViolation('window_blur', customEvt.detail?.reason || 'Mobile app minimized or switched');
+      if (!isSubmittingRef.current && !isSubmitted && !isSubmittedRef.current && !isGrading) {
+        recordViolation('window_blur', customEvt.detail?.reason || 'Mobile app minimized or switched');
       }
     };
 
     // G. Prevent accidental unload/reload
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (!isSubmittingRef.current && !isSubmitted) {
+      if (!isSubmittingRef.current && !isSubmitted && !isSubmittedRef.current) {
         e.preventDefault();
         e.returnValue = 'You have an active exam in progress. Are you sure you want to leave?';
       }
@@ -1194,7 +1417,7 @@ export function StudentQuizRunner({
       document.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, logViolation]);
+  }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode]);
 
   // ─── 3B. Multi-Monitor / Extended Display Shield ────────────────────────────
   useEffect(() => {
@@ -1263,6 +1486,10 @@ export function StudentQuizRunner({
         setLockTime('');
         setPinInput('');
         setPinError(null);
+        setFullscreenExitCount(0);
+        fullscreenExitCountRef.current = 0;
+        setIsFullscreenGraceActive(false);
+        setFullscreenGraceSecondsLeft(5);
         setSecurityAlert('✅ Examination remotely unlocked by invigilator. Please remain focused.');
         setTimeout(() => setSecurityAlert(null), 5000);
         requestSecureFullscreen().catch(() => { });
@@ -1315,6 +1542,10 @@ export function StudentQuizRunner({
         setLockTime('');
         setPinInput('');
         setPinError(null);
+        setFullscreenExitCount(0);
+        fullscreenExitCountRef.current = 0;
+        setIsFullscreenGraceActive(false);
+        setFullscreenGraceSecondsLeft(5);
         setSecurityAlert('✅ Security strikes pardoned and cleared by invigilator. Please stay in fullscreen.');
         setTimeout(() => setSecurityAlert(null), 5000);
         setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
@@ -1601,7 +1832,7 @@ export function StudentQuizRunner({
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {
-    if (isSubmitted || isGrading || isSubmittingRef.current) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || isSubmittedRef.current) return;
     isSubmittingRef.current = true;
     setShowSubmitModal(false);
     setIsGrading(true);
@@ -1837,6 +2068,7 @@ export function StudentQuizRunner({
           exportSubmissionToFile(submission).catch(() => {});
         }
 
+        isSubmittedRef.current = true;
         setIsSubmitted(true);
       } catch (err: any) {
         console.error('Failed to submit exam:', err);
@@ -1882,9 +2114,12 @@ export function StudentQuizRunner({
         setSyncStatus('offline_failed');
         setSyncErrorMessage(err?.message || 'Network error occurred during submission. Encrypted .exam backup downloaded.');
         exportSubmissionToFile(fallback).catch(() => {});
+        isSubmittedRef.current = true;
         setIsSubmitted(true);
       } finally {
-        isSubmittingRef.current = false;
+        if (!isSubmittedRef.current) {
+          isSubmittingRef.current = false;
+        }
         setIsGrading(false);
       }
       return;
@@ -2085,14 +2320,18 @@ export function StudentQuizRunner({
         exportSubmissionToFile(submission).catch(() => {});
       }
 
+      isSubmittedRef.current = true;
       setIsSubmitted(true);
     } catch (err: any) {
       console.error('Failed to grade student submission:', err);
       setSyncStatus('offline_failed');
       setSyncErrorMessage(err?.message || 'Grading evaluation error');
+      isSubmittedRef.current = true;
       setIsSubmitted(true);
     } finally {
-      isSubmittingRef.current = false;
+      if (!isSubmittedRef.current) {
+        isSubmittingRef.current = false;
+      }
       setIsGrading(false);
     }
   }, [
@@ -2152,8 +2391,11 @@ export function StudentQuizRunner({
    * into an AES-256-GCM encrypted `.exam` file, triggers browser download, and queues in outbox.
    */
   const handleEmergencySaveAndExit = useCallback(async () => {
-    if (isSubmitted || isGrading || isSubmittingRef.current) return;
+    if (isSubmitted || isGrading || isSubmittingRef.current || isSubmittedRef.current) return;
     isSubmittingRef.current = true;
+    isSubmittedRef.current = true;
+    setIsLockedByProctor(false);
+    setIsFullscreenGraceActive(false);
     setShowEmergencyExitModal(false);
     releaseKeyboardLock();
 
@@ -2307,7 +2549,9 @@ export function StudentQuizRunner({
 
       await exportSubmissionToFile(emergencySubmission);
     } finally {
-      isSubmittingRef.current = false;
+      if (!isSubmittedRef.current) {
+        isSubmittingRef.current = false;
+      }
     }
   }, [
     isSubmitted,
@@ -2494,6 +2738,7 @@ export function StudentQuizRunner({
       securityEnabled,
       enableWatermark,
       enableMultiMonitorDetection,
+      hideEmergencyExamButton,
       requireTeacherUnlock,
       teacherPinHash,
       requireStudentPin,
@@ -2502,6 +2747,7 @@ export function StudentQuizRunner({
       lockReason,
       lockTime,
       violations,
+      fullscreenExitCount: fullscreenExitCountRef.current,
     };
 
     if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
@@ -2534,6 +2780,7 @@ export function StudentQuizRunner({
     securityEnabled,
     enableWatermark,
     enableMultiMonitorDetection,
+    hideEmergencyExamButton,
     requireTeacherUnlock,
     teacherPinHash,
     requireStudentPin,
@@ -2908,6 +3155,10 @@ export function StudentQuizRunner({
       setIsLockedByProctor(false);
       setLockReason('');
       setLockTime('');
+      setFullscreenExitCount(0);
+      fullscreenExitCountRef.current = 0;
+      setIsFullscreenGraceActive(false);
+      setFullscreenGraceSecondsLeft(5);
 
       // Forensic telemetry belongs to the previous candidate too.
       answerChangeHistoryRef.current = [];
@@ -3629,45 +3880,170 @@ export function StudentQuizRunner({
     return (
       <div className="student-lobby-wrap animate-fade-in" ref={containerRef}>
         <div className="student-lobby-card animate-scale-up">
+          {/* Institutional Header Logos */}
+          <div
+            className="student-lobby-brand-row"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '16px',
+              marginBottom: '18px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div
+              style={{
+                background: '#ffffff',
+                padding: '6px 14px',
+                borderRadius: '12px',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title="Insan Cendekia Madani"
+            >
+              <img
+                src={ICM_LOGO_PATH}
+                alt="ICM"
+                style={{ height: '36px', width: 'auto', maxWidth: '140px', objectFit: 'contain', display: 'block' }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = DEFAULT_SCHOOL_LOGO;
+                }}
+              />
+            </div>
+            <div
+              style={{
+                background: '#ffffff',
+                padding: '6px 14px',
+                borderRadius: '12px',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title="Cambridge Assessment International Education"
+            >
+              <img
+                src={CAMBRIDGE_LOGO_PATH}
+                alt="Cambridge Assessment"
+                style={{ height: '36px', width: 'auto', maxWidth: '140px', objectFit: 'contain', display: 'block' }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = DEFAULT_CAMBRIDGE_LOGO;
+                }}
+              />
+            </div>
+          </div>
+
           <div className="student-lobby-header">
-            <span className="student-lobby-badge">STUDENT ASSESSMENT PORTAL</span>
             <h1 className="student-lobby-title">{title}</h1>
             <p className="student-lobby-subtitle">
               {headerConfig?.subject || 'Assessment'} {headerConfig?.subjectCode ? `(${headerConfig.subjectCode})` : ''} • {questions.length} Questions • {totalMarks} Total Marks
             </p>
           </div>
 
-          <div className="student-lobby-rules-grid">
-            <div className="lobby-rule-item">
-              <span className="rule-icon">⏱️</span>
+          {/* Prominent Assessment Duration Highlight */}
+          <div
+            className="student-lobby-duration-highlight"
+            style={{
+              background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.06) 0%, rgba(99, 102, 241, 0.1) 100%)',
+              border: '1.5px solid rgba(59, 130, 246, 0.3)',
+              borderRadius: 'var(--radius-lg, 12px)',
+              padding: '14px 18px',
+              marginBottom: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '16px',
+              boxShadow: '0 2px 8px rgba(37, 99, 235, 0.04)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  background: 'rgba(37, 99, 235, 0.12)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.4rem',
+                  flexShrink: 0,
+                }}
+              >
+                ⏱️
+              </div>
               <div>
-                <strong>Duration</strong>
-                <p>
-                  {isExamMode
-                    ? `${effectiveDurationMinutes} minutes total`
-                    : 'Self-Paced Practice'}
+                <strong style={{ fontSize: '0.8125rem', color: 'var(--color-text-primary)', display: 'block' }}>
+                  Assessment Duration
+                </strong>
+                <p style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', margin: '2px 0 0' }}>
+                  {isExamMode ? 'Allocated examination working time' : 'Self-paced practice session'}
                 </p>
               </div>
             </div>
-            <div className="lobby-rule-item">
-              <span className="rule-icon">{securityEnabled ? '🔒' : '🌐'}</span>
-              <div>
-                <strong>Security Guard</strong>
-                <p>
-                  {securityEnabled
-                    ? 'Fullscreen & tab-switch tracking active'
-                    : 'Inactive (Standard Browser)'}
-                </p>
-              </div>
+            <div
+              style={{
+                padding: '6px 14px',
+                borderRadius: '999px',
+                background: '#ffffff',
+                border: '1.5px solid rgba(37, 99, 235, 0.35)',
+                boxShadow: '0 2px 8px rgba(37, 99, 235, 0.1)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '1.15rem',
+                  fontWeight: 900,
+                  color: '#1d4ed8',
+                  letterSpacing: '-0.01em',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                {isExamMode ? `${effectiveDurationMinutes} Minutes Total` : 'Self-Paced Practice'}
+              </span>
             </div>
           </div>
 
           {headerConfig?.instructions && (
-            <div className="student-lobby-instructions">
+            <div className="student-lobby-instructions" style={{ marginBottom: '14px' }}>
               <strong>Instructions to Candidate:</strong>
               <p>{headerConfig.instructions}</p>
             </div>
           )}
+
+          {/* Security & Invigilator Rules */}
+          <div
+            className="student-lobby-security-callout"
+            style={{
+              background: 'rgba(245, 158, 11, 0.08)',
+              border: '1.5px solid rgba(245, 158, 11, 0.35)',
+              borderRadius: 'var(--radius-lg, 12px)',
+              padding: '12px 16px',
+              marginBottom: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#b45309', fontWeight: 800, fontSize: '0.8125rem' }}>
+              <span>⚠️</span>
+              <span>Important Examination Rules:</span>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.8125rem', color: 'var(--color-text-primary, #334155)', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <li>
+                <strong>Do not exit fullscreen:</strong> Do <u>not</u> press <strong>Esc</strong>, <strong>Alt+Tab</strong>, or <strong>F11</strong> during the examination.
+              </li>
+              <li>
+                <strong>Screen Locked:</strong> If your screen becomes locked at any time, please <strong>raise your hand to inform the invigilator</strong>.
+              </li>
+            </ul>
+          </div>
 
           {/* Empty Roster Warning */}
           {requireStudentPin && schoolRoster.length === 0 && (
@@ -3978,49 +4354,8 @@ export function StudentQuizRunner({
             </div>
           )}
 
-          {/* Mode Policy: Locked for Formal Teacher Exams vs Configurable for Practice Previews */}
-          {isTeacherLocked ? (
-            <div
-              style={{
-                background: 'var(--color-surface-sunken)',
-                border: '1.5px solid var(--color-border)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '12px 16px',
-                margin: '16px 0',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1.1rem' }}>🛡️</span>
-                <span
-                  style={{
-                    fontSize: '0.8125rem',
-                    fontWeight: 700,
-                    color: 'var(--color-text-primary)',
-                  }}
-                >
-                  Formal Examination Session
-                </span>
-              </div>
-              <span
-                style={{
-                  fontSize: '0.7rem',
-                  fontWeight: 800,
-                  background: 'rgba(16, 185, 129, 0.15)',
-                  color: '#10b981',
-                  padding: '3px 8px',
-                  borderRadius: '6px',
-                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.04em',
-                }}
-              >
-                Enforced by Teacher
-              </span>
-            </div>
-          ) : (
+          {/* Mode Policy: Configurable for Practice Previews (Omitted for Formal Teacher Exams) */}
+          {!isTeacherLocked && (
             <>
               {/* Practice Preview Mode Selector */}
               <div className="student-mode-toggle-box">
@@ -4122,7 +4457,7 @@ export function StudentQuizRunner({
               onClick={handleStartExam}
               disabled={isCheckingAttempt}
             >
-              {isCheckingAttempt ? '⏳ Verifying Credentials...' : '🚀 Begin Assessment Now'}
+              {isCheckingAttempt ? '⏳ Verifying Credentials...' : '🚀 Begin Exam Now'}
             </button>
           </div>
         </div>
@@ -5564,28 +5899,30 @@ export function StudentQuizRunner({
           )}
 
           {/* Guarded Mid-Exam Emergency Save & Exit */}
-          <button
-            type="button"
-            className="sq-btn sq-btn-emergency-exit"
-            style={{
-              background: 'rgba(245, 158, 11, 0.14)',
-              color: '#fbbf24',
-              border: '1px solid rgba(245, 158, 11, 0.35)',
-              borderRadius: '8px',
-              fontSize: '0.8125rem',
-              fontWeight: 700,
-              padding: '6px 12px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              cursor: 'pointer',
-            }}
-            onClick={() => setShowEmergencyExitModal(true)}
-            title="Emergency Save & Exit (Use only if Wi-Fi is permanently down, device battery is critically low, or room evacuation is ordered)"
-          >
-            <span>⚠️</span>
-            <span>Emergency Save</span>
-          </button>
+          {!hideEmergencyExamButton && (
+            <button
+              type="button"
+              className="sq-btn sq-btn-emergency-exit"
+              style={{
+                background: 'rgba(245, 158, 11, 0.14)',
+                color: '#fbbf24',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                borderRadius: '8px',
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                padding: '6px 12px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: 'pointer',
+              }}
+              onClick={() => setShowEmergencyExitModal(true)}
+              title="Emergency Save & Exit (Use only if Wi-Fi is permanently down, device battery is critically low, or room evacuation is ordered)"
+            >
+              <span>⚠️</span>
+              <span>Emergency Save</span>
+            </button>
+          )}
 
           {/* Submit Action */}
           <button
@@ -5693,6 +6030,16 @@ export function StudentQuizRunner({
           >
             ✕
           </button>
+        </div>
+      )}
+
+      {/* Hardware Keyboard Lock Capability Notice */}
+      {keyboardLockAvailable === false && hasStarted && !isSubmitted && !isGrading && isExamMode && securityEnabled && (
+        <div
+          className="sq-security-alert-bar animate-fade-in"
+          style={{ background: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.4)', color: '#d97706' }}
+        >
+          <span>ℹ️ Notice: Hardware keyboard lock is unsupported in this browser. Please avoid pressing Esc or F11 during the exam.</span>
         </div>
       )}
 
@@ -6622,7 +6969,7 @@ export function StudentQuizRunner({
       )}
 
       {/* Guarded Mid-Exam Emergency Save & Exit Confirmation Modal */}
-      {showEmergencyExitModal && (
+      {!hideEmergencyExamButton && showEmergencyExitModal && (
         <div
           style={{
             position: 'fixed',
@@ -6900,17 +7247,94 @@ export function StudentQuizRunner({
         </div>
       )}
 
-      {/* 🛡️ Secure Fullscreen Recovery Overlay (When browser drops fullscreen on reload or Esc) */}
+      {/* 🛡️ Secure Fullscreen Recovery Overlay (Grace Period or Standard Required Overlay) */}
       {!isLockedByProctor && hasStarted && !isSubmitted && !isGrading && isExamMode && securityEnabled && !isFullscreenActive && (
-        <div className="sq-lockdown-overlay animate-fade-in" style={{ backdropFilter: 'blur(12px)', zIndex: 9999 }}>
-          <div className="sq-lockdown-card animate-scale-up" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px', textAlign: 'center' }}>
-            <div className="sq-lockdown-icon-wrap" style={{ background: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)' }}>
-              <span className="sq-lockdown-icon">🛡️</span>
+        <div
+          className="sq-lockdown-overlay animate-fade-in"
+          onClick={handleResumeFullscreen}
+          role="button"
+          tabIndex={0}
+          aria-label="Click anywhere to return to fullscreen exam"
+          style={{ backdropFilter: 'blur(12px)', zIndex: 9999, cursor: 'pointer' }}
+        >
+          <div
+            className="sq-lockdown-card animate-scale-up"
+            onClick={handleResumeFullscreen}
+            style={{ maxWidth: '500px', textAlign: 'center' }}
+          >
+            <div
+              className="sq-lockdown-icon-wrap"
+              style={{
+                background: isFullscreenGraceActive ? 'rgba(239, 68, 68, 0.18)' : 'rgba(59, 130, 246, 0.15)',
+                borderColor: isFullscreenGraceActive ? 'rgba(239, 68, 68, 0.45)' : 'rgba(59, 130, 246, 0.3)',
+              }}
+            >
+              <span className="sq-lockdown-icon">{isFullscreenGraceActive ? '⏱️' : '🛡️'}</span>
             </div>
 
-            <h2 className="sq-lockdown-title" style={{ color: 'var(--color-primary-400, #38bdf8)' }}>FULLSCREEN MODE REQUIRED</h2>
+            <h2
+              className="sq-lockdown-title"
+              style={{ color: isFullscreenGraceActive ? '#f87171' : 'var(--color-primary-400, #38bdf8)' }}
+            >
+              {isFullscreenGraceActive ? 'FULLSCREEN REQUIRED (FIRST WARNING)' : 'FULLSCREEN MODE REQUIRED'}
+            </h2>
+
+            {isFullscreenGraceActive && (
+              <div
+                style={{
+                  margin: '14px auto 10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <div
+                  style={{
+                    width: '96px',
+                    height: '96px',
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.1) 70%)',
+                    border: '3px solid #ef4444',
+                    boxShadow: '0 0 25px rgba(239, 68, 68, 0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    animation: 'pulse 1s ease-in-out infinite',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '3.5rem',
+                      fontWeight: 900,
+                      lineHeight: 1,
+                      color: '#f87171',
+                      fontFamily: 'monospace',
+                      textShadow: '0 0 16px rgba(239, 68, 68, 0.65)',
+                    }}
+                  >
+                    {fullscreenGraceSecondsLeft}
+                  </span>
+                </div>
+                <span
+                  style={{
+                    marginTop: '8px',
+                    fontSize: '0.85rem',
+                    fontWeight: 800,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    color: '#fca5a5',
+                  }}
+                >
+                  Seconds Until Exam Locks
+                </span>
+              </div>
+            )}
+
             <p className="sq-lockdown-subtitle">
-              To preserve examination integrity and comply with assessment policy, this formal exam must be completed in dedicated fullscreen view.
+              {isFullscreenGraceActive
+                ? 'You exited fullscreen view. You have 5 seconds to return before your exam is locked for invigilator PIN verification.'
+                : 'To preserve examination integrity, this formal exam must be completed in dedicated fullscreen view.'}
             </p>
 
             <div className="sq-lockdown-details-box" style={{ textAlign: 'left', margin: '16px 0' }}>
@@ -6944,12 +7368,22 @@ export function StudentQuizRunner({
                 justifyContent: 'center',
                 gap: '8px',
                 borderRadius: 'var(--radius-md)',
-                boxShadow: '0 4px 14px rgba(59, 130, 246, 0.35)',
+                background: isFullscreenGraceActive ? 'linear-gradient(135deg, #ef4444, #dc2626)' : undefined,
+                boxShadow: isFullscreenGraceActive
+                  ? '0 4px 14px rgba(239, 68, 68, 0.45)'
+                  : '0 4px 14px rgba(59, 130, 246, 0.35)',
               }}
             >
               <span>🖥️</span>
-              <span>Return to Fullscreen Exam</span>
+              <span>
+                {isFullscreenGraceActive
+                  ? `Return to Fullscreen Now (${fullscreenGraceSecondsLeft}s)`
+                  : 'Return to Fullscreen Exam'}
+              </span>
             </button>
+            <p style={{ marginTop: '12px', fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>
+              💡 Press <kbd style={{ padding: '2px 6px', background: 'rgba(255,255,255,0.15)', borderRadius: '4px', fontWeight: 700 }}>Enter</kbd>, <kbd style={{ padding: '2px 6px', background: 'rgba(255,255,255,0.15)', borderRadius: '4px', fontWeight: 700 }}>F11</kbd> or click anywhere to resume
+            </p>
           </div>
         </div>
       )}

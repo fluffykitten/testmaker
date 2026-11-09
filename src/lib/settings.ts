@@ -28,6 +28,7 @@ export interface AppSettings {
   enableVariantImageGeneration?: boolean; // AI diagram & SVG generation for question variants (default: false)
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
   hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
+  hideEmergencyExamButton?: boolean;      // Hide Emergency Save & Exit button during student exams (default: false)
   geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
   geminiApiKeyTier?: GeminiApiKeyTier;    // Active Cloudflare-configured API Key Tier: 'auto' | 'paid' | 'free'
 }
@@ -79,6 +80,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableVariantImageGeneration: false,
   enableQuizizzMode: false,
   hideCreativeModeOnLanding: false,
+  hideEmergencyExamButton: false,
   geminiExtractionModel: 'gemini-3.5-flash-lite',
   geminiApiKeyTier: 'auto',
 };
@@ -527,6 +529,83 @@ export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolea
     }
   } catch (err) {
     console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
+  }
+
+  return localVal;
+}
+
+/**
+ * Saves and updates Emergency Save Button visibility in local settings and syncs to Supabase cloud app_config
+ */
+export function saveEmergencyExamButtonVisibility(hide: boolean): void {
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    hideEmergencyExamButton: hide,
+  };
+  saveSettings(updated);
+  syncEmergencyExamButtonVisibilityToCloud(hide).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('emergency_exam_button_visibility_updated', {
+        detail: { hideEmergencyExamButton: hide },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs Emergency Save Button visibility to Supabase app_config store
+ */
+export async function syncEmergencyExamButtonVisibilityToCloud(hide: boolean): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'hide_emergency_exam_button',
+      value: JSON.stringify(hide),
+    });
+    if (error) {
+      console.warn('Emergency exam button visibility cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for Emergency exam button visibility:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads Emergency Save Button visibility from local storage, fetches from Supabase cloud app_config if available,
+ * and updates local cache.
+ */
+export async function loadAndSyncEmergencyExamButtonVisibility(): Promise<boolean> {
+  const current = getSavedSettings();
+  const localVal = Boolean(current.hideEmergencyExamButton);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'hide_emergency_exam_button')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = Boolean(parsed);
+      if (current.hideEmergencyExamButton !== cloudVal) {
+        const updated = { ...current, hideEmergencyExamButton: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('emergency_exam_button_visibility_updated', {
+              detail: { hideEmergencyExamButton: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch Emergency exam button visibility from cloud:', err);
   }
 
   return localVal;

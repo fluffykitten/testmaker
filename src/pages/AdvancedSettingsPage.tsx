@@ -15,6 +15,8 @@ import {
   syncGoogleDriveClientIdToCloud,
   saveCreativeModeLandingVisibility,
   loadAndSyncCreativeModeLandingVisibility,
+  saveEmergencyExamButtonVisibility,
+  loadAndSyncEmergencyExamButtonVisibility,
   getGeminiExtractionModel,
   saveGeminiExtractionModel,
   syncGeminiExtractionModelToCloud,
@@ -161,6 +163,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       loadAndSyncCreativeModeLandingVisibility().then((hide) => {
         setSettingsState((prev) => ({ ...prev, hideCreativeModeOnLanding: hide }));
       });
+      loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
+        setSettingsState((prev) => ({ ...prev, hideEmergencyExamButton: hide }));
+      });
       loadAndSyncGeminiExtractionModel().then((cloudModel) => {
         if (cloudModel) {
           const isPreset = cloudModel === 'gemini-3.5-flash-lite' || cloudModel === 'gemini-3.8-flash';
@@ -198,6 +203,16 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       hide
         ? '✓ Creative Mode Hub & Avatar Studio hidden from student landing page'
         : '✓ Creative Mode Hub & Avatar Studio now visible on landing page'
+    );
+  };
+
+  const handleToggleHideEmergencyExamButton = (hide: boolean) => {
+    updateSetting('hideEmergencyExamButton', hide);
+    saveEmergencyExamButtonVisibility(hide);
+    showNotice(
+      hide
+        ? '✓ Emergency Save button is now HIDDEN in student exam runner'
+        : '✓ Emergency Save button is now VISIBLE in student exam runner'
     );
   };
 
@@ -706,7 +721,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
             onClick={() => setActiveSection('security')}
           >
             🛡️ Exam Security & Feature Controls
-            <span className="adv-tab-counter">Watermarking · Creative Mode · Auto-Lock</span>
+            <span className="adv-tab-counter">Watermarking · Multi-Monitor · Emergency Button · Auto-Lock</span>
           </button>
 
           <button
@@ -1380,6 +1395,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   onClick={() => handleToggleHideCreativeMode(!settings.hideCreativeModeOnLanding)}
                 >
                   {settings.hideCreativeModeOnLanding ? 'Hidden on Landing (Active)' : 'Visible (Default)'}
+                </button>
+              </div>
+
+              {/* Emergency Save Button Visibility */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">⚠️ Hide Emergency Save Button (Exam Runner)</strong>
+                  <p className="adv-setting-desc">
+                    Hides the "⚠️ Emergency Save" button in the candidate exam interface. When hidden, students cannot self-initiate emergency offline hand-in, preventing unauthorized early exits or distractions.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.hideEmergencyExamButton ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => handleToggleHideEmergencyExamButton(!settings.hideEmergencyExamButton)}
+                >
+                  {settings.hideEmergencyExamButton ? 'Hidden (Active)' : 'Visible (Default)'}
                 </button>
               </div>
             </div>

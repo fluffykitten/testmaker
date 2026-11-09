@@ -20,6 +20,7 @@ export interface StudentQuizData {
   securityEnabled?: boolean;
   enableWatermark?: boolean;
   enableMultiMonitorDetection?: boolean;
+  hideEmergencyExamButton?: boolean;
   requireTeacherUnlock?: boolean;
   /** Salted hash of the invigilator PIN — the plaintext PIN is never sent to candidates. */
   teacherPinHash?: string;
@@ -215,6 +216,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       securityEnabled: published.securityEnabled,
       enableWatermark: published.enableWatermark ?? false,
       enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
+      hideEmergencyExamButton: published.hideEmergencyExamButton ?? false,
       requireTeacherUnlock: published.requireTeacherUnlock,
       teacherPinHash,
       maxViolations: published.maxViolations,
