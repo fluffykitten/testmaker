@@ -269,9 +269,15 @@ export function StudentResultModal({
                                 : 'srm-metric-val--warning'
                             }`}
                           >
-                            {selectedSubmission.violationsCount === 0
-                              ? 'Clean (0 Strikes)'
-                              : `${selectedSubmission.violationsCount} Warnings`}
+                            {selectedSubmission.forensics?.autoSubmittedBySecurity
+                              ? `Auto-Submitted (${selectedSubmission.forensics.finalStrikeCount ?? selectedSubmission.violationsCount} Strikes)`
+                              : selectedSubmission.violationsCount === 0
+                                ? 'Clean (0 Strikes)'
+                                : `${selectedSubmission.forensics?.finalStrikeCount ?? selectedSubmission.violationsCount} Strikes${
+                                    selectedSubmission.forensics?.totalPenaltySeconds
+                                      ? ` (-${Math.round(selectedSubmission.forensics.totalPenaltySeconds / 60)}m)`
+                                      : ''
+                                  }`}
                           </p>
                         </div>
                       </div>

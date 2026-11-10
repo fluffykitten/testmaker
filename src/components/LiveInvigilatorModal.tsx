@@ -152,8 +152,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
   const isStudentExceeded = useCallback(
     (s: ProctorStudentState): boolean => {
+      if (s.autoSubmittedBySecurity) return true;
       const maxV = getMaxViolations(s);
-      return Boolean(s.exceededMaxViolations || (maxV > 0 && s.violationsCount >= maxV));
+      const strikes = s.strikeCount ?? s.violationsCount;
+      return Boolean(s.exceededMaxViolations || (maxV > 0 && strikes >= maxV));
     },
     [getMaxViolations]
   );
@@ -934,7 +936,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
   const handlePardon = useCallback((compositeKey: string) => {
     const s = students[compositeKey];
-    if (!s || !s.quizCode) return;
+    if (!s || !s.quizCode || s.autoSubmittedBySecurity) return;
 
     delete pendingHeartbeatsRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'pardon');
@@ -947,7 +949,9 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         [compositeKey]: {
           ...prev[compositeKey],
           status: 'active',
-          violationsCount: 0,
+          strikeCount: 0,
+          currentTierName: undefined,
+          currentTierAction: undefined,
           exceededMaxViolations: false,
           lockReason: undefined,
           lastViolation: undefined,
@@ -961,7 +965,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         studentName: s.studentName,
         quizCode: s.quizCode,
         type: 'pardon',
-        detail: `Security violations cleared and candidate pardoned`,
+        detail: `Security strikes reset to 0 by invigilator (prior time penalties retained)`,
         severity: 'info',
       },
       ...prev,
@@ -975,7 +979,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       candidateClass: s.candidateClass,
       eventType: 'pardon',
       severity: 'info',
-      detail: 'Security violations cleared and candidate pardoned',
+      detail: 'Security strike counter reset to 0 by invigilator (prior time penalties retained)',
       actor: 'invigilator',
       createdAt: new Date().toISOString(),
     });
@@ -1907,14 +1911,38 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                               </div>
                             </div>
                             <div className="lip-card-badge-wrap">
-                              {isExceeded && (
+                              {s.autoSubmittedBySecurity ? (
+                                <span
+                                  className="lip-badge-exceeded-limit"
+                                  style={{ background: '#b91c1c', borderColor: '#ef4444' }}
+                                  title="Candidate exceeded maximum security strike allowance and was auto-submitted"
+                                >
+                                  🛑 AUTO-SUBMITTED (Strike {s.strikeCount ?? s.violationsCount})
+                                </span>
+                              ) : isExceeded ? (
                                 <span
                                   className="lip-badge-exceeded-limit"
                                   title="Candidate exceeded allowed security notices"
                                 >
-                                  🚨 LIMIT EXCEEDED ({s.violationsCount}/{maxV || 'Max'})
+                                  🚨 LIMIT EXCEEDED ({s.strikeCount ?? s.violationsCount}/{maxV || 'Max'})
                                 </span>
-                              )}
+                              ) : s.currentTierAction === 'time_penalty' && (s.totalPenaltySeconds || 0) > 0 ? (
+                                <span
+                                  className="lip-badge-exceeded-limit"
+                                  style={{ background: '#c2410c', borderColor: '#f97316' }}
+                                  title={`Active Penalty Tier: ${s.currentTierName}`}
+                                >
+                                  ⏱️ {s.currentTierName} (-{Math.round((s.totalPenaltySeconds || 0) / 60)}m)
+                                </span>
+                              ) : s.currentTierName && (s.strikeCount ?? 0) > 0 ? (
+                                <span
+                                  className="lip-badge-exceeded-limit"
+                                  style={{ background: '#d97706', borderColor: '#f59e0b' }}
+                                  title={`Security Tier: ${s.currentTierName}`}
+                                >
+                                  ⚠️ {s.currentTierName} (Strike {s.strikeCount})
+                                </span>
+                              ) : null}
                               {getStatusBadge(s.status, s.multiMonitorDetected)}
                             </div>
                           </div>
@@ -1960,7 +1988,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                               <span className="lip-telemetry-label">Violations:</span>
                               <span
                                 className={`lip-telemetry-val ${
-                                  s.violationsCount > 0 ? 'lip-telemetry-val--violation' : ''
+                                  (s.strikeCount ?? s.violationsCount) > 0 ? 'lip-telemetry-val--violation' : ''
                                 }`}
                                 title={
                                   s.recentViolations && s.recentViolations.length > 0
@@ -1980,7 +2008,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                                     : s.lastViolation || undefined
                                 }
                               >
-                                {s.violationsCount} strike{s.violationsCount !== 1 ? 's' : ''}
+                                {s.strikeCount ?? s.violationsCount} strike{(s.strikeCount ?? s.violationsCount) !== 1 ? 's' : ''}
+                                {(s.totalPenaltySeconds || 0) > 0 && ` (-${Math.round((s.totalPenaltySeconds || 0) / 60)}m)`}
                               </span>
                             </div>
                             {s.multiMonitorDetected && (
@@ -1997,34 +2026,38 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
                           {/* Student Action Buttons */}
                           <div className="lip-card-actions">
-                            {isLocked ? (
-                              <button
-                                type="button"
-                                className="lip-card-btn lip-card-btn--unlock"
-                                onClick={() => handleRemoteUnlock(compositeKey)}
-                                title="Remotely clear lock screen and resume candidate examination"
-                              >
-                                🔓 Remote Unlock
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="lip-card-btn lip-card-btn--time"
-                                onClick={() => handleAddTime(compositeKey, 5)}
-                                title="Add +5 minutes accommodation to candidate"
-                              >
-                                ⏱️ +5m
-                              </button>
-                            )}
-                            {s.violationsCount > 0 && (
-                              <button
-                                type="button"
-                                className="lip-card-btn lip-card-btn--pardon"
-                                onClick={() => handlePardon(compositeKey)}
-                                title="Pardon strikes and reset violation counters"
-                              >
-                                🛡️ Pardon
-                              </button>
+                            {!s.autoSubmittedBySecurity && (
+                              <>
+                                {isLocked ? (
+                                  <button
+                                    type="button"
+                                    className="lip-card-btn lip-card-btn--unlock"
+                                    onClick={() => handleRemoteUnlock(compositeKey)}
+                                    title="Remotely clear lock screen and resume candidate examination"
+                                  >
+                                    🔓 Remote Unlock
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="lip-card-btn lip-card-btn--time"
+                                    onClick={() => handleAddTime(compositeKey, 5)}
+                                    title="Add +5 minutes accommodation to candidate"
+                                  >
+                                    ⏱️ +5m
+                                  </button>
+                                )}
+                                {(s.strikeCount ?? s.violationsCount) > 0 && (
+                                  <button
+                                    type="button"
+                                    className="lip-card-btn lip-card-btn--pardon"
+                                    onClick={() => handlePardon(compositeKey)}
+                                    title="Pardon strikes and reset violation counters"
+                                  >
+                                    🛡️ Pardon
+                                  </button>
+                                )}
+                              </>
                             )}
                             {s.status !== 'submitted' && (
                               <button

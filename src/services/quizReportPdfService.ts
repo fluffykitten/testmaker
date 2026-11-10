@@ -262,8 +262,16 @@ export function exportClassQuizReportPdf(
     const { grade, color } = deriveGrade(sub.percentage, quiz.gradeThresholds);
     const mins = Math.floor(sub.durationSeconds / 60);
     const secs = sub.durationSeconds % 60;
-    const isClean = sub.violationsCount === 0;
-    return `<tr><td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td><td><strong>${sub.studentName}</strong></td><td>${sub.studentClass || 'General'}</td><td style="text-align: center; font-family: monospace;">${sub.candidateNumber || '-'}</td><td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td><td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td><td style="text-align: center;"><span class="grade-badge" style="background: ${color};">${grade}</span></td>${!isOffline ? `<td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td><td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">${isClean ? 'Clean (0)' : `⚠️ ${sub.violationsCount}`}</td>` : ''}</tr>`;
+    const penaltyMins = sub.forensics?.totalPenaltySeconds ? Math.round(sub.forensics.totalPenaltySeconds / 60) : 0;
+    const penaltyText = penaltyMins > 0 ? ` (-${penaltyMins}m)` : '';
+    const strikesVal = sub.forensics?.finalStrikeCount ?? sub.violationsCount;
+    const isClean = strikesVal === 0;
+    const strikeText = sub.forensics?.autoSubmittedBySecurity
+      ? `🛑 Auto (${strikesVal})`
+      : isClean
+        ? 'Clean (0)'
+        : `⚠️ ${strikesVal}${penaltyText}`;
+    return `<tr><td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td><td><strong>${sub.studentName}</strong></td><td>${sub.studentClass || 'General'}</td><td style="text-align: center; font-family: monospace;">${sub.candidateNumber || '-'}</td><td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td><td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td><td style="text-align: center;"><span class="grade-badge" style="background: ${color};">${grade}</span></td>${!isOffline ? `<td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td><td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">${strikeText}</td>` : ''}</tr>`;
   }).join('')}
     </tbody>
   </table>
@@ -1345,7 +1353,6 @@ export function exportIndividualStudentReportPdf(
   const { grade, color } = deriveGrade(submission.percentage, options?.gradeThresholds);
   const mins = Math.floor(submission.durationSeconds / 60);
   const secs = submission.durationSeconds % 60;
-  const isClean = submission.violationsCount === 0;
 
   const htmlContent = `<!DOCTYPE html>
 <html lang="en">
@@ -1437,7 +1444,13 @@ export function exportIndividualStudentReportPdf(
     </div>
     <div class="meta-item">
       <span>Exam Integrity:</span>
-      <strong style="color: ${isClean ? '#16a34a' : '#ea580c'}">${isClean ? '🟢 0 Strikes (Clean)' : `⚠️ ${submission.violationsCount} Strikes`}</strong>
+      <strong style="color: ${(submission.forensics?.finalStrikeCount ?? submission.violationsCount) === 0 ? '#16a34a' : '#ea580c'}">${
+        submission.forensics?.autoSubmittedBySecurity
+          ? `🛑 Auto-Submitted (${submission.forensics.finalStrikeCount ?? submission.violationsCount} Strikes${(submission.forensics.totalPenaltySeconds || 0) > 0 ? `, -${Math.round(submission.forensics.totalPenaltySeconds! / 60)}m` : ''})`
+          : (submission.forensics?.finalStrikeCount ?? submission.violationsCount) === 0
+            ? '🟢 0 Strikes (Clean)'
+            : `⚠️ ${submission.forensics?.finalStrikeCount ?? submission.violationsCount} Strikes${(submission.forensics?.totalPenaltySeconds || 0) > 0 ? ` (-${Math.round(submission.forensics!.totalPenaltySeconds! / 60)}m penalty)` : ''}`
+      }</strong>
     </div>
     ` : ''}
   </div>

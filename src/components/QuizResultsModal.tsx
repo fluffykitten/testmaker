@@ -2017,9 +2017,27 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                       </div>
                     </div>
 
-                    {selectedSubmission.forensics?.exceededMaxViolations && (
+                    {selectedSubmission.forensics?.autoSubmittedBySecurity ? (
+                      <div className="proctor-exceeded-banner" style={{ background: 'rgba(239, 68, 68, 0.15)', borderColor: '#ef4444' }}>
+                        🛑 <strong>Auto-Submitted by Security Policy:</strong> Candidate reached final violation tier ({selectedSubmission.forensics.finalTierReached || 'Auto-Submit'}). The exam was automatically locked and submitted.
+                      </div>
+                    ) : selectedSubmission.forensics?.exceededMaxViolations ? (
                       <div className="proctor-exceeded-banner animate-pulse">
-                        🚨 <strong>Security Threshold Exceeded:</strong> Candidate exceeded the maximum allowed violation strikes. Real-time invigilator notification was dispatched without auto-submitting the exam.
+                        🚨 <strong>Security Threshold Exceeded:</strong> Candidate exceeded the allowed strike threshold ({selectedSubmission.forensics?.finalStrikeCount ?? selectedSubmission.violationsCount} strikes recorded).
+                      </div>
+                    ) : null}
+
+                    {Boolean(selectedSubmission.forensics?.totalPenaltySeconds && selectedSubmission.forensics.totalPenaltySeconds > 0) && (
+                      <div style={{
+                        marginTop: '8px',
+                        padding: '6px 12px',
+                        background: 'rgba(234, 88, 12, 0.12)',
+                        border: '1px solid rgba(234, 88, 12, 0.3)',
+                        borderRadius: '6px',
+                        fontSize: '0.8125rem',
+                        color: 'var(--color-text-primary)',
+                      }}>
+                        ⏱️ <strong>Time Penalties Applied:</strong> Total {Math.round(selectedSubmission.forensics!.totalPenaltySeconds! / 60)} minutes deducted across violation escalation tiers.
                       </div>
                     )}
 

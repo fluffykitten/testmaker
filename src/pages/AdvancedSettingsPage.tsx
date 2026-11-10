@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type KeyboardEvent, type ClipboardEvent } from 'react';
+import { useState, useEffect, useRef, useMemo, type KeyboardEvent, type ClipboardEvent } from 'react';
 import { BackupRestoreModal } from '../components/BackupRestoreModal';
 import {
   type AppSettings,
@@ -26,7 +26,16 @@ import {
   syncGeminiApiKeyTierToCloud,
   loadAndSyncGeminiApiKeyTier,
   type GeminiApiKeyTier,
+  getSecurityTiers,
+  saveSecurityTiers,
+  loadAndSyncSecurityTiers,
 } from '../lib/settings';
+import {
+  type SecurityViolationTier,
+  type SecurityTierAction,
+  DEFAULT_SECURITY_TIERS,
+  validateSecurityTiers,
+} from '../lib/securityTiers';
 import { testR2Connection } from '../services/storageService';
 import { testGeminiModelConnectivity, getConfiguredApiKeyStatus } from '../lib/gemini';
 import {
@@ -138,6 +147,11 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [isSavingModel, setIsSavingModel] = useState(false);
   const keySlotStatus = getConfiguredApiKeyStatus(geminiKeyTier);
 
+  // Security Violation Escalation Tiers State
+  const [securityTiers, setSecurityTiers] = useState<SecurityViolationTier[]>(() => getSecurityTiers());
+  const [isSavingTiers, setIsSavingTiers] = useState(false);
+  const tierValidation = useMemo(() => validateSecurityTiers(securityTiers), [securityTiers]);
+
   // Focus first pin digit on load if locked
   useEffect(() => {
     if (!isUnlocked) {
@@ -165,6 +179,11 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       });
       loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
         setSettingsState((prev) => ({ ...prev, hideEmergencyExamButton: hide }));
+      });
+      loadAndSyncSecurityTiers().then((tiers) => {
+        if (tiers && tiers.length > 0) {
+          setSecurityTiers(tiers);
+        }
       });
       loadAndSyncGeminiExtractionModel().then((cloudModel) => {
         if (cloudModel) {
@@ -214,6 +233,76 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
         ? '✓ Emergency Save button is now HIDDEN in student exam runner'
         : '✓ Emergency Save button is now VISIBLE in student exam runner'
     );
+  };
+
+  const handleUpdateTier = (index: number, patch: Partial<SecurityViolationTier>) => {
+    setSecurityTiers((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  };
+
+  const handleAddTier = () => {
+    setSecurityTiers((prev) => {
+      const next = [...prev];
+      const lastIndex = next.length - 1;
+      const finalTier = { ...next[lastIndex] };
+      const prevStrike = lastIndex > 0 ? next[lastIndex - 1].strikeCount : 0;
+      const newStrike = prevStrike + 1;
+      if (finalTier.strikeCount <= newStrike) {
+        finalTier.strikeCount = newStrike + 1;
+      }
+      next[lastIndex] = finalTier;
+
+      const newTier: SecurityViolationTier = {
+        id: `tier_${Date.now()}`,
+        strikeCount: newStrike,
+        name: `Warning with Penalty`,
+        action: 'time_penalty',
+        penaltyMinutes: 5,
+        studentNotice: `Strike ${newStrike}. 5 minutes deducted from exam time.`,
+      };
+      next.splice(lastIndex, 0, newTier);
+      return next;
+    });
+  };
+
+  const handleDeleteTier = (index: number) => {
+    setSecurityTiers((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, i) => i !== index);
+      const lastIndex = next.length - 1;
+      if (next[lastIndex].action !== 'auto_submit') {
+        next[lastIndex] = {
+          ...next[lastIndex],
+          action: 'auto_submit',
+          penaltyMinutes: 0,
+          name: next[lastIndex].name || 'Final Warning (Auto Submit)',
+        };
+      }
+      return next;
+    });
+  };
+
+  const handleRestoreDefaultTiers = () => {
+    setSecurityTiers(JSON.parse(JSON.stringify(DEFAULT_SECURITY_TIERS)));
+    showNotice('✓ Restored 4-tier default escalation policy');
+  };
+
+  const handleSaveTiers = async () => {
+    const val = validateSecurityTiers(securityTiers);
+    if (!val.ok) {
+      showNotice(`Cannot save tiers: ${val.errors[0]}`);
+      return;
+    }
+    setIsSavingTiers(true);
+    try {
+      saveSecurityTiers(securityTiers);
+      showNotice('✓ Violation escalation tiers saved and synced to cloud');
+    } finally {
+      setIsSavingTiers(false);
+    }
   };
 
   const handleSaveGeminiModel = async () => {
@@ -1109,6 +1198,211 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                 <p className="adv-section-subtitle">
                   Configure default integrity protections, candidate watermarking, multi-monitor shields, portal visibility, and automatic lockouts.
                 </p>
+              </div>
+            </div>
+
+            {/* ── Multi-Tier Security Violation Escalation Policy ── */}
+            <div className="adv-tier-policy-card">
+              <div className="adv-tier-header">
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>🚨</span>
+                    <h3 className="adv-tier-title">Violation Escalation Tiers (School-Wide Policy)</h3>
+                    <span className="adv-tier-count-badge">
+                      {securityTiers.length} {securityTiers.length === 1 ? 'Tier' : 'Tiers'}
+                    </span>
+                  </div>
+                  <p className="adv-tier-subtitle">
+                    Progressive actions enforced when candidates commit security strikes (tab-switching, exiting fullscreen, unauthorized window blur, or multi-monitor extensions).
+                  </p>
+                </div>
+                <div className="adv-tier-header-actions">
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={handleRestoreDefaultTiers}
+                    title="Restore default 4-tier policy (Warning → -5m → -10m → Auto Submit)"
+                  >
+                    ↺ Restore 4-Tier Default
+                  </button>
+                  <button
+                    type="button"
+                    className="adv-btn-primary"
+                    onClick={handleSaveTiers}
+                    disabled={isSavingTiers || !tierValidation.ok}
+                  >
+                    {isSavingTiers ? 'Saving…' : '💾 Save & Sync Tiers'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Flow Breadcrumb Pill Bar */}
+              <div className="adv-tier-flow-bar">
+                <span className="adv-tier-flow-label">Active Escalation Flow:</span>
+                <div className="adv-tier-flow-pills">
+                  {securityTiers.map((t, idx) => (
+                    <div key={t.id || idx} className="adv-tier-flow-item">
+                      <div className={`adv-tier-pill adv-tier-pill--${t.action}`}>
+                        <span className="adv-tier-pill-strike">Strike {t.strikeCount}:</span>
+                        <span className="adv-tier-pill-name">{t.name}</span>
+                        {t.action === 'time_penalty' && (
+                          <span className="adv-tier-pill-penalty">(-{t.penaltyMinutes || 5}m)</span>
+                        )}
+                        {t.action === 'auto_submit' && (
+                          <span className="adv-tier-pill-auto">🛑 Auto-Submit</span>
+                        )}
+                      </div>
+                      {idx < securityTiers.length - 1 && <span className="adv-tier-flow-arrow">→</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Inline Validation Banner */}
+              {!tierValidation.ok && (
+                <div className="adv-tier-validation-alert">
+                  <strong>⚠️ Policy Configuration Issues:</strong>
+                  <ul>
+                    {tierValidation.errors.map((err: string, i: number) => (
+                      <li key={i}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Tiers Editor List */}
+              <div className="adv-tier-list">
+                {securityTiers.map((tier, idx) => {
+                  const isFinal = idx === securityTiers.length - 1;
+                  return (
+                    <div
+                      key={tier.id || idx}
+                      className={`adv-tier-card adv-tier-card--${tier.action} ${isFinal ? 'adv-tier-card--final' : ''}`}
+                    >
+                      {/* Top Row: Core Rule Attributes */}
+                      <div className="adv-tier-card-top">
+                        <div className="adv-tier-field adv-tier-field--strike">
+                          <label className="adv-tier-field-label">Strike #</label>
+                          <div className="adv-tier-strike-input-wrap">
+                            <span className={`adv-tier-strike-pill ${isFinal ? 'adv-tier-strike-pill--final' : ''}`}>
+                              #{tier.strikeCount}
+                            </span>
+                            <input
+                              type="number"
+                              className="adv-input adv-tier-input-strike"
+                              min={1}
+                              max={50}
+                              value={tier.strikeCount}
+                              onChange={(e) =>
+                                handleUpdateTier(idx, { strikeCount: parseInt(e.target.value, 10) || 1 })
+                              }
+                              title="Strike count threshold"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="adv-tier-field adv-tier-field--name">
+                          <label className="adv-tier-field-label">Tier Display Name</label>
+                          <input
+                            type="text"
+                            className="adv-input adv-tier-input-name"
+                            placeholder="e.g. Warning with Penalty"
+                            value={tier.name}
+                            onChange={(e) => handleUpdateTier(idx, { name: e.target.value })}
+                          />
+                        </div>
+
+                        <div className="adv-tier-field adv-tier-field--action">
+                          <label className="adv-tier-field-label">Enforced Action</label>
+                          <select
+                            className="adv-input adv-tier-select-action"
+                            value={tier.action}
+                            onChange={(e) => {
+                              const newAction = e.target.value as SecurityTierAction;
+                              handleUpdateTier(idx, {
+                                action: newAction,
+                                penaltyMinutes: newAction === 'time_penalty' ? (tier.penaltyMinutes || 5) : 0,
+                              });
+                            }}
+                          >
+                            <option value="warning">Early Warning (PIN Unlock, No Penalty)</option>
+                            <option value="time_penalty">Warning with Time Penalty (PIN Unlock + Deduct Time)</option>
+                            <option value="auto_submit">Final Warning (Lock & Auto-Submit Immediately)</option>
+                          </select>
+                        </div>
+
+                        <div className="adv-tier-field adv-tier-field--penalty">
+                          <label className="adv-tier-field-label">Time Deduction</label>
+                          {tier.action === 'time_penalty' ? (
+                            <div className="adv-tier-penalty-input-group">
+                              <input
+                                type="number"
+                                className="adv-input adv-tier-input-penalty"
+                                min={1}
+                                max={120}
+                                value={tier.penaltyMinutes ?? 5}
+                                onChange={(e) =>
+                                  handleUpdateTier(idx, {
+                                    penaltyMinutes: Math.max(1, parseInt(e.target.value, 10) || 1),
+                                  })
+                                }
+                              />
+                              <span className="adv-tier-penalty-unit">mins</span>
+                            </div>
+                          ) : (
+                            <span className={`adv-tier-action-badge adv-tier-action-badge--${tier.action}`}>
+                              {tier.action === 'auto_submit' ? '🛑 Irreversible' : '0 min (None)'}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="adv-tier-del-wrap">
+                          <button
+                            type="button"
+                            className="adv-tier-del-btn"
+                            disabled={securityTiers.length <= 1 || isFinal}
+                            onClick={() => handleDeleteTier(idx)}
+                            title={isFinal ? 'Final auto-submit tier cannot be removed' : 'Remove escalation tier'}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Bottom Row: Candidate Lock Notice */}
+                      <div className="adv-tier-card-bottom">
+                        <div className="adv-tier-field adv-tier-field--notice">
+                          <label className="adv-tier-field-label">
+                            Lock Screen Student Notice{' '}
+                            <span className="adv-tier-field-hint">(Shown on candidate's device when locked)</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="adv-input adv-tier-input-notice"
+                            placeholder="Optional message shown on candidate lock screen..."
+                            value={tier.studentNotice || ''}
+                            onChange={(e) => handleUpdateTier(idx, { studentNotice: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Add Tier Action */}
+              <div className="adv-tier-footer-row">
+                <button
+                  type="button"
+                  className="adv-btn-secondary"
+                  onClick={handleAddTier}
+                  disabled={securityTiers.length >= 10}
+                >
+                  + Add Escalation Tier
+                </button>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
+                  Tiers are enforced sequentially. The final tier must be <strong>Final Warning (Auto Submit)</strong>.
+                </span>
               </div>
             </div>
 

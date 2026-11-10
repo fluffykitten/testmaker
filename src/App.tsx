@@ -13,6 +13,7 @@ import {
   loadAndSyncCreativeModeLandingVisibility,
   loadAndSyncGeminiExtractionModel,
   loadAndSyncGeminiApiKeyTier,
+  loadAndSyncSecurityTiers,
 } from './lib/settings';
 import { PortalLandingPage } from './pages/PortalLandingPage';
 import { resolveStudentQuiz } from './services/quizCodeService';
@@ -147,6 +148,7 @@ function App() {
     loadAndSyncCreativeModeLandingVisibility().catch(() => {});
     loadAndSyncGeminiExtractionModel().catch(() => {});
     loadAndSyncGeminiApiKeyTier().catch(() => {});
+    loadAndSyncSecurityTiers().catch(() => {});
 
     // Proactively pre-warm Question Bank chunk and database cache in background
     const prewarmTimer = setTimeout(() => {

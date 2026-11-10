@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.4.1",
+  "version": "2.4.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "test:tos-citations": "node --import ./scripts/register-ts.mjs scripts/test-tos-citations-dual-links.mjs",
     "test:cambridge-links": "node --import ./scripts/register-ts.mjs scripts/test-post-upload-cambridge-links.mjs",
     "test:fullscreen-grace": "node scripts/test-fullscreen-grace-period.mjs",
+    "test:security-tiers": "node --import ./scripts/register-ts.mjs scripts/test-tiered-security-system.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",
     "deploy:draft": "npm run build && npx netlify deploy --dir=dist",

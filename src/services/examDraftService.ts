@@ -4,6 +4,7 @@
 
 import { supabase } from '../lib/supabase';
 import { normalizeIdentityPart } from '../lib/examSubmissionGuards';
+import type { SecurityViolationTier, SecurityTierEvent } from '../lib/securityTiers';
 
 export interface ExamDraftPayload {
   quizCode: string;
@@ -23,6 +24,12 @@ export interface ExamDraftPayload {
   isLockedByProctor?: boolean;
   lockReason?: string;
   lockTime?: string;
+  securityTiersSnapshot?: SecurityViolationTier[];
+  strikeCount?: number;
+  lastStrikeAt?: number | null;
+  totalPenaltySeconds?: number;
+  tierHistory?: SecurityTierEvent[];
+  autoSubmittedBySecurity?: boolean;
   lastSavedAt: string;
   status: 'in_progress' | 'submitted';
 }

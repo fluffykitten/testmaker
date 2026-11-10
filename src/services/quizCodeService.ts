@@ -5,6 +5,8 @@ import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizMa
 import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 import { hashTeacherPin, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
+import { type SecurityViolationTier } from '../lib/securityTiers';
+import { loadAndSyncSecurityTiers } from '../lib/settings';
 
 export interface StudentQuizData {
   publishedId?: string;
@@ -21,6 +23,7 @@ export interface StudentQuizData {
   enableWatermark?: boolean;
   enableMultiMonitorDetection?: boolean;
   hideEmergencyExamButton?: boolean;
+  securityTiers?: SecurityViolationTier[];
   requireTeacherUnlock?: boolean;
   /** Salted hash of the invigilator PIN — the plaintext PIN is never sent to candidates. */
   teacherPinHash?: string;
@@ -201,6 +204,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     // (Practice mode keeps them so instant solutions can still be rendered.)
     const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
     const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
+    const schoolSecurityTiers = await loadAndSyncSecurityTiers();
 
     const result: StudentQuizData = {
       publishedId: published.id,
@@ -217,6 +221,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       enableWatermark: published.enableWatermark ?? false,
       enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
       hideEmergencyExamButton: published.hideEmergencyExamButton ?? false,
+      securityTiers: schoolSecurityTiers,
       requireTeacherUnlock: published.requireTeacherUnlock,
       teacherPinHash,
       maxViolations: published.maxViolations,

@@ -10,6 +10,7 @@
 //  · a channel teardown only removes the session that owns it.
 
 import { supabase } from '../lib/supabase';
+import type { SecurityTierAction } from '../lib/securityTiers';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import {
   checkRateLimit,
@@ -51,6 +52,11 @@ export interface ProctorStudentState {
   recentViolations?: ProctorViolationSummary[];
   exceededMaxViolations?: boolean;
   maxViolations?: number;
+  strikeCount?: number;
+  currentTierName?: string;
+  currentTierAction?: SecurityTierAction;
+  totalPenaltySeconds?: number;
+  autoSubmittedBySecurity?: boolean;
   quizCode?: string;
   quizTitle?: string;
 }

@@ -492,8 +492,20 @@ export async function exportAllSubmissionsExcelICM(
     const p = s.percentage;
     const grade = deriveGradeFromPercentage(p, options?.gradeThresholds).grade;
     const durationFmt = isOffline ? '-' : `${Math.floor(s.durationSeconds / 60)}m ${s.durationSeconds % 60}s`;
-    const strikesFmt = isOffline ? '-' : s.violationsCount;
-    const statusFmt = isOffline ? 'Offline Paper Exam' : s.violationsCount === 0 ? 'Clean (0 Strikes)' : s.violationsCount >= 3 ? 'Disqualified / Flagged' : `Suspicious (${s.violationsCount})`;
+    const strikesCount = s.forensics?.finalStrikeCount ?? s.violationsCount;
+    const strikesFmt = isOffline ? '-' : strikesCount;
+    const penaltyMins = s.forensics?.totalPenaltySeconds ? Math.round(s.forensics.totalPenaltySeconds / 60) : 0;
+    const penaltySuffix = penaltyMins > 0 ? ` (-${penaltyMins}m)` : '';
+    const isExceeded = Boolean(s.forensics?.autoSubmittedBySecurity || s.forensics?.exceededMaxViolations || s.violationsCount >= 3);
+    const statusFmt = isOffline
+      ? 'Offline Paper Exam'
+      : s.forensics?.autoSubmittedBySecurity
+        ? `Auto-Submitted (${strikesCount} Strikes${penaltySuffix})`
+        : strikesCount === 0
+          ? 'Clean (0 Strikes)'
+          : isExceeded
+            ? `Flagged (${strikesCount} Strikes${penaltySuffix})`
+            : `Suspicious (${strikesCount}${penaltySuffix})`;
 
     const rowData = [
       idx + 1,
@@ -547,7 +559,7 @@ export async function exportAllSubmissionsExcelICM(
       }
 
       // Proctoring alert status
-      if (cIdx === 10 && !isOffline && s.violationsCount >= 3) {
+      if (cIdx === 10 && !isOffline && isExceeded) {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.crimsonLight } };
         cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.crimsonText } };
       }
@@ -871,7 +883,7 @@ export async function exportAllSubmissionsExcelICM(
             violationType: log.type || 'security_event',
             event: log.event,
             severity: log.severity.toUpperCase(),
-            limitExceeded: (sub.forensics?.exceededMaxViolations || sub.violationsCount >= 3) ? 'YES 🚨' : 'No',
+            limitExceeded: (sub.forensics?.autoSubmittedBySecurity || sub.forensics?.exceededMaxViolations || sub.violationsCount >= 3) ? 'YES 🚨' : 'No',
           });
         });
       }
@@ -1002,8 +1014,26 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     { property: 'Calculated Grade', value: deriveGradeFromPercentage(submission.percentage, options?.gradeThresholds).grade },
     { property: 'Assessment Mode', value: isOffline ? 'Offline Paper Exam' : 'Computer-Based (Online)' },
     { property: 'Time Taken', value: isOffline ? '-' : `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
-    { property: 'Violation Strikes', value: isOffline ? '-' : String(submission.violationsCount) },
-    { property: 'Integrity Status', value: isOffline ? 'Offline' : submission.violationsCount === 0 ? 'Clean (0 Strikes)' : 'Flagged' },
+    {
+      property: 'Violation Strikes',
+      value: isOffline
+        ? '-'
+        : `${submission.forensics?.finalStrikeCount ?? submission.violationsCount}${
+            submission.forensics?.totalPenaltySeconds
+              ? ` (-${Math.round(submission.forensics.totalPenaltySeconds / 60)}m Penalty)`
+              : ''
+          }`,
+    },
+    {
+      property: 'Integrity Status',
+      value: isOffline
+        ? 'Offline'
+        : submission.forensics?.autoSubmittedBySecurity
+          ? 'Auto-Submitted (Security Threshold)'
+          : submission.violationsCount === 0
+            ? 'Clean (0 Strikes)'
+            : 'Flagged',
+    },
     { property: 'Date Submitted', value: formatSubmissionDateTime(submission.submittedAt) },
   ];
 

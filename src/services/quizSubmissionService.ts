@@ -12,6 +12,7 @@ import {
   isOutboxRetryable,
   normalizeIdentityPart,
 } from '../lib/examSubmissionGuards';
+import type { SecurityTierEvent } from '../lib/securityTiers';
 import {
   encryptEmergencyPackage,
   decryptEmergencyPackage,
@@ -812,6 +813,11 @@ export interface ExamForensics {
   ingestedAt?: string;
   /** Reason recorded when triggered via mid-exam Emergency Save & Exit. */
   emergencyExitReason?: string;
+  totalPenaltySeconds?: number;
+  finalStrikeCount?: number;
+  finalTierReached?: string;
+  autoSubmittedBySecurity?: boolean;
+  tierHistory?: SecurityTierEvent[];
 }
 
 export interface StudentSubmission {

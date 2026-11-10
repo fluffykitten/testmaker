@@ -1,4 +1,9 @@
 import { supabase } from './supabase';
+import {
+  type SecurityViolationTier,
+  DEFAULT_SECURITY_TIERS,
+  normalizeSecurityTiers,
+} from './securityTiers';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type AccentColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'sky';
@@ -29,6 +34,7 @@ export interface AppSettings {
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
   hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
   hideEmergencyExamButton?: boolean;      // Hide Emergency Save & Exit button during student exams (default: false)
+  securityTiers?: SecurityViolationTier[]; // Dynamic list of strike escalation penalty tiers
   geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
   geminiApiKeyTier?: GeminiApiKeyTier;    // Active Cloudflare-configured API Key Tier: 'auto' | 'paid' | 'free'
 }
@@ -81,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableQuizizzMode: false,
   hideCreativeModeOnLanding: false,
   hideEmergencyExamButton: false,
+  securityTiers: DEFAULT_SECURITY_TIERS,
   geminiExtractionModel: 'gemini-3.5-flash-lite',
   geminiApiKeyTier: 'auto',
 };
@@ -154,6 +161,7 @@ export function getSavedSettings(): AppSettings {
         ...DEFAULT_SETTINGS,
         ...parsed,
         googleDriveClientId: localId,
+        securityTiers: parsed.securityTiers ? normalizeSecurityTiers(parsed.securityTiers) : DEFAULT_SECURITY_TIERS,
       };
     }
   } catch (e) {
@@ -796,6 +804,95 @@ export async function loadAndSyncGeminiApiKeyTier(): Promise<GeminiApiKeyTier> {
     }
   } catch (err) {
     console.warn('Could not fetch Gemini API key tier from cloud:', err);
+  }
+
+  return localVal;
+}
+
+/**
+ * Retrieves the currently configured security violation escalation tiers.
+ */
+export function getSecurityTiers(): SecurityViolationTier[] {
+  const current = getSavedSettings();
+  return normalizeSecurityTiers(current.securityTiers);
+}
+
+/**
+ * Saves and updates security escalation tiers in local settings and syncs to Supabase cloud app_config
+ */
+export function saveSecurityTiers(tiers: SecurityViolationTier[]): void {
+  const normalized = normalizeSecurityTiers(tiers);
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    securityTiers: normalized,
+  };
+  saveSettings(updated);
+  syncSecurityTiersToCloud(normalized).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('security_tiers_updated', {
+        detail: { securityTiers: normalized },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs security escalation tiers to Supabase app_config store
+ */
+export async function syncSecurityTiersToCloud(tiers: SecurityViolationTier[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'exam_security_tiers',
+      value: JSON.stringify(tiers),
+    });
+    if (error) {
+      console.warn('Security escalation tiers cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for security escalation tiers:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads security escalation tiers from local storage, fetches from Supabase cloud app_config if available,
+ * and updates local cache.
+ */
+export async function loadAndSyncSecurityTiers(): Promise<SecurityViolationTier[]> {
+  const current = getSavedSettings();
+  const localVal = normalizeSecurityTiers(current.securityTiers);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'exam_security_tiers')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = normalizeSecurityTiers(parsed);
+      const currentJson = JSON.stringify(localVal);
+      const cloudJson = JSON.stringify(cloudVal);
+
+      if (currentJson !== cloudJson) {
+        const updated = { ...current, securityTiers: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('security_tiers_updated', {
+              detail: { securityTiers: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch security escalation tiers from cloud:', err);
   }
 
   return localVal;
