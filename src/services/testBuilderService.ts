@@ -23,6 +23,12 @@ export interface ExamHeaderConfig {
    */
   teacherPinHash?: string;
   questionOverrides?: Record<string, Question>;
+  /**
+   * Tracks whether the teacher has manually edited any header field
+   * (subject, code, instructions, materials, title, duration).
+   * When true, automatic question-based subject inference is strictly disabled.
+   */
+  isUserCustomized?: boolean;
 }
 
 export interface SaveTestPayload {

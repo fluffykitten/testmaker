@@ -272,11 +272,20 @@ export function TestBuilderPage({
   // Exam Header Settings with session persistence
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig>(() => {
     if (initialHeaderConfig) {
-      return initialHeaderConfig;
+      return {
+        ...initialHeaderConfig,
+        isUserCustomized: initialHeaderConfig.isUserCustomized ?? true,
+      };
     }
     try {
       const saved = sessionStorage.getItem('testmaker_builder_header_config');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          isUserCustomized: parsed.isUserCustomized ?? false,
+        };
+      }
     } catch {
       // ignore
     }
@@ -294,6 +303,7 @@ export function TestBuilderPage({
       durationMinutes: activeProfile?.preferences?.defaultExamDurationMinutes || 45,
       instructions: initialDetected.instructions,
       additionalMaterials: initialDetected.additionalMaterials,
+      isUserCustomized: false,
     };
   });
 
@@ -311,7 +321,10 @@ export function TestBuilderPage({
       setCurrentTestId(initialTestId);
     }
     if (initialHeaderConfig) {
-      setHeaderConfig(initialHeaderConfig);
+      setHeaderConfig({
+        ...initialHeaderConfig,
+        isUserCustomized: initialHeaderConfig.isUserCustomized ?? true,
+      });
     }
     if (initialTestId || initialHeaderConfig) {
       onClearLoadedState?.();
@@ -336,6 +349,11 @@ export function TestBuilderPage({
     const detected = inferSubjectFromQuestions(questions, syllabuses);
 
     setHeaderConfig((prev) => {
+      // If the teacher has manually customized any header field, lock it completely!
+      if (prev.isUserCustomized) {
+        return prev;
+      }
+
       const prevSubject = (prev.subject || '').trim().toLowerCase();
       const detectedSubject = detected.subject.trim().toLowerCase();
 
@@ -355,11 +373,25 @@ export function TestBuilderPage({
           title: isDefaultTitle ? detected.defaultTitle : prev.title.replace(new RegExp(prev.subject || 'Chemistry', 'i'), detected.subject),
           additionalMaterials: detected.additionalMaterials,
           instructions: detected.instructions || prev.instructions,
+          isUserCustomized: false,
         };
       }
       return prev;
     });
   }, [questions, syllabuses]);
+
+  const handleResetHeaderToAutoDetect = () => {
+    const detected = inferSubjectFromQuestions(questions, syllabuses);
+    setHeaderConfig((prev) => ({
+      ...prev,
+      subject: detected.subject,
+      subjectCode: detected.subjectCode,
+      title: detected.defaultTitle,
+      additionalMaterials: detected.additionalMaterials,
+      instructions: detected.instructions,
+      isUserCustomized: false,
+    }));
+  };
 
   useEffect(() => {
     try {
@@ -649,6 +681,7 @@ export function TestBuilderPage({
                   config={headerConfig}
                   onChange={setHeaderConfig}
                   suggestedDuration={suggestedDuration}
+                  onResetToAutoDetect={handleResetHeaderToAutoDetect}
                 />
 
                 <div className="builder-questions-section">

@@ -6,12 +6,14 @@ interface TestHeaderEditorProps {
   config: ExamHeaderConfig;
   onChange: (updated: ExamHeaderConfig) => void;
   suggestedDuration: number;
+  onResetToAutoDetect?: () => void;
 }
 
 export function TestHeaderEditor({
   config,
   onChange,
   suggestedDuration,
+  onResetToAutoDetect,
 }: TestHeaderEditorProps) {
   const [isExpanded, setIsExpanded] = useState(true);
 
@@ -19,6 +21,7 @@ export function TestHeaderEditor({
     onChange({
       ...config,
       [field]: value,
+      isUserCustomized: true,
     });
   };
 
@@ -28,20 +31,40 @@ export function TestHeaderEditor({
         <div className="header-editor-title-group">
           <span className="header-editor-icon">📝</span>
           <div>
-            <h3 className="header-editor-heading">Exam Paper Configuration</h3>
+            <h3 className="header-editor-heading">
+              Exam Paper Configuration
+              {config.isUserCustomized && (
+                <span className="header-editor-custom-badge" title="Header values locked by teacher edits">
+                  Customized
+                </span>
+              )}
+            </h3>
             <p className="header-editor-subheading">
               {config.title || 'Untitled Assessment'} • {config.schoolName || 'Default School'} • {config.durationMinutes} mins
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          className="header-editor-toggle"
-          title={isExpanded ? 'Collapse settings' : 'Expand settings'}
-        >
-          {isExpanded ? '▲ Collapse' : '▼ Customize Header'}
-        </button>
+        <div className="header-editor-actions" onClick={(e) => e.stopPropagation()}>
+          {onResetToAutoDetect && (
+            <button
+              type="button"
+              className="header-editor-autodetect-btn"
+              onClick={onResetToAutoDetect}
+              title="Reset header fields and auto-detect subject from current questions"
+            >
+              ↺ Auto-Detect
+            </button>
+          )}
+          <button
+            type="button"
+            className="header-editor-toggle"
+            title={isExpanded ? 'Collapse settings' : 'Expand settings'}
+            onClick={() => setIsExpanded(!isExpanded)}
+          >
+            {isExpanded ? '▲ Collapse' : '▼ Customize Header'}
+          </button>
+        </div>
       </div>
 
       {isExpanded && (

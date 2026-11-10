@@ -46,6 +46,49 @@
   margin: 0;
 }
 
+.header-editor-custom-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-primary-50, rgba(99, 102, 241, 0.12));
+  color: var(--color-primary-600, #4f46e5);
+  border: 1px solid var(--color-primary-200, rgba(99, 102, 241, 0.25));
+  border-radius: 9999px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.header-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-editor-autodetect-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--transition-fast);
+}
+
+.header-editor-autodetect-btn:hover {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-primary-400);
+  color: var(--color-primary-600);
+}
+
 .header-editor-toggle {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
