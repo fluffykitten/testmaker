@@ -8,7 +8,7 @@
     "title": "ICM Cambridge Exam System Pilot (170-Student Drill)",
     "quizCode": "ICM170",
     "subject": "Cambridge Multi-Discipline Pilot",
-    "totalMarks": 26,
+    "totalMarks": 22,
     "questionCount": 10,
     "questionIds": [
       "pilot-q1-chem",
@@ -46,3 +46,4 @@
     }
   }
 }
+

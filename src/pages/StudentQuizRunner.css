@@ -253,6 +253,17 @@
   text-justify: inter-word;
 }
 
+/* Arabic Examination Typography */
+.sq-q-stem.sq-q-stem--arabic,
+.sq-q-stem[dir="rtl"] {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif !important;
+  font-size: 1.55rem !important;
+  line-height: 2.3 !important;
+  letter-spacing: 0.02em;
+}
+
 .sq-stimulus-card {
   text-align: justify;
   text-justify: inter-word;
@@ -371,6 +382,42 @@
   background: var(--color-primary-500);
   border-color: var(--color-primary-500);
   color: white;
+}
+
+/* Arabic MCQ Choices Typography */
+.sq-choice-btn.sq-choice-btn--arabic,
+.sq-choice-btn[dir="rtl"] {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif !important;
+  padding: 16px 20px;
+  gap: 16px;
+}
+
+.sq-choice-btn.sq-choice-btn--arabic:hover,
+.sq-choice-btn[dir="rtl"]:hover {
+  transform: translateX(-2px);
+}
+
+.sq-choice-btn.sq-choice-btn--arabic .sq-choice-letter,
+.sq-choice-btn[dir="rtl"] .sq-choice-letter {
+  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', serif !important;
+  font-size: 1.35rem !important;
+  font-weight: 700 !important;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 50%;
+  line-height: 1;
+}
+
+.sq-choice-btn.sq-choice-btn--arabic .sq-choice-text,
+.sq-choice-btn[dir="rtl"] .sq-choice-text {
+  font-size: 1.45rem !important;
+  line-height: 2.2 !important;
+  font-weight: 500;
+  display: block;
+  flex: 1;
 }
 
 /* Structured textarea */

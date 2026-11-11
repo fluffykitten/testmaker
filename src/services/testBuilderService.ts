@@ -5,6 +5,7 @@
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import { inferTopicFromContent, normalizeQuestionRecord } from './questionBankService';
+import { PILOT_CUSTOM_TEST, PILOT_EXAM_ID } from '../data/pilotExam170Data';
 
 export interface ExamHeaderConfig {
   title: string;
@@ -47,7 +48,7 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  */
 export function getDeletedTestIds(): Set<string> {
   try {
-    const raw = localStorage.getItem(DELETED_TESTS_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(DELETED_TESTS_KEY) : null;
     const parsed = raw ? JSON.parse(raw) : [];
     return new Set(Array.isArray(parsed) ? parsed : []);
   } catch {
@@ -68,7 +69,9 @@ export function recordDeletedTestId(id: string): void {
     // Keep most recent 500 deleted IDs to prevent unbounded storage growth
     const arr = Array.from(current);
     const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
-    localStorage.setItem(DELETED_TESTS_KEY, JSON.stringify(trimmed));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DELETED_TESTS_KEY, JSON.stringify(trimmed));
+    }
   } catch (err) {
     console.warn('Failed to record deleted test ID to tombstone registry:', err);
   }
@@ -84,13 +87,19 @@ export function isTestDeleted(id: string): boolean {
 
 export function getLocalTests(): CustomTest[] {
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LOCAL_STORAGE_KEY) : null;
     const list: CustomTest[] = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(list)) return [];
     const deletedIds = getDeletedTestIds();
-    return list.filter((t) => t && t.id && !deletedIds.has(t.id));
+    const active = list.filter((t) => t && t.id && !deletedIds.has(t.id));
+
+    // Auto-seed pilot test into Saved Tests if not deleted and not in list
+    if (!deletedIds.has(PILOT_EXAM_ID) && !active.some((t) => t.id === PILOT_EXAM_ID)) {
+      active.unshift(PILOT_CUSTOM_TEST);
+    }
+    return active;
   } catch {
-    return [];
+    return [PILOT_CUSTOM_TEST];
   }
 }
 

@@ -6569,42 +6569,50 @@ export function StudentQuizRunner({
 
             {/* Question Stem & Interactive Target Area */}
             <div ref={questionTargetRef} className="sq-question-interactive-target">
-              <div className="sq-q-stem">
-                {isCurrentInlineGap ? (
-                  <InlineGapText
-                    content={promptText}
-                    values={(() => {
-                      const raw = answers[currentIndex];
-                      if (!raw) return {};
-                      if (typeof raw === 'object') return raw;
-                      const str = String(raw).trim();
-                      if (str.startsWith('{')) {
-                        try { return JSON.parse(str); } catch { }
-                      }
-                      return { 'gap_1': str, '1': str };
-                    })()}
-                    onGapChange={(gapId, val) => {
-                      if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
-                      const raw = answers[currentIndex];
-                      let currentMap: Record<string, string> = {};
-                      if (typeof raw === 'string' && raw.startsWith('{')) {
-                        try { currentMap = JSON.parse(raw); } catch { }
-                      } else if (raw) {
-                        currentMap['gap_1'] = String(raw);
-                      }
-                      currentMap[gapId] = val;
-                      const nextSerialized = JSON.stringify(currentMap);
-                      recordAnswerChange(currentIndex, raw, nextSerialized);
-                      setAnswers((prev) => ({
-                        ...prev,
-                        [currentIndex]: nextSerialized,
-                      }));
-                    }}
-                  />
-                ) : (
-                  <ExamMathText content={promptText} />
-                )}
-              </div>
+              {(() => {
+                const isStemArabic = isArabicText(promptText || '') || isArabicText(currentQuestion?.question_text || '');
+                return (
+                  <div
+                    className={`sq-q-stem ${isStemArabic ? 'sq-q-stem--arabic' : ''}`}
+                    dir={isStemArabic ? 'rtl' : 'auto'}
+                  >
+                    {isCurrentInlineGap ? (
+                      <InlineGapText
+                        content={promptText}
+                        values={(() => {
+                          const raw = answers[currentIndex];
+                          if (!raw) return {};
+                          if (typeof raw === 'object') return raw;
+                          const str = String(raw).trim();
+                          if (str.startsWith('{')) {
+                            try { return JSON.parse(str); } catch { }
+                          }
+                          return { 'gap_1': str, '1': str };
+                        })()}
+                        onGapChange={(gapId, val) => {
+                          if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+                          const raw = answers[currentIndex];
+                          let currentMap: Record<string, string> = {};
+                          if (typeof raw === 'string' && raw.startsWith('{')) {
+                            try { currentMap = JSON.parse(raw); } catch { }
+                          } else if (raw) {
+                            currentMap['gap_1'] = String(raw);
+                          }
+                          currentMap[gapId] = val;
+                          const nextSerialized = JSON.stringify(currentMap);
+                          recordAnswerChange(currentIndex, raw, nextSerialized);
+                          setAnswers((prev) => ({
+                            ...prev,
+                            [currentIndex]: nextSerialized,
+                          }));
+                        }}
+                      />
+                    ) : (
+                      <ExamMathText content={promptText} />
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Insert / Resource Booklet Trigger Button */}
@@ -6702,12 +6710,12 @@ export function StudentQuizRunner({
                     <button
                       key={oIdx}
                       type="button"
-                      className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''}`}
+                      className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''} ${isArabicQ ? 'sq-choice-btn--arabic' : ''}`}
                       onClick={() => handleSelectOption(oIdx)}
                       dir={isArabicQ ? 'rtl' : 'auto'}
                     >
                       <span
-                        className="sq-choice-letter"
+                        className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
                         style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
                       >
                         {isMultiSelect ? (isSelected ? '✓' : letter) : letter}

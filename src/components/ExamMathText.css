@@ -11,7 +11,9 @@
 .exam-text-block.exam-text-arabic {
   direction: rtl;
   text-align: right;
-  font-family: 'Segoe UI', Tahoma, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif;
+  font-size: 1.45rem;
+  line-height: 2.2;
 }
 
 

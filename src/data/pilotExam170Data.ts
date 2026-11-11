@@ -15,7 +15,7 @@
  * 10. Bahasa Indonesia: Teks eksplanasi ilmiah & ecological reading comprehension
  */
 
-import type { Question } from '../types/database';
+import type { Question, CustomTest } from '../types/database';
 import type { PublishedQuiz } from '../services/quizManagerService';
 
 export const PILOT_EXAM_ID = 'pilot-exam-170';
@@ -220,27 +220,32 @@ Which row correctly states its relative atomic mass ($A_r$) to one decimal place
     sub_topic: 'Kinetic Energy Calculations',
     difficulty: 'Medium',
     cognitive_level: 'C3',
-    marks: 3,
+    marks: 2,
     diagram_url: null,
     has_embedded_values: true,
     created_at: '2026-11-11T18:50:00.000Z',
-    question_style: 'Calculation',
+    question_style: 'Multiple Choice',
     question_text: `An electric test vehicle of mass $m = 1200\\text{ kg}$ accelerates uniformly from rest to a final velocity of $v = 25\\text{ m/s}$.
 
 Using the on-screen **Scientific Calculator** (🧮 button in the top bar), calculate the kinetic energy ($E_k$) of the vehicle in **Joules ($\\text{J}$)**.
 
 $$E_k = \\frac{1}{2} m v^2$$
 
-Enter your numerical answer in the answer box below.`,
-    options: null,
+Which option correctly states the kinetic energy of the vehicle?`,
+    options: [
+      'A: 15,000 J',
+      'B: 150,000 J',
+      'C: 375,000 J',
+      'D: 750,000 J',
+    ],
     sub_questions: [],
     mark_scheme: {
       marking_points: [
-        'Formula: 0.5 * 1200 * (25^2)',
-        'Calculation: 600 * 625 = 375,000 J',
+        'Formula: Ek = 0.5 * 1200 * (25^2)',
+        'Calculation: 600 * 625 = 375,000 J (Option C)',
       ],
-      acceptable_answers: ['375000', '375,000', '375000 J', '375 kJ', '3.75e5', '3.75 * 10^5'],
-      guidance: ['Accept 375000 or 375 kJ with clear unit. Partial mark (1) for squaring velocity 625.'],
+      acceptable_answers: ['C', 'C: 375,000 J', '375,000 J', '375000'],
+      guidance: ['Option C is correct. Students should use the Scientific Calculator to compute 0.5 * 1200 * 25^2.'],
     },
   },
 
@@ -260,17 +265,17 @@ Enter your numerical answer in the answer box below.`,
     marks: 2,
     diagram_url: null,
     created_at: '2026-11-11T18:50:00.000Z',
-    audio_url: 'https://cdn.freesound.org/previews/320/320655_5260872-lq.mp3',
+    audio_url: '/audio/pilot-english-listening.wav',
     audio_metadata: {
       title: 'Track 1: School Robotics & Science Exhibition Broadcast',
-      transcript: 'Attention students and invigilators. The annual Insan Cendekia Madani science and robotics exhibition will officially open in the secondary campus auditorium at 10:15 AM immediately following the morning assembly.',
-      duration: 16,
+      transcript: 'Attention students and invigilators. The annual Insan Cendekia Madani science and robotics exhibition will officially open in the secondary campus auditorium at 10:15 AM immediately following the morning assembly. Please ensure your project badges are clearly visible before entering the main hall.',
+      duration: 19,
       play_limit: 2,
     },
     question_style: 'Multiple Choice',
-    question_text: `Listen to the short school audio announcement regarding the interactive robotics and science exhibition. You may play the recording up to **2 times**.
+    question_text: `Listen to the school announcement regarding the annual robotics and science exhibition. You may play the recording up to **2 times**.
 
-According to the audio broadcast, at what time does the interactive exhibition officially open in the auditorium?`,
+According to the audio broadcast, at what time does the exhibition officially open in the secondary campus auditorium?`,
     options: [
       'A: 09:30 AM',
       'B: 10:15 AM',
@@ -297,44 +302,29 @@ According to the audio broadcast, at what time does the interactive exhibition o
     sub_topic: 'Leaf Anatomy & Photosynthesis',
     difficulty: 'Medium',
     cognitive_level: 'C2',
-    marks: 3,
+    marks: 2,
     diagram_url: null,
     svg_content: LEAF_ANATOMY_SVG,
     diagram_type: 'photo',
     created_at: '2026-11-11T18:50:00.000Z',
-    question_style: 'Structured',
-    question_text: `Fig. 4.1 shows a transverse section through a dicotyledonous leaf as viewed under a high-power microscope. Study the diagram carefully and answer the questions below:`,
-    options: null,
-    sub_questions: [
-      {
-        sub_id: 'a',
-        question_text: 'State the letter (A, B, C, or D) that identifies the palisade mesophyll layer, which contains the highest concentration of chloroplasts for photosynthesis. [1 mark]',
-        marks: 1,
-        mark_scheme: 'B',
-        guidance: 'Identifies layer B as palisade mesophyll.',
-      },
-      {
-        sub_id: 'b',
-        question_text: 'Name the microscopic pores located in the lower epidermis that allow carbon dioxide to diffuse into the leaf for photosynthesis. [1 mark]',
-        marks: 1,
-        mark_scheme: 'stomata',
-        guidance: 'Stomata or stoma.',
-      },
-      {
-        sub_id: 'c',
-        question_text: 'State the name of the specialized pair of cells that regulate the opening and closing of these pores to control transpiration. [1 mark]',
-        marks: 1,
-        mark_scheme: 'guard cells',
-        guidance: 'Guard cells.',
-      },
+    question_style: 'Multiple Choice',
+    question_text: `Fig. 4.1 shows a transverse section through a dicotyledonous leaf as viewed under a high-power microscope.
+
+Which row correctly identifies the letter designating the **palisade mesophyll** (the layer with the highest concentration of chloroplasts) and names the specialized cells regulating the stomata in the lower epidermis?`,
+    options: [
+      'A: Layer A • Epidermal pavement cells',
+      'B: Layer B • Guard cells',
+      'C: Layer C • Spongy mesophyll cells',
+      'D: Layer D • Phloem companion cells',
     ],
+    sub_questions: [],
     mark_scheme: {
       marking_points: [
-        '4(a): Layer B',
-        '4(b): Stomata / stoma',
-        '4(c): Guard cells',
+        'Layer B identifies the palisade mesophyll layer.',
+        'Guard cells regulate the opening and closing of stomata in the lower epidermis (Option B).',
       ],
-      acceptable_answers: ['B', 'stomata', 'guard cells'],
+      acceptable_answers: ['B', 'B: Layer B • Guard cells'],
+      guidance: ['Layer B has vertically elongated cells packed with chloroplasts. Guard cells flank the stomata.'],
     },
   },
 
@@ -351,52 +341,35 @@ According to the audio broadcast, at what time does the interactive exhibition o
     sub_topic: 'Topographic Contours & Risk Assessment',
     difficulty: 'Medium',
     cognitive_level: 'C3',
-    marks: 4,
+    marks: 2,
     diagram_url: null,
     svg_content: MERAPI_CONTOUR_SVG,
     resource_ref: 'Fig. 5.1',
     created_at: '2026-11-11T18:50:00.000Z',
-    question_style: 'Structured',
-    question_text: `Study **Fig. 5.1** in the **Resource Booklet** (📖 button in the top bar), which shows a topographic survey map and volcanic profile of Mount Merapi.`,
-    options: null,
-    sub_questions: [
-      {
-        sub_id: 'a',
-        question_text: 'Identify the volcanic feature marked at location X on the summit. [1 mark]',
-        marks: 1,
-        mark_scheme: 'crater',
-        guidance: 'Crater / Caldera / Summit vent.',
-      },
-      {
-        sub_id: 'b',
-        question_text: 'Calculate the elevation difference in meters between the summit crater rim X (2930 m) and the observation outpost Y (1280 m). [1 mark]',
-        marks: 1,
-        mark_scheme: '1650',
-        guidance: '2930 - 1280 = 1650 m.',
-      },
-      {
-        sub_id: 'c',
-        question_text: 'State TWO human economic activities vulnerable to pyroclastic flows identified in the valley settlement. [2 marks]',
-        marks: 2,
-        mark_scheme: 'farming and tourism',
-        guidance: 'Farming / agriculture, tourism / hiking, or mining / quarrying.',
-      },
+    question_style: 'Multiple Choice',
+    question_text: `Study **Fig. 5.1** in the **Resource Booklet** (📖 button in the top bar), which shows a topographic survey map and volcanic profile of Mount Merapi.
+
+Which row correctly identifies the volcanic summit feature at location **X** and the elevation difference between the summit crater rim X ($2930\\text{ m}$) and the observation outpost Y ($1280\\text{ m}$)?`,
+    options: [
+      'A: Summit Caldera • Elevation difference: 1280 m',
+      'B: Volcanic Crater • Elevation difference: 1650 m',
+      'C: Pyroclastic Cone • Elevation difference: 2150 m',
+      'D: Lava Dome • Elevation difference: 2930 m',
     ],
+    sub_questions: [],
     mark_scheme: {
       marking_points: [
-        '5(a): Crater / caldera',
-        '5(b): 1650 m',
-        '5(c): Farming, tourism, or mining',
+        'Summit feature X is a volcanic crater.',
+        'Elevation difference = 2930 m - 1280 m = 1650 m (Option B).',
       ],
-      acceptable_answers: ['crater', '1650', 'farming'],
-      // Insert resource definition for the Resource Booklet Drawer
+      acceptable_answers: ['B', 'B: Volcanic Crater • Elevation difference: 1650 m'],
       _insert_resources: [
         {
           id: 'Fig. 5.1',
           title: 'Topographic Contour Profile of Mount Merapi Volcano',
           page_number: 1,
           text_content: 'Topographic elevation map showing summit crater rim X at 2930m, observation outpost Y at 1280m, and river valley settlement hazard zone.',
-          target_questions: ['5(a)', '5(b)', '5(c)'],
+          target_questions: ['Q5'],
         },
       ],
     } as any,
@@ -627,7 +600,7 @@ export const PILOT_EXAM_170_PUBLISHED_QUIZ: PublishedQuiz = {
   title: 'ICM Cambridge Exam System Pilot (170-Student Drill)',
   quizCode: PILOT_QUIZ_CODE,
   subject: 'Cambridge Multi-Discipline Pilot',
-  totalMarks: 26,
+  totalMarks: 22,
   questionCount: 10,
   questionIds: PILOT_EXAM_170_QUESTIONS.map((q) => q.id),
   durationMinutes: 20,
@@ -654,6 +627,30 @@ export const PILOT_EXAM_170_PUBLISHED_QUIZ: PublishedQuiz = {
     title: 'ICM Cambridge Exam System Pilot (170-Student Drill)',
     schoolName: 'Insan Cendekia Madani',
     subject: 'Cambridge Multi-Discipline Orientation',
+    subjectCode: '0001',
+    durationMinutes: 20,
+    instructions: 'Answer all 10 questions. Test each on-screen tool: Periodic Table (Q1), Scientific Calculator (Q2), Audio Player (Q3), Leaf Anatomy Diagram (Q4), Resource Booklet (Q5), Data Table (Q6), Multi-Select (Q7), Inline Cloze (Q8), Arabic RTL (Q9), and Bahasa Indonesia (Q10). Do not press Esc, Alt+Tab, or F11 during the examination.',
+    teacherPin: PILOT_TEACHER_PIN,
+    questionOverrides: Object.fromEntries(
+      PILOT_EXAM_170_QUESTIONS.map((q) => [q.id, q])
+    ),
+  },
+};
+
+/**
+ * Pre-configured CustomTest record for instant display in Saved Tests dashboard
+ */
+export const PILOT_CUSTOM_TEST: CustomTest = {
+  id: PILOT_EXAM_ID,
+  user_id: null,
+  title: 'ICM Cambridge Exam System Pilot (170-Student Drill)',
+  total_marks: 22,
+  question_ids: PILOT_EXAM_170_QUESTIONS.map((q) => q.id),
+  created_at: '2026-11-11T18:50:00.000Z',
+  header_config: {
+    title: 'ICM Cambridge Exam System Pilot (170-Student Drill)',
+    schoolName: 'Insan Cendekia Madani',
+    subject: 'Cambridge Multi-Discipline Pilot',
     subjectCode: '0001',
     durationMinutes: 20,
     instructions: 'Answer all 10 questions. Test each on-screen tool: Periodic Table (Q1), Scientific Calculator (Q2), Audio Player (Q3), Leaf Anatomy Diagram (Q4), Resource Booklet (Q5), Data Table (Q6), Multi-Select (Q7), Inline Cloze (Q8), Arabic RTL (Q9), and Bahasa Indonesia (Q10). Do not press Esc, Alt+Tab, or F11 during the examination.',

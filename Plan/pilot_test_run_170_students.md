@@ -50,15 +50,15 @@ This pilot assessment is designed as an interactive orientation and hardware str
 
 ### Q2: Physics — Cambridge IGCSE (0625)
 * **Topic**: Mechanics & Energy Calculations
-* **Question Style**: `Calculation`
-* **Marks**: 3 Marks
+* **Question Style**: `Multiple Choice`
+* **Marks**: 2 Marks
 * **Interaction**: Opens the **Scientific Calculator** (`🧮 Calculator`).
-* **Question Text**:
-  > *"An electric test vehicle of mass $m = 1200\text{ kg}$ accelerates uniformly from rest to a velocity of $v = 25\text{ m/s}$.  
-  > Using the on-screen **Calculator**, calculate the kinetic energy ($E_k$) of the vehicle in **Joules ($\text{J}$)**.  
-  > Formula: $$E_k = \frac{1}{2} m v^2$$  
-  > Enter your numerical answer in the box below."*
-* **Expected Answer**: `375000` (Acceptable range / formatted: `375,000`, `3.75e5`, `375000 J`)
+* **Formula Tested**: $E_k = \frac{1}{2}mv^2$ where $m = 1200\text{ kg}$, $v = 25\text{ m/s}$.
+* **Options**:
+  - **A**: $15,000\text{ J}$
+  - **B**: $150,000\text{ J}$
+  - **C**: $375,000\text{ J}$ *(Correct)*
+  - **D**: $750,000\text{ J}$
 
 ---
 
@@ -66,11 +66,10 @@ This pilot assessment is designed as an interactive orientation and hardware str
 * **Topic**: Listening Comprehension & Auditory Verification
 * **Question Style**: `Multiple Choice`
 * **Marks**: 2 Marks
-* **Audio Track**: External high-reliability CDN stream
+* **Audio Track**: Local speech broadcast file (`/audio/pilot-english-listening.wav`), 19s duration
 * **Audio Play Limit**: 2 Plays allowed
 * **Question Text**:
-  > *"Listen to the short environmental announcement regarding the school's renewable energy workshop. You may play the recording up to **2 times**.  
-  > According to the audio broadcast, at what time does the interactive robotics exhibition begin?"*
+  > *"Listen to the school announcement regarding the annual robotics and science exhibition. You may play the recording up to **2 times**. According to the audio broadcast, at what time does the exhibition officially open in the secondary campus auditorium?"*
 * **Options**:
   - **A**: 09:30 AM
   - **B**: 10:15 AM *(Correct)*
@@ -81,33 +80,31 @@ This pilot assessment is designed as an interactive orientation and hardware str
 
 ### Q4: Cambridge Biology — Cambridge IGCSE (0610) *(Reordered to #4)*
 * **Topic**: Plant Nutrition, Leaf Anatomy & Gas Exchange
-* **Question Style**: `Structured` (with In-Stem Microscopic Diagram)
-* **Marks**: 3 Marks
+* **Question Style**: `Multiple Choice`
+* **Marks**: 2 Marks
 * **Interaction**: On-screen SVG/Diagram inspection embedded directly within the question card.
 * **Question Text**:
-  > *"Fig. 4.1 shows a transverse section through a dicotyledonous leaf as viewed under a high-power light microscope.*
-  > 
-  > *(a) State the letter (**A**, **B**, **C**, or **D**) that identifies the **palisade mesophyll layer**, which contains the highest concentration of chloroplasts for photosynthesis. [1 mark]*  
-  > *(b) Name the microscopic pores located in the lower epidermis that allow carbon dioxide to diffuse into the leaf for photosynthesis. [1 mark]*  
-  > *(c) State the name of the specialized pairs of cells that regulate the opening and closing of these pores to control transpiration. [1 mark]"*
-* **Sub-questions**:
-  - `4(a)`: Short Answer — Expected: `"B"` (Palisade mesophyll)
-  - `4(b)`: Short Answer — Expected: `"stomata"` (or `"stoma"`)
-  - `4(c)`: Short Answer — Expected: `"guard cells"` (or `"guard cell"`)
+  > *"Fig. 4.1 shows a transverse section through a dicotyledonous leaf as viewed under a high-power microscope. Which row correctly identifies the letter designating the **palisade mesophyll** (the layer with the highest concentration of chloroplasts) and names the specialized cells regulating the stomata in the lower epidermis?"*
+* **Options**:
+  - **A**: Layer A • Epidermal pavement cells
+  - **B**: Layer B • Guard cells *(Correct)*
+  - **C**: Layer C • Spongy mesophyll cells
+  - **D**: Layer D • Phloem companion cells
 
 ---
 
 ### Q5: Cambridge Geography — Cambridge IGCSE (0460)
 * **Topic**: Geographical Skills & Resource Booklet Inspection
-* **Question Style**: `Structured`
-* **Marks**: 4 Marks (2 sub-questions)
+* **Question Style**: `Multiple Choice`
+* **Marks**: 2 Marks
 * **Interaction**: Opens the **Resource Booklet Drawer** (`📖 Resource Booklet` - Fig. 5.1 Topographic Survey Map & Volcano Cross-section).
 * **Question Text**:
-  > *"Study **Fig. 5.1** in the **Resource Booklet** (📖 button in the top bar), which shows a topographic survey map extract and satellite photo of Mount Merapi.*
-  > 
-  > *(a) Identify the volcanic feature marked at location **X** on the map. [1 mark]*  
-  > *(b) Calculate the approximate difference in elevation between the crater rim ($2930\text{ m}$) and the observation outpost ($1280\text{ m}$). [1 mark]*  
-  > *(c) State TWO human activities vulnerable to pyroclastic flows identified in the valley settlement. [2 marks]"*
+  > *"Study **Fig. 5.1** in the **Resource Booklet** (📖 button in the top bar), which shows a topographic survey map and volcanic profile of Mount Merapi. Which row correctly identifies the volcanic summit feature at location **X** and the elevation difference between the summit crater rim X ($2930\text{ m}$) and the observation outpost Y ($1280\text{ m}$)?"*
+* **Options**:
+  - **A**: Summit Caldera • Elevation difference: 1280 m
+  - **B**: Volcanic Crater • Elevation difference: 1650 m *(Correct)*
+  - **C**: Pyroclastic Cone • Elevation difference: 2150 m
+  - **D**: Lava Dome • Elevation difference: 2930 m
 * **Sub-questions**:
   - `5(a)`: Short Answer — Expected: `"crater"` or `"caldera"` or `"crater vent"`
   - `5(b)`: Calculation — Expected: `1650` (meters)
