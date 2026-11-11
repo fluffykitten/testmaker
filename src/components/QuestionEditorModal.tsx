@@ -7,6 +7,7 @@ import {
   updateQuestion,
   createQuestion,
   fetchSyllabuses,
+  createOrGetSyllabus,
   batchAttachPastPaperPdf,
   batchAttachCambridgeHubUrl,
   batchAttachCambridgeMsHubUrl,
@@ -105,6 +106,10 @@ export function QuestionEditorModal({
 
   // Form State
   const [syllabusId, setSyllabusId] = useState('');
+  const [isCreatingSubject, setIsCreatingSubject] = useState(false);
+  const [newSubjectName, setNewSubjectName] = useState('');
+  const [newSubjectCode, setNewSubjectCode] = useState('');
+  const [isSavingNewSubject, setIsSavingNewSubject] = useState(false);
   const [topic, setTopic] = useState('');
   const [subTopic, setSubTopic] = useState('');
   const [questionNumber, setQuestionNumber] = useState('1');
@@ -430,6 +435,9 @@ export function QuestionEditorModal({
       setMisconceptionsList([]);
     }
     setErrorMessage(null);
+    setIsCreatingSubject(false);
+    setNewSubjectName('');
+    setNewSubjectCode('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, question?.id]);
 
@@ -2494,9 +2502,19 @@ export function QuestionEditorModal({
             <div className="q-editor-tab-content animate-fade-in">
               <div className="q-editor-grid-2">
                 <div className="q-editor-field">
-                  <label className="q-editor-label" htmlFor="q-syllabus-select">
-                    Syllabus / Subject:
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <label className="q-editor-label" htmlFor="q-syllabus-select">
+                      Syllabus / Subject:
+                    </label>
+                    <button
+                      type="button"
+                      className="q-editor-btn q-editor-btn--secondary"
+                      style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                      onClick={() => setIsCreatingSubject((prev) => !prev)}
+                    >
+                      {isCreatingSubject ? 'Cancel' : '+ New Subject'}
+                    </button>
+                  </div>
                   <select
                     id="q-syllabus-select"
                     className="q-editor-select"
@@ -2513,6 +2531,54 @@ export function QuestionEditorModal({
                       <option value="">General / Default Syllabus</option>
                     )}
                   </select>
+                  {isCreatingSubject && (
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                      <input
+                        type="text"
+                        className="q-editor-input"
+                        placeholder="Subject name (e.g. ICM Exam)"
+                        value={newSubjectName}
+                        onChange={(e) => setNewSubjectName(e.target.value)}
+                        style={{ flex: '2 1 150px' }}
+                      />
+                      <input
+                        type="text"
+                        className="q-editor-input"
+                        placeholder="Code (optional)"
+                        value={newSubjectCode}
+                        onChange={(e) => setNewSubjectCode(e.target.value)}
+                        style={{ flex: '1 1 80px' }}
+                      />
+                      <button
+                        type="button"
+                        className="q-editor-btn q-editor-btn--primary"
+                        disabled={isSavingNewSubject || !newSubjectName.trim()}
+                        onClick={async () => {
+                          if (!newSubjectName.trim()) return;
+                          setIsSavingNewSubject(true);
+                          setErrorMessage(null);
+                          try {
+                            const created = await createOrGetSyllabus(newSubjectName, newSubjectCode);
+                            setLocalSyllabuses((prev) =>
+                              prev.some((s) => s.id === created.id)
+                                ? prev
+                                : [...prev, created].sort((a, b) => a.subject_name.localeCompare(b.subject_name))
+                            );
+                            setSyllabusId(created.id);
+                            setNewSubjectName('');
+                            setNewSubjectCode('');
+                            setIsCreatingSubject(false);
+                          } catch (err: any) {
+                            setErrorMessage(err?.message || 'Could not create subject');
+                          } finally {
+                            setIsSavingNewSubject(false);
+                          }
+                        }}
+                      >
+                        {isSavingNewSubject ? 'Adding...' : 'Add'}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="q-editor-field">

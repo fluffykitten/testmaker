@@ -175,8 +175,21 @@ export function QuestionBankPage({
         console.error('Error loading syllabuses:', err);
       });
 
+    const handleSyllabusesUpdated = () => {
+      const updatedSyls = getCachedSyllabuses();
+      if (updatedSyls.length > 0) {
+        setSyllabuses(updatedSyls);
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('syllabuses_updated', handleSyllabusesUpdated);
+    }
+
     return () => {
       isMounted = false;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('syllabuses_updated', handleSyllabusesUpdated);
+      }
     };
   }, [activeProfile, showAllSubjects, findMatchingSyllabusId, filters.syllabusId]);
 

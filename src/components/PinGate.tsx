@@ -94,7 +94,7 @@ export function prefetchAccessPin(): Promise<string | null> {
         .from('app_config')
         .select('value')
         .eq('key', 'access_pin')
-        .single();
+        .maybeSingle();
 
       const res = (await Promise.race([queryPromise, timeoutPromise])) as {
         data: { value: string } | null;

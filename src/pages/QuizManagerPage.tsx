@@ -56,7 +56,7 @@ export function QuizManagerPage({
       const pubList = getPublishedQuizzes();
       return pubList.map((q) => {
         if (!q.subject || q.subject.toLowerCase() === 'assessment') {
-          return { ...q, subject: 'Chemistry' };
+          return { ...q, subject: q.headerConfig?.subject?.trim() || 'General' };
         }
         return q;
       });
@@ -154,7 +154,7 @@ export function QuizManagerPage({
     const sanitize = (list: PublishedQuiz[]) =>
       list.map((q) => {
         if (!q.subject || q.subject.toLowerCase() === 'assessment') {
-          return { ...q, subject: 'Chemistry' };
+          return { ...q, subject: q.headerConfig?.subject?.trim() || 'General' };
         }
         return q;
       });
@@ -459,7 +459,7 @@ export function QuizManagerPage({
           headerConfig: {
             title: testMeta?.header_config?.title || testMeta?.title || 'Offline Exam Assessment',
             schoolName: testMeta?.header_config?.schoolName || '',
-            subject: testMeta?.header_config?.subject || (testMeta as any)?.primarySubject || 'Chemistry',
+            subject: testMeta?.header_config?.subject || (testMeta as any)?.primarySubject || 'General',
             subjectCode: testMeta?.header_config?.subjectCode || '',
             durationMinutes: testMeta?.header_config?.durationMinutes || Math.round((testMeta?.total_marks || 20) * 1.25),
             instructions: testMeta?.header_config?.instructions || 'Answer all questions.',
@@ -588,7 +588,7 @@ export function QuizManagerPage({
       }
     }
 
-    const cleanSubject = activeQuizDraft.subject?.trim() || 'Chemistry';
+    const cleanSubject = activeQuizDraft.subject?.trim() || activeQuizDraft.headerConfig?.subject?.trim() || 'General';
     const effectiveTeacherPin = activeQuizDraft.teacherPin || '1234';
     const currentSettings = getSavedSettings();
 
@@ -679,7 +679,7 @@ export function QuizManagerPage({
     const resolvedHeader: ExamHeaderConfig = {
       title: testMeta?.header_config?.title || quiz.title,
       schoolName: testMeta?.header_config?.schoolName || '',
-      subject: testMeta?.header_config?.subject || quiz.subject || 'Chemistry',
+      subject: testMeta?.header_config?.subject || quiz.subject || 'General',
       subjectCode: testMeta?.header_config?.subjectCode || '',
       durationMinutes: quiz.durationMinutes || testMeta?.header_config?.durationMinutes || 45,
       instructions: testMeta?.header_config?.instructions || 'Simulated Assessment Run',
@@ -1872,7 +1872,7 @@ export function QuizManagerPage({
                     >
                       {savedTests.map((t) => (
                         <option key={t.id} value={t.id}>
-                          {t.title} ({t.primarySubject || t.header_config?.subject || 'Chemistry'} • {t.question_ids?.length || 0} questions • {t.total_marks} marks)
+                          {t.title} ({t.primarySubject || t.header_config?.subject || 'General'} • {t.question_ids?.length || 0} questions • {t.total_marks} marks)
                         </option>
                       ))}
                     </select>
@@ -2636,7 +2636,7 @@ export function QuizManagerPage({
                     <div>
                       <div style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>{t.title || 'Untitled Assessment'}</div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                        {t.header_config?.subject || t.primarySubject || 'Chemistry'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
+                        {t.header_config?.subject || t.primarySubject || 'General'} • {t.total_marks || 0} marks • {t.question_ids?.length || 0} questions
                       </div>
                     </div>
                     <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-primary-600)' }}>Select →</span>

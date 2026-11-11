@@ -1,12 +1,16 @@
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
-import { getPublishedQuizzes, fetchPublishedQuizzesFromSupabase } from './quizManagerService';
+import {
+  getPublishedQuizzes,
+  fetchPublishedQuizzesFromSupabase,
+  fetchPublishedQuizByCodeFromSupabase,
+} from './quizManagerService';
 import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 import { hashTeacherPin, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
 import { type SecurityViolationTier } from '../lib/securityTiers';
-import { loadAndSyncSecurityTiers } from '../lib/settings';
+import { getSecurityTiers, loadAndSyncSecurityTiers } from '../lib/settings';
 import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
 
 export interface StudentQuizData {
@@ -73,8 +77,67 @@ export function generateQuizCode(test: { id: string; header_config?: ExamHeaderC
 }
 
 const resolvedQuizMemoryCache = new Map<string, { data: StudentQuizData; timestamp: number }>();
+const inFlightQuizResolutions = new Map<string, Promise<StudentQuizData | null>>();
 const questionObjectCache = new Map<string, Question>();
 const QUIZ_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes TTL
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallbackValue), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function resolveCustomTestHeaderAndQuestions(test: CustomTest): Promise<{
+  headerConfig?: ExamHeaderConfig;
+  questions: Question[];
+}> {
+  let headerConfig = test.header_config;
+  let questionIds = test.question_ids || [];
+
+  if (!headerConfig || !headerConfig.questionOverrides) {
+    try {
+      const res = await withTimeout<{ data: { value: string } | null; error: any }>(
+        (supabase.from('app_config' as any) as any)
+          .select('value')
+          .eq('key', `custom_test_header_${test.id}`)
+          .maybeSingle(),
+        3000,
+        { data: null, error: null }
+      );
+      if (!res.error && res.data?.value) {
+        const parsed = JSON.parse(res.data.value) as ExamHeaderConfig & { _savedQuestionIds?: string[] };
+        const { _savedQuestionIds, ...cleanParsed } = parsed;
+        if (Array.isArray(_savedQuestionIds) && _savedQuestionIds.length > 0) {
+          questionIds = _savedQuestionIds;
+        }
+        headerConfig = headerConfig
+          ? {
+              ...cleanParsed,
+              ...headerConfig,
+              questionOverrides: {
+                ...(cleanParsed.questionOverrides || {}),
+                ...(headerConfig.questionOverrides || {}),
+              },
+            }
+          : cleanParsed;
+      }
+    } catch {
+      // ignore cloud header hydration error
+    }
+  }
+
+  const questions = await fetchAndApplyOverrides(questionIds, headerConfig?.questionOverrides);
+  return { headerConfig, questions };
+}
 
 /**
  * Clears the in-memory cache for resolved quizzes and cached question objects
@@ -107,7 +170,7 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Resolves a quiz by Quiz Code or Test UUID from Supabase, Published Quizzes, or LocalStorage (cached)
+ * Resolves a quiz by Quiz Code or Test UUID from Supabase, Published Quizzes, or LocalStorage (cached & deduplicated)
  */
 export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizData | null> {
   const cleanInput = codeOrId.trim().toUpperCase();
@@ -118,6 +181,27 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     return cached.data;
   }
 
+  const existingInFlight = inFlightQuizResolutions.get(cleanInput);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const resolutionPromise = (async (): Promise<StudentQuizData | null> => {
+    return resolveStudentQuizUncached(codeOrId, cleanInput);
+  })();
+
+  inFlightQuizResolutions.set(cleanInput, resolutionPromise);
+  try {
+    return await resolutionPromise;
+  } finally {
+    inFlightQuizResolutions.delete(cleanInput);
+  }
+}
+
+async function resolveStudentQuizUncached(
+  codeOrId: string,
+  cleanInput: string
+): Promise<StudentQuizData | null> {
   // 1. Check Configured Published Quizzes in LocalStorage first
   const matchQuiz = (p: PublishedQuiz) =>
     p.quizCode.toUpperCase() === cleanInput ||
@@ -133,11 +217,16 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     console.warn('Local published lookup error:', err);
   }
 
-  // 2. If not found locally (e.g., in a Private / Incognito window or different device), fetch from Supabase Cloud
+  // 2. If not found locally (e.g., fresh student device / incognito), try fast per-code cloud index first, then full cloud list
   if (!published) {
     try {
-      const cloudQuizzes = await fetchPublishedQuizzesFromSupabase();
-      published = cloudQuizzes.find(matchQuiz);
+      const byCode = await fetchPublishedQuizByCodeFromSupabase(cleanInput);
+      if (byCode) {
+        published = byCode;
+      } else {
+        const cloudQuizzes = await fetchPublishedQuizzesFromSupabase();
+        published = cloudQuizzes.find(matchQuiz);
+      }
       if (published) {
         try {
           const localList = getPublishedQuizzes();
@@ -167,7 +256,17 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 
   if (published) {
-    let questions = await fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides);
+    const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
+    const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
+
+    // Run question loading, PIN hashing, and school security policy sync in parallel (bounded timeout)
+    const [rawQuestions, teacherPinHash, schoolSecurityTiers] = await Promise.all([
+      fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides),
+      hashTeacherPin(published.quizCode, effectiveTeacherPin),
+      withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers()),
+    ]);
+
+    let questions = rawQuestions;
 
     // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
     // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
@@ -194,9 +293,6 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     if (isAlphabeticallyMuddled) {
       questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
     }
-    const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
-    const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
-    const teacherPinHash = await hashTeacherPin(published.quizCode, effectiveTeacherPin);
 
     // A candidate browser must never receive the invigilator PIN or the test
     // overrides (they are full Question objects and therefore contain mark schemes).
@@ -218,7 +314,6 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     // (Practice mode keeps them so instant solutions can still be rendered.)
     const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
     const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
-    const schoolSecurityTiers = await loadAndSyncSecurityTiers();
 
     const result: StudentQuizData = {
       publishedId: published.id,
@@ -266,7 +361,7 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
     return result;
   }
 
-  // 3. Check LocalStorage tests fallback
+  // 4. Check LocalStorage tests fallback
   try {
     const rawLocal = localStorage.getItem(LOCAL_STORAGE_KEY);
     const localTests: CustomTest[] = rawLocal ? JSON.parse(rawLocal) : [];
@@ -278,10 +373,9 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
         test.id.replace(/-/g, '').toUpperCase().startsWith(cleanInput.replace(/-/g, '')) ||
         generated === cleanInput
       ) {
-        // Fetch question objects
         const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
         const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
-        return {
+        const result: StudentQuizData = {
           testId: test.id,
           quizCode: generated,
           title: test.title || test.header_config?.title || 'Examination Assessment',
@@ -290,63 +384,87 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
           totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
           durationMinutes: effectiveDuration,
         };
+        resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+        return result;
       }
     }
   } catch (err) {
     console.warn('Local test resolution error:', err);
   }
 
-  // 4. Query Supabase custom_tests table
+  // 5. Query Supabase custom_tests table (explicit columns only; bounded timeout)
   try {
-    // If it looks like a full UUID
-    if (cleanInput.length >= 32) {
-      const { data: test, error } = await supabase
-        .from('custom_tests')
-        .select('*')
-        .eq('id', codeOrId.trim())
-        .single() as { data: CustomTest | null; error: any };
+    const trimmedInput = codeOrId.trim();
+    if (UUID_REGEX.test(trimmedInput)) {
+      const { data: test, error } = await withTimeout<{ data: CustomTest | null; error: any }>(
+        supabase
+          .from('custom_tests')
+          .select('id, title, total_marks, question_ids, created_at')
+          .eq('id', trimmedInput)
+          .maybeSingle(),
+        4500,
+        { data: null, error: null }
+      );
 
       if (!error && test) {
-        const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
-        const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
-        return {
+        const { headerConfig, questions } = await resolveCustomTestHeaderAndQuestions(test);
+        const hydratedTest = { ...test, header_config: headerConfig };
+        const effectiveDuration = headerConfig?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
+        const result: StudentQuizData = {
           testId: test.id,
-          quizCode: generateQuizCode(test),
-          title: test.title || test.header_config?.title || 'Examination Assessment',
-          headerConfig: test.header_config ? { ...test.header_config, durationMinutes: effectiveDuration } : undefined,
+          quizCode: generateQuizCode(hydratedTest),
+          title: test.title || headerConfig?.title || 'Examination Assessment',
+          headerConfig: headerConfig ? { ...headerConfig, durationMinutes: effectiveDuration } : undefined,
           questions,
           totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
           durationMinutes: effectiveDuration,
         };
+        resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+        return result;
       }
     }
 
-    // Search by prefix or list all recent tests to match generated Quiz Code
-    const { data: allTests, error } = await supabase
-      .from('custom_tests')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(50) as { data: CustomTest[] | null; error: any };
+    // Search recent tests by ID prefix or generated Quiz Code
+    const { data: allTests, error } = await withTimeout<{ data: CustomTest[] | null; error: any }>(
+      supabase
+        .from('custom_tests')
+        .select('id, title, total_marks, question_ids, created_at')
+        .order('created_at', { ascending: false })
+        .limit(50),
+      4500,
+      { data: null, error: null }
+    );
 
     if (!error && allTests) {
+      const dashIdx = cleanInput.indexOf('-');
+      const requestedSuffix = dashIdx > 0 ? cleanInput.slice(dashIdx + 1) : '';
+
       for (const test of allTests) {
         const code = generateQuizCode(test).toUpperCase();
-        if (
+        const testSuffix = (test.id.replace(/[^a-zA-Z0-9]/g, '') + '1234').slice(0, 4).toUpperCase();
+        const directMatch =
           code === cleanInput ||
           test.id.toUpperCase().startsWith(cleanInput) ||
-          test.id.replace(/-/g, '').toUpperCase().startsWith(cleanInput.replace(/-/g, ''))
-        ) {
-          const questions = await fetchAndApplyOverrides(test.question_ids || [], test.header_config?.questionOverrides);
-          const effectiveDuration = test.header_config?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
-          return {
-            testId: test.id,
-            quizCode: code,
-            title: test.title || test.header_config?.title || 'Examination Assessment',
-            headerConfig: test.header_config ? { ...test.header_config, durationMinutes: effectiveDuration } : undefined,
-            questions,
-            totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
-            durationMinutes: effectiveDuration,
-          };
+          test.id.replace(/-/g, '').toUpperCase().startsWith(cleanInput.replace(/-/g, ''));
+
+        if (directMatch || (requestedSuffix && requestedSuffix === testSuffix)) {
+          const { headerConfig, questions } = await resolveCustomTestHeaderAndQuestions(test);
+          const hydratedTest = headerConfig ? { ...test, header_config: headerConfig } : test;
+          const hydratedCode = generateQuizCode(hydratedTest).toUpperCase();
+          if (directMatch || hydratedCode === cleanInput) {
+            const effectiveDuration = headerConfig?.durationMinutes || Math.round((test.total_marks || 20) * 1.25);
+            const result: StudentQuizData = {
+              testId: test.id,
+              quizCode: hydratedCode,
+              title: test.title || headerConfig?.title || 'Examination Assessment',
+              headerConfig: headerConfig ? { ...headerConfig, durationMinutes: effectiveDuration } : undefined,
+              questions,
+              totalMarks: test.total_marks || questions.reduce((sum, q) => sum + (q.marks || 0), 0),
+              durationMinutes: effectiveDuration,
+            };
+            resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+            return result;
+          }
         }
       }
     }
@@ -409,8 +527,8 @@ export async function verifyTeacherUnlockPin(
 export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
   if (!ids || ids.length === 0) return [];
 
-  // 1. Check which IDs are already cached in memory
-  const missingIds = ids.filter((id) => !questionObjectCache.has(id));
+  // 1. Check which valid UUID IDs are missing from cache (non-UUID IDs live in overrides/local data)
+  const missingIds = ids.filter((id) => UUID_REGEX.test(id) && !questionObjectCache.has(id));
 
   if (missingIds.length > 0) {
     try {
@@ -422,14 +540,18 @@ export async function fetchQuestionsByIds(ids: string[]): Promise<Question[]> {
 
       const results = await Promise.all(
         chunks.map((chunk) =>
-          supabase
-            .from('questions')
-            .select('*')
-            .in('id', chunk)
+          withTimeout(
+            supabase
+              .from('questions')
+              .select('*')
+              .in('id', chunk),
+            5000,
+            { data: null, error: null } as any
+          )
         )
       );
 
-      results.forEach(({ data, error }) => {
+      results.forEach(({ data, error }: any) => {
         if (!error && data && Array.isArray(data)) {
           (data as any[]).forEach((raw) => {
             const norm = normalizeQuestionRecord(raw);
@@ -455,19 +577,24 @@ export async function fetchAndApplyOverrides(
   questionIds: string[],
   overrides?: Record<string, any>
 ): Promise<Question[]> {
-  const dbQuestions = await fetchQuestionsByIds(questionIds);
-  if (!overrides || Object.keys(overrides).length === 0) return dbQuestions;
-  
-  const dbMap = new Map(dbQuestions.map(q => [q.id, q]));
+  if (!questionIds || questionIds.length === 0) return [];
+  const safeOverrides = overrides || {};
+
+  // Resolve overrides first so custom/pilot tests resolve immediately without redundant DB round-trips
+  const missingFromOverrides = questionIds.filter((qid) => !safeOverrides[qid]);
+  const dbQuestions =
+    missingFromOverrides.length > 0 ? await fetchQuestionsByIds(missingFromOverrides) : [];
+
+  const dbMap = new Map(dbQuestions.map((q) => [q.id, q]));
   const result: Question[] = [];
-  
+
   for (const qid of questionIds) {
-    if (overrides[qid]) {
-      result.push(overrides[qid] as Question);
+    if (safeOverrides[qid]) {
+      result.push(normalizeQuestionRecord(safeOverrides[qid] as Question));
     } else if (dbMap.has(qid)) {
       result.push(dbMap.get(qid)!);
     }
   }
-  
+
   return result;
 }

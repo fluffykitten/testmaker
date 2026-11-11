@@ -21,6 +21,8 @@
     "test:fullscreen-grace": "node scripts/test-fullscreen-grace-period.mjs",
     "test:security-tiers": "node --import ./scripts/register-ts.mjs scripts/test-tiered-security-system.mjs",
     "test:pilot-exam": "node --import ./scripts/register-ts.mjs scripts/test-pilot-exam-resolution.mjs",
+    "test:custom-subject": "node --import ./scripts/register-ts.mjs scripts/test-custom-subject-and-latency.mjs",
+    "test:keyboard-controls": "node --import ./scripts/register-ts.mjs scripts/test-exam-keyboard-controls.mjs",
     "test:submission-tombstones": "node scripts/test-submission-deletion-tombstones.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",

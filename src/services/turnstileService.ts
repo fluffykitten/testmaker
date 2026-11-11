@@ -30,11 +30,14 @@ export async function verifyTurnstileToken(
     return { success: false, error: 'Missing challenge token' };
   }
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 5000) : undefined;
   try {
     const res = await fetch(`${WORKER_ENDPOINT}/api/verify-turnstile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, action }),
+      signal: controller?.signal,
     });
 
     if (res.ok) {
@@ -54,5 +57,7 @@ export async function verifyTurnstileToken(
     console.warn('[turnstileService] Worker unreachable, falling back gracefully:', err?.message);
     // If worker is temporarily down or network fails in dev, allow fallback to not block teachers
     return { success: true, isBypassed: true };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }

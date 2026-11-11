@@ -52,6 +52,16 @@ export function extractDiagramFileName(url: string): string {
 /**
  * Fetches all records from a Supabase table with pagination to bypass the default 1,000 row cap.
  */
+async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<Response> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    return await fetch(url, controller ? { signal: controller.signal } : undefined);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function fetchAllTableRows<T = any>(
   tableName: string,
   onBatch?: (fetched: number) => void
@@ -221,7 +231,7 @@ export async function createFullBackupArchive(
         batch.map(async (url) => {
           try {
             const fileName = diagramMapping[url];
-            const res = await fetch(url);
+            const res = await fetchWithTimeout(url, 15000);
             if (res.ok) {
               const arrayBuffer = await res.arrayBuffer();
               diagramsFolder.file(fileName, arrayBuffer);

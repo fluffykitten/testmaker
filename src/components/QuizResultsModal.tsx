@@ -1121,7 +1121,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         <div className="qrm-header">
           <div className="qrm-header-info">
             <div className="qrm-header-title-row">
-              <span className="qrm-subject-badge">{currentQuiz.subject || 'Chemistry'}</span>
+              <span className="qrm-subject-badge">{currentQuiz.subject || 'General'}</span>
               <h2 className="qrm-title" title={currentQuiz.title}>{currentQuiz.title}</h2>
               <code className="qrm-code" title="Assessment Access Code">{currentQuiz.quizCode}</code>
               <span className="qrm-meta-summary">

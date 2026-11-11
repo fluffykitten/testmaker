@@ -26,6 +26,20 @@ export interface AIEvaluationResult {
 // Cache evaluation results to eliminate redundant API calls
 const evaluationCache = new Map<string, AIEvaluationResult>();
 
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 15000
+): Promise<Response> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    return await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Builds the examiner prompt for evaluating student descriptive answers
  */
@@ -264,7 +278,7 @@ export async function evaluateAnswerWithGemini(
 
   for (const model of candidateModels) {
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`,
         {
           method: 'POST',
@@ -280,7 +294,8 @@ export async function evaluateAnswerWithGemini(
               responseMimeType: 'application/json',
             },
           }),
-        }
+        },
+        15000
       );
 
       if (response.ok) {
@@ -561,7 +576,7 @@ Return ONLY valid JSON matching this exact schema:
 
   for (const model of candidateModels) {
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`,
         {
           method: 'POST',
@@ -573,7 +588,8 @@ Return ONLY valid JSON matching this exact schema:
               responseMimeType: 'application/json',
             },
           }),
-        }
+        },
+        15000
       );
 
       if (response.ok) {

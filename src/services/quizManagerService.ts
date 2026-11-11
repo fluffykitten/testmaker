@@ -207,26 +207,157 @@ export function getPublishedQuizzes(): PublishedQuiz[] {
   }
 }
 
-export async function fetchPublishedQuizzesFromSupabase(): Promise<PublishedQuiz[]> {
-  try {
-    const { data, error } = (await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', 'published_quizzes')
-      .maybeSingle()) as { data: { value: string } | null; error: any };
+const QUIZ_BY_CODE_KEY_PREFIX = 'quiz_by_code_';
+const CLOUD_QUIZZES_CACHE_TTL_MS = 15 * 1000;
+let cloudQuizzesCache: { data: PublishedQuiz[]; timestamp: number } | null = null;
+let inFlightCloudQuizzes: Promise<PublishedQuiz[]> | null = null;
 
-    if (!error && data?.value) {
-      const parsed = JSON.parse(data.value);
-      if (Array.isArray(parsed)) return deduplicateQuizzes(parsed);
+function clearCloudQuizzesCache(): void {
+  cloudQuizzesCache = null;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('quizzes_updated', clearCloudQuizzesCache);
+}
+
+async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallbackValue: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallbackValue), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function upsertQuizCodeIndexToCloud(quiz: PublishedQuiz): Promise<void> {
+  try {
+    const codes = Array.from(
+      new Set(
+        [quiz.quizCode, ...(quiz.previousCodes || [])]
+          .map((c) => (c || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+    if (codes.length === 0) return;
+
+    const payload = JSON.stringify(quiz);
+    await Promise.all(
+      codes.map((code) =>
+        (supabase.from('app_config' as any) as any).upsert(
+          {
+            key: `${QUIZ_BY_CODE_KEY_PREFIX}${code}`,
+            value: payload,
+          },
+          { onConflict: 'key' }
+        )
+      )
+    );
+  } catch (err) {
+    console.warn('Quiz code index sync notice:', err);
+  }
+}
+
+async function deleteQuizCodeIndexFromCloud(codes: string[]): Promise<void> {
+  const cleanCodes = Array.from(
+    new Set(codes.map((c) => (c || '').trim().toUpperCase()).filter(Boolean))
+  );
+  if (cleanCodes.length === 0) return;
+  try {
+    const keys = cleanCodes.map((c) => `${QUIZ_BY_CODE_KEY_PREFIX}${c}`);
+    await (supabase.from('app_config' as any) as any).delete().in('key', keys);
+  } catch (err) {
+    console.warn('Quiz code index delete notice:', err);
+  }
+}
+
+/**
+ * Fast single-quiz lookup by Quiz Code (avoids downloading the full published_quizzes array on student devices).
+ */
+export async function fetchPublishedQuizByCodeFromSupabase(
+  quizCode: string
+): Promise<PublishedQuiz | null> {
+  const cleanCode = (quizCode || '').trim().toUpperCase();
+  if (!cleanCode) return null;
+
+  try {
+    const result = await withTimeout<{ data: { value: string } | null; error: any }>(
+      (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', `${QUIZ_BY_CODE_KEY_PREFIX}${cleanCode}`)
+        .maybeSingle(),
+      4000,
+      { data: null, error: null }
+    );
+
+    if (!result.error && result.data?.value) {
+      const parsed = JSON.parse(result.data.value) as PublishedQuiz;
+      if (parsed && parsed.id) {
+        const deletedIds = getDeletedQuizIds();
+        if (deletedIds.has(String(parsed.id).trim())) {
+          return null;
+        }
+        return parsed;
+      }
     }
   } catch (err) {
-    console.warn('Could not fetch published quizzes from Supabase cloud:', err);
+    console.warn('Could not fetch quiz by code from Supabase:', err);
   }
-  return [];
+  return null;
+}
+
+export async function fetchPublishedQuizzesFromSupabase(forceRefresh = false): Promise<PublishedQuiz[]> {
+  if (
+    !forceRefresh &&
+    cloudQuizzesCache &&
+    Date.now() - cloudQuizzesCache.timestamp < CLOUD_QUIZZES_CACHE_TTL_MS
+  ) {
+    return cloudQuizzesCache.data;
+  }
+
+  if (!forceRefresh && inFlightCloudQuizzes) {
+    return inFlightCloudQuizzes;
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const { data, error } = await withTimeout<{ data: { value: string } | null; error: any }>(
+        (supabase.from('app_config' as any) as any)
+          .select('value')
+          .eq('key', 'published_quizzes')
+          .maybeSingle(),
+        5000,
+        { data: null, error: { message: 'Timeout' } }
+      );
+
+      if (!error && data?.value) {
+        const parsed = JSON.parse(data.value);
+        if (Array.isArray(parsed)) {
+          const deduped = deduplicateQuizzes(parsed);
+          cloudQuizzesCache = { data: deduped, timestamp: Date.now() };
+          return deduped;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch published quizzes from Supabase cloud:', err);
+    } finally {
+      inFlightCloudQuizzes = null;
+    }
+    return cloudQuizzesCache ? cloudQuizzesCache.data : [];
+  })();
+
+  inFlightCloudQuizzes = fetchPromise;
+  return fetchPromise;
 }
 
 export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Promise<boolean> {
   try {
     const deduplicated = deduplicateQuizzes(quizzes);
+    cloudQuizzesCache = { data: deduplicated, timestamp: Date.now() };
     const { error } = await (supabase.from('app_config' as any) as any)
       .upsert({
         key: 'published_quizzes',
@@ -308,7 +439,7 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
 export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: string): Promise<PublishedQuiz[]> {
   try {
     const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
-    const cleanSubject = quiz.subject || quiz.headerConfig?.subject || 'Chemistry';
+    const cleanSubject = quiz.subject || quiz.headerConfig?.subject || 'General';
     const effectiveTeacherPin = quiz.teacherPin || quiz.headerConfig?.teacherPin || '1234';
     const cleanQuizCode = quiz.quizCode.trim().toUpperCase();
 
@@ -361,11 +492,15 @@ export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: strin
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
     // 2. Fetch current cloud state and merge to avoid overwriting quizzes from other devices
-    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    clearCloudQuizzesCache();
+    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
     const finalMerged = deduplicateQuizzes([cleanQuiz, ...updated, ...cloudList]);
     
     localStorage.setItem(STORAGE_KEY, JSON.stringify(finalMerged));
-    await syncPublishedQuizzesToCloud(finalMerged);
+    await Promise.all([
+      syncPublishedQuizzesToCloud(finalMerged),
+      upsertQuizCodeIndexToCloud(cleanQuiz),
+    ]);
 
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('quizzes_updated'));
     return finalMerged;
@@ -396,9 +531,17 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
       const updated = existing.filter((q) => !matchesTarget(q));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      clearCloudQuizzesCache();
+      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
       const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      await syncPublishedQuizzesToCloud(updatedCloud);
+      const codesToDelete = [
+        directQuiz.quizCode,
+        ...(directQuiz.previousCodes || []),
+      ];
+      await Promise.all([
+        syncPublishedQuizzesToCloud(updatedCloud),
+        deleteQuizCodeIndexFromCloud(codesToDelete),
+      ]);
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: targetId } }));
@@ -409,10 +552,15 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     // 2. Test ID Deletion (e.g. called from testBuilderService when an entire test paper is deleted)
     const matchingByTest = existing.filter((q) => q.testId === cleanId);
     if (matchingByTest.length > 0) {
+      const codesToDelete: string[] = [];
       matchingByTest.forEach((q) => {
         recordDeletedQuiz(q.id);
         clearQuizMemoryCache(q.id);
-        if (q.quizCode) clearQuizMemoryCache(q.quizCode.trim().toUpperCase());
+        if (q.quizCode) {
+          clearQuizMemoryCache(q.quizCode.trim().toUpperCase());
+          codesToDelete.push(q.quizCode);
+        }
+        if (q.previousCodes) codesToDelete.push(...q.previousCodes);
       });
 
       const matchesTarget = (q: PublishedQuiz) => q.testId === cleanId;
@@ -420,9 +568,13 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
       const updated = existing.filter((q) => !matchesTarget(q));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      clearCloudQuizzesCache();
+      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
       const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      await syncPublishedQuizzesToCloud(updatedCloud);
+      await Promise.all([
+        syncPublishedQuizzesToCloud(updatedCloud),
+        deleteQuizCodeIndexFromCloud(codesToDelete),
+      ]);
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
@@ -434,10 +586,13 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     const cleanCodeUpper = cleanId.toUpperCase();
     const matchingByCode = existing.filter((q) => q.quizCode.toUpperCase() === cleanCodeUpper);
     if (matchingByCode.length > 0) {
+      const codesToDelete: string[] = [cleanCodeUpper];
       matchingByCode.forEach((q) => {
         recordDeletedQuiz(q.id);
         clearQuizMemoryCache(q.id);
         clearQuizMemoryCache(cleanCodeUpper);
+        if (q.quizCode) codesToDelete.push(q.quizCode);
+        if (q.previousCodes) codesToDelete.push(...q.previousCodes);
       });
 
       const matchesTarget = (q: PublishedQuiz) => q.quizCode.toUpperCase() === cleanCodeUpper;
@@ -445,9 +600,13 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
       const updated = existing.filter((q) => !matchesTarget(q));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-      const cloudList = await fetchPublishedQuizzesFromSupabase();
+      clearCloudQuizzesCache();
+      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
       const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      await syncPublishedQuizzesToCloud(updatedCloud);
+      await Promise.all([
+        syncPublishedQuizzesToCloud(updatedCloud),
+        deleteQuizCodeIndexFromCloud(codesToDelete),
+      ]);
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
@@ -459,9 +618,20 @@ export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> 
     recordDeletedQuiz(cleanId);
     clearQuizMemoryCache(cleanId);
 
-    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    clearCloudQuizzesCache();
+    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
+    const matchedCloud = cloudList.filter(
+      (q) => q.id === cleanId || q.testId === cleanId || q.quizCode.toUpperCase() === cleanCodeUpper
+    );
+    const codesToDelete = [
+      cleanCodeUpper,
+      ...matchedCloud.flatMap((q) => [q.quizCode, ...(q.previousCodes || [])]),
+    ];
     const updatedCloud = cloudList.filter((q) => q.id !== cleanId && q.testId !== cleanId && q.quizCode.toUpperCase() !== cleanCodeUpper);
-    await syncPublishedQuizzesToCloud(updatedCloud);
+    await Promise.all([
+      syncPublishedQuizzesToCloud(updatedCloud),
+      deleteQuizCodeIndexFromCloud(codesToDelete),
+    ]);
 
     return existing;
   } catch (err) {
@@ -479,7 +649,8 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
     target.updatedAt = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
 
-    const cloudList = await fetchPublishedQuizzesFromSupabase();
+    clearCloudQuizzesCache();
+    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
     const cloudTarget = cloudList.find((q) => q.id === id);
     if (cloudTarget) {
       cloudTarget.isActive = target.isActive;
@@ -487,7 +658,10 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
     } else {
       cloudList.push(target);
     }
-    await syncPublishedQuizzesToCloud(cloudList);
+    await Promise.all([
+      syncPublishedQuizzesToCloud(cloudList),
+      upsertQuizCodeIndexToCloud(target),
+    ]);
 
     return target;
   } catch (err) {

@@ -65,6 +65,9 @@ import {
   enableKeyboardLock,
   releaseKeyboardLock,
   applyMaskedPinInput,
+  EXAM_LOCKED_KEYS,
+  isCopyShortcut,
+  isWindowsOrCopilotKey,
 } from '../utils/examSecurityUtils';
 import {
   joinProctorSession,
@@ -1466,7 +1469,7 @@ export function StudentQuizRunner({
     // Assert hardware keyboard lock on mount if fullscreen is active
     const assertKeyboardLock = async () => {
       try {
-        const ok = await enableKeyboardLock(['Escape', 'F11']);
+        const ok = await enableKeyboardLock(EXAM_LOCKED_KEYS);
         setKeyboardLockAvailable(ok);
       } catch {
         setKeyboardLockAvailable(false);
@@ -1616,6 +1619,12 @@ export function StudentQuizRunner({
         }
         return;
       }
+      // Silently disable Windows and Copilot keys in Exam Mode (no warning screen)
+      if (isExamMode && isWindowsOrCopilotKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Block Alt+Left / Alt+Right (browser back/forward keyboard navigation)
       if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
@@ -1626,27 +1635,48 @@ export function StudentQuizRunner({
       if (e.key === 'F12') {
         e.preventDefault();
         recordViolation('blocked_shortcut', 'Attempted to open Developer Tools (F12)');
+        return;
       }
       // Block Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C
       if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) {
         e.preventDefault();
+        e.stopPropagation();
         recordViolation('blocked_shortcut', 'Attempted to inspect page elements');
+        return;
       }
       // Block Ctrl+P (Print), Ctrl+S (Save), Ctrl+U (View source)
       if (e.ctrlKey && (e.key === 'p' || e.key === 'P' || e.key === 's' || e.key === 'S' || e.key === 'u' || e.key === 'U')) {
         e.preventDefault();
         recordViolation('blocked_shortcut', `Attempted browser action (Ctrl+${e.key.toUpperCase()})`);
+        return;
       }
-      // Block Ctrl+C (Copy), Ctrl+V (Paste) in Exam Mode
-      if (isExamMode && e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'v' || e.key === 'V')) {
+      // Silently disable Ctrl+C / Cmd+C / Ctrl+Insert (Copy) in Exam Mode without showing warning screen
+      if (isExamMode && isCopyShortcut(e)) {
         e.preventDefault();
+        e.stopPropagation();
         flushClipboard();
-        recordViolation('blocked_shortcut', 'Copying and pasting is disabled during exam');
+        return;
+      }
+      // Block Ctrl+V / Cmd+V (Paste) in Exam Mode
+      if (isExamMode && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) {
+        e.preventDefault();
+        e.stopPropagation();
+        flushClipboard();
+        recordViolation('blocked_shortcut', 'Pasting is disabled during exam');
+        return;
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (isEscapeOrF11(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (isExamMode && isWindowsOrCopilotKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (isExamMode && isCopyShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -1656,8 +1686,11 @@ export function StudentQuizRunner({
     const handleCopy = (e: ClipboardEvent) => {
       if (isExamMode) {
         e.preventDefault();
+        e.stopPropagation();
+        try {
+          e.clipboardData?.setData('text/plain', '');
+        } catch {}
         flushClipboard();
-        recordViolation('blocked_shortcut', 'Copying question content is disabled during exam');
       }
     };
 
@@ -1696,7 +1729,8 @@ export function StudentQuizRunner({
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('focus', handleWindowFocus);
-    window.addEventListener('copy', handleCopy);
+    window.addEventListener('copy', handleCopy, { capture: true });
+    document.addEventListener('copy', handleCopy, { capture: true });
     window.addEventListener('cut', handleCut);
     window.addEventListener('paste', handlePaste);
     window.addEventListener('mobile-proctor-violation', handleMobileProctor);
@@ -1712,7 +1746,8 @@ export function StudentQuizRunner({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
-      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('copy', handleCopy, { capture: true });
+      document.removeEventListener('copy', handleCopy, { capture: true });
       window.removeEventListener('cut', handleCut);
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
@@ -6463,7 +6498,7 @@ export function StudentQuizRunner({
           className="sq-security-alert-bar animate-fade-in"
           style={{ background: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.4)', color: '#d97706' }}
         >
-          <span>ℹ️ Notice: Hardware keyboard lock is unsupported in this browser. Please avoid pressing Esc or F11 during the exam.</span>
+          <span>ℹ️ Notice: Hardware keyboard lock is unsupported in this browser. Please avoid pressing Esc, F11, or system shortcut keys during the exam.</span>
         </div>
       )}
 

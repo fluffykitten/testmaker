@@ -175,11 +175,75 @@ export function getCanonicalProctorStudentId(params: {
   return `cand_${stableIdentityHash(`${code}::${identity}`).slice(0, 12)}`;
 }
 
+export const EXAM_FALLBACK_LOCKED_KEYS = ['Escape', 'F11'];
+export const EXAM_LOCKED_KEYS = ['Escape', 'F11', 'MetaLeft', 'MetaRight', 'F23'];
+
+export interface KeyboardShortcutLike {
+  key?: string;
+  code?: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+}
+
 /**
- * Locks physical keys (like Escape and F11) in supported browsers (Chromium / Chrome / Edge)
- * using the W3C Keyboard Lock API so they cannot exit fullscreen or trigger browser window toggles.
+ * Matches user copy shortcuts (Ctrl+C, Cmd+C, Ctrl+Insert) while excluding
+ * developer/system combos like Ctrl+Shift+C (DevTools element inspector).
  */
-export async function enableKeyboardLock(keys: string[] = ['Escape', 'F11']): Promise<boolean> {
+export function isCopyShortcut(e: KeyboardShortcutLike): boolean {
+  if (!e) return false;
+  const key = (e.key || '').toLowerCase();
+  const code = e.code || '';
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+    if (key === 'c' || code === 'KeyC') return true;
+  }
+  if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+    if (key === 'insert' || code === 'Insert') return true;
+  }
+  return false;
+}
+
+/**
+ * Matches Windows / Super keys and Copilot hardware/shell shortcuts
+ * (MetaLeft/Right, OSLeft/Right, Windows 11 Copilot's Shift+Meta+F23 / F23,
+ * LaunchAssistant, and Win+C).
+ */
+export function isWindowsOrCopilotKey(e: KeyboardShortcutLike): boolean {
+  if (!e) return false;
+  const key = e.key || '';
+  const code = e.code || '';
+  const lowerKey = key.toLowerCase();
+
+  if (
+    key === 'Meta' ||
+    key === 'OS' ||
+    code === 'MetaLeft' ||
+    code === 'MetaRight' ||
+    code === 'OSLeft' ||
+    code === 'OSRight'
+  ) {
+    return true;
+  }
+
+  if (key === 'F23' || code === 'F23' || key === 'LaunchAssistant' || key === 'Assistant') {
+    return true;
+  }
+
+  // Win+C is used for Copilot on Windows (also blocks Cmd+C quietly without triggering a strike)
+  if (e.metaKey && !e.ctrlKey && !e.altKey && (lowerKey === 'c' || code === 'KeyC')) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Locks physical keys (Escape, F11, and Windows/Copilot key codes when supported) in
+ * supported browsers (Chromium / Chrome / Edge) using the W3C Keyboard Lock API so they
+ * cannot exit fullscreen or trigger OS/browser overlays during exam fullscreen.
+ */
+export async function enableKeyboardLock(keys: string[] = EXAM_LOCKED_KEYS): Promise<boolean> {
   if (typeof navigator === 'undefined') return false;
   const nav = navigator as any;
   if (nav.keyboard && typeof nav.keyboard.lock === 'function') {
@@ -187,6 +251,17 @@ export async function enableKeyboardLock(keys: string[] = ['Escape', 'F11']): Pr
       await nav.keyboard.lock(keys);
       return true;
     } catch (err) {
+      // Fall back to Escape + F11 if an extended key code is rejected on this platform/browser
+      const hasExtendedKeys = keys.some((k) => !EXAM_FALLBACK_LOCKED_KEYS.includes(k));
+      if (hasExtendedKeys) {
+        try {
+          await nav.keyboard.lock(EXAM_FALLBACK_LOCKED_KEYS);
+          return true;
+        } catch (fallbackErr) {
+          console.debug('[Security] Keyboard lock fallback note:', fallbackErr);
+          return false;
+        }
+      }
       console.debug('[Security] Keyboard lock note:', err);
       return false;
     }
@@ -221,9 +296,9 @@ export async function requestSecureFullscreen(): Promise<boolean> {
         await document.documentElement.requestFullscreen();
       }
     }
-    // Lock Escape and F11 keys using W3C Keyboard Lock API once in fullscreen
+    // Lock Escape, F11, and Windows/Copilot keys using W3C Keyboard Lock API once in fullscreen
     if (document.fullscreenElement) {
-      await enableKeyboardLock(['Escape', 'F11']);
+      await enableKeyboardLock(EXAM_LOCKED_KEYS);
     }
     return !!document.fullscreenElement;
   } catch (err) {

@@ -92,7 +92,7 @@ async function resolveSyllabus(
     .select('id')
     .eq('subject_code', subjectCode)
     .limit(1)
-    .single() as { data: { id: string } | null };
+    .maybeSingle() as { data: { id: string } | null };
 
   if (existing) return existing.id;
 
@@ -230,9 +230,6 @@ export async function saveExtractedQuestions(
       difficulty: q.estimated_difficulty,
       cognitive_level: effectiveCognitiveLevel,
       source_pdf_url: effectivePdfUrl,
-      cambridge_hub_url: effectiveHubUrl,
-      cambridge_ms_hub_url: effectiveMsHubUrl,
-      insert_pdf_url: effectiveInsertPdfUrl,
       page_number: effectivePageNumber,
       marks: q.total_marks,
       diagram_url: permanentDiagramUrls.get(q.question_number) || null,
@@ -274,16 +271,13 @@ export async function saveExtractedQuestions(
       error.message.includes('paper_number') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
-      error.message.includes('cambridge_hub_url') ||
-      error.message.includes('cambridge_ms_hub_url') ||
-      error.message.includes('insert_pdf_url') ||
       error.message.includes('page_number') ||
       error.message.includes('schema cache') ||
       error.message.includes('Could not find') ||
       error.message.includes('invalid input syntax for type integer'))
   ) {
     console.warn('Extended columns or type mismatch in database, falling back to core schema:', error.message);
-    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, insert_pdf_url, audio_url, audio_metadata, cognitive_level, source_pdf_url, cambridge_hub_url, cambridge_ms_hub_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
+    const fallbackRecords = (records as any[]).map(({ diagram_source, resource_ref, insert_page_number, audio_url, audio_metadata, cognitive_level, source_pdf_url, page_number, mark_scheme, paper_number, ...rest }: any) => {
       const ms = typeof mark_scheme === 'object' && mark_scheme !== null ? { ...mark_scheme } : { raw: mark_scheme };
       if (audio_url) (ms as any)._audio_url = audio_url;
       if (audio_metadata) (ms as any)._audio_metadata = audio_metadata;
@@ -292,9 +286,6 @@ export async function saveExtractedQuestions(
       if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
       if (cognitive_level) (ms as any)._cognitive_level = cognitive_level;
       if (source_pdf_url) (ms as any)._source_pdf_url = source_pdf_url;
-      if (cambridge_hub_url) (ms as any)._cambridge_hub_url = cambridge_hub_url;
-      if (cambridge_ms_hub_url) (ms as any)._cambridge_ms_hub_url = cambridge_ms_hub_url;
-      if (insert_pdf_url) (ms as any)._insert_pdf_url = insert_pdf_url;
       if (page_number) (ms as any)._page_number = page_number;
 
       let safePaperNum: any = paper_number;
@@ -327,25 +318,7 @@ export async function saveExtractedQuestions(
 
   // 5. Clean up temporary local Object URLs
   revokeLocalDiagramUrls(diagramData);
-
-  // 6. Attempt to persist insert_resources to dedicated table if available
-  if (insert_resources && insert_resources.length > 0) {
-    try {
-      await supabase.from('insert_resources').insert(
-        insert_resources.map((res) => ({
-          syllabus_id: syllabusId,
-          resource_id: res.id,
-          title: res.title,
-          page_number: res.page_number,
-          target_questions: res.target_questions || [],
-          diagram_url: res.diagram_url || null,
-          text_content: res.text_content || null,
-        })) as any
-      );
-    } catch {
-      // Safely ignored if insert_resources table does not exist in DB; catalog is already saved in questions JSONB
-    }
-  }
+  // Note: insert_resources catalog is already persisted inside questions.mark_scheme._insert_resources JSONB.
 
   const insertedCount = data?.length ?? 0;
   const insertedIds = data?.map((d) => d.id) || [];

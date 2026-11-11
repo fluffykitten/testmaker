@@ -32,8 +32,13 @@ const bodyEnd = source.indexOf('// ─── 3B.', effectStart);
 const body = source.slice(effectStart, bodyEnd);
 
 check(/logViolationRef\.current\(type, detail\)/.test(body), 'violations are not routed through logViolationRef inside the effect');
-check(/assertKeyboardLock/.test(body) && /enableKeyboardLock\(\['Escape', 'F11'\]\)/.test(body), 'effect no longer re-asserts the keyboard lock on subscribe');
+check(
+  /assertKeyboardLock/.test(body) && /enableKeyboardLock\((?:EXAM_LOCKED_KEYS|\['Escape', 'F11'\])\)/.test(body),
+  'effect no longer re-asserts the keyboard lock on subscribe'
+);
 check(/isEscapeOrF11\(e\)/.test(body), 'Escape/F11 handler missing');
+check(/isWindowsOrCopilotKey\(e\)/.test(body), 'Windows/Copilot key guard missing');
+check(/isCopyShortcut\(e\)/.test(body), 'silent copy shortcut guard missing');
 check(/Attempted to leave the exam view/.test(body), 'Esc/F11 attempts are not recorded as a violation');
 check(/lastBlockedExitAtRef/.test(body), 'Esc/F11 violation logging is not throttled');
 check(/releaseKeyboardLock\(\)/.test(body), 'cleanup no longer releases the keyboard lock');

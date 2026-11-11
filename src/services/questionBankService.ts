@@ -57,6 +57,12 @@ const inFlightFacets = new Map<
 const inFlightQuestions = new Map<string, Promise<QuestionQueryResult>>();
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const filterValidUuids = (ids: string[]): string[] => ids.filter((id) => UUID_REGEX.test(id));
+const quotePostgrestIlikePattern = (rawToken: string): string => {
+  const escaped = rawToken.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"%${escaped}%"`;
+};
 let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 // Hydrate syllabuses cache synchronously from localStorage if available
@@ -204,6 +210,66 @@ export async function fetchSyllabuses(): Promise<Syllabus[]> {
   }
 
   return refreshPromise;
+}
+
+/**
+ * Creates (or reuses an existing) subject/syllabus in Supabase and updates caches immediately.
+ */
+export async function createOrGetSyllabus(
+  subjectName: string,
+  subjectCode?: string
+): Promise<Syllabus> {
+  const cleanName = subjectName.trim();
+  if (!cleanName) {
+    throw new Error('Subject name is required');
+  }
+
+  const derivedCode = (
+    subjectCode?.trim() ||
+    cleanName
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.slice(0, 4))
+      .join('-')
+      .toUpperCase() ||
+    'SUBJ'
+  ).slice(0, 20);
+
+  const existingList = await fetchSyllabuses();
+  const matched = existingList.find(
+    (s) =>
+      s.subject_name.trim().toLowerCase() === cleanName.toLowerCase() ||
+      (subjectCode?.trim() && s.subject_code.trim().toLowerCase() === derivedCode.toLowerCase())
+  );
+  if (matched) {
+    return matched;
+  }
+
+  const { data: created, error } = await (supabase.from('syllabuses' as any) as any)
+    .insert({ subject_name: cleanName, subject_code: derivedCode })
+    .select('*')
+    .single();
+
+  if (error || !created) {
+    throw new Error(error?.message || 'Failed to create subject syllabus');
+  }
+
+  const createdSyllabus = created as Syllabus;
+  const updatedList = [...existingList, createdSyllabus].sort((a, b) =>
+    a.subject_name.localeCompare(b.subject_name)
+  );
+  const entry = { data: updatedList, timestamp: Date.now() };
+  syllabusesCache = entry;
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(SYLLABUSES_STORAGE_KEY, JSON.stringify(entry));
+    } catch {}
+    window.dispatchEvent(new CustomEvent('syllabuses_updated', { detail: { syllabuses: updatedList } }));
+  }
+
+  return createdSyllabus;
 }
 
 /**
@@ -852,7 +918,7 @@ export async function fetchQuestions(
 
         // Filter: Bookmarks Only
         if (params.bookmarkedOnly) {
-          const bookmarkedIds = Array.from(getBookmarkedQuestionIds());
+          const bookmarkedIds = filterValidUuids(Array.from(getBookmarkedQuestionIds()));
           if (bookmarkedIds.length === 0) {
             return null;
           }
@@ -863,8 +929,10 @@ export async function fetchQuestions(
         if (params.customTag) {
           const tagMap = getAllQuestionTagsMap();
           const targetTag = params.customTag.toLowerCase().trim().replace(/^#/, '');
-          const taggedIds = Object.keys(tagMap).filter((id) =>
-            tagMap[id].some((t) => t.toLowerCase() === targetTag)
+          const taggedIds = filterValidUuids(
+            Object.keys(tagMap).filter((id) =>
+              tagMap[id].some((t) => t.toLowerCase() === targetTag)
+            )
           );
           if (taggedIds.length === 0) {
             return null;
@@ -881,8 +949,10 @@ export async function fetchQuestions(
           if (isTagQuery) {
             // Explicit tag search: e.g. #tka, #mock2026, #homework
             const cleanTag = rawTerm.replace(/^#+/, '').trim().toLowerCase();
-            const matchedTagIds = Object.keys(tagMap).filter((id) =>
-              tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
+            const matchedTagIds = filterValidUuids(
+              Object.keys(tagMap).filter((id) =>
+                tagMap[id].some((t) => t.toLowerCase().includes(cleanTag))
+              )
             );
             if (matchedTagIds.length === 0) {
               return null;
@@ -894,8 +964,10 @@ export async function fetchQuestions(
             const lowerTerm = term.toLowerCase();
 
             // Check if search term matches any custom teacher tags
-            const tagMatchedIds = Object.keys(tagMap).filter((id) =>
-              tagMap[id].some((t) => t.toLowerCase() === lowerTerm || t.toLowerCase().includes(lowerTerm))
+            const tagMatchedIds = filterValidUuids(
+              Object.keys(tagMap).filter((id) =>
+                tagMap[id].some((t) => t.toLowerCase() === lowerTerm || t.toLowerCase().includes(lowerTerm))
+              )
             );
 
             const tokensToSearch = Array.from(
@@ -908,7 +980,10 @@ export async function fetchQuestions(
 
             const textClauses = tokensToSearch
               .slice(0, 15)
-              .map((tok) => `question_text.ilike.%${tok}%,topic.ilike.%${tok}%,sub_topic.ilike.%${tok}%`);
+              .map((tok) => {
+                const pattern = quotePostgrestIlikePattern(tok);
+                return `question_text.ilike.${pattern},topic.ilike.${pattern},sub_topic.ilike.${pattern}`;
+              });
 
             if (tagMatchedIds.length > 0) {
               const idClause = tagMatchedIds.length === 1
@@ -918,7 +993,8 @@ export async function fetchQuestions(
             } else if (textClauses.length > 1) {
               q = q.or(textClauses.join(','));
             } else {
-              q = q.or(`question_text.ilike.%${term}%,topic.ilike.%${term}%,sub_topic.ilike.%${term}%`);
+              const pattern = quotePostgrestIlikePattern(term);
+              q = q.or(`question_text.ilike.${pattern},topic.ilike.${pattern},sub_topic.ilike.${pattern}`);
             }
           }
         }
@@ -1073,14 +1149,18 @@ export function prewarmQuestionBankData(pageSize = 12, syllabusId?: string): voi
  * Fetch a single question by UUID with full details
  */
 export async function fetchQuestionById(id: string): Promise<Question | null> {
+  if (!UUID_REGEX.test(id)) {
+    return null;
+  }
+
   const { data, error } = await supabase
     .from('questions')
     .select('*')
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
   if (error || !data) {
-    console.error(`Failed to fetch question ${id}:`, error);
+    if (error) console.error(`Failed to fetch question ${id}:`, error);
     return null;
   }
 
@@ -1091,6 +1171,10 @@ export async function fetchQuestionById(id: string): Promise<Question | null> {
  * Delete a single question by UUID
  */
 export async function deleteQuestion(id: string): Promise<boolean> {
+  if (!UUID_REGEX.test(id)) {
+    return false;
+  }
+
   clearQuestionBankCache();
   const { error } = await supabase
     .from('questions')
@@ -1110,7 +1194,8 @@ export async function deleteQuestion(id: string): Promise<boolean> {
  * Delete multiple questions by array of UUIDs (bulk deletion)
  */
 export async function deleteQuestions(ids: string[]): Promise<{ success: boolean; deletedCount: number }> {
-  if (!ids || ids.length === 0) {
+  const validIds = filterValidUuids(ids || []);
+  if (validIds.length === 0) {
     return { success: true, deletedCount: 0 };
   }
 
@@ -1118,7 +1203,7 @@ export async function deleteQuestions(ids: string[]): Promise<{ success: boolean
   const { error } = await supabase
     .from('questions')
     .delete()
-    .in('id', ids);
+    .in('id', validIds);
 
   if (error) {
     console.error('Failed to bulk delete questions:', error);
@@ -1126,7 +1211,7 @@ export async function deleteQuestions(ids: string[]): Promise<{ success: boolean
   }
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('questions_updated'));
-  return { success: true, deletedCount: ids.length };
+  return { success: true, deletedCount: validIds.length };
 }
 
 /**
@@ -1137,6 +1222,10 @@ export async function updateQuestionMarkScheme(
   markScheme: Question['mark_scheme'],
   subQuestions?: Question['sub_questions']
 ): Promise<boolean> {
+  if (!UUID_REGEX.test(id)) {
+    return false;
+  }
+
   const payload: any = { mark_scheme: markScheme };
   if (subQuestions !== undefined) {
     payload.sub_questions = subQuestions;
@@ -1177,6 +1266,7 @@ export function normalizeQuestionRecord(q: any): Question {
   const sourcePdfUrl = q.source_pdf_url || q.mark_scheme?._source_pdf_url || null;
   const cambridgeHubUrl = q.cambridge_hub_url || q.mark_scheme?._cambridge_hub_url || null;
   const cambridgeMsHubUrl = q.cambridge_ms_hub_url || q.mark_scheme?._cambridge_ms_hub_url || null;
+  const insertPdfUrl = q.insert_pdf_url || q.mark_scheme?._insert_pdf_url || null;
   const pageNumber = q.page_number !== undefined && q.page_number !== null ? q.page_number : (q.mark_scheme?._page_number ?? null);
 
   const normalizedSubs = Array.isArray(q.sub_questions)
@@ -1194,6 +1284,7 @@ export function normalizeQuestionRecord(q: any): Question {
     source_pdf_url: sourcePdfUrl,
     cambridge_hub_url: cambridgeHubUrl,
     cambridge_ms_hub_url: cambridgeMsHubUrl,
+    ...(insertPdfUrl ? { insert_pdf_url: insertPdfUrl } : {}),
     page_number: pageNumber,
     svg_content: svgContent,
     ai_diagram_prompt: aiDiagramPrompt,
@@ -1217,6 +1308,10 @@ export async function updateQuestion(
   id: string,
   updates: Partial<Omit<Question, 'id' | 'created_at'>>
 ): Promise<Question | null> {
+  if (!UUID_REGEX.test(id)) {
+    return null;
+  }
+
   const payload: any = { ...updates };
 
   // Ensure SVG content is preserved in diagram_url if no separate diagram_url is set
@@ -1248,6 +1343,7 @@ export async function updateQuestion(
     payload.source_pdf_url !== undefined ||
     payload.cambridge_hub_url !== undefined ||
     payload.cambridge_ms_hub_url !== undefined ||
+    payload.insert_pdf_url !== undefined ||
     payload.page_number !== undefined
   ) {
     const baseMarkScheme =
@@ -1291,12 +1387,17 @@ export async function updateQuestion(
     } else if (payload.cambridge_ms_hub_url === null) {
       delete baseMarkScheme._cambridge_ms_hub_url;
     }
+    if (payload.insert_pdf_url) {
+      baseMarkScheme._insert_pdf_url = payload.insert_pdf_url;
+    } else if (payload.insert_pdf_url === null) {
+      delete baseMarkScheme._insert_pdf_url;
+    }
     if (payload.page_number !== undefined) baseMarkScheme._page_number = payload.page_number;
 
     payload.mark_scheme = baseMarkScheme;
   }
 
-  // Strip virtual / generated client-only properties that do not exist as columns in `questions`
+  // Strip virtual / non-migrated client-only properties that do not exist as columns in `questions`
   delete payload.svg_content;
   delete payload.ai_diagram_prompt;
   delete payload.diagram_type;
@@ -1304,6 +1405,9 @@ export async function updateQuestion(
   delete payload.data_tables;
   delete payload.scratchpad;
   delete payload.question_number_numeric;
+  delete payload.cambridge_hub_url;
+  delete payload.cambridge_ms_hub_url;
+  delete payload.insert_pdf_url;
   delete payload.id;
   delete payload.created_at;
 
@@ -1312,9 +1416,9 @@ export async function updateQuestion(
     .update(payload)
     .eq('id', id)
     .select('*')
-    .single();
+    .maybeSingle();
 
-  // If column doesn't exist in schema cache (e.g. audio_metadata or audio_url not migrated yet)
+  // If column doesn't exist in schema cache (e.g. older DB missing migrations 005-017)
   if (
     error &&
     error.message &&
@@ -1326,8 +1430,6 @@ export async function updateQuestion(
       error.message.includes('paper_number') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
-      error.message.includes('cambridge_hub_url') ||
-      error.message.includes('cambridge_ms_hub_url') ||
       error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('svg_content') ||
@@ -1348,8 +1450,6 @@ export async function updateQuestion(
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
     if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
     if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
-    if (fallbackPayload.cambridge_hub_url) markScheme._cambridge_hub_url = fallbackPayload.cambridge_hub_url;
-    if (fallbackPayload.cambridge_ms_hub_url) markScheme._cambridge_ms_hub_url = fallbackPayload.cambridge_ms_hub_url;
     if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
@@ -1358,8 +1458,6 @@ export async function updateQuestion(
     delete fallbackPayload.svg_content;
     delete fallbackPayload.cognitive_level;
     delete fallbackPayload.source_pdf_url;
-    delete fallbackPayload.cambridge_hub_url;
-    delete fallbackPayload.cambridge_ms_hub_url;
     delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
@@ -1375,7 +1473,7 @@ export async function updateQuestion(
       .update(fallbackPayload)
       .eq('id', id)
       .select('*')
-      .single();
+      .maybeSingle();
 
     data = retryRes.data;
     error = retryRes.error;
@@ -1415,7 +1513,7 @@ export async function createQuestion(
         .from('syllabuses')
         .insert({ subject_name: 'General', subject_code: 'GEN' })
         .select('id')
-        .single();
+        .maybeSingle();
       if (newSyllabus) {
         validSyllabusId = newSyllabus.id;
       }
@@ -1423,30 +1521,38 @@ export async function createQuestion(
   }
 
   // 2. Build clean insert payload (strip temp / non-UUID IDs and created_at)
-  const baseMarkScheme =
+  let baseMarkScheme: any =
     typeof questionData.mark_scheme === 'object' && questionData.mark_scheme !== null
       ? { ...questionData.mark_scheme }
       : questionData.mark_scheme
         ? { marking_points: [String(questionData.mark_scheme)] }
         : null;
 
-  if ((questionData as any).ai_diagram_prompt && baseMarkScheme) {
-    (baseMarkScheme as any)._ai_diagram_prompt = (questionData as any).ai_diagram_prompt;
+  const ensureMarkScheme = () => {
+    if (!baseMarkScheme) baseMarkScheme = {};
+    return baseMarkScheme;
+  };
+
+  if ((questionData as any).ai_diagram_prompt) {
+    ensureMarkScheme()._ai_diagram_prompt = (questionData as any).ai_diagram_prompt;
   }
-  if (questionData.cognitive_level && baseMarkScheme) {
-    (baseMarkScheme as any)._cognitive_level = questionData.cognitive_level;
+  if (questionData.cognitive_level) {
+    ensureMarkScheme()._cognitive_level = questionData.cognitive_level;
   }
-  if (questionData.source_pdf_url && baseMarkScheme) {
-    (baseMarkScheme as any)._source_pdf_url = questionData.source_pdf_url;
+  if (questionData.source_pdf_url) {
+    ensureMarkScheme()._source_pdf_url = questionData.source_pdf_url;
   }
-  if (questionData.cambridge_hub_url && baseMarkScheme) {
-    (baseMarkScheme as any)._cambridge_hub_url = questionData.cambridge_hub_url;
+  if (questionData.cambridge_hub_url) {
+    ensureMarkScheme()._cambridge_hub_url = questionData.cambridge_hub_url;
   }
-  if (questionData.cambridge_ms_hub_url && baseMarkScheme) {
-    (baseMarkScheme as any)._cambridge_ms_hub_url = questionData.cambridge_ms_hub_url;
+  if (questionData.cambridge_ms_hub_url) {
+    ensureMarkScheme()._cambridge_ms_hub_url = questionData.cambridge_ms_hub_url;
   }
-  if (questionData.page_number !== undefined && questionData.page_number !== null && baseMarkScheme) {
-    (baseMarkScheme as any)._page_number = questionData.page_number;
+  if (questionData.insert_pdf_url) {
+    ensureMarkScheme()._insert_pdf_url = questionData.insert_pdf_url;
+  }
+  if (questionData.page_number !== undefined && questionData.page_number !== null) {
+    ensureMarkScheme()._page_number = questionData.page_number;
   }
 
   const payload: any = {
@@ -1465,8 +1571,6 @@ export async function createQuestion(
     difficulty: questionData.difficulty || 'Medium',
     cognitive_level: questionData.cognitive_level || null,
     source_pdf_url: questionData.source_pdf_url || null,
-    cambridge_hub_url: questionData.cambridge_hub_url || null,
-    cambridge_ms_hub_url: questionData.cambridge_ms_hub_url || null,
     page_number: questionData.page_number || null,
     marks: Number(questionData.marks) || 1,
     diagram_url:
@@ -1503,9 +1607,9 @@ export async function createQuestion(
     .from('questions')
     .insert([payload])
     .select('*')
-    .single();
+    .maybeSingle();
 
-  // If insert failed due to missing columns in DB schema, fallback to embedded mark_scheme
+  // If insert failed due to missing columns in legacy DB schema, fallback to embedded mark_scheme
   if (
     error &&
     error.message &&
@@ -1516,8 +1620,6 @@ export async function createQuestion(
       error.message.includes('resource_ref') ||
       error.message.includes('cognitive_level') ||
       error.message.includes('source_pdf_url') ||
-      error.message.includes('cambridge_hub_url') ||
-      error.message.includes('cambridge_ms_hub_url') ||
       error.message.includes('page_number') ||
       error.message.includes('ai_diagram_prompt') ||
       error.message.includes('insert_page_number'))
@@ -1536,8 +1638,6 @@ export async function createQuestion(
     if (fallbackPayload.ai_diagram_prompt) markScheme._ai_diagram_prompt = fallbackPayload.ai_diagram_prompt;
     if (fallbackPayload.cognitive_level) markScheme._cognitive_level = fallbackPayload.cognitive_level;
     if (fallbackPayload.source_pdf_url) markScheme._source_pdf_url = fallbackPayload.source_pdf_url;
-    if (fallbackPayload.cambridge_hub_url) markScheme._cambridge_hub_url = fallbackPayload.cambridge_hub_url;
-    if (fallbackPayload.cambridge_ms_hub_url) markScheme._cambridge_ms_hub_url = fallbackPayload.cambridge_ms_hub_url;
     if (fallbackPayload.page_number !== undefined) markScheme._page_number = fallbackPayload.page_number;
 
     delete fallbackPayload.audio_url;
@@ -1545,8 +1645,6 @@ export async function createQuestion(
     delete fallbackPayload.ai_diagram_prompt;
     delete fallbackPayload.cognitive_level;
     delete fallbackPayload.source_pdf_url;
-    delete fallbackPayload.cambridge_hub_url;
-    delete fallbackPayload.cambridge_ms_hub_url;
     delete fallbackPayload.page_number;
     if (error.message.includes('options')) delete fallbackPayload.options;
     if (error.message.includes('paper_number') || error.message.includes('invalid input syntax for type integer')) {
@@ -1561,7 +1659,7 @@ export async function createQuestion(
       .from('questions')
       .insert([fallbackPayload])
       .select('*')
-      .single();
+      .maybeSingle();
 
     data = retryResult.data;
     error = retryResult.error;
@@ -1821,13 +1919,13 @@ export async function batchAttachPastPaperPdf(
   // Cross-check: If PDF URL starts with a subject code (e.g. papers/0620_...), verify it matches target syllabus
   if (pdfUrl && pdfUrl.trim()) {
     const codeMatch = pdfUrl.match(/papers\/([A-Za-z0-9_-]+?)_\d{4}/);
-    if (codeMatch) {
+    if (codeMatch && UUID_REGEX.test(filter.syllabusId.trim())) {
       const pdfSubCode = codeMatch[1].toLowerCase();
       const { data: targetSyl } = await (supabase as any)
         .from('syllabuses')
         .select('subject_code, subject_name')
         .eq('id', filter.syllabusId.trim())
-        .single();
+        .maybeSingle();
 
       if (targetSyl?.subject_code && pdfSubCode !== targetSyl.subject_code.toLowerCase()) {
         throw new Error(
@@ -2003,15 +2101,7 @@ export async function batchAttachCambridgeHubUrl(
     return { success: !error, updatedCount: 0 };
   }
 
-  const ids = data.map((d: any) => d.id);
-
-  // 1. Try native column update if present (ignore schema error if column not migrated yet)
-  await (supabase as any)
-    .from('questions')
-    .update({ cambridge_hub_url: check.normalizedUrl })
-    .in('id', ids);
-
-  // 2. Keep mark_scheme JSONB in sync for maximum schema resilience
+  // Note: Cambridge Hub URLs are persisted inside questions.mark_scheme JSONB (_cambridge_hub_url)
   let successCount = 0;
   for (const row of data) {
     const ms =
@@ -2056,15 +2146,6 @@ export async function batchDetachCambridgeHubUrl(
     return { success: !error, updatedCount: 0 };
   }
 
-  const ids = data.map((d: any) => d.id);
-
-  // 1. Clear native column if present
-  await (supabase as any)
-    .from('questions')
-    .update({ cambridge_hub_url: null })
-    .in('id', ids);
-
-  // 2. Clear from mark_scheme JSONB
   let successCount = 0;
   for (const row of data) {
     if (typeof row.mark_scheme === 'object' && row.mark_scheme !== null && row.mark_scheme._cambridge_hub_url) {
@@ -2116,15 +2197,6 @@ export async function batchAttachCambridgeMsHubUrl(
     return { success: !error, updatedCount: 0 };
   }
 
-  const ids = data.map((d: any) => d.id);
-
-  // 1. Try native column update if present
-  await (supabase as any)
-    .from('questions')
-    .update({ cambridge_ms_hub_url: check.normalizedUrl })
-    .in('id', ids);
-
-  // 2. Keep mark_scheme JSONB in sync for maximum schema resilience
   let successCount = 0;
   for (const row of data) {
     const ms =
@@ -2169,15 +2241,6 @@ export async function batchDetachCambridgeMsHubUrl(
     return { success: !error, updatedCount: 0 };
   }
 
-  const ids = data.map((d: any) => d.id);
-
-  // 1. Clear native column if present
-  await (supabase as any)
-    .from('questions')
-    .update({ cambridge_ms_hub_url: null })
-    .in('id', ids);
-
-  // 2. Clear from mark_scheme JSONB
   let successCount = 0;
   for (const row of data) {
     if (typeof row.mark_scheme === 'object' && row.mark_scheme !== null && row.mark_scheme._cambridge_ms_hub_url) {
@@ -2239,13 +2302,15 @@ export async function batchDetachPastPaperPdf(
     return { success: !error, updatedCount: 0 };
   }
 
-  const ids = data.map((d: any) => d.id);
+  const ids = filterValidUuids(data.map((d: any) => d.id));
 
   // 1. Clear native column
-  await (supabase as any)
-    .from('questions')
-    .update({ source_pdf_url: null })
-    .in('id', ids);
+  if (ids.length > 0) {
+    await (supabase as any)
+      .from('questions')
+      .update({ source_pdf_url: null })
+      .in('id', ids);
+  }
 
   // 2. Clear from mark_scheme JSONB
   let successCount = 0;
@@ -2288,6 +2353,7 @@ export async function batchUpdateCognitiveLevels(
   let updatedCount = 0;
 
   for (const item of updates) {
+    if (!UUID_REGEX.test(item.id)) continue;
     const level = item.cognitiveLevel || item.cognitive_level || 'C2';
     const subQs = item.sub_questions || item.subQuestions;
 
@@ -2296,7 +2362,9 @@ export async function batchUpdateCognitiveLevels(
       .from('questions')
       .select('mark_scheme, sub_questions')
       .eq('id', item.id)
-      .single();
+      .maybeSingle();
+
+    if (!current) continue;
 
     const ms = typeof current?.mark_scheme === 'object' && current?.mark_scheme !== null
       ? { ...current.mark_scheme }

@@ -41,6 +41,47 @@ export interface RestoreProgressCallback {
   (status: string, percentage: number): void;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sanitizeQuestionForRestore(q: any): any {
+  const {
+    cambridge_hub_url,
+    cambridge_ms_hub_url,
+    insert_pdf_url,
+    ai_diagram_prompt,
+    svg_content,
+    diagram_type,
+    has_embedded_values,
+    data_tables,
+    scratchpad,
+    question_number_numeric,
+    mark_scheme,
+    ...rest
+  } = q || {};
+
+  const ms =
+    typeof mark_scheme === 'object' && mark_scheme !== null
+      ? { ...mark_scheme }
+      : mark_scheme !== undefined
+        ? { raw: mark_scheme }
+        : {};
+
+  if (cambridge_hub_url) (ms as any)._cambridge_hub_url = cambridge_hub_url;
+  if (cambridge_ms_hub_url) (ms as any)._cambridge_ms_hub_url = cambridge_ms_hub_url;
+  if (insert_pdf_url) (ms as any)._insert_pdf_url = insert_pdf_url;
+  if (ai_diagram_prompt) (ms as any)._ai_diagram_prompt = ai_diagram_prompt;
+  if (svg_content) (ms as any)._svg_content = svg_content;
+  if (diagram_type) (ms as any)._diagram_type = diagram_type;
+  if (has_embedded_values !== undefined) (ms as any)._has_embedded_values = has_embedded_values;
+  if (data_tables) (ms as any)._data_tables = data_tables;
+  if (scratchpad) (ms as any)._scratchpad = scratchpad;
+
+  return {
+    ...rest,
+    mark_scheme: ms,
+  };
+}
+
 function getStorageMimeType(fileName: string): string {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.webp')) return 'image/webp';
@@ -382,9 +423,11 @@ export async function executeRestore(
       if (Array.isArray(qList) && qList.length > 0) {
         const BATCH_SIZE = 100;
         for (let i = 0; i < qList.length; i += BATCH_SIZE) {
-          const batch = qList.slice(i, i + BATCH_SIZE).map((q) => {
-            return rewriteQuestionMediaUrls(q, mediaUrlMap, diagramMapping);
-          });
+          const batch = qList
+            .slice(i, i + BATCH_SIZE)
+            .filter((q) => !q?.id || UUID_REGEX.test(String(q.id)))
+            .map((q) => sanitizeQuestionForRestore(rewriteQuestionMediaUrls(q, mediaUrlMap, diagramMapping)));
+          if (batch.length === 0) continue;
 
           let { error } = await (supabase.from('questions') as any).upsert(batch, {
             onConflict: 'id',
@@ -398,7 +441,10 @@ export async function executeRestore(
               error.message.includes('resource_ref') ||
               error.message.includes('insert_page_number') ||
               error.message.includes('audio_url') ||
-              error.message.includes('audio_metadata'))
+              error.message.includes('audio_metadata') ||
+              error.message.includes('cognitive_level') ||
+              error.message.includes('source_pdf_url') ||
+              error.message.includes('page_number'))
           ) {
             console.warn(
               '[RestoreService] Extended columns missing in target database; falling back to core schema:',
@@ -411,6 +457,9 @@ export async function executeRestore(
                 insert_page_number,
                 audio_url,
                 audio_metadata,
+                cognitive_level,
+                source_pdf_url,
+                page_number,
                 mark_scheme,
                 ...rest
               }: any) => {
@@ -421,6 +470,9 @@ export async function executeRestore(
                 if (diagram_source) (ms as any)._diagram_source = diagram_source;
                 if (resource_ref) (ms as any)._resource_ref = resource_ref;
                 if (insert_page_number) (ms as any)._insert_page_number = insert_page_number;
+                if (cognitive_level) (ms as any)._cognitive_level = cognitive_level;
+                if (source_pdf_url) (ms as any)._source_pdf_url = source_pdf_url;
+                if (page_number !== undefined && page_number !== null) (ms as any)._page_number = page_number;
                 return {
                   ...rest,
                   mark_scheme: ms,
@@ -448,35 +500,73 @@ export async function executeRestore(
       }
     }
 
-    // ─── Step 4: Restore Custom Tests with Foreign Key Fallback ───────────
+    // ─── Step 4: Restore Custom Tests with Schema & Foreign Key Fallback ────
     onProgress?.('Restoring custom tests…', 86);
     const testsFile = zip.file('data/custom_tests.json');
     if (testsFile) {
       const tList = JSON.parse(await testsFile.async('string')) as CustomTest[];
       if (Array.isArray(tList) && tList.length > 0) {
-        let { error } = await (supabase.from('custom_tests') as any).upsert(tList, {
-          onConflict: 'id',
-        });
+        const sqlTests = tList
+          .filter((t: any) => UUID_REGEX.test(String(t?.id || '')))
+          .map((t: any) => {
+            const fullIds = Array.isArray(t.question_ids) ? t.question_ids : [];
+            return {
+              id: t.id,
+              user_id: t.user_id ?? null,
+              title: t.title || 'Custom Assessment',
+              total_marks: Number(t.total_marks) || 0,
+              question_ids: fullIds.filter((qid: string) => UUID_REGEX.test(String(qid || ''))),
+              ...(t.created_at ? { created_at: t.created_at } : {}),
+            };
+          });
 
-        // Foreign key fallback: if user_id does not exist in target project's auth.users
-        if (
-          error &&
-          (error.message.includes('user_id') ||
-            error.message.includes('foreign key') ||
-            error.message.includes('fkey') ||
-            error.message.includes('auth.users') ||
-            error.message.includes('users'))
-        ) {
-          console.warn('[RestoreService] Foreign key constraint on user_id failed, retrying with user_id: null fallback');
-          const sanitized = tList.map(({ user_id, ...rest }) => ({ ...rest, user_id: null }));
-          const retry = await (supabase.from('custom_tests') as any).upsert(sanitized, {
+        if (sqlTests.length > 0) {
+          let { error } = await (supabase.from('custom_tests') as any).upsert(sqlTests, {
             onConflict: 'id',
           });
-          error = retry.error;
+
+          // Foreign key fallback: if user_id does not exist in target project's auth.users
+          if (
+            error &&
+            (error.message.includes('user_id') ||
+              error.message.includes('foreign key') ||
+              error.message.includes('fkey') ||
+              error.message.includes('auth.users') ||
+              error.message.includes('users'))
+          ) {
+            console.warn('[RestoreService] Foreign key constraint on user_id failed, retrying with user_id: null fallback');
+            const sanitized = sqlTests.map(({ user_id: _uid, ...rest }) => ({ ...rest, user_id: null }));
+            const retry = await (supabase.from('custom_tests') as any).upsert(sanitized, {
+              onConflict: 'id',
+            });
+            error = retry.error;
+          }
+
+          if (error) errors.push(`Custom tests: ${error.message}`);
+          else customTestsRestored = sqlTests.length;
         }
 
-        if (error) errors.push(`Custom tests: ${error.message}`);
-        else customTestsRestored = tList.length;
+        // Preserve any embedded header_config or non-UUID question_ids in app_config
+        const headerRows = tList
+          .filter((t: any) => t?.id && (t.header_config || (Array.isArray(t.question_ids) && t.question_ids.some((qid: string) => !UUID_REGEX.test(String(qid || ''))))))
+          .map((t: any) => {
+            const fullIds = Array.isArray(t.question_ids) ? t.question_ids : [];
+            const payload = t.header_config ? { ...t.header_config } : { title: t.title || '', schoolName: '', subject: 'General', subjectCode: '', durationMinutes: 45, instructions: '' };
+            if (fullIds.some((qid: string) => !UUID_REGEX.test(String(qid || '')))) {
+              payload._savedQuestionIds = fullIds;
+            }
+            return {
+              key: `custom_test_header_${t.id}`,
+              value: JSON.stringify(payload),
+            };
+          });
+        if (headerRows.length > 0) {
+          try {
+            await (supabase.from('app_config') as any).upsert(headerRows, { onConflict: 'key' });
+          } catch {
+            // non-fatal header preservation failure
+          }
+        }
       }
     }
 

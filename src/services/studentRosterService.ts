@@ -114,7 +114,7 @@ export async function fetchPublicRosterDirectory(): Promise<PublicRosterStudent[
   try {
     // 1. Try Postgres RPC first (Direct, 0ms cold start, natively runs inside Supabase)
     const { data: rpcData, error: rpcError } = await (supabase as any).rpc('get_public_roster_directory');
-    if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+    if (!rpcError && Array.isArray(rpcData)) {
       return rpcData;
     }
 

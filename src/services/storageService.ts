@@ -54,6 +54,20 @@ export function isR2StorageEnabled(): boolean {
   return Boolean(getR2MediaEndpoint());
 }
 
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 12000
+): Promise<Response> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    return await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Uploads a file blob to Cloudflare R2 via Worker proxy.
  */
@@ -68,14 +82,14 @@ async function uploadToR2Proxy(
   const url = `${endpoint}/${pathKey}`;
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${secret}`,
         'Content-Type': blob.type || 'application/octet-stream',
       },
       body: blob,
-    });
+    }, 15000);
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
@@ -230,20 +244,20 @@ export async function testR2Connection(): Promise<{ ok: boolean; latencyMs: numb
     const testKey = `diagrams/__ping_test_${Date.now()}.txt`;
     const testBlob = new Blob(['ping'], { type: 'text/plain' });
 
-    const uploadRes = await fetch(`${endpoint}/${testKey}`, {
+    const uploadRes = await fetchWithTimeout(`${endpoint}/${testKey}`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${secret}`,
         'Content-Type': 'text/plain',
       },
       body: testBlob,
-    });
+    }, 8000);
 
     if (!uploadRes.ok) {
       return { ok: false, latencyMs: Math.round(performance.now() - start), error: `Upload HTTP ${uploadRes.status}` };
     }
 
-    const readRes = await fetch(`${endpoint}/${testKey}`);
+    const readRes = await fetchWithTimeout(`${endpoint}/${testKey}`, {}, 8000);
     const latencyMs = Math.round(performance.now() - start);
 
     if (!readRes.ok) {
