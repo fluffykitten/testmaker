@@ -7,6 +7,7 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
 import type { GradeThresholds } from '../utils/gradeThresholdUtils';
 import { getSavedSettings } from '../lib/settings';
+import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
 
 export interface ExamAttachment {
   id: string;
@@ -120,7 +121,7 @@ const DELETED_QUIZZES_KEY = 'fluffykitten_deleted_quiz_ids';
  */
 export function getDeletedQuizIds(): Set<string> {
   try {
-    const raw = localStorage.getItem(DELETED_QUIZZES_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(DELETED_QUIZZES_KEY) : null;
     const parsed = raw ? JSON.parse(raw) : [];
     return new Set(Array.isArray(parsed) ? parsed : []);
   } catch {
@@ -182,7 +183,7 @@ export async function syncDeletedQuizIdsToCloud(deletedIds: string[]): Promise<b
 
 export function getPublishedQuizzes(): PublishedQuiz[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
     const list: PublishedQuiz[] = raw ? JSON.parse(raw) : [];
     const deletedIds = getDeletedQuizIds();
     const activeOnly = list.filter((q) => {
@@ -190,10 +191,19 @@ export function getPublishedQuizzes(): PublishedQuiz[] {
       const qId = String(q.id || '').trim();
       return !deletedIds.has(qId);
     });
+
+    // Auto-seed pilot exam ICM170 if not deleted and not already in list
+    if (
+      !deletedIds.has(PILOT_EXAM_ID) &&
+      !activeOnly.some((q) => q.id === PILOT_EXAM_ID || q.quizCode === PILOT_QUIZ_CODE)
+    ) {
+      activeOnly.unshift(PILOT_EXAM_170_PUBLISHED_QUIZ);
+    }
+
     return deduplicateQuizzes(activeOnly);
   } catch (err) {
     console.error('Failed to load published quizzes from localStorage:', err);
-    return [];
+    return [PILOT_EXAM_170_PUBLISHED_QUIZ];
   }
 }
 

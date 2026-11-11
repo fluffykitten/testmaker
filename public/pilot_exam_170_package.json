@@ -1,0 +1,48 @@
+{
+  "version": "2.4.2",
+  "exportedAt": "2026-11-11T18:50:00.000Z",
+  "quizCode": "ICM170",
+  "publishedQuiz": {
+    "id": "pilot-exam-170",
+    "testId": "pilot-exam-170",
+    "title": "ICM Cambridge Exam System Pilot (170-Student Drill)",
+    "quizCode": "ICM170",
+    "subject": "Cambridge Multi-Discipline Pilot",
+    "totalMarks": 26,
+    "questionCount": 10,
+    "questionIds": [
+      "pilot-q1-chem",
+      "pilot-q2-phys",
+      "pilot-q3-eng",
+      "pilot-q4-bio",
+      "pilot-q5-geog",
+      "pilot-q6-econ",
+      "pilot-q7-multi",
+      "pilot-q8-cloze",
+      "pilot-q9-arab",
+      "pilot-q10-indo"
+    ],
+    "durationMinutes": 20,
+    "isExamMode": true,
+    "securityEnabled": true,
+    "requireTeacherUnlock": true,
+    "teacherPin": "2026",
+    "allowCalculator": true,
+    "calculatorType": "scientific",
+    "allowPeriodicTable": true,
+    "allowScratchpad": true,
+    "allowFormulaSheet": true,
+    "requireStudentPin": false,
+    "limitOneAttempt": true,
+    "hideEmergencyExamButton": false,
+    "headerConfig": {
+      "title": "ICM Cambridge Exam System Pilot (170-Student Drill)",
+      "schoolName": "Insan Cendekia Madani",
+      "subject": "Cambridge Multi-Discipline Orientation",
+      "subjectCode": "0001",
+      "durationMinutes": 20,
+      "instructions": "Answer all 10 questions. Test each on-screen tool: Periodic Table (Q1), Scientific Calculator (Q2), Audio Player (Q3), Leaf Anatomy Diagram (Q4), Resource Booklet (Q5), Data Table (Q6), Multi-Select (Q7), Inline Cloze (Q8), Arabic RTL (Q9), and Bahasa Indonesia (Q10). Do not press Esc, Alt+Tab, or F11 during the examination.",
+      "teacherPin": "2026"
+    }
+  }
+}

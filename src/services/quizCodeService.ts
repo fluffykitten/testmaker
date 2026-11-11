@@ -7,6 +7,7 @@ import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankS
 import { hashTeacherPin, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
 import { type SecurityViolationTier } from '../lib/securityTiers';
 import { loadAndSyncSecurityTiers } from '../lib/settings';
+import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
 
 export interface StudentQuizData {
   publishedId?: string;
@@ -149,6 +150,19 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
       }
     } catch (err) {
       console.warn('Cloud published quiz lookup error:', err);
+    }
+  }
+
+  // 3. Fallback to Pre-configured 170-Student Pilot Drill (ICM170)
+  if (!published && (cleanInput === PILOT_QUIZ_CODE || cleanInput === PILOT_EXAM_ID.toUpperCase())) {
+    published = PILOT_EXAM_170_PUBLISHED_QUIZ;
+    try {
+      const localList = getPublishedQuizzes();
+      if (!localList.some((q) => q.id === published!.id) && typeof localStorage !== 'undefined') {
+        localStorage.setItem('fluffykitten_published_quizzes', JSON.stringify([published, ...localList]));
+      }
+    } catch {
+      // ignore
     }
   }
 
