@@ -149,6 +149,22 @@ export function markOutboxSynced(submissionId: string): void {
 }
 
 /**
+ * Permanently removes a submission (or array of submissions) from the outbox
+ * so it will never be retried or synced to the cloud.
+ */
+export function pruneSubmissionFromOutbox(submissionIdOrIds: string | string[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const targetSet = new Set(Array.isArray(submissionIdOrIds) ? submissionIdOrIds : [submissionIdOrIds]);
+    const outbox = getSubmissionOutbox();
+    const filtered = outbox.filter((item) => !targetSet.has(item.submission.id));
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(pruneOutbox(filtered)));
+  } catch (err) {
+    console.warn('Could not prune submission from outbox:', err);
+  }
+}
+
+/**
  * Creates a tamper-evident AES-256-GCM encrypted `.exam` emergency file package.
  */
 export async function createEncryptedEmergencyFileContent(
@@ -610,15 +626,22 @@ export async function importSubmissionToken(
 
 /**
  * Flushes all pending outbox submissions to Supabase cloud.
+ * Automatically discards any items that have been tombstoned/deleted to prevent resurrection.
  */
 export async function flushSubmissionOutbox(): Promise<{ syncedCount: number; failedCount: number }> {
   const pending = getPendingOutboxSubmissions();
   if (pending.length === 0) return { syncedCount: 0, failedCount: 0 };
 
+  const deletedIds = getDeletedSubmissionIds();
   let syncedCount = 0;
   let failedCount = 0;
 
   for (const item of pending) {
+    if (deletedIds.has(item.submission.id)) {
+      // Discard tombstoned submission from outbox permanently without uploading
+      pruneSubmissionFromOutbox(item.submission.id);
+      continue;
+    }
     try {
       const success = await saveQuizSubmissionCloud(item.submission);
       if (success) {
@@ -849,23 +872,151 @@ export interface StudentSubmission {
 
 const SUBMISSIONS_STORAGE_KEY = 'fluffykitten_quiz_submissions';
 const DEVICE_RECEIPTS_KEY = 'fluffykitten_device_exam_receipts';
+const DELETED_SUBMISSIONS_KEY = 'fluffykitten_deleted_submission_ids';
+const CLOUD_TOMBSTONE_CONFIG_KEY = 'deleted_submission_ids';
+const MAX_TOMBSTONES = 1000;
 
 // In-memory cache for high-frequency operations (e.g. badge counters, dashboard stats)
 let submissionsMemoryCache: StudentSubmission[] | null = null;
 
 /**
+ * Returns the set of all submission IDs that have been explicitly deleted.
+ */
+export function getDeletedSubmissionIds(): Set<string> {
+  try {
+    if (typeof localStorage === 'undefined') return new Set();
+    const raw = localStorage.getItem(DELETED_SUBMISSIONS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Permanently records one or more deleted submission IDs into the tombstone registry.
+ * Automatically synchronizes with Supabase cloud app_config store.
+ */
+export function recordDeletedSubmissionIds(ids: string | string[]): void {
+  try {
+    const current = getDeletedSubmissionIds();
+    const toAdd = Array.isArray(ids) ? ids : [ids];
+    toAdd.forEach((id) => {
+      if (id && typeof id === 'string') current.add(id.trim());
+    });
+    const arr = Array.from(current);
+    // Keep most recent 1000 IDs (FIFO) to prevent unbounded storage growth while retaining robust defense
+    const trimmed = arr.length > MAX_TOMBSTONES ? arr.slice(arr.length - MAX_TOMBSTONES) : arr;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DELETED_SUBMISSIONS_KEY, JSON.stringify(trimmed));
+    }
+    // Asynchronously push tombstones to cloud
+    syncDeletedSubmissionIdsToCloud(trimmed).catch(() => {});
+  } catch (err) {
+    console.warn('Failed to record deleted submission tombstone:', err);
+  }
+}
+
+/**
+ * Checks whether a given submission ID is tombstoned/deleted.
+ */
+export function isSubmissionDeleted(id?: string): boolean {
+  if (!id) return false;
+  return getDeletedSubmissionIds().has(id.trim());
+}
+
+/**
+ * Fetches deleted submission IDs from Supabase cloud app_config.
+ */
+export async function fetchDeletedSubmissionIdsFromCloud(): Promise<string[]> {
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', CLOUD_TOMBSTONE_CONFIG_KEY)
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value) {
+      const parsed = JSON.parse(data.value);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('Could not fetch deleted submission ids from Supabase cloud:', err);
+  }
+  return [];
+}
+
+/**
+ * Pushes deleted submission IDs to Supabase cloud app_config.
+ */
+export async function syncDeletedSubmissionIdsToCloud(deletedIds: string[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any)
+      .upsert({
+        key: CLOUD_TOMBSTONE_CONFIG_KEY,
+        value: JSON.stringify(deletedIds),
+      });
+    if (error) {
+      console.warn('Supabase cloud sync deleted submission ids notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync deleted submission ids error:', err);
+    return false;
+  }
+}
+
+/**
+ * Two-way synchronizes deleted submission tombstones with Supabase Cloud.
+ * Returns the consolidated set of tombstoned IDs.
+ */
+export async function syncDeletedSubmissionIdsWithCloud(): Promise<Set<string>> {
+  const localDeleted = getDeletedSubmissionIds();
+  try {
+    const cloudDeleted = await fetchDeletedSubmissionIdsFromCloud();
+    let hasNewCloudDeleted = false;
+    cloudDeleted.forEach((id) => {
+      if (id && !localDeleted.has(id)) {
+        localDeleted.add(id);
+        hasNewCloudDeleted = true;
+      }
+    });
+    if (hasNewCloudDeleted && typeof localStorage !== 'undefined') {
+      const arr = Array.from(localDeleted);
+      const trimmed = arr.length > MAX_TOMBSTONES ? arr.slice(arr.length - MAX_TOMBSTONES) : arr;
+      localStorage.setItem(DELETED_SUBMISSIONS_KEY, JSON.stringify(trimmed));
+    }
+    if (cloudDeleted.length < localDeleted.size) {
+      const arr = Array.from(localDeleted);
+      const trimmed = arr.length > MAX_TOMBSTONES ? arr.slice(arr.length - MAX_TOMBSTONES) : arr;
+      await syncDeletedSubmissionIdsToCloud(trimmed);
+    }
+  } catch (err) {
+    console.warn('Error synchronizing deleted submission tombstones with cloud:', err);
+  }
+  return localDeleted;
+}
+
+/**
  * Safely persists submissions to localStorage with multi-stage quota recovery.
  * Prevents browser crashes and unhandled QuotaExceededError when storing hundreds of student attempts.
+ * Automatically filters out any tombstoned/deleted records before writing to disk.
  */
 export function safeSaveSubmissionsToLocalStorage(submissions: StudentSubmission[]): void {
+  // Always filter out tombstoned submissions before saving
+  const deletedIds = getDeletedSubmissionIds();
+  const cleanSubmissions = deletedIds.size > 0
+    ? submissions.filter((s) => !deletedIds.has(s.id))
+    : submissions;
+
   // Always update in-memory cache first so current app session has immediate, full fidelity
-  submissionsMemoryCache = submissions;
+  submissionsMemoryCache = cleanSubmissions;
   try {
-    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(submissions));
+    localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(cleanSubmissions));
   } catch (err: any) {
     console.warn('LocalStorage quota exceeded while saving submissions, attempting progressive pruning:', err);
     // Stage 1: Sort by most recent submission time first
-    const sorted = [...submissions].sort(
+    const sorted = [...cleanSubmissions].sort(
       (a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime()
     );
     // Try saving recent 100
@@ -901,12 +1052,26 @@ export function safeSaveSubmissionsToLocalStorage(submissions: StudentSubmission
 }
 
 export function getAllSubmissions(): StudentSubmission[] {
+  const deletedIds = getDeletedSubmissionIds();
   if (submissionsMemoryCache !== null) {
-    return submissionsMemoryCache;
+    return deletedIds.size > 0
+      ? submissionsMemoryCache.filter((s) => !deletedIds.has(s.id))
+      : submissionsMemoryCache;
   }
   try {
     const raw = localStorage.getItem(SUBMISSIONS_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
+    const parsed: StudentSubmission[] = raw ? JSON.parse(raw) : [];
+    if (deletedIds.size > 0) {
+      const activeOnly = parsed.filter((s) => !deletedIds.has(s.id));
+      if (activeOnly.length < parsed.length) {
+        // Auto-prune tombstoned records from localStorage
+        try {
+          localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(activeOnly));
+        } catch {}
+      }
+      submissionsMemoryCache = activeOnly;
+      return activeOnly;
+    }
     submissionsMemoryCache = parsed;
     return parsed;
   } catch (err) {
@@ -944,6 +1109,10 @@ export function getSubmissionsForQuiz(quizId: string, quizCode?: string, _testId
 }
 
 export function saveQuizSubmission(submission: StudentSubmission): void {
+  if (isSubmissionDeleted(submission.id)) {
+    console.warn('Attempted to save tombstoned submission, ignoring:', submission.id);
+    return;
+  }
   try {
     const existing = getAllSubmissions();
     const filtered = existing.filter((s) => s.id !== submission.id);
@@ -1004,6 +1173,11 @@ export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[
  * Saves or updates submission both locally and asynchronously in Supabase cloud (dual-tier table + app_config).
  */
 export async function saveQuizSubmissionCloud(submission: StudentSubmission): Promise<boolean> {
+  if (isSubmissionDeleted(submission.id)) {
+    console.warn('Attempted to push tombstoned submission to cloud, aborting:', submission.id);
+    return false;
+  }
+
   // 1. Always save to local storage immediately
   saveQuizSubmission(submission);
   saveToSubmissionOutbox(submission, 'pending');
@@ -1081,6 +1255,11 @@ export async function saveQuizSubmissionWithVerification(
   maxRetries: number = 3,
   onAttempt?: (attempt: number, total: number) => void
 ): Promise<{ success: boolean; attempts: number; error?: string }> {
+  if (isSubmissionDeleted(submission.id)) {
+    console.warn('Attempted to save and verify tombstoned submission, aborting:', submission.id);
+    return { success: false, attempts: 0, error: 'Submission deleted' };
+  }
+
   // Always save locally immediately
   saveQuizSubmission(submission);
   saveToSubmissionOutbox(submission, 'pending');
@@ -1115,14 +1294,18 @@ export async function saveQuizSubmissionWithVerification(
  * Saves a batch of submissions both locally and asynchronously in Supabase cloud (dual-tier table + app_config).
  */
 export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmission[]): Promise<boolean> {
-  if (submissions.length === 0) return true;
+  const deletedIds = getDeletedSubmissionIds();
+  const validSubmissions = deletedIds.size > 0
+    ? submissions.filter((s) => !deletedIds.has(s.id))
+    : submissions;
+  if (validSubmissions.length === 0) return true;
 
   // 1. Save all to local storage immediately
   try {
     const existing = getAllSubmissions();
-    const subIds = new Set(submissions.map((s) => s.id));
+    const subIds = new Set(validSubmissions.map((s) => s.id));
     const filtered = existing.filter((s) => !subIds.has(s.id));
-    const updated = [...submissions, ...filtered];
+    const updated = [...validSubmissions, ...filtered];
     safeSaveSubmissionsToLocalStorage(updated);
     window.dispatchEvent(new Event('submissions_updated'));
   } catch (err) {
@@ -1133,7 +1316,7 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
 
   // 2. Batch upsert to Supabase dedicated table
   try {
-    const rows = submissions.map((submission) => ({
+    const rows = validSubmissions.map((submission) => ({
       id: submission.id,
       quiz_id: submission.quizId,
       quiz_code: submission.quizCode.toUpperCase(),
@@ -1193,42 +1376,72 @@ export async function updateSubmission(submission: StudentSubmission): Promise<b
 }
 
 export async function deleteSubmission(id: string): Promise<void> {
+  if (!id) return;
+  const cleanId = id.trim();
+
+  // 1. Immediately record in persistent tombstone registry (local + cloud)
+  recordDeletedSubmissionIds(cleanId);
+
+  // 2. Remove from local storage & memory cache
   try {
     const existing = getAllSubmissions();
-    const updated = existing.filter((s) => s.id !== id);
+    const updated = existing.filter((s) => s.id !== cleanId);
     safeSaveSubmissionsToLocalStorage(updated);
   } catch (err) {
     console.error('Failed to delete submission from localStorage:', err);
   }
 
+  // 3. Remove from offline submission outbox to prevent background outbox re-sync
+  pruneSubmissionFromOutbox(cleanId);
+
+  // 4. Delete from Supabase dedicated table
   try {
     const { error } = await (supabase.from('quiz_submissions' as any) as any)
       .delete()
-      .eq('id', id);
+      .eq('id', cleanId);
     if (error) console.warn('Could not delete from table:', error.message);
   } catch (err) {
     console.warn('Cloud delete error:', err);
   }
 
+  // 5. Delete from app_config backup store
   try {
     const appConfigSubs = await fetchSubmissionsFromAppConfig();
-    const updatedAppConfig = appConfigSubs.filter((s) => s.id !== id);
+    const updatedAppConfig = appConfigSubs.filter((s) => s.id !== cleanId);
     await syncSubmissionsToAppConfig(updatedAppConfig);
   } catch {}
+
+  // 6. Asynchronously sync tombstones with cloud
+  syncDeletedSubmissionIdsWithCloud().catch(() => {});
 
   window.dispatchEvent(new Event('submissions_updated'));
 }
 
 export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string): Promise<void> {
   const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
+
+  // 1. Collect all matching submission IDs to tombstone
+  const allSubmissions = getAllSubmissions();
+  const matchingIds: string[] = allSubmissions
+    .filter((s) => s.quizId === quizId || (cleanCode && (s.quizCode || '').toUpperCase() === cleanCode))
+    .map((s) => s.id);
+
+  if (matchingIds.length > 0) {
+    recordDeletedSubmissionIds(matchingIds);
+    pruneSubmissionFromOutbox(matchingIds);
+  }
+
+  // 2. Remove from local storage
   try {
-    const existing = getAllSubmissions();
-    const updated = existing.filter((s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode));
+    const updated = allSubmissions.filter(
+      (s) => s.quizId !== quizId && (!cleanCode || (s.quizCode || '').toUpperCase() !== cleanCode)
+    );
     safeSaveSubmissionsToLocalStorage(updated);
   } catch (err) {
     console.error('Failed to clear submissions from localStorage:', err);
   }
 
+  // 3. Delete from Supabase dedicated table
   try {
     let q = (supabase.from('quiz_submissions' as any) as any).delete();
     if (cleanCode) {
@@ -1242,21 +1455,27 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
     console.warn('Cloud clear error:', err);
   }
 
+  // 4. Delete from app_config backup store
   try {
     const appConfigSubs = await fetchSubmissionsFromAppConfig();
     const updatedAppConfig = appConfigSubs.filter(
-      (s) => s.quizId !== quizId && (!cleanCode || s.quizCode.toUpperCase() !== cleanCode)
+      (s) => s.quizId !== quizId && (!cleanCode || (s.quizCode || '').toUpperCase() !== cleanCode)
     );
     await syncSubmissionsToAppConfig(updatedAppConfig);
   } catch {}
+
+  // 5. Asynchronously sync tombstones with cloud
+  syncDeletedSubmissionIdsWithCloud().catch(() => {});
 
   window.dispatchEvent(new Event('submissions_updated'));
 }
 
 /**
- * Fetches all student submissions across all quizzes from Supabase cloud (table or app_config).
+ * Fetches all student submissions across all quizzes from Supabase cloud (table or app_config),
+ * strictly filtering out any tombstoned/deleted records.
  */
 export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmission[]> {
+  const deletedIds = getDeletedSubmissionIds();
   try {
     // 1. Try dedicated table first
     const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
@@ -1264,63 +1483,79 @@ export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmissi
       .order('submitted_at', { ascending: false });
 
     if (!error && Array.isArray(data) && data.length > 0) {
-      return data.map((row: any) => {
-        const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
-        const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
-        delete (rawAnswers as any)._forensics;
+      return data
+        .filter((row: any) => !deletedIds.has(row.id))
+        .map((row: any) => {
+          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+          delete (rawAnswers as any)._forensics;
 
-        return {
-          id: row.id,
-          quizId: row.quiz_id,
-          quizCode: row.quiz_code,
-          quizTitle: row.quiz_title,
-          subject: row.subject,
-          studentName: row.student_name,
-          studentClass: row.student_class,
-          candidateNumber: row.candidate_number,
-          submittedAt: row.submitted_at,
-          durationSeconds: row.duration_seconds,
-          score: Number(row.score) || 0,
-          totalMarks: Number(row.total_marks) || 0,
-          percentage: Number(row.percentage) || 0,
-          violationsCount: Number(row.violations_count) || 0,
-          proctoringLogs: row.proctoring_logs || [],
-          rawAnswers,
-          questionResults: row.question_results || [],
-          topicBreakdown: row.topic_breakdown || {},
-          status: (row.status as SubmissionStatus) || 'submitted',
-          teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-          teacherNotes: row.teacher_notes || '',
-          resultPin: row.result_pin || '',
-          updatedAt: row.updated_at || row.submitted_at,
-          forensics,
-        };
-      });
+          return {
+            id: row.id,
+            quizId: row.quiz_id,
+            quizCode: row.quiz_code,
+            quizTitle: row.quiz_title,
+            subject: row.subject,
+            studentName: row.student_name,
+            studentClass: row.student_class,
+            candidateNumber: row.candidate_number,
+            submittedAt: row.submitted_at,
+            durationSeconds: row.duration_seconds,
+            score: Number(row.score) || 0,
+            totalMarks: Number(row.total_marks) || 0,
+            percentage: Number(row.percentage) || 0,
+            violationsCount: Number(row.violations_count) || 0,
+            proctoringLogs: row.proctoring_logs || [],
+            rawAnswers,
+            questionResults: row.question_results || [],
+            topicBreakdown: row.topic_breakdown || {},
+            status: (row.status as SubmissionStatus) || 'submitted',
+            teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+            teacherNotes: row.teacher_notes || '',
+            resultPin: row.result_pin || '',
+            updatedAt: row.updated_at || row.submitted_at,
+            forensics,
+          };
+        });
     }
   } catch (err) {
     console.warn('Could not fetch from quiz_submissions table, trying app_config:', err);
   }
 
   // 2. Fallback to app_config
-  return await fetchSubmissionsFromAppConfig();
+  const appConfigSubs = await fetchSubmissionsFromAppConfig();
+  return appConfigSubs.filter((s) => !deletedIds.has(s.id));
 }
 
 /**
  * Loads all submissions from local storage, merges with Supabase Cloud,
  * syncs any local-only submissions back to the cloud, and updates localStorage.
+ * Strictly respects persistent tombstones to prevent resurrecting deleted submissions.
  */
 export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> {
-  const localList = getAllSubmissions();
+  // 1. Sync tombstones first so this device is immediately aware of deletions made on other devices
+  const deletedIds = await syncDeletedSubmissionIdsWithCloud();
+  const localList = getAllSubmissions().filter((s) => !deletedIds.has(s.id));
 
   try {
-    const cloudList = await fetchAllSubmissionsFromSupabase();
+    const rawCloudList = await fetchAllSubmissionsFromSupabase();
+    // Filter out any tombstoned submissions from cloud list
+    const cloudList = rawCloudList.filter((s) => !deletedIds.has(s.id));
+
+    // If any cloud row was tombstoned, trigger background delete to clean Supabase database
+    const tombstonedInCloud = rawCloudList.filter((s) => deletedIds.has(s.id));
+    if (tombstonedInCloud.length > 0) {
+      tombstonedInCloud.forEach((s) => {
+        (supabase.from('quiz_submissions' as any) as any).delete().eq('id', s.id).catch(() => {});
+      });
+    }
 
     const mergedMap = new Map<string, StudentSubmission>();
 
     // 1. Cloud submissions
     cloudList.forEach((s) => mergedMap.set(s.id, s));
 
-    // 2. Local submissions - preserve newer/exclusive
+    // 2. Local submissions - preserve newer/exclusive (strictly non-deleted)
     let hasLocalExclusiveOrNewer = false;
     localList.forEach((localS) => {
       const existing = mergedMap.get(localS.id);
@@ -1349,7 +1584,7 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
       }
     });
 
-    const merged = Array.from(mergedMap.values());
+    const merged = Array.from(mergedMap.values()).filter((s) => !deletedIds.has(s.id));
 
     // 3. Update localStorage safely
     safeSaveSubmissionsToLocalStorage(merged);
@@ -1370,6 +1605,7 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
 /**
  * Fetches all student submissions for a specific quiz from Supabase (with table + app_config fallback),
  * merging with local storage. Supports resilient matching across published ID, Quiz Code, and underlying Test UUID.
+ * Strictly filters through persistent tombstones to ensure deleted submissions never reappear.
  */
 export async function fetchSubmissionsFromSupabase(
   quizId: string,
@@ -1378,6 +1614,7 @@ export async function fetchSubmissionsFromSupabase(
 ): Promise<StudentSubmission[]> {
   const cleanCode = quizCode ? quizCode.toUpperCase() : undefined;
   const cleanTestId = testId ? testId.toUpperCase() : undefined;
+  const deletedIds = getDeletedSubmissionIds();
 
   try {
     let query = (supabase.from('quiz_submissions' as any) as any)
@@ -1399,50 +1636,53 @@ export async function fetchSubmissionsFromSupabase(
 
     const { data, error } = await query;
     if (!error && Array.isArray(data) && data.length > 0) {
-      const cloudSubs: StudentSubmission[] = data.map((row: any) => {
-        const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
-        const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
-        delete (rawAnswers as any)._forensics;
+      const cloudSubs: StudentSubmission[] = data
+        .filter((row: any) => !deletedIds.has(row.id)) // Filter out tombstoned rows
+        .map((row: any) => {
+          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+          delete (rawAnswers as any)._forensics;
 
-        return {
-          id: row.id,
-          quizId: row.quiz_id,
-          quizCode: row.quiz_code,
-          quizTitle: row.quiz_title,
-          subject: row.subject,
-          studentName: row.student_name,
-          studentClass: row.student_class,
-          candidateNumber: row.candidate_number,
-          submittedAt: row.submitted_at,
-          durationSeconds: row.duration_seconds,
-          score: Number(row.score) || 0,
-          totalMarks: Number(row.total_marks) || 0,
-          percentage: Number(row.percentage) || 0,
-          violationsCount: Number(row.violations_count) || 0,
-          proctoringLogs: row.proctoring_logs || [],
-          rawAnswers,
-          questionResults: row.question_results || [],
-          topicBreakdown: row.topic_breakdown || {},
-          status: (row.status as SubmissionStatus) || 'submitted',
-          teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
-          teacherNotes: row.teacher_notes || '',
-          resultPin: row.result_pin || '',
-          updatedAt: row.updated_at || row.submitted_at,
-          forensics,
-        };
-      });
+          return {
+            id: row.id,
+            quizId: row.quiz_id,
+            quizCode: row.quiz_code,
+            quizTitle: row.quiz_title,
+            subject: row.subject,
+            studentName: row.student_name,
+            studentClass: row.student_class,
+            candidateNumber: row.candidate_number,
+            submittedAt: row.submitted_at,
+            durationSeconds: row.duration_seconds,
+            score: Number(row.score) || 0,
+            totalMarks: Number(row.total_marks) || 0,
+            percentage: Number(row.percentage) || 0,
+            violationsCount: Number(row.violations_count) || 0,
+            proctoringLogs: row.proctoring_logs || [],
+            rawAnswers,
+            questionResults: row.question_results || [],
+            topicBreakdown: row.topic_breakdown || {},
+            status: (row.status as SubmissionStatus) || 'submitted',
+            teacherAdjustedMarks: Number(row.teacher_adjusted_marks) || 0,
+            teacherNotes: row.teacher_notes || '',
+            resultPin: row.result_pin || '',
+            updatedAt: row.updated_at || row.submitted_at,
+            forensics,
+          };
+        });
 
-      // Merge with local storage
-      const local = getSubmissionsForQuiz(quizId, quizCode, testId);
+      // Merge with local storage (strictly filtering tombstoned items)
+      const local = getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
       const map = new Map<string, StudentSubmission>();
       cloudSubs.forEach((s) => map.set(s.id, s));
       local.forEach((s) => {
         if (!map.has(s.id)) map.set(s.id, s);
       });
 
-      const merged = Array.from(map.values());
+      const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
       try {
         const allLocal = getAllSubmissions().filter((s) => {
+          if (deletedIds.has(s.id)) return false;
           const sQuizId = (s.quizId || '').toUpperCase();
           const sCode = (s.quizCode || '').toUpperCase();
           const matchPubId = s.quizId === quizId;
@@ -1463,6 +1703,7 @@ export async function fetchSubmissionsFromSupabase(
   try {
     const appConfigSubs = await fetchSubmissionsFromAppConfig();
     const matching = appConfigSubs.filter((s) => {
+      if (deletedIds.has(s.id)) return false; // Filter out tombstoned rows
       const sQuizId = (s.quizId || '').toUpperCase();
       const sCode = (s.quizCode || '').toUpperCase();
       return (
@@ -1473,15 +1714,16 @@ export async function fetchSubmissionsFromSupabase(
     });
 
     if (matching.length > 0) {
-      const local = getSubmissionsForQuiz(quizId, quizCode, testId);
+      const local = getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
       const map = new Map<string, StudentSubmission>();
       matching.forEach((s) => map.set(s.id, s));
       local.forEach((s) => {
         if (!map.has(s.id)) map.set(s.id, s);
       });
-      const merged = Array.from(map.values());
+      const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
       try {
         const allLocal = getAllSubmissions().filter((s) => {
+          if (deletedIds.has(s.id)) return false;
           const sQuizId = (s.quizId || '').toUpperCase();
           const sCode = (s.quizCode || '').toUpperCase();
           const matchPubId = s.quizId === quizId;
@@ -1497,7 +1739,7 @@ export async function fetchSubmissionsFromSupabase(
     console.warn('Could not fetch cloud submissions from app_config:', err);
   }
 
-  return getSubmissionsForQuiz(quizId, quizCode, testId);
+  return getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
 }
 
 /**
