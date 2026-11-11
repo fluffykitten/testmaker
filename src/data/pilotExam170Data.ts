@@ -607,7 +607,7 @@ export const PILOT_EXAM_170_PUBLISHED_QUIZ: PublishedQuiz = {
   isExamMode: true,
   securityEnabled: true,
   enableWatermark: false,
-  enableMultiMonitorDetection: true,
+  enableMultiMonitorDetection: false,
   hideEmergencyExamButton: false,
   requireTeacherUnlock: true,
   teacherPin: PILOT_TEACHER_PIN,

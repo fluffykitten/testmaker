@@ -4,3 +4,4 @@ $voices = $speak.GetInstalledVoices()
 foreach ($v in $voices) {
     Write-Output $v.VoiceInfo.Name
 }
+

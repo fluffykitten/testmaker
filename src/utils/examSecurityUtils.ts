@@ -56,20 +56,32 @@ export async function detectMultiMonitor(): Promise<MultiMonitorCheckResult> {
     console.debug('[Security] isExtended check note:', err);
   }
 
-  // 2. Screen Details API via getScreenDetails (if granted or supported)
+  // 2. Screen Details API via getScreenDetails — ONLY if permission is already granted!
+  // Calling getScreenDetails() while permission is 'prompt' triggers Chromium's
+  // "wants to manage your windows" permission popup, which forcibly exits fullscreen.
   try {
     const win = window as any;
-    if (typeof win.getScreenDetails === 'function') {
-      const details = await win.getScreenDetails();
-      if (details && details.screens && details.screens.length > 1) {
-        return {
-          isMultiMonitor: true,
-          reason: `Multiple active displays connected (${details.screens.length} monitors)`,
-        };
+    if (
+      typeof win.getScreenDetails === 'function' &&
+      typeof navigator !== 'undefined' &&
+      navigator.permissions &&
+      typeof navigator.permissions.query === 'function'
+    ) {
+      const permStatus = await navigator.permissions.query({
+        name: 'window-management' as PermissionName,
+      });
+      if (permStatus.state === 'granted') {
+        const details = await win.getScreenDetails();
+        if (details && details.screens && details.screens.length > 1) {
+          return {
+            isMultiMonitor: true,
+            reason: `Multiple active displays connected (${details.screens.length} monitors)`,
+          };
+        }
       }
     }
   } catch {
-    // Permission prompt may not be permitted synchronously; continue to heuristics
+    // Permission query or Screen Details unavailable; fall back silently to screen.isExtended & heuristics
   }
 
   // 3. Window Coordinate Heuristics (e.g. window placed on negative coordinate or beyond primary screen bounds)

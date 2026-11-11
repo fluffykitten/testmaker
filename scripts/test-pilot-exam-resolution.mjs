@@ -15,6 +15,7 @@ import { resolveStudentQuiz } from '../src/services/quizCodeService.ts';
 import { PILOT_QUIZ_CODE, PILOT_EXAM_ID, PILOT_EXAM_170_QUESTIONS } from '../src/data/pilotExam170Data.ts';
 import { getPublishedQuizzes } from '../src/services/quizManagerService.ts';
 import { getLocalTests, fetchCustomTestWithQuestions } from '../src/services/testBuilderService.ts';
+import { detectMultiMonitor } from '../src/utils/examSecurityUtils.ts';
 
 console.log('🧪 Testing Pilot Exam (ICM170) Resolution, Saved Tests & Integrity...\n');
 
@@ -118,5 +119,50 @@ const audioPath = path.resolve('public/audio/pilot-english-listening.wav');
 check('21. Local audio file exists and has valid speech waveform (> 500 KB)', 
   fs.existsSync(audioPath) && fs.statSync(audioPath).size > 500000
 );
+
+// 22. Pilot exam matches school default (no window-management surprises)
+check('22. Pilot exam sets enableMultiMonitorDetection: false by default',
+  exam.enableMultiMonitorDetection === false
+);
+
+// 23-24. detectMultiMonitor permission-prompt safety regression tests
+let screenDetailsPromptTriggered = false;
+const origNav = globalThis.navigator;
+try {
+  globalThis.screen = { width: 1920, height: 1080, isExtended: false };
+  globalThis.window = {
+    screen: globalThis.screen,
+    screenLeft: 0,
+    screenTop: 0,
+    outerWidth: 1920,
+    getScreenDetails: async () => {
+      screenDetailsPromptTriggered = true;
+      return { screens: [{}, {}] };
+    },
+  };
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      permissions: {
+        query: async () => ({ state: 'prompt' }),
+      },
+    },
+  });
+
+  const singleRes = await detectMultiMonitor();
+  check('23. detectMultiMonitor() NEVER triggers getScreenDetails() popup when permission is prompt',
+    screenDetailsPromptTriggered === false && singleRes.isMultiMonitor === false
+  );
+
+  globalThis.screen.isExtended = true;
+  const extendedRes = await detectMultiMonitor();
+  check('24. detectMultiMonitor() silently detects extended monitor via screen.isExtended without prompting',
+    screenDetailsPromptTriggered === false && extendedRes.isMultiMonitor === true
+  );
+} finally {
+  delete globalThis.window;
+  delete globalThis.screen;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: origNav });
+}
 
 console.log(`\n🎉 All ${passed} pilot exam tests passed successfully!`);
