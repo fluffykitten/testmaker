@@ -51,6 +51,12 @@ import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
+import {
+  buildBookletResources,
+  getQuestionBookletTrigger,
+  getSubQuestionBookletTrigger,
+  normalizeResourceKey,
+} from '../utils/resourceBookletUtils';
 import { ExamAttachmentModal } from '../components/ExamAttachmentModal';
 import { ExamScratchpadModal } from '../components/ExamScratchpadModal';
 import type { ExamAttachment } from '../services/quizManagerService';
@@ -67,6 +73,7 @@ import {
   applyMaskedPinInput,
   EXAM_LOCKED_KEYS,
   isCopyShortcut,
+  isPasteShortcut,
   isWindowsOrCopilotKey,
 } from '../utils/examSecurityUtils';
 import {
@@ -451,6 +458,11 @@ export function StudentQuizRunner({
   const [showPeriodicTable, setShowPeriodicTable] = useState<boolean>(false);
   const [showCalculator, setShowCalculator] = useState<boolean>(false);
   const [showResourceBooklet, setShowResourceBooklet] = useState<boolean>(false);
+  const [activeBookletResourceRef, setActiveBookletResourceRef] = useState<string | null>(null);
+  const openResourceBooklet = useCallback((refId?: string | null) => {
+    setActiveBookletResourceRef(refId ?? null);
+    setShowResourceBooklet(true);
+  }, []);
   const [showAttachmentModal, setShowAttachmentModal] = useState<boolean>(false);
   const [showScratchpad, setShowScratchpad] = useState<boolean>(false);
   const [allowCalculator, setAllowCalculator] = useState<boolean | undefined>(() => savedExam?.allowCalculator);
@@ -1657,12 +1669,11 @@ export function StudentQuizRunner({
         flushClipboard();
         return;
       }
-      // Block Ctrl+V / Cmd+V (Paste) in Exam Mode
-      if (isExamMode && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) {
+      // Silently disable Ctrl+V / Cmd+V / Shift+Insert (Paste) in Exam Mode without showing warning screen
+      if (isExamMode && isPasteShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
         flushClipboard();
-        recordViolation('blocked_shortcut', 'Pasting is disabled during exam');
         return;
       }
     };
@@ -1676,7 +1687,7 @@ export function StudentQuizRunner({
         e.preventDefault();
         e.stopPropagation();
       }
-      if (isExamMode && isCopyShortcut(e)) {
+      if (isExamMode && (isCopyShortcut(e) || isPasteShortcut(e))) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -1705,8 +1716,8 @@ export function StudentQuizRunner({
     const handlePaste = (e: ClipboardEvent) => {
       if (isExamMode) {
         e.preventDefault();
+        e.stopPropagation();
         flushClipboard();
-        recordViolation('blocked_shortcut', 'Pasting external content into exam is disabled');
       }
     };
 
@@ -1732,7 +1743,8 @@ export function StudentQuizRunner({
     window.addEventListener('copy', handleCopy, { capture: true });
     document.addEventListener('copy', handleCopy, { capture: true });
     window.addEventListener('cut', handleCut);
-    window.addEventListener('paste', handlePaste);
+    window.addEventListener('paste', handlePaste, { capture: true });
+    document.addEventListener('paste', handlePaste, { capture: true });
     window.addEventListener('mobile-proctor-violation', handleMobileProctor);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('keydown', handleKeyDown, { capture: true });
@@ -1749,7 +1761,8 @@ export function StudentQuizRunner({
       window.removeEventListener('copy', handleCopy, { capture: true });
       document.removeEventListener('copy', handleCopy, { capture: true });
       window.removeEventListener('cut', handleCut);
-      window.removeEventListener('paste', handlePaste);
+      window.removeEventListener('paste', handlePaste, { capture: true });
+      document.removeEventListener('paste', handlePaste, { capture: true });
       window.removeEventListener('mobile-proctor-violation', handleMobileProctor);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
@@ -3795,9 +3808,17 @@ export function StudentQuizRunner({
     );
   }, [isLanguageExam, headerConfig, questions, title]);
 
-  const hasResourceBooklet = useMemo(() => {
-    return questions.some((q) => q.resource_ref || q.diagram_source === 'insert' || (q as any).insert_resource_id);
-  }, [questions]);
+  const bookletResources = useMemo(
+    () => buildBookletResources({ questions }),
+    [questions]
+  );
+
+  const hasResourceBooklet = bookletResources.length > 0;
+
+  const currentQuestionBookletTrigger = useMemo(
+    () => getQuestionBookletTrigger(questions[currentIndex], currentIndex, bookletResources),
+    [questions, currentIndex, bookletResources]
+  );
 
   // Active Stimulus Passage detection for multi-question reading texts (e.g. Text 1 for Q1-Q4)
   // Restricted to language exams so STEM/Chemistry questions never inherit reading passages across questions
@@ -6232,7 +6253,25 @@ export function StudentQuizRunner({
                   gap: '6px',
                   cursor: 'pointer',
                 }}
-                onClick={() => setShowResourceBooklet(true)}
+                onClick={() => {
+                  if (currentQuestionBookletTrigger) {
+                    openResourceBooklet(currentQuestionBookletTrigger.refId);
+                    return;
+                  }
+                  for (const sub of currentQuestion?.sub_questions || []) {
+                    const subTrig = getSubQuestionBookletTrigger(
+                      sub,
+                      currentQuestion,
+                      currentIndex,
+                      bookletResources
+                    );
+                    if (subTrig) {
+                      openResourceBooklet(subTrig.refId);
+                      return;
+                    }
+                  }
+                  openResourceBooklet(null);
+                }}
                 title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
               >
                 <span>📖</span>
@@ -6651,7 +6690,7 @@ export function StudentQuizRunner({
             </div>
 
             {/* Insert / Resource Booklet Trigger Button */}
-            {(currentQuestion?.resource_ref || currentQuestion?.diagram_source === 'insert') && (
+            {currentQuestionBookletTrigger && (
               <div style={{ margin: '8px 0 12px' }}>
                 <button
                   type="button"
@@ -6669,12 +6708,11 @@ export function StudentQuizRunner({
                     gap: '8px',
                     cursor: 'pointer',
                   }}
-                  onClick={() => setShowResourceBooklet(true)}
-                  title="Open Resource Booklet to view maps, photos, or diagrams referenced in this question"
+                  onClick={() => openResourceBooklet(currentQuestionBookletTrigger.refId)}
+                  title="Open Resource Booklet to view maps, photos, notes, or diagrams referenced in this question"
                 >
                   <span>📖</span>
-                  <span>Open {currentQuestion.resource_ref || 'Figure / Map'} in Resource Booklet</span>
-                  <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>↗</span>
+                  <span>Open {currentQuestionBookletTrigger.label} in Resource Booklet</span>
                 </button>
               </div>
             )}
@@ -6827,6 +6865,50 @@ export function StudentQuizRunner({
                           <span>Part ({sub.sub_id}) Audio active in top listening bar</span>
                         </div>
                       )}
+
+                      {/* Sub-Question Resource Booklet Trigger */}
+                      {(() => {
+                        const subTrigger = getSubQuestionBookletTrigger(
+                          sub,
+                          currentQuestion,
+                          currentIndex,
+                          bookletResources
+                        );
+                        if (
+                          !subTrigger ||
+                          (currentQuestionBookletTrigger &&
+                            normalizeResourceKey(subTrigger.refId) ===
+                              normalizeResourceKey(currentQuestionBookletTrigger.refId))
+                        ) {
+                          return null;
+                        }
+                        return (
+                          <div style={{ margin: '6px 0 10px' }}>
+                            <button
+                              type="button"
+                              className="sq-btn"
+                              style={{
+                                background: 'rgba(14, 165, 233, 0.12)',
+                                color: '#0284c7',
+                                border: '1px solid rgba(14, 165, 233, 0.35)',
+                                borderRadius: '8px',
+                                fontSize: '0.8125rem',
+                                fontWeight: 700,
+                                padding: '6px 12px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                cursor: 'pointer',
+                              }}
+                              onClick={() => openResourceBooklet(subTrigger.refId)}
+                              title="Open Resource Booklet for this sub-question"
+                            >
+                              <span>📖</span>
+                              <span>Open {subTrigger.label} in Resource Booklet</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
 
                       {/* Sub-Question Diagram / SVG (if specifically attached to this sub-part) */}
                       {sub.svg_content ? (
@@ -7602,18 +7684,15 @@ export function StudentQuizRunner({
       {/* Cambridge Insert / Resource Booklet Drawer */}
       <ResourceBookletDrawer
         isOpen={showResourceBooklet}
-        onClose={() => setShowResourceBooklet(false)}
+        onClose={() => {
+          setShowResourceBooklet(false);
+          setActiveBookletResourceRef(null);
+        }}
         questions={questions}
-        resources={(() => {
-          for (const q of questions) {
-            const list = (q.mark_scheme as any)?._insert_resources;
-            if (Array.isArray(list) && list.length > 0) return list;
-          }
-          return undefined;
-        })()}
-        activeResourceRef={currentQuestion?.resource_ref}
-        subject={headerConfig?.subject || 'Geography'}
-        title={`${title} — Resource Booklet`}
+        resources={bookletResources}
+        activeResourceRef={activeBookletResourceRef || currentQuestionBookletTrigger?.refId || null}
+        subject={headerConfig?.subject || 'Assessment'}
+        title={`${title} : Resource Booklet`}
       />
 
       {/* 🚨 Fullscreen Exam Lockdown Overlay (Requires Teacher / Invigilator PIN or Final Auto-Submit) */}

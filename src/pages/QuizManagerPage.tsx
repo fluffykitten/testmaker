@@ -501,14 +501,57 @@ export function QuizManagerPage({
     }
   };
 
+  const savedTestById = useMemo(() => {
+    const map = new Map<string, CustomTestWithDetails>();
+    for (const t of savedTests) {
+      map.set(t.id, t);
+    }
+    return map;
+  }, [savedTests]);
+
+  const hydrateQuizFromSavedTest = useCallback(
+    (quiz: PublishedQuiz): PublishedQuiz => {
+      if (!quiz.testId) return quiz;
+      const savedTest = savedTestById.get(quiz.testId);
+      if (!savedTest) return quiz;
+      const savedQuestionIds =
+        savedTest.question_ids && savedTest.question_ids.length > 0
+          ? savedTest.question_ids
+          : quiz.questionIds;
+      const savedTotalMarks = savedTest.total_marks > 0 ? savedTest.total_marks : quiz.totalMarks;
+      const savedQuestionCount =
+        savedQuestionIds && savedQuestionIds.length > 0 ? savedQuestionIds.length : quiz.questionCount;
+      return {
+        ...quiz,
+        questionIds: savedQuestionIds,
+        questionCount: savedQuestionCount,
+        totalMarks: savedTotalMarks,
+        headerConfig: savedTest.header_config
+          ? {
+              ...(quiz.headerConfig || {}),
+              ...savedTest.header_config,
+              title: quiz.title || quiz.headerConfig?.title || savedTest.header_config.title,
+              subject: quiz.subject || quiz.headerConfig?.subject || savedTest.header_config.subject,
+              durationMinutes:
+                quiz.durationMinutes ||
+                quiz.headerConfig?.durationMinutes ||
+                savedTest.header_config.durationMinutes,
+            }
+          : quiz.headerConfig,
+      };
+    },
+    [savedTestById]
+  );
+
   const handleOpenEditModal = (quiz: PublishedQuiz) => {
+    const hydratedQuiz = hydrateQuizFromSavedTest(quiz);
     const currentSettings = getSavedSettings();
     setSecurityDefaults(currentSettings);
-    setOriginalQuizCode(quiz.quizCode);
+    setOriginalQuizCode(hydratedQuiz.quizCode);
     setAttachmentUploadError(null);
     setActiveQuizDraft({
-      ...quiz,
-      attachments: quiz.attachments ? [...quiz.attachments] : [],
+      ...hydratedQuiz,
+      attachments: hydratedQuiz.attachments ? [...hydratedQuiz.attachments] : [],
       allowCalculator: quiz.allowCalculator ?? false,
       calculatorType: quiz.calculatorType || 'scientific',
       allowPeriodicTable: quiz.allowPeriodicTable ?? false,
@@ -1291,7 +1334,7 @@ export function QuizManagerPage({
                                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                                         <polyline points="14 2 14 8 20 8" />
                                       </svg>
-                                      <span>{quiz.questionCount || 0} Qs</span>
+                                      <span>{hydrateQuizFromSavedTest(quiz).questionCount || 0} Qs</span>
                                     </span>
 
                                     {quiz.securityEnabled && (
@@ -1532,7 +1575,7 @@ export function QuizManagerPage({
                                         : `${quiz.durationMinutes || 45} mins`}
                                     </span>
                                     <span className="qm-meta-dot">•</span>
-                                    <span>{quiz.questionCount || 0} Questions</span>
+                                    <span>{hydrateQuizFromSavedTest(quiz).questionCount || 0} Questions</span>
                                   </div>
                                 </div>
                               </div>
@@ -1807,7 +1850,7 @@ export function QuizManagerPage({
       {/* ─── Results & Proctoring Audit Modal ─────────────────────────────────── */}
       {selectedQuizForResults && (
         <QuizResultsModal
-          quiz={selectedQuizForResults}
+          quiz={hydrateQuizFromSavedTest(selectedQuizForResults)}
           onClose={() => setSelectedQuizForResults(null)}
         />
       )}

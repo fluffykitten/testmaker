@@ -205,6 +205,23 @@ export function isCopyShortcut(e: KeyboardShortcutLike): boolean {
 }
 
 /**
+ * Matches user paste shortcuts (Ctrl+V, Cmd+V, Ctrl+Shift+V, Cmd+Shift+V, Shift+Insert)
+ * so the exam runner can disable pasting silently without triggering a warning screen.
+ */
+export function isPasteShortcut(e: KeyboardShortcutLike): boolean {
+  if (!e) return false;
+  const key = (e.key || '').toLowerCase();
+  const code = e.code || '';
+  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+    if (key === 'v' || code === 'KeyV') return true;
+  }
+  if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (key === 'insert' || code === 'Insert') return true;
+  }
+  return false;
+}
+
+/**
  * Matches Windows / Super keys and Copilot hardware/shell shortcuts
  * (MetaLeft/Right, OSLeft/Right, Windows 11 Copilot's Shift+Meta+F23 / F23,
  * LaunchAssistant, and Win+C).

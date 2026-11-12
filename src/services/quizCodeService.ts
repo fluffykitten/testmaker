@@ -1,6 +1,6 @@
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
-import type { ExamHeaderConfig } from './testBuilderService';
+import { fetchCustomTestWithQuestions, type ExamHeaderConfig } from './testBuilderService';
 import {
   getPublishedQuizzes,
   fetchPublishedQuizzesFromSupabase,
@@ -103,7 +103,7 @@ async function resolveCustomTestHeaderAndQuestions(test: CustomTest): Promise<{
   let headerConfig = test.header_config;
   let questionIds = test.question_ids || [];
 
-  if (!headerConfig || !headerConfig.questionOverrides) {
+  if (isSupabaseConfigured()) {
     try {
       const res = await withTimeout<{ data: { value: string } | null; error: any }>(
         (supabase.from('app_config' as any) as any)
@@ -114,21 +114,25 @@ async function resolveCustomTestHeaderAndQuestions(test: CustomTest): Promise<{
         { data: null, error: null }
       );
       if (!res.error && res.data?.value) {
-        const parsed = JSON.parse(res.data.value) as ExamHeaderConfig & { _savedQuestionIds?: string[] };
-        const { _savedQuestionIds, ...cleanParsed } = parsed;
-        if (Array.isArray(_savedQuestionIds) && _savedQuestionIds.length > 0) {
-          questionIds = _savedQuestionIds;
+        const parsed = JSON.parse(res.data.value) as ExamHeaderConfig & {
+          _savedQuestionIds?: string[];
+          _savedTotalMarks?: number;
+          _updatedAt?: string;
+        };
+        const { _savedQuestionIds, _savedTotalMarks, _updatedAt, ...cleanParsed } = parsed;
+        const localTs = Date.parse(headerConfig?.updatedAt || '') || 0;
+        const cloudTs = Date.parse(_updatedAt || cleanParsed.updatedAt || '') || 0;
+        const localStrictlyNewer = Boolean(headerConfig?.updatedAt) && localTs > cloudTs && cloudTs > 0;
+        if (!localStrictlyNewer) {
+          if (Array.isArray(_savedQuestionIds) && _savedQuestionIds.length > 0) {
+            questionIds = _savedQuestionIds;
+          }
+          headerConfig = {
+            ...(headerConfig || {}),
+            ...cleanParsed,
+            questionOverrides: cleanParsed.questionOverrides || {},
+          };
         }
-        headerConfig = headerConfig
-          ? {
-              ...cleanParsed,
-              ...headerConfig,
-              questionOverrides: {
-                ...(cleanParsed.questionOverrides || {}),
-                ...(headerConfig.questionOverrides || {}),
-              },
-            }
-          : cleanParsed;
       }
     } catch {
       // ignore cloud header hydration error
@@ -165,6 +169,7 @@ if (typeof window !== 'undefined') {
     resolvedQuizMemoryCache.clear();
   });
   window.addEventListener('tests_updated', () => {
+    questionObjectCache.clear();
     resolvedQuizMemoryCache.clear();
   });
 }
@@ -259,12 +264,18 @@ async function resolveStudentQuizUncached(
     const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
     const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
 
-    // Run question loading, PIN hashing, and school security policy sync in parallel (bounded timeout)
-    const [rawQuestions, teacherPinHash, schoolSecurityTiers] = await Promise.all([
-      fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides),
+    // Saved test is the single source of truth for paper questions, overrides, mark schemes, and total marks.
+    // Falls back to published.questionIds only when published.testId does not resolve to a saved test (e.g. offline import).
+    const [savedTestData, teacherPinHash, schoolSecurityTiers] = await Promise.all([
+      published.testId ? fetchCustomTestWithQuestions(published.testId) : Promise.resolve(null),
       hashTeacherPin(published.quizCode, effectiveTeacherPin),
       withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers()),
     ]);
+
+    const hasSavedTest = Boolean(savedTestData && savedTestData.questions.length > 0);
+    const rawQuestions = hasSavedTest
+      ? savedTestData!.questions
+      : await fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides);
 
     let questions = rawQuestions;
 
@@ -296,17 +307,27 @@ async function resolveStudentQuizUncached(
 
     // A candidate browser must never receive the invigilator PIN or the test
     // overrides (they are full Question objects and therefore contain mark schemes).
-    const headerSource = { ...(published.headerConfig || {}) } as ExamHeaderConfig;
+    const publishedHeader = { ...(published.headerConfig || {}) } as ExamHeaderConfig;
+    const savedHeader = hasSavedTest
+      ? ({ ...(savedTestData!.test.header_config || {}) } as ExamHeaderConfig)
+      : undefined;
+    const headerSource = {
+      ...publishedHeader,
+      ...(savedHeader || {}),
+    } as ExamHeaderConfig;
     delete (headerSource as any).teacherPin;
     delete (headerSource as any).questionOverrides;
+    delete (headerSource as any).updatedAt;
+
     const syncedHeader: ExamHeaderConfig = {
       ...headerSource,
-      title: headerSource.title || published.title || 'Examination Assessment',
-      schoolName: headerSource.schoolName || '',
-      subject: headerSource.subject || published.subject || 'Assessment',
-      subjectCode: headerSource.subjectCode || '',
+      title: published.title || publishedHeader.title || savedHeader?.title || 'Examination Assessment',
+      schoolName: savedHeader?.schoolName || publishedHeader.schoolName || '',
+      subject: published.subject || publishedHeader.subject || savedHeader?.subject || 'Assessment',
+      subjectCode: savedHeader?.subjectCode || publishedHeader.subjectCode || '',
       durationMinutes: effectiveDuration,
-      instructions: headerSource.instructions || '',
+      instructions: savedHeader?.instructions ?? publishedHeader.instructions ?? '',
+      additionalMaterials: savedHeader?.additionalMaterials ?? publishedHeader.additionalMaterials,
       teacherPinHash,
     };
 
@@ -314,6 +335,10 @@ async function resolveStudentQuizUncached(
     // (Practice mode keeps them so instant solutions can still be rendered.)
     const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
     const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
+    const computedQuestionMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+    const effectiveTotalMarks = hasSavedTest
+      ? (computedQuestionMarks > 0 ? computedQuestionMarks : (savedTestData!.test.total_marks || published.totalMarks))
+      : (published.totalMarks || computedQuestionMarks);
 
     const result: StudentQuizData = {
       publishedId: published.id,
@@ -322,7 +347,7 @@ async function resolveStudentQuizUncached(
       title: published.title,
       headerConfig: syncedHeader,
       questions: studentQuestions,
-      totalMarks: published.totalMarks,
+      totalMarks: effectiveTotalMarks,
       durationMinutes: effectiveDuration,
       isExamMode: published.isExamMode,
       isActive: published.isActive !== undefined ? published.isActive : true,

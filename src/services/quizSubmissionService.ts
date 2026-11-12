@@ -683,7 +683,8 @@ export interface QuestionSubmissionResult {
   aiFeedback?: string;
   missingPoints?: string[];
   criteriaBreakdown?: Array<{ point: string; achieved: boolean; examinerNote?: string }>;
-  gradingMethod?: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback';
+  gradingMethod?: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' | 'teacher';
+  manualOverride?: boolean;
   subQuestionResults?: Array<{
     subId: string;
     questionText?: string;
@@ -692,6 +693,7 @@ export interface QuestionSubmissionResult {
     maxMarks: number;
     isCorrect: boolean;
     feedback?: string;
+    manualOverride?: boolean;
     criteria?: Array<{ point: string; achieved: boolean }>;
   }>;
 }
@@ -841,6 +843,7 @@ export interface ExamForensics {
   finalTierReached?: string;
   autoSubmittedBySecurity?: boolean;
   tierHistory?: SecurityTierEvent[];
+  manualTotalScoreOverride?: boolean;
 }
 
 export interface StudentSubmission {
@@ -1169,6 +1172,132 @@ export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[
   }
 }
 
+interface InFlightSubmissionEntry {
+  submission: StudentSubmission;
+  token: number;
+}
+
+const inFlightSubmissionSaves = new Map<string, InFlightSubmissionEntry>();
+let inFlightSaveSeq = 0;
+
+export function getSubmissionTimestampMs(
+  sub: Pick<StudentSubmission, 'updatedAt' | 'submittedAt'>
+): number {
+  const raw = sub.updatedAt || sub.submittedAt || 0;
+  if (!raw) return 0;
+  const parsed = new Date(raw).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function doesSubmissionMatchScope(
+  s: StudentSubmission,
+  quizId: string,
+  cleanCode?: string,
+  cleanTestId?: string
+): boolean {
+  const sQuizId = (s.quizId || '').toUpperCase();
+  const sCode = (s.quizCode || '').toUpperCase();
+  return (
+    s.quizId === quizId ||
+    (Boolean(cleanCode) && sCode === cleanCode) ||
+    (Boolean(cleanTestId) && (sQuizId === cleanTestId || sCode === cleanTestId))
+  );
+}
+
+function pickNewerSubmission(
+  cloudSub: StudentSubmission,
+  localSub: StudentSubmission,
+  isProtectedUnsynced: boolean
+): { winner: StudentSubmission; preferLocal: boolean } {
+  if (isProtectedUnsynced) {
+    return { winner: localSub, preferLocal: true };
+  }
+
+  const localTime = getSubmissionTimestampMs(localSub);
+  const cloudTime = getSubmissionTimestampMs(cloudSub);
+
+  if (localTime > cloudTime) {
+    return { winner: localSub, preferLocal: true };
+  }
+  if (cloudTime > localTime) {
+    return { winner: cloudSub, preferLocal: false };
+  }
+
+  const isCloudGraded = cloudSub.status === 'graded' || cloudSub.status === 'published';
+  const isLocalGraded = localSub.status === 'graded' || localSub.status === 'published';
+  if (isLocalGraded && !isCloudGraded) {
+    return { winner: localSub, preferLocal: true };
+  }
+
+  return { winner: cloudSub, preferLocal: false };
+}
+
+export function mergeSubmissionsPreferNewest(
+  cloudList: StudentSubmission[],
+  localList: StudentSubmission[],
+  deletedIds: Set<string>,
+  scopeFilter?: (s: StudentSubmission) => boolean
+): { merged: StudentSubmission[]; hasLocalNewerOrExclusive: boolean } {
+  const map = new Map<string, StudentSubmission>();
+  cloudList.forEach((s) => {
+    if (!deletedIds.has(s.id)) map.set(s.id, s);
+  });
+
+  const unsyncedOutboxMap = new Map<string, StudentSubmission>();
+  for (const item of getSubmissionOutbox()) {
+    if (item.status === 'synced') continue;
+    const sub = item.submission;
+    if (!sub || deletedIds.has(sub.id)) continue;
+    if (!scopeFilter || scopeFilter(sub) || map.has(sub.id)) {
+      const prev = unsyncedOutboxMap.get(sub.id);
+      if (!prev || getSubmissionTimestampMs(sub) >= getSubmissionTimestampMs(prev)) {
+        unsyncedOutboxMap.set(sub.id, sub);
+      }
+    }
+  }
+
+  const activeInFlightMap = new Map<string, StudentSubmission>();
+  inFlightSubmissionSaves.forEach((entry, id) => {
+    if (deletedIds.has(id)) return;
+    if (!scopeFilter || scopeFilter(entry.submission) || map.has(id)) {
+      activeInFlightMap.set(id, entry.submission);
+    }
+  });
+
+  const localCandidateMap = new Map<string, StudentSubmission>();
+  localList.forEach((s) => {
+    if (!deletedIds.has(s.id)) localCandidateMap.set(s.id, s);
+  });
+  unsyncedOutboxMap.forEach((s, id) => {
+    const prev = localCandidateMap.get(id);
+    if (!prev || getSubmissionTimestampMs(s) >= getSubmissionTimestampMs(prev)) {
+      localCandidateMap.set(id, s);
+    }
+  });
+  activeInFlightMap.forEach((s, id) => {
+    localCandidateMap.set(id, s);
+  });
+
+  let hasLocalNewerOrExclusive = false;
+  localCandidateMap.forEach((localS, id) => {
+    const cloudS = map.get(id);
+    if (!cloudS) {
+      map.set(id, localS);
+      hasLocalNewerOrExclusive = true;
+      return;
+    }
+    const isProtectedUnsynced = unsyncedOutboxMap.has(id) || activeInFlightMap.has(id);
+    const { winner, preferLocal } = pickNewerSubmission(cloudS, localS, isProtectedUnsynced);
+    map.set(id, winner);
+    if (preferLocal) {
+      hasLocalNewerOrExclusive = true;
+    }
+  });
+
+  const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
+  return { merged, hasLocalNewerOrExclusive };
+}
+
 /**
  * Saves or updates submission both locally and asynchronously in Supabase cloud (dual-tier table + app_config).
  */
@@ -1178,69 +1307,89 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
     return false;
   }
 
-  // 1. Always save to local storage immediately
-  saveQuizSubmission(submission);
-  saveToSubmissionOutbox(submission, 'pending');
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
+  const updatedIso = submission.updatedAt || new Date().toISOString();
+  const stampedSubmission: StudentSubmission =
+    submission.updatedAt === updatedIso ? submission : { ...submission, updatedAt: updatedIso };
+
+  const token = ++inFlightSaveSeq;
+  inFlightSubmissionSaves.set(stampedSubmission.id, { submission: stampedSubmission, token });
+
+  // 1. Save locally & stage outbox immediately without dispatching a pre-upsert cloud refetch
+  saveQuizSubmission(stampedSubmission);
+  saveToSubmissionOutbox(stampedSubmission, 'pending');
 
   let tableSuccess = false;
 
-  // 2. Upsert to Supabase dedicated table
   try {
-    const row = {
-      id: submission.id,
-      quiz_id: submission.quizId,
-      quiz_code: submission.quizCode.toUpperCase(),
-      quiz_title: submission.quizTitle,
-      subject: submission.subject,
-      student_name: submission.studentName,
-      student_class: submission.studentClass,
-      candidate_number: submission.candidateNumber,
-      submitted_at: submission.submittedAt,
-      duration_seconds: submission.durationSeconds,
-      score: submission.score,
-      total_marks: submission.totalMarks,
-      percentage: submission.percentage,
-      violations_count: submission.violationsCount,
-      proctoring_logs: submission.proctoringLogs,
-      raw_answers: {
-        ...(submission.rawAnswers || {}),
-        ...(submission.forensics ? { _forensics: submission.forensics } : {}),
-      },
-      question_results: submission.questionResults,
-      topic_breakdown: submission.topicBreakdown,
-      status: submission.status || 'submitted',
-      teacher_adjusted_marks: submission.teacherAdjustedMarks || 0,
-      teacher_notes: submission.teacherNotes || '',
-      result_pin: submission.resultPin || '',
-      updated_at: new Date().toISOString(),
-    };
-
-    const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
-
-    if (!error) {
-      tableSuccess = true;
-      markOutboxSynced(submission.id);
-    } else {
-      console.warn('Could not sync submission to Supabase table:', error.message);
-    }
-  } catch (err) {
-    console.warn('Error pushing submission to Supabase table:', err);
-  }
-
-  // 3. Only use the app_config mirror when the primary table write failed. The
-  // mirror is a read-modify-write of one shared JSON blob, so doing it on every
-  // successful submit made concurrent end-of-exam papers overwrite each other.
-  if (!tableSuccess) {
+    // 2. Upsert to Supabase dedicated table
     try {
-      const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
-      const mergedMap = new Map<string, StudentSubmission>();
-      cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
-      mergedMap.set(submission.id, submission);
-      await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
-    } catch (err) {
-      console.warn('Could not mirror submission to app_config:', err);
+      const row = {
+        id: stampedSubmission.id,
+        quiz_id: stampedSubmission.quizId,
+        quiz_code: stampedSubmission.quizCode.toUpperCase(),
+        quiz_title: stampedSubmission.quizTitle,
+        subject: stampedSubmission.subject,
+        student_name: stampedSubmission.studentName,
+        student_class: stampedSubmission.studentClass,
+        candidate_number: stampedSubmission.candidateNumber,
+        submitted_at: stampedSubmission.submittedAt,
+        duration_seconds: stampedSubmission.durationSeconds,
+        score: stampedSubmission.score,
+        total_marks: stampedSubmission.totalMarks,
+        percentage: stampedSubmission.percentage,
+        violations_count: stampedSubmission.violationsCount,
+        proctoring_logs: stampedSubmission.proctoringLogs,
+        raw_answers: {
+          ...(stampedSubmission.rawAnswers || {}),
+          ...(stampedSubmission.forensics ? { _forensics: stampedSubmission.forensics } : {}),
+        },
+        question_results: stampedSubmission.questionResults,
+        topic_breakdown: stampedSubmission.topicBreakdown,
+        status: stampedSubmission.status || 'submitted',
+        teacher_adjusted_marks: stampedSubmission.teacherAdjustedMarks || 0,
+        teacher_notes: stampedSubmission.teacherNotes || '',
+        result_pin: stampedSubmission.resultPin || '',
+        updated_at: updatedIso,
+      };
+
+      const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
+
+      if (!error) {
+        tableSuccess = true;
+        markOutboxSynced(stampedSubmission.id);
+      } else {
+        saveToSubmissionOutbox(stampedSubmission, 'failed', error.message);
+        console.warn('Could not sync submission to Supabase table:', error.message);
+      }
+    } catch (err: any) {
+      saveToSubmissionOutbox(
+        stampedSubmission,
+        'failed',
+        err?.message || 'Could not push submission to Supabase table'
+      );
+      console.warn('Error pushing submission to Supabase table:', err);
     }
+
+    // 3. Only use the app_config mirror when the primary table write failed. The
+    // mirror is a read-modify-write of one shared JSON blob, so doing it on every
+    // successful submit made concurrent end-of-exam papers overwrite each other.
+    if (!tableSuccess) {
+      try {
+        const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
+        const mergedMap = new Map<string, StudentSubmission>();
+        cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
+        mergedMap.set(stampedSubmission.id, stampedSubmission);
+        await syncSubmissionsToAppConfig(Array.from(mergedMap.values()));
+      } catch (err) {
+        console.warn('Could not mirror submission to app_config:', err);
+      }
+    }
+  } finally {
+    const currentEntry = inFlightSubmissionSaves.get(stampedSubmission.id);
+    if (currentEntry && currentEntry.token === token) {
+      inFlightSubmissionSaves.delete(stampedSubmission.id);
+    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
   }
 
   return tableSuccess;
@@ -1263,7 +1412,6 @@ export async function saveQuizSubmissionWithVerification(
   // Always save locally immediately
   saveQuizSubmission(submission);
   saveToSubmissionOutbox(submission, 'pending');
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
 
   let lastErr = '';
 
@@ -1563,48 +1711,18 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
       });
     }
 
-    const mergedMap = new Map<string, StudentSubmission>();
-
-    // 1. Cloud submissions
-    cloudList.forEach((s) => mergedMap.set(s.id, s));
-
-    // 2. Local submissions - preserve newer/exclusive (strictly non-deleted)
-    let hasLocalExclusiveOrNewer = false;
-    localList.forEach((localS) => {
-      const existing = mergedMap.get(localS.id);
-      if (!existing) {
-        mergedMap.set(localS.id, localS);
-        hasLocalExclusiveOrNewer = true;
-      } else {
-        const localTime = new Date(localS.updatedAt || localS.submittedAt || 0).getTime();
-        const cloudTime = new Date(existing.updatedAt || existing.submittedAt || 0).getTime();
-        
-        // Prioritize graded / published evaluation over provisional un-analyzed 'submitted'
-        const isCloudGraded = existing.status === 'graded' || existing.status === 'published';
-        const isLocalGraded = localS.status === 'graded' || localS.status === 'published';
-
-        if (isCloudGraded && !isLocalGraded) {
-          mergedMap.set(localS.id, existing);
-        } else if (isLocalGraded && !isCloudGraded) {
-          mergedMap.set(localS.id, localS);
-          hasLocalExclusiveOrNewer = true;
-        } else if (localTime > cloudTime) {
-          mergedMap.set(localS.id, localS);
-          hasLocalExclusiveOrNewer = true;
-        } else {
-          mergedMap.set(localS.id, existing);
-        }
-      }
-    });
-
-    const merged = Array.from(mergedMap.values()).filter((s) => !deletedIds.has(s.id));
+    const { merged, hasLocalNewerOrExclusive } = mergeSubmissionsPreferNewest(
+      cloudList,
+      localList,
+      deletedIds
+    );
 
     // 3. Update localStorage safely
     safeSaveSubmissionsToLocalStorage(merged);
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
 
     // 4. If local had items not yet in cloud (e.g. graded on localhost), sync to cloud
-    if (hasLocalExclusiveOrNewer || cloudList.length < merged.length) {
+    if ((hasLocalNewerOrExclusive || cloudList.length < merged.length) && inFlightSubmissionSaves.size === 0) {
       await saveBatchQuizSubmissionsCloud(merged);
     }
 
@@ -1684,24 +1802,15 @@ export async function fetchSubmissionsFromSupabase(
           };
         });
 
-      // Merge with local storage (strictly filtering tombstoned items)
+      // Merge with local storage, pending outbox, and active in-flight saves (preferring newest)
       const local = getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
-      const map = new Map<string, StudentSubmission>();
-      cloudSubs.forEach((s) => map.set(s.id, s));
-      local.forEach((s) => {
-        if (!map.has(s.id)) map.set(s.id, s);
-      });
-
-      const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
+      const { merged } = mergeSubmissionsPreferNewest(cloudSubs, local, deletedIds, (s) =>
+        doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId)
+      );
       try {
         const allLocal = getAllSubmissions().filter((s) => {
           if (deletedIds.has(s.id)) return false;
-          const sQuizId = (s.quizId || '').toUpperCase();
-          const sCode = (s.quizCode || '').toUpperCase();
-          const matchPubId = s.quizId === quizId;
-          const matchCode = cleanCode && sCode === cleanCode;
-          const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
-          return !matchPubId && !matchCode && !matchTestId;
+          return !doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId);
         });
         safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
       } catch {}
@@ -1717,32 +1826,18 @@ export async function fetchSubmissionsFromSupabase(
     const appConfigSubs = await fetchSubmissionsFromAppConfig();
     const matching = appConfigSubs.filter((s) => {
       if (deletedIds.has(s.id)) return false; // Filter out tombstoned rows
-      const sQuizId = (s.quizId || '').toUpperCase();
-      const sCode = (s.quizCode || '').toUpperCase();
-      return (
-        s.quizId === quizId ||
-        (cleanCode && sCode === cleanCode) ||
-        (cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId))
-      );
+      return doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId);
     });
 
     if (matching.length > 0) {
       const local = getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
-      const map = new Map<string, StudentSubmission>();
-      matching.forEach((s) => map.set(s.id, s));
-      local.forEach((s) => {
-        if (!map.has(s.id)) map.set(s.id, s);
-      });
-      const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
+      const { merged } = mergeSubmissionsPreferNewest(matching, local, deletedIds, (s) =>
+        doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId)
+      );
       try {
         const allLocal = getAllSubmissions().filter((s) => {
           if (deletedIds.has(s.id)) return false;
-          const sQuizId = (s.quizId || '').toUpperCase();
-          const sCode = (s.quizCode || '').toUpperCase();
-          const matchPubId = s.quizId === quizId;
-          const matchCode = cleanCode && sCode === cleanCode;
-          const matchTestId = cleanTestId && (sQuizId === cleanTestId || sCode === cleanTestId);
-          return !matchPubId && !matchCode && !matchTestId;
+          return !doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId);
         });
         safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
       } catch {}
@@ -1752,7 +1847,10 @@ export async function fetchSubmissionsFromSupabase(
     console.warn('Could not fetch cloud submissions from app_config:', err);
   }
 
-  return getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
+  const localFallback = getSubmissionsForQuiz(quizId, quizCode, testId).filter((s) => !deletedIds.has(s.id));
+  return mergeSubmissionsPreferNewest([], localFallback, deletedIds, (s) =>
+    doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId)
+  ).merged;
 }
 
 /**
@@ -1915,9 +2013,10 @@ export async function setQuizSubmissionsStatus(
   quizCode: string,
   newStatus: SubmissionStatus
 ): Promise<boolean> {
+  const nowIso = new Date().toISOString();
   try {
     const { error } = await (supabase.from('quiz_submissions' as any) as any)
-      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .update({ status: newStatus, updated_at: nowIso })
       .or(`quiz_id.eq.${quizId},quiz_code.eq.${quizCode.toUpperCase()}`);
 
     if (error) {
@@ -1931,7 +2030,7 @@ export async function setQuizSubmissionsStatus(
   try {
     const all = getAllSubmissions().map((s) => {
       if (s.quizId === quizId || s.quizCode.toUpperCase() === quizCode.toUpperCase()) {
-        return { ...s, status: newStatus };
+        return { ...s, status: newStatus, updatedAt: nowIso };
       }
       return s;
     });

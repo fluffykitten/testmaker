@@ -6,6 +6,7 @@ import {
   EXAM_LOCKED_KEYS,
   enableKeyboardLock,
   isCopyShortcut,
+  isPasteShortcut,
   isWindowsOrCopilotKey,
   requestSecureFullscreen,
 } from '../src/utils/examSecurityUtils.ts';
@@ -20,6 +21,16 @@ function runUnitTests() {
   assert.equal(isCopyShortcut({ key: 'c', code: 'KeyC', ctrlKey: true, altKey: true }), false, 'Ctrl+Alt+C must not match copy');
   assert.equal(isCopyShortcut({ key: 'v', code: 'KeyV', ctrlKey: true }), false, 'Ctrl+V (paste) must not match copy');
   assert.equal(isCopyShortcut({ key: 'c', code: 'KeyC' }), false, 'Plain letter c must not match copy');
+
+  // 1b. Paste shortcut classification (silent block, no warning screen)
+  assert.equal(isPasteShortcut({ key: 'v', code: 'KeyV', ctrlKey: true }), true, 'Ctrl+V must match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'V', code: 'KeyV', ctrlKey: true }), true, 'Ctrl+V uppercase must match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'v', code: 'KeyV', metaKey: true }), true, 'Cmd+V must match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true }), true, 'Ctrl+Shift+V must match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'Insert', code: 'Insert', shiftKey: true }), true, 'Shift+Insert must match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'v', code: 'KeyV', ctrlKey: true, altKey: true }), false, 'Ctrl+Alt+V must not match paste shortcut');
+  assert.equal(isPasteShortcut({ key: 'Insert', code: 'Insert', ctrlKey: true }), false, 'Ctrl+Insert is copy, not paste');
+  assert.equal(isPasteShortcut({ key: 'v', code: 'KeyV' }), false, 'Plain letter v must not match paste shortcut');
 
   // 2. Windows & Copilot key classification
   assert.equal(isWindowsOrCopilotKey({ key: 'Meta', code: 'MetaLeft', metaKey: true }), true, 'Left Windows key must match');
@@ -137,6 +148,21 @@ function runRunnerRegressionChecks() {
   assert.ok(/flushClipboard\(\)/.test(handleCopyMatch[1]), 'handleCopy must clear clipboard');
   assert.ok(!/recordViolation/.test(handleCopyMatch[1]), 'handleCopy must NOT call recordViolation()');
 
+  // Assert silent Ctrl+V / Paste handling does NOT recordViolation or open warning/lock screen
+  const keyDownPasteMatch = src.match(/if\s*\(\s*isExamMode\s*&&\s*isPasteShortcut\(e\)\s*\)\s*\{([\s\S]*?)\}/);
+  assert.ok(keyDownPasteMatch, 'isPasteShortcut(e) block missing in StudentQuizRunner.tsx');
+  assert.ok(/e\.preventDefault\(\)/.test(keyDownPasteMatch[1]), 'Ctrl+V handler must call preventDefault()');
+  assert.ok(/e\.stopPropagation\(\)/.test(keyDownPasteMatch[1]), 'Ctrl+V handler must call stopPropagation()');
+  assert.ok(/flushClipboard\(\)/.test(keyDownPasteMatch[1]), 'Ctrl+V handler must flush clipboard');
+  assert.ok(!/recordViolation/.test(keyDownPasteMatch[1]), 'Ctrl+V handler must NOT call recordViolation()');
+
+  const handlePasteMatch = src.match(/const\s+handlePaste\s*=\s*\(e:\s*ClipboardEvent\)\s*=>\s*\{([\s\S]*?)\n\s{4}\};/);
+  assert.ok(handlePasteMatch, 'handlePaste interceptor missing in StudentQuizRunner.tsx');
+  assert.ok(/e\.preventDefault\(\)/.test(handlePasteMatch[1]), 'handlePaste must call preventDefault()');
+  assert.ok(/e\.stopPropagation\(\)/.test(handlePasteMatch[1]), 'handlePaste must call stopPropagation()');
+  assert.ok(/flushClipboard\(\)/.test(handlePasteMatch[1]), 'handlePaste must flush clipboard');
+  assert.ok(!/recordViolation/.test(handlePasteMatch[1]), 'handlePaste must NOT call recordViolation()');
+
   // Assert silent Windows/Copilot handling does NOT recordViolation
   const winCopilotMatch = src.match(/if\s*\(\s*isExamMode\s*&&\s*isWindowsOrCopilotKey\(e\)\s*\)\s*\{([\s\S]*?)\}/);
   assert.ok(winCopilotMatch, 'isWindowsOrCopilotKey(e) block missing in StudentQuizRunner.tsx');
@@ -144,13 +170,20 @@ function runRunnerRegressionChecks() {
   assert.ok(/e\.stopPropagation\(\)/.test(winCopilotMatch[1]), 'Windows/Copilot handler must call stopPropagation()');
   assert.ok(!/recordViolation/.test(winCopilotMatch[1]), 'Windows/Copilot handler must NOT call recordViolation()');
 
-  // Assert capture-phase registration for copy event on both window and document
+  // Assert capture-phase registration for copy and paste events on both window and document
   assert.ok(
     src.includes("window.addEventListener('copy', handleCopy, { capture: true })") &&
       src.includes("document.addEventListener('copy', handleCopy, { capture: true })") &&
       src.includes("window.removeEventListener('copy', handleCopy, { capture: true })") &&
       src.includes("document.removeEventListener('copy', handleCopy, { capture: true })"),
     'copy listener must be registered & cleaned up in capture phase on both window and document'
+  );
+  assert.ok(
+    src.includes("window.addEventListener('paste', handlePaste, { capture: true })") &&
+      src.includes("document.addEventListener('paste', handlePaste, { capture: true })") &&
+      src.includes("window.removeEventListener('paste', handlePaste, { capture: true })") &&
+      src.includes("document.removeEventListener('paste', handlePaste, { capture: true })"),
+    'paste listener must be registered & cleaned up in capture phase on both window and document'
   );
 
   // Assert DevTools Inspector Ctrl+Shift+C still stays protected

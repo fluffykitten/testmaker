@@ -60,11 +60,13 @@ interface QuizResultsModalProps {
 
 export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [currentQuiz, setCurrentQuiz] = useState<PublishedQuiz>(quiz);
+  const effectiveTotalMarksRef = useRef<number>(quiz.totalMarks);
   const [isCurveEditorOpen, setIsCurveEditorOpen] = useState(false);
   const [curveSavedMsg, setCurveSavedMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setCurrentQuiz(quiz);
+    effectiveTotalMarksRef.current = quiz.totalMarks;
   }, [quiz]);
 
   const handleUpdateGradeThresholds = async (gradeThresholds: GradeThresholds) => {
@@ -176,10 +178,27 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [masterQuestions, setMasterQuestions] = useState<Question[]>([]);
   const masterQuestionsRef = useRef<Question[]>([]);
   const isAutoGradingRef = useRef<boolean>(false);
+  const refreshSeqRef = useRef<number>(0);
+  const latestManualEditAtRef = useRef<Record<string, number>>({});
+  const submissionsRef = useRef<StudentSubmission[]>(submissions);
+  submissionsRef.current = submissions;
 
   useEffect(() => {
     masterQuestionsRef.current = [];
-  }, [quiz.id, quiz.testId]);
+    effectiveTotalMarksRef.current = quiz.totalMarks;
+  }, [quiz.id, quiz.testId, quiz.totalMarks]);
+
+  useEffect(() => {
+    const clearCachedMasterQuestions = () => {
+      masterQuestionsRef.current = [];
+    };
+    window.addEventListener('tests_updated', clearCachedMasterQuestions);
+    window.addEventListener('questions_updated', clearCachedMasterQuestions);
+    return () => {
+      window.removeEventListener('tests_updated', clearCachedMasterQuestions);
+      window.removeEventListener('questions_updated', clearCachedMasterQuestions);
+    };
+  }, []);
 
   const loadQuizQuestionsWithOverrides = useCallback(async () => {
     if (masterQuestionsRef.current.length > 0) {
@@ -188,8 +207,26 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     if (quiz.testId) {
       const customRes = await fetchCustomTestWithQuestions(quiz.testId);
       if (customRes && customRes.questions && customRes.questions.length > 0) {
+        const computedMarks = customRes.questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+        const resolvedMarks =
+          computedMarks > 0
+            ? computedMarks
+            : (customRes.test.total_marks || effectiveTotalMarksRef.current || quiz.totalMarks);
         masterQuestionsRef.current = customRes.questions;
+        effectiveTotalMarksRef.current = resolvedMarks;
         setMasterQuestions(customRes.questions);
+        setCurrentQuiz((prev) => ({
+          ...prev,
+          totalMarks: resolvedMarks,
+          questionCount: customRes.questions.length,
+          questionIds: customRes.test.question_ids || prev.questionIds,
+          headerConfig: customRes.test.header_config
+            ? {
+                ...(prev.headerConfig || {}),
+                ...customRes.test.header_config,
+              }
+            : prev.headerConfig,
+        }));
         return customRes.questions;
       }
     }
@@ -202,7 +239,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       setMasterQuestions(fallbackQuestions);
     }
     return fallbackQuestions;
-  }, [quiz.testId, quiz.questionIds, quiz.headerConfig?.questionOverrides]);
+  }, [quiz.testId, quiz.totalMarks, quiz.questionIds, quiz.headerConfig?.questionOverrides]);
 
   // Keep the active candidate inspection pane in sync whenever submissions update
   useEffect(() => {
@@ -214,45 +251,74 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   }, [submissions]);
 
   const refreshSubmissions = useCallback(async () => {
+    const reqSeq = ++refreshSeqRef.current;
+    const reqStartedAt = Date.now();
     try {
-      if (submissions.length === 0) {
+      if (submissionsRef.current.length === 0) {
         setIsLoadingSubmissions(true);
       }
       const subs = await fetchSubmissionsFromSupabase(quiz.id, quiz.quizCode, quiz.testId);
-      setSubmissions(subs);
-      setSelectedSubmission((prev) =>
-        prev ? subs.find((s) => s.id === prev.id) || prev : null
-      );
+      if (reqSeq !== refreshSeqRef.current) return;
+
+      const preservePendingManualEdits = (incoming: StudentSubmission[]): StudentSubmission[] => {
+        const currentById = new Map(submissionsRef.current.map((s) => [s.id, s]));
+        return incoming.map((item) => {
+          const editedAt = latestManualEditAtRef.current[item.id] || 0;
+          if (editedAt > reqStartedAt) {
+            return currentById.get(item.id) || item;
+          }
+          return item;
+        });
+      };
+
+      const guardedSubs = preservePendingManualEdits(subs);
+      setSubmissions(guardedSubs);
+      setSelectedSubmission((prev) => {
+        if (!prev) return null;
+        if ((latestManualEditAtRef.current[prev.id] || 0) > reqStartedAt) return prev;
+        return guardedSubs.find((s) => s.id === prev.id) || prev;
+      });
 
       // Automatically evaluate any un-graded deterministic/MCQ items from Exam Mode
       // submissions (where candidate payloads were sanitized of mark schemes).
-      const hasPotentialUnresolved = subs.some(
+      const hasPotentialUnresolved = guardedSubs.some(
         (s) =>
           !s.questionResults ||
           s.questionResults.length === 0 ||
-          s.questionResults.some(
-            (qr) =>
-              qr.aiFeedback === 'Awaiting examiner AI evaluation' ||
-              !qr.correctAnswer ||
-              qr.correctAnswer === 'See mark scheme' ||
-              (qr.subQuestionResults || []).some(
-                (sr: any) => sr.feedback === 'Awaiting examiner AI evaluation'
-              )
-          )
+          s.questionResults.some((qr) => {
+            const isManualQ = Boolean(qr.manualOverride || qr.gradingMethod === 'teacher');
+            if (
+              !isManualQ &&
+              (qr.aiFeedback === 'Awaiting examiner AI evaluation' ||
+                !qr.correctAnswer ||
+                qr.correctAnswer === 'See mark scheme')
+            ) {
+              return true;
+            }
+            return (qr.subQuestionResults || []).some(
+              (sr: any) => !sr.manualOverride && sr.feedback === 'Awaiting examiner AI evaluation'
+            );
+          })
       );
 
       if (hasPotentialUnresolved && !isAutoGradingRef.current) {
         isAutoGradingRef.current = true;
         try {
           const questions = await loadQuizQuestionsWithOverrides();
+          if (reqSeq !== refreshSeqRef.current) return;
           if (questions && questions.length > 0) {
             let anyChanged = false;
             const autoGradedList: StudentSubmission[] = [];
-            for (const sub of subs) {
+            for (const sub of guardedSubs) {
+              if (reqSeq !== refreshSeqRef.current) break;
+              if ((latestManualEditAtRef.current[sub.id] || 0) > reqStartedAt) {
+                autoGradedList.push(submissionsRef.current.find((p) => p.id === sub.id) || sub);
+                continue;
+              }
               const { updatedSub, changed } = gradeSubmissionDeterministically(
                 sub,
                 questions,
-                quiz.totalMarks,
+                effectiveTotalMarksRef.current || quiz.totalMarks,
                 { onlyUnresolved: true }
               );
               if (changed) {
@@ -263,11 +329,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 autoGradedList.push(sub);
               }
             }
-            if (anyChanged) {
-              setSubmissions(autoGradedList);
-              setSelectedSubmission((prev) =>
-                prev ? autoGradedList.find((s) => s.id === prev.id) || prev : null
-              );
+            if (anyChanged && reqSeq === refreshSeqRef.current) {
+              const guardedAuto = preservePendingManualEdits(autoGradedList);
+              setSubmissions(guardedAuto);
+              setSelectedSubmission((prev) => {
+                if (!prev) return null;
+                if ((latestManualEditAtRef.current[prev.id] || 0) > reqStartedAt) return prev;
+                return guardedAuto.find((s) => s.id === prev.id) || prev;
+              });
             }
           }
         } catch (autoErr) {
@@ -281,9 +350,11 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     } catch (e) {
       console.warn('Failed to refresh submissions:', e);
     } finally {
-      setIsLoadingSubmissions(false);
+      if (reqSeq === refreshSeqRef.current) {
+        setIsLoadingSubmissions(false);
+      }
     }
-  }, [quiz.id, quiz.quizCode, quiz.testId, quiz.totalMarks, submissions.length, loadQuizQuestionsWithOverrides]);
+  }, [quiz.id, quiz.quizCode, quiz.testId, quiz.totalMarks, loadQuizQuestionsWithOverrides]);
 
   useEffect(() => {
     refreshSubmissions();
@@ -306,7 +377,19 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           schema: 'public',
           table: 'quiz_submissions',
         },
-        () => {
+        (payload: any) => {
+          const row = payload?.new || payload?.old;
+          if (row) {
+            const rowCode = String(row.quiz_code || '').toUpperCase();
+            const rowQuizId = row.quiz_id;
+            const rowTestId = row.test_id;
+            const codeMatches = Boolean(cleanCode && rowCode && rowCode === cleanCode);
+            const idMatches = Boolean(rowQuizId && rowQuizId === quiz.id);
+            const testMatches = Boolean(quiz.testId && rowTestId && rowTestId === quiz.testId);
+            if (!codeMatches && !idMatches && !testMatches && (rowCode || rowQuizId || rowTestId)) {
+              return;
+            }
+          }
           refreshSubmissions();
         }
       )
@@ -318,7 +401,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
       supabase.removeChannel(channel);
     };
-  }, [quiz.id, quiz.quizCode, refreshSubmissions]);
+  }, [quiz.id, quiz.quizCode, quiz.testId, refreshSubmissions]);
 
   const handleImportSubmit = async (rawText: string) => {
     const clean = rawText.trim();
@@ -483,7 +566,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           let aiFeedback: string | undefined;
           let missingPoints: string[] | undefined;
           let criteriaBreakdown: Array<{ point: string; achieved: boolean; examinerNote?: string }> | undefined;
-          let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+          let gradingMethod: QuestionSubmissionResult['gradingMethod'] = 'deterministic';
           const subResults: any[] = [];
 
           const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
@@ -503,6 +586,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             let totalSubEarned = 0;
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
+              const prevSub =
+                prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) ||
+                prevResult?.subQuestionResults?.[sqIdx];
               let subAns = resolveStoredAnswer({
                 rawAnswers,
                 answersByQuestionId: answersById,
@@ -512,7 +598,6 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 subIndex: sqIdx,
               });
               if (subAns === undefined || subAns === '') {
-                const prevSub = prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) || prevResult?.subQuestionResults?.[sqIdx];
                 if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
                   subAns = prevSub.studentAnswer;
                 } else {
@@ -520,6 +605,21 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 }
               }
               const subMarks = sq.marks || 1;
+
+              if (prevSub?.manualOverride) {
+                const keptEarned = Number(prevSub.earnedMarks) || 0;
+                totalSubEarned += keptEarned;
+                subResults.push({
+                  ...prevSub,
+                  subId: sq.sub_id,
+                  questionText: sq.question_text,
+                  studentAnswer: subAns,
+                  earnedMarks: keptEarned,
+                  maxMarks: subMarks,
+                  isCorrect: Boolean(prevSub.isCorrect),
+                });
+                continue;
+              }
 
               const det = gradeDeterministicAnswer(subAns, q, sqIdx);
               if (det.isHandled) {
@@ -558,6 +658,14 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             }
             qEarned = Math.min(totalSubEarned, qMarks);
             isCorrect = qEarned === qMarks;
+            if (
+              prevResult?.manualOverride ||
+              prevResult?.gradingMethod === 'teacher' ||
+              subResults.some((sr) => Boolean(sr.manualOverride))
+            ) {
+              gradingMethod = 'teacher';
+              aiFeedback = prevResult?.aiFeedback;
+            }
           }
           // Case B: Standalone Question (MCQ, Multiple-Select, Matching Table, or Structured)
           else {
@@ -575,32 +683,47 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               }
             }
             finalStudentAnswer = userAns;
-            const det = gradeDeterministicAnswer(userAns, q);
-            if (det.isHandled || isMcq) {
-              qEarned = det.earnedMarks;
-              isCorrect = det.isCorrect;
-              aiFeedback = det.feedback;
-              gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+            if (prevResult && (prevResult.manualOverride || prevResult.gradingMethod === 'teacher')) {
+              qEarned = Number(prevResult.earnedMarks) || 0;
+              isCorrect = Boolean(prevResult.isCorrect);
+              aiFeedback = prevResult.aiFeedback;
+              missingPoints = prevResult.missingPoints;
+              criteriaBreakdown = prevResult.criteriaBreakdown;
+              gradingMethod = 'teacher';
             } else {
-              setGradingProgress({
-                current: sIdx + 1,
-                total: targets.length,
-                text: `Evaluating ${sub.studentName}: Question ${idx + 1}...`,
-              });
-              const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
-              qEarned = aiRes.earnedMarks;
-              isCorrect = aiRes.isCorrect;
-              aiFeedback = aiRes.feedback;
-              missingPoints = aiRes.missingKeyPoints;
-              criteriaBreakdown = aiRes.criteriaResults;
-              gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
-              // Throttled delay to respect Gemini rate limits
-              await new Promise((r) => setTimeout(r, 1200));
+              const det = gradeDeterministicAnswer(userAns, q);
+              if (det.isHandled || isMcq) {
+                qEarned = det.earnedMarks;
+                isCorrect = det.isCorrect;
+                aiFeedback = det.feedback;
+                gradingMethod = det.matchType === 'mcq' ? 'mcq' : 'deterministic';
+              } else {
+                setGradingProgress({
+                  current: sIdx + 1,
+                  total: targets.length,
+                  text: `Evaluating ${sub.studentName}: Question ${idx + 1}...`,
+                });
+                const aiRes = await evaluateAnswerWithGemini(q, undefined, String(userAns));
+                qEarned = aiRes.earnedMarks;
+                isCorrect = aiRes.isCorrect;
+                aiFeedback = aiRes.feedback;
+                missingPoints = aiRes.missingKeyPoints;
+                criteriaBreakdown = aiRes.criteriaResults;
+                gradingMethod = aiRes.evaluatedBy === 'gemini' ? 'ai_gemini' : 'rule_fallback';
+                // Throttled delay to respect Gemini rate limits
+                await new Promise((r) => setTimeout(r, 1200));
+              }
             }
           }
 
           earnedMarks += qEarned;
           topicBreakdown[top].earnedMarks += qEarned;
+
+          const isManualQuestion = Boolean(
+            prevResult?.manualOverride ||
+              gradingMethod === 'teacher' ||
+              subResults.some((sr) => Boolean(sr.manualOverride))
+          );
 
           qResults.push({
             questionId: q.id,
@@ -618,6 +741,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
             missingPoints,
             criteriaBreakdown,
             gradingMethod,
+            manualOverride: isManualQuestion ? true : undefined,
             subQuestionResults: subResults.length > 0 ? subResults : undefined,
           });
         }
@@ -627,14 +751,20 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
         });
 
+        const hasManualTotalOverride = Boolean(sub.forensics?.manualTotalScoreOverride);
+        const finalScore = hasManualTotalOverride ? (Number(sub.score) || 0) : earnedMarks;
+        const finalTopicBreakdown =
+          hasManualTotalOverride && sub.topicBreakdown ? sub.topicBreakdown : topicBreakdown;
+        const resolvedTotalMarks = effectiveTotalMarksRef.current || currentQuiz.totalMarks || sub.totalMarks;
         const updatedSub: StudentSubmission = {
           ...sub,
-          score: earnedMarks,
-          totalMarks: quiz.totalMarks || sub.totalMarks,
-          percentage: (quiz.totalMarks || sub.totalMarks) > 0 ? Math.round((earnedMarks / (quiz.totalMarks || sub.totalMarks)) * 100) : 100,
+          score: finalScore,
+          totalMarks: resolvedTotalMarks,
+          percentage: resolvedTotalMarks > 0 ? Math.round((finalScore / resolvedTotalMarks) * 100) : 100,
           questionResults: qResults,
-          topicBreakdown,
+          topicBreakdown: finalTopicBreakdown,
           status: sub.status === 'published' ? 'published' : 'graded',
+          updatedAt: new Date().toISOString(),
         };
 
         await updateSubmission(updatedSub);
@@ -681,7 +811,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         const { updatedSub, preservedCount } = gradeSubmissionDeterministically(
           sub,
           questions,
-          quiz.totalMarks,
+          effectiveTotalMarksRef.current || quiz.totalMarks,
           { onlyUnresolved: false }
         );
 
@@ -917,10 +1047,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       updatedSubResults = qr.subQuestionResults.map((sub, idx) => {
         const subMax = sub.maxMarks || 1;
         const newSubEarned = Math.max(0, Math.min(subMax, Number(editSubMarksInput[idx] ?? sub.earnedMarks ?? 0)));
-        const prevSubEarned = Number(sub.earnedMarks) || 0;
-        const wasEdited = newSubEarned !== prevSubEarned;
         let nextFeedback = sub.feedback;
-        if (wasEdited && (!nextFeedback || nextFeedback === 'Awaiting examiner AI evaluation')) {
+        if (!nextFeedback || nextFeedback === 'Awaiting examiner AI evaluation') {
           nextFeedback = `Marked by teacher (${newSubEarned}/${subMax} mark${subMax !== 1 ? 's' : ''})`;
         }
         return {
@@ -928,6 +1056,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           earnedMarks: newSubEarned,
           isCorrect: newSubEarned >= subMax,
           feedback: nextFeedback,
+          manualOverride: true,
         };
       });
       finalQuestionEarned = Math.min(
@@ -950,6 +1079,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           earnedMarks: finalQuestionEarned,
           isCorrect: finalQuestionEarned >= q.maxMarks,
           aiFeedback: nextAiFeedback,
+          gradingMethod: 'teacher' as const,
+          manualOverride: true,
           subQuestionResults: updatedSubResults,
         };
       }
@@ -996,6 +1127,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         (q.subQuestionResults && q.subQuestionResults.some((sr) => sr.feedback === 'Awaiting examiner AI evaluation'))
     );
 
+    let nextForensics = selectedSubmission.forensics;
+    if (nextForensics?.manualTotalScoreOverride) {
+      nextForensics = { ...nextForensics };
+      delete nextForensics.manualTotalScoreOverride;
+    }
+
     const updatedSubmission: StudentSubmission = {
       ...selectedSubmission,
       score: newScore,
@@ -1003,9 +1140,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       questionResults: updatedQuestionResults,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
       topicBreakdown: updatedTopicBreakdown,
+      forensics: nextForensics,
       status: selectedSubmission.status === 'submitted' && !hasRemainingAwaitingAI ? 'graded' : selectedSubmission.status,
       updatedAt: new Date().toISOString(),
     };
+
+    latestManualEditAtRef.current[updatedSubmission.id] = Date.now();
 
     // Optimistic UI update: apply immediately so Save feels instantaneous
     setSelectedSubmission(updatedSubmission);
@@ -1016,10 +1156,11 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       setSavedQuestionId((curr) => (curr === qr.questionId ? null : curr));
     }, 2500);
 
-    // Sync to localStorage & Supabase in background
-    updateSubmission(updatedSubmission).catch((err) => {
-      console.warn('Background mark override sync warning:', err);
-    });
+    try {
+      await updateSubmission(updatedSubmission);
+    } catch (err) {
+      console.warn('Mark override sync warning:', err);
+    }
   };
 
   const handleSaveTotalScoreOverride = async () => {
@@ -1099,17 +1240,25 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       percentage: newPct,
       teacherAdjustedMarks: (selectedSubmission.teacherAdjustedMarks || 0) + diff,
       topicBreakdown: updatedTopicBreakdown,
+      forensics: {
+        ...(selectedSubmission.forensics || {}),
+        manualTotalScoreOverride: true,
+      },
       updatedAt: new Date().toISOString(),
     };
+
+    latestManualEditAtRef.current[updatedSubmission.id] = Date.now();
 
     // Optimistic UI update: apply immediately
     setSelectedSubmission(updatedSubmission);
     setSubmissions((prev) => prev.map((s) => (s.id === updatedSubmission.id ? updatedSubmission : s)));
     setIsEditingTotalScore(false);
 
-    updateSubmission(updatedSubmission).catch((err) => {
-      console.warn('Background total score override sync warning:', err);
-    });
+    try {
+      await updateSubmission(updatedSubmission);
+    } catch (err) {
+      console.warn('Total score override sync warning:', err);
+    }
   };
 
   const backdropDismiss = useBackdropDismiss(onClose);

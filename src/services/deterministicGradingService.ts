@@ -1590,7 +1590,7 @@ export function gradeSubmissionDeterministically(
     let isCorrect = false;
     let qEarned = 0;
     let feedback: string | undefined;
-    let gradingMethod: 'mcq' | 'deterministic' | 'ai_gemini' | 'rule_fallback' = 'deterministic';
+    let gradingMethod: QuestionSubmissionResult['gradingMethod'] = 'deterministic';
     const subResults: any[] = [];
 
     const prevResult = sub.questionResults?.find((r) => r.questionId === q.id) || sub.questionResults?.[idx];
@@ -1624,13 +1624,14 @@ export function gradeSubmissionDeterministically(
         }
         const subMarks = sq.marks || 1;
 
+        const isManualSub = Boolean(previousSub?.manualOverride);
         const isSubUnresolved =
           !previousSub ||
           previousSub.feedback === 'Awaiting examiner AI evaluation' ||
           !prevResult?.correctAnswer ||
           prevResult.correctAnswer === 'See mark scheme';
 
-        if (onlyUnresolved && !isSubUnresolved && previousSub) {
+        if ((isManualSub || (onlyUnresolved && !isSubUnresolved)) && previousSub) {
           preservedCount++;
           const keptEarned = Number(previousSub.earnedMarks) || 0;
           totalSubEarned += keptEarned;
@@ -1643,6 +1644,7 @@ export function gradeSubmissionDeterministically(
             maxMarks: subMarks,
             isCorrect: Boolean(previousSub.isCorrect),
             feedback: previousSub.feedback,
+            manualOverride: previousSub.manualOverride,
           });
           continue;
         }
@@ -1660,12 +1662,17 @@ export function gradeSubmissionDeterministically(
           maxMarks: subMarks,
           isCorrect: kept.isCorrect,
           feedback: kept.feedback ?? det.feedback,
+          manualOverride: previousSub?.manualOverride,
         });
       }
       qEarned = Math.min(totalSubEarned, qMarks);
       isCorrect = qEarned === qMarks;
       feedback = prevResult?.aiFeedback === 'Awaiting examiner AI evaluation' ? undefined : prevResult?.aiFeedback;
-      gradingMethod = prevResult?.gradingMethod || 'deterministic';
+      const anyManualSub = subResults.some((sr) => Boolean(sr.manualOverride));
+      const keepParentManual = Boolean(
+        prevResult?.manualOverride || prevResult?.gradingMethod === 'teacher' || anyManualSub
+      );
+      gradingMethod = keepParentManual ? 'teacher' : (prevResult?.gradingMethod || 'deterministic');
 
       earnedMarks += qEarned;
       topicBreakdown[top].earnedMarks += qEarned;
@@ -1691,6 +1698,7 @@ export function gradeSubmissionDeterministically(
         misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || prevResult?.misconceptions || [],
         aiFeedback: feedback,
         gradingMethod,
+        manualOverride: keepParentManual ? true : prevResult?.manualOverride,
         subQuestionResults: subResults.length > 0 ? subResults : undefined,
       });
     } else {
@@ -1708,18 +1716,21 @@ export function gradeSubmissionDeterministically(
         }
       }
 
+      const isManualQuestion = Boolean(prevResult?.manualOverride || prevResult?.gradingMethod === 'teacher');
       const isQuestionUnresolved =
         !prevResult ||
         prevResult.aiFeedback === 'Awaiting examiner AI evaluation' ||
         !prevResult.correctAnswer ||
         prevResult.correctAnswer === 'See mark scheme';
 
-      if (onlyUnresolved && !isQuestionUnresolved && prevResult) {
+      if ((isManualQuestion || (onlyUnresolved && !isQuestionUnresolved)) && prevResult) {
         preservedCount++;
         qEarned = Number(prevResult.earnedMarks) || 0;
         isCorrect = Boolean(prevResult.isCorrect);
         feedback = prevResult.aiFeedback;
-        gradingMethod = prevResult.gradingMethod || (isMcq ? 'mcq' : 'deterministic');
+        gradingMethod = isManualQuestion
+          ? (prevResult.gradingMethod || 'teacher')
+          : (prevResult.gradingMethod || (isMcq ? 'mcq' : 'deterministic'));
       } else {
         const det = gradeDeterministicAnswer(userAns, q);
         const kept = chooseRegradeMarks(det, prevResult);
@@ -1750,6 +1761,7 @@ export function gradeSubmissionDeterministically(
         misconceptions: (q as any).metadata?.misconceptions || (q as any).misconceptions || prevResult?.misconceptions || [],
         aiFeedback: feedback,
         gradingMethod,
+        manualOverride: isManualQuestion ? true : prevResult?.manualOverride,
         subQuestionResults: undefined,
       });
     }
@@ -1768,8 +1780,11 @@ export function gradeSubmissionDeterministically(
       )
   );
 
+  const hasManualTotalOverride = Boolean(sub.forensics?.manualTotalScoreOverride);
+  const finalScore = hasManualTotalOverride ? (Number(sub.score) || 0) : earnedMarks;
+  const finalTopicBreakdown = hasManualTotalOverride && sub.topicBreakdown ? sub.topicBreakdown : topicBreakdown;
   const totalQuizMarks = quizTotalMarks || sub.totalMarks;
-  const nextPercentage = totalQuizMarks > 0 ? Math.round((earnedMarks / totalQuizMarks) * 100) : 100;
+  const nextPercentage = totalQuizMarks > 0 ? Math.round((finalScore / totalQuizMarks) * 100) : 100;
   const nextStatus =
     sub.status === 'published'
       ? 'published'
@@ -1779,7 +1794,7 @@ export function gradeSubmissionDeterministically(
 
   const prevResults = sub.questionResults || [];
   let changed =
-    sub.score !== earnedMarks ||
+    sub.score !== finalScore ||
     sub.totalMarks !== totalQuizMarks ||
     sub.percentage !== nextPercentage ||
     (sub.status || 'submitted') !== nextStatus ||
@@ -1826,11 +1841,11 @@ export function gradeSubmissionDeterministically(
 
   const updatedSub: StudentSubmission = {
     ...sub,
-    score: earnedMarks,
+    score: finalScore,
     totalMarks: totalQuizMarks,
     percentage: nextPercentage,
     questionResults: qResults,
-    topicBreakdown,
+    topicBreakdown: finalTopicBreakdown,
     status: nextStatus,
     updatedAt: changed ? new Date().toISOString() : sub.updatedAt,
   };

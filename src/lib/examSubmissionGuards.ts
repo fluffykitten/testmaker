@@ -187,6 +187,8 @@ export interface PreviousMarkLike {
   isCorrect: boolean;
   feedback?: string;
   aiFeedback?: string;
+  manualOverride?: boolean;
+  gradingMethod?: string;
 }
 
 export interface RegradeChoice {
@@ -206,6 +208,15 @@ export function chooseRegradeMarks(
   det: DeterministicOutcomeLike,
   previous: PreviousMarkLike | null | undefined
 ): RegradeChoice {
+  if (previous && (previous.manualOverride || previous.gradingMethod === 'teacher')) {
+    return {
+      earnedMarks: Number(previous.earnedMarks) || 0,
+      isCorrect: Boolean(previous.isCorrect),
+      feedback: previous.feedback ?? previous.aiFeedback,
+      preserved: true,
+    };
+  }
+
   if (det.isHandled) {
     return {
       earnedMarks: det.earnedMarks,
@@ -344,8 +355,16 @@ export function sanitizeQuestionsForStudent(questions: Question[], stripAnswerKe
         })
       : q.sub_questions;
 
+    const preservedInsertResources =
+      Array.isArray((q as any).insert_resources) && (q as any).insert_resources.length > 0
+        ? (q as any).insert_resources
+        : Array.isArray((q.mark_scheme as any)?._insert_resources) && (q.mark_scheme as any)._insert_resources.length > 0
+          ? (q.mark_scheme as any)._insert_resources
+          : undefined;
+
     const clean: any = {
       ...q,
+      ...(preservedInsertResources ? { insert_resources: preservedInsertResources } : {}),
       mark_scheme: null,
       scratchpad: undefined,
       sub_questions: subs,

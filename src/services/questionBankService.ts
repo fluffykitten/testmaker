@@ -1267,6 +1267,13 @@ export function normalizeQuestionRecord(q: any): Question {
   const cambridgeHubUrl = q.cambridge_hub_url || q.mark_scheme?._cambridge_hub_url || null;
   const cambridgeMsHubUrl = q.cambridge_ms_hub_url || q.mark_scheme?._cambridge_ms_hub_url || null;
   const insertPdfUrl = q.insert_pdf_url || q.mark_scheme?._insert_pdf_url || null;
+  const rawInsertResources =
+    q.insert_resources ||
+    (typeof q.mark_scheme === 'object' && q.mark_scheme !== null ? q.mark_scheme._insert_resources : null) ||
+    null;
+  const insertResources = Array.isArray(rawInsertResources) && rawInsertResources.length > 0
+    ? rawInsertResources
+    : null;
   const pageNumber = q.page_number !== undefined && q.page_number !== null ? q.page_number : (q.mark_scheme?._page_number ?? null);
 
   const normalizedSubs = Array.isArray(q.sub_questions)
@@ -1285,6 +1292,7 @@ export function normalizeQuestionRecord(q: any): Question {
     cambridge_hub_url: cambridgeHubUrl,
     cambridge_ms_hub_url: cambridgeMsHubUrl,
     ...(insertPdfUrl ? { insert_pdf_url: insertPdfUrl } : {}),
+    ...(insertResources ? { insert_resources: insertResources } : {}),
     page_number: pageNumber,
     svg_content: svgContent,
     ai_diagram_prompt: aiDiagramPrompt,
@@ -1344,6 +1352,7 @@ export async function updateQuestion(
     payload.cambridge_hub_url !== undefined ||
     payload.cambridge_ms_hub_url !== undefined ||
     payload.insert_pdf_url !== undefined ||
+    payload.insert_resources !== undefined ||
     payload.page_number !== undefined
   ) {
     const baseMarkScheme =
@@ -1392,6 +1401,11 @@ export async function updateQuestion(
     } else if (payload.insert_pdf_url === null) {
       delete baseMarkScheme._insert_pdf_url;
     }
+    if (payload.insert_resources && Array.isArray(payload.insert_resources) && payload.insert_resources.length > 0) {
+      baseMarkScheme._insert_resources = payload.insert_resources;
+    } else if (payload.insert_resources === null) {
+      delete baseMarkScheme._insert_resources;
+    }
     if (payload.page_number !== undefined) baseMarkScheme._page_number = payload.page_number;
 
     payload.mark_scheme = baseMarkScheme;
@@ -1408,6 +1422,7 @@ export async function updateQuestion(
   delete payload.cambridge_hub_url;
   delete payload.cambridge_ms_hub_url;
   delete payload.insert_pdf_url;
+  delete payload.insert_resources;
   delete payload.id;
   delete payload.created_at;
 
@@ -1550,6 +1565,9 @@ export async function createQuestion(
   }
   if (questionData.insert_pdf_url) {
     ensureMarkScheme()._insert_pdf_url = questionData.insert_pdf_url;
+  }
+  if (questionData.insert_resources && questionData.insert_resources.length > 0) {
+    ensureMarkScheme()._insert_resources = questionData.insert_resources;
   }
   if (questionData.page_number !== undefined && questionData.page_number !== null) {
     ensureMarkScheme()._page_number = questionData.page_number;

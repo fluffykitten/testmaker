@@ -125,6 +125,7 @@ export interface InsertResourceItem {
   title: string;            // e.g. "Settlement map of Area X" or "Synoptic weather chart"
   page_number: number;
   diagram_url?: string | null;
+  svg_content?: string | null;
   text_content?: string | null;
   target_questions?: string[]; // e.g. ["1(a)", "1(b)"]
 }
@@ -214,6 +215,7 @@ export interface Question {
   diagram_source?: 'qp' | 'insert' | null; // Source document for diagram
   resource_ref?: string | null;     // Reference to Insert figure/photo (e.g. "Fig. 1.1")
   insert_page_number?: number | null;
+  insert_resources?: InsertResourceItem[] | null; // Preserved insert/booklet catalog items for candidate view
   audio_url?: string | null;        // Supabase Storage audio public URL
   audio_metadata?: AudioMetadata | null; // Audio play limits, transcript, duration
   options?: string[] | null;        // Multiple choice options [A, B, C, D]

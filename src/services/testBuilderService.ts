@@ -2,7 +2,7 @@
 // Service for saving, retrieving, and managing custom exam tests in Supabase
 // with robust local-storage persistence fallback.
 
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import { inferTopicFromContent, normalizeQuestionRecord } from './questionBankService';
 import { PILOT_CUSTOM_TEST, PILOT_EXAM_ID } from '../data/pilotExam170Data';
@@ -30,6 +30,7 @@ export interface ExamHeaderConfig {
    * When true, automatic question-based subject inference is strictly disabled.
    */
   isUserCustomized?: boolean;
+  updatedAt?: string;
 }
 
 export interface SaveTestPayload {
@@ -145,13 +146,42 @@ function saveLocalTest(test: CustomTest) {
 
 type StoredCloudTestHeader = ExamHeaderConfig & {
   _savedQuestionIds?: string[];
+  _savedTotalMarks?: number;
+  _updatedAt?: string;
 };
+
+async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallbackValue: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallbackValue), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function parseTimestampMs(iso?: string | null): number {
+  if (!iso) return 0;
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 function serializeHeaderForCloud(
   headerConfig?: ExamHeaderConfig,
-  questionIds?: string[]
+  questionIds?: string[],
+  testId?: string,
+  totalMarks?: number
 ): StoredCloudTestHeader | undefined {
-  if (!headerConfig && (!questionIds || questionIds.every((id) => UUID_REGEX.test(id)))) {
+  const hasNonUuidQuestions = Boolean(
+    Array.isArray(questionIds) && questionIds.length > 0 && questionIds.some((id) => !UUID_REGEX.test(id))
+  );
+  const isNonUuidTest = Boolean(testId && !UUID_REGEX.test(testId));
+
+  if (!headerConfig && !hasNonUuidQuestions && !isNonUuidTest && typeof totalMarks !== 'number') {
     return undefined;
   }
   const baseHeader: ExamHeaderConfig = headerConfig || {
@@ -171,38 +201,65 @@ function serializeHeaderForCloud(
     header_config: baseHeader,
   }).header_config as StoredCloudTestHeader;
 
-  // Preserve full ordered IDs (including non-UUID custom/local/pilot IDs) since custom_tests.question_ids is UUID[]
-  if (Array.isArray(questionIds) && questionIds.length > 0 && questionIds.some((id) => !UUID_REGEX.test(id))) {
+  // Preserve full ordered IDs when custom/non-UUID IDs are used or when the test row itself is non-UUID
+  if (Array.isArray(questionIds) && questionIds.length > 0 && (hasNonUuidQuestions || isNonUuidTest)) {
     compacted._savedQuestionIds = questionIds;
   } else if (compacted && '_savedQuestionIds' in compacted) {
     delete compacted._savedQuestionIds;
   }
+
+  if (typeof totalMarks === 'number' && Number.isFinite(totalMarks)) {
+    compacted._savedTotalMarks = totalMarks;
+  }
+
+  compacted._updatedAt = headerConfig?.updatedAt || compacted.updatedAt || new Date().toISOString();
+  compacted.updatedAt = compacted._updatedAt;
   return compacted;
 }
 
-function hydrateTestWithCloudHeader(
+export function hydrateTestWithCloudHeader(
   test: CustomTest,
-  rawHeader?: StoredCloudTestHeader
+  rawHeader?: StoredCloudTestHeader,
+  options: { replaceHeader?: boolean } = {}
 ): CustomTest {
   if (!rawHeader) return test;
-  const { _savedQuestionIds, ...cleanHeader } = rawHeader;
+  const { _savedQuestionIds, _savedTotalMarks, _updatedAt, ...cleanHeader } = rawHeader;
+  const effectiveUpdatedAt = _updatedAt || cleanHeader.updatedAt || test.header_config?.updatedAt;
   const existingOverrides = test.header_config?.questionOverrides || {};
   const cloudOverrides = cleanHeader.questionOverrides || {};
-  const mergedHeader: ExamHeaderConfig = {
-    ...cleanHeader,
-    ...(test.header_config || {}),
-    questionOverrides:
-      Object.keys(cloudOverrides).length > 0 || Object.keys(existingOverrides).length > 0
-        ? { ...cloudOverrides, ...existingOverrides }
-        : undefined,
-  };
+
+  let mergedHeader: ExamHeaderConfig;
+  if (options.replaceHeader) {
+    mergedHeader = {
+      ...cleanHeader,
+      updatedAt: effectiveUpdatedAt,
+      questionOverrides: Object.keys(cloudOverrides).length > 0 ? cloudOverrides : undefined,
+    };
+  } else {
+    mergedHeader = {
+      ...cleanHeader,
+      ...(test.header_config || {}),
+      updatedAt: effectiveUpdatedAt,
+      questionOverrides:
+        Object.keys(cloudOverrides).length > 0 || Object.keys(existingOverrides).length > 0
+          ? { ...cloudOverrides, ...existingOverrides }
+          : undefined,
+    };
+  }
+
   const resolvedQuestionIds =
     Array.isArray(_savedQuestionIds) && _savedQuestionIds.length > 0
       ? _savedQuestionIds
       : test.question_ids;
 
+  const resolvedTotalMarks =
+    typeof _savedTotalMarks === 'number' && _savedTotalMarks > 0
+      ? _savedTotalMarks
+      : test.total_marks;
+
   return {
     ...test,
+    total_marks: resolvedTotalMarks,
     question_ids: resolvedQuestionIds,
     header_config: mergedHeader,
   };
@@ -211,10 +268,11 @@ function hydrateTestWithCloudHeader(
 async function saveCloudTestHeaderConfig(
   testId: string,
   headerConfig?: ExamHeaderConfig,
-  questionIds?: string[]
+  questionIds?: string[],
+  totalMarks?: number
 ): Promise<void> {
-  const payload = serializeHeaderForCloud(headerConfig, questionIds);
-  if (!testId || !payload) return;
+  const payload = serializeHeaderForCloud(headerConfig, questionIds, testId, totalMarks);
+  if (!testId || !payload || !isSupabaseConfigured()) return;
   try {
     await (supabase.from('app_config' as any) as any).upsert(
       {
@@ -229,12 +287,16 @@ async function saveCloudTestHeaderConfig(
 }
 
 async function fetchCloudTestHeaderConfig(testId: string): Promise<StoredCloudTestHeader | undefined> {
-  if (!testId) return undefined;
+  if (!testId || !isSupabaseConfigured()) return undefined;
   try {
-    const { data, error } = await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', `custom_test_header_${testId}`)
-      .maybeSingle();
+    const { data, error } = await withTimeout<{ data: { value: string } | null; error: any }>(
+      (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', `custom_test_header_${testId}`)
+        .maybeSingle(),
+      4000,
+      { data: null, error: null }
+    );
     if (!error && data?.value) {
       return JSON.parse(data.value) as StoredCloudTestHeader;
     }
@@ -339,6 +401,51 @@ function inferSubjectFromText(text: string): string | null {
   return null;
 }
 
+function syncLocalPublishedQuizzesWithSavedTest(savedTest: CustomTest): void {
+  if (typeof localStorage === 'undefined' || !savedTest?.id) return;
+  try {
+    const raw = localStorage.getItem('fluffykitten_published_quizzes');
+    if (!raw) return;
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list) || list.length === 0) return;
+
+    let changed = false;
+    const nextIds = Array.isArray(savedTest.question_ids) ? savedTest.question_ids : [];
+    const nextTotalMarks = Number(savedTest.total_marks) || 0;
+    const updatedAt = new Date().toISOString();
+
+    const updatedList = list.map((q: any) => {
+      if (!q || q.testId !== savedTest.id) return q;
+      changed = true;
+      const nextHeader = q.headerConfig
+        ? {
+            ...q.headerConfig,
+            ...(savedTest.header_config || {}),
+            title: q.headerConfig.title || q.title || savedTest.title,
+            subject: q.subject || q.headerConfig.subject || savedTest.header_config?.subject,
+            durationMinutes: q.durationMinutes || q.headerConfig.durationMinutes,
+            teacherPin: q.teacherPin || q.headerConfig.teacherPin,
+          }
+        : savedTest.header_config;
+
+      return {
+        ...q,
+        questionIds: nextIds,
+        questionCount: nextIds.length,
+        totalMarks: nextTotalMarks > 0 ? nextTotalMarks : q.totalMarks,
+        headerConfig: nextHeader,
+        updatedAt,
+      };
+    });
+
+    if (changed) {
+      localStorage.setItem('fluffykitten_published_quizzes', JSON.stringify(updatedList));
+    }
+  } catch (err) {
+    console.warn('Could not sync local published quiz cache for test update:', err);
+  }
+}
+
 /**
  * Saves a new custom exam test to Supabase with automatic local storage fallback.
  * Sends only schema-supported columns & UUID question_ids to custom_tests (no 400 errors)
@@ -349,9 +456,20 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
     ? crypto.randomUUID()
     : `test-${Date.now()}`;
 
+  const nowIso = new Date().toISOString();
   const safeTitle = (payload.title || 'Custom Assessment').trim().slice(0, 255);
   const fullQuestionIds = Array.isArray(payload.questionIds) ? payload.questionIds : [];
   const validUuidQuestionIds = fullQuestionIds.filter((id) => UUID_REGEX.test(id));
+  const stampedHeaderConfig: ExamHeaderConfig = {
+    title: payload.headerConfig?.title || safeTitle,
+    schoolName: payload.headerConfig?.schoolName || '',
+    subject: payload.headerConfig?.subject || 'General',
+    subjectCode: payload.headerConfig?.subjectCode || '',
+    durationMinutes: payload.headerConfig?.durationMinutes || 45,
+    instructions: payload.headerConfig?.instructions || '',
+    ...(payload.headerConfig || {}),
+    updatedAt: nowIso,
+  };
 
   const localRecord: CustomTest = {
     id: localId,
@@ -359,47 +477,49 @@ export async function saveCustomTest(payload: SaveTestPayload): Promise<CustomTe
     title: safeTitle,
     total_marks: payload.totalMarks,
     question_ids: fullQuestionIds,
-    created_at: new Date().toISOString(),
-    header_config: payload.headerConfig,
+    created_at: nowIso,
+    header_config: stampedHeaderConfig,
   };
 
-  try {
-    const { data, error } = await supabase
-      .from('custom_tests')
-      .insert([
-        {
-          title: safeTitle,
-          total_marks: payload.totalMarks,
-          question_ids: validUuidQuestionIds,
-        },
-      ] as any)
-      .select('*')
-      .maybeSingle();
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('custom_tests')
+        .insert([
+          {
+            title: safeTitle,
+            total_marks: payload.totalMarks,
+            question_ids: validUuidQuestionIds,
+          },
+        ] as any)
+        .select('*')
+        .maybeSingle();
 
-    if (!error && data) {
-      const saved: CustomTest = {
-        ...(data as CustomTest),
-        question_ids: fullQuestionIds,
-        header_config: payload.headerConfig || (data as any).header_config,
-      };
-      saveLocalTest(saved);
-      clearCustomTestsCache();
-      await saveCloudTestHeaderConfig(saved.id, payload.headerConfig, fullQuestionIds);
-      if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
-      return saved;
-    }
+      if (!error && data) {
+        const saved: CustomTest = {
+          ...(data as CustomTest),
+          question_ids: fullQuestionIds,
+          header_config: stampedHeaderConfig,
+        };
+        saveLocalTest(saved);
+        clearCustomTestsCache();
+        await saveCloudTestHeaderConfig(saved.id, stampedHeaderConfig, fullQuestionIds, payload.totalMarks);
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
+        return saved;
+      }
 
-    if (error) {
-      console.warn('Supabase insert notice, persisting to local storage:', error.message);
+      if (error) {
+        console.warn('Supabase insert notice, persisting to local storage:', error.message);
+      }
+    } catch (err) {
+      console.warn('Supabase insert failed, persisting to local storage:', err);
     }
-  } catch (err) {
-    console.warn('Supabase insert failed, persisting to local storage:', err);
   }
 
   // Fallback to local storage + cloud header store
   saveLocalTest(localRecord);
   clearCustomTestsCache();
-  await saveCloudTestHeaderConfig(localRecord.id, payload.headerConfig, fullQuestionIds);
+  await saveCloudTestHeaderConfig(localRecord.id, stampedHeaderConfig, fullQuestionIds, payload.totalMarks);
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
   return localRecord;
 }
@@ -412,9 +532,21 @@ export async function updateCustomTest(
   payload: SaveTestPayload
 ): Promise<CustomTest> {
   const existingLocal = getLocalTests().find((t) => t.id === testId);
+  const nowIso = new Date().toISOString();
   const safeTitle = (payload.title || 'Custom Assessment').trim().slice(0, 255);
   const fullQuestionIds = Array.isArray(payload.questionIds) ? payload.questionIds : [];
   const validUuidQuestionIds = fullQuestionIds.filter((id) => UUID_REGEX.test(id));
+  const mergedBaseHeader = payload.headerConfig || existingLocal?.header_config;
+  const stampedHeaderConfig: ExamHeaderConfig = {
+    title: mergedBaseHeader?.title || safeTitle,
+    schoolName: mergedBaseHeader?.schoolName || '',
+    subject: mergedBaseHeader?.subject || 'General',
+    subjectCode: mergedBaseHeader?.subjectCode || '',
+    durationMinutes: mergedBaseHeader?.durationMinutes || 45,
+    instructions: mergedBaseHeader?.instructions || '',
+    ...(mergedBaseHeader || {}),
+    updatedAt: nowIso,
+  };
 
   const updatedRecord: CustomTest = {
     id: testId,
@@ -422,46 +554,50 @@ export async function updateCustomTest(
     title: safeTitle,
     total_marks: payload.totalMarks,
     question_ids: fullQuestionIds,
-    created_at: existingLocal?.created_at || new Date().toISOString(),
-    header_config: payload.headerConfig,
+    created_at: existingLocal?.created_at || nowIso,
+    header_config: stampedHeaderConfig,
   };
 
-  try {
-    if (UUID_REGEX.test(testId)) {
-      const { data, error } = await (supabase.from('custom_tests' as any) as any)
-        .update({
-          title: safeTitle,
-          total_marks: payload.totalMarks,
-          question_ids: validUuidQuestionIds,
-        })
-        .eq('id', testId)
-        .select('*')
-        .maybeSingle();
+  if (isSupabaseConfigured()) {
+    try {
+      if (UUID_REGEX.test(testId)) {
+        const { data, error } = await (supabase.from('custom_tests' as any) as any)
+          .update({
+            title: safeTitle,
+            total_marks: payload.totalMarks,
+            question_ids: validUuidQuestionIds,
+          })
+          .eq('id', testId)
+          .select('*')
+          .maybeSingle();
 
-      if (!error && data) {
-        const saved: CustomTest = {
-          ...(data as CustomTest),
-          question_ids: fullQuestionIds,
-          header_config: payload.headerConfig || (data as any).header_config,
-        };
-        saveLocalTest(saved);
-        clearCustomTestsCache();
-        await saveCloudTestHeaderConfig(saved.id, payload.headerConfig, fullQuestionIds);
-        if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
-        return saved;
-      }
+        if (!error && data) {
+          const saved: CustomTest = {
+            ...(data as CustomTest),
+            question_ids: fullQuestionIds,
+            header_config: stampedHeaderConfig,
+          };
+          saveLocalTest(saved);
+          syncLocalPublishedQuizzesWithSavedTest(saved);
+          clearCustomTestsCache();
+          await saveCloudTestHeaderConfig(saved.id, stampedHeaderConfig, fullQuestionIds, payload.totalMarks);
+          if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
+          return saved;
+        }
 
-      if (error) {
-        console.warn('Supabase update notice, updating local storage:', error.message);
+        if (error) {
+          console.warn('Supabase update notice, updating local storage:', error.message);
+        }
       }
+    } catch (err) {
+      console.warn('Supabase update failed, updating local storage:', err);
     }
-  } catch (err) {
-    console.warn('Supabase update failed, updating local storage:', err);
   }
 
   saveLocalTest(updatedRecord);
+  syncLocalPublishedQuizzesWithSavedTest(updatedRecord);
   clearCustomTestsCache();
-  await saveCloudTestHeaderConfig(updatedRecord.id, payload.headerConfig, fullQuestionIds);
+  await saveCloudTestHeaderConfig(updatedRecord.id, stampedHeaderConfig, fullQuestionIds, payload.totalMarks);
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('tests_updated'));
   return updatedRecord;
 }
@@ -556,58 +692,51 @@ export async function fetchCustomTests(): Promise<CustomTest[]> {
         }
       }
 
+      // Hydrate cloud-persisted header_config for ALL cloud tests first so timestamps & overrides are authoritative
+      const cloudIds = Array.from(mergedMap.keys());
+      const cloudHeaders = await fetchCloudTestHeadersBatch(cloudIds);
+      cloudHeaders.forEach((hdr, id) => {
+        const existing = mergedMap.get(id);
+        if (existing) {
+          mergedMap.set(id, hydrateTestWithCloudHeader(existing, hdr, { replaceHeader: true }));
+        }
+      });
+
       localTests.forEach((t) => {
         if (deletedIds.has(t.id)) return;
         if (!mergedMap.has(t.id)) {
           mergedMap.set(t.id, t);
-        } else {
-          // Preserve local header_config, custom question_ids, and questionOverrides if cloud record is missing them
-          const existing = mergedMap.get(t.id)!;
-          const preservedQuestionIds =
-            Array.isArray(t.question_ids) &&
-            t.question_ids.length > (existing.question_ids?.length || 0)
-              ? t.question_ids
-              : existing.question_ids;
+          return;
+        }
+        const existing = mergedMap.get(t.id)!;
+        const cloudHdr = cloudHeaders.get(t.id);
+        const localTs = parseTimestampMs(t.header_config?.updatedAt);
+        const cloudTs = parseTimestampMs(cloudHdr?._updatedAt || cloudHdr?.updatedAt);
 
-          if (!existing.header_config && t.header_config) {
-            mergedMap.set(t.id, {
-              ...existing,
-              question_ids: preservedQuestionIds,
-              header_config: t.header_config,
-            });
-          } else if (existing.header_config && t.header_config) {
-            mergedMap.set(t.id, {
-              ...existing,
-              question_ids: preservedQuestionIds,
-              header_config: {
-                ...existing.header_config,
-                ...t.header_config,
-                questionOverrides: {
-                  ...(existing.header_config.questionOverrides || {}),
-                  ...(t.header_config.questionOverrides || {}),
-                },
-              },
-            });
-          } else if (preservedQuestionIds !== existing.question_ids) {
-            mergedMap.set(t.id, { ...existing, question_ids: preservedQuestionIds });
-          }
+        // Only keep local copy over cloud when local has a strictly newer offline edit timestamp
+        if (localTs > cloudTs) {
+          mergedMap.set(t.id, t);
+          return;
+        }
+
+        // Legacy fallback only: if cloud has neither header_config nor saved non-UUID IDs, keep local metadata/custom IDs
+        const hasLocalCustomIds =
+          Array.isArray(t.question_ids) && t.question_ids.some((id) => !UUID_REGEX.test(id));
+        const preservedQuestionIds =
+          hasLocalCustomIds && !cloudHdr?._savedQuestionIds && t.question_ids.length >= (existing.question_ids?.length || 0)
+            ? t.question_ids
+            : existing.question_ids;
+
+        if (!existing.header_config && t.header_config) {
+          mergedMap.set(t.id, {
+            ...existing,
+            question_ids: preservedQuestionIds,
+            header_config: t.header_config,
+          });
+        } else if (preservedQuestionIds !== existing.question_ids) {
+          mergedMap.set(t.id, { ...existing, question_ids: preservedQuestionIds });
         }
       });
-
-      // Hydrate cloud-persisted header_config (subject, custom question IDs, overrides) for any rows missing local headers
-      const idsMissingHeaders = Array.from(mergedMap.values())
-        .filter((t) => !t.header_config)
-        .map((t) => t.id);
-
-      if (idsMissingHeaders.length > 0) {
-        const cloudHeaders = await fetchCloudTestHeadersBatch(idsMissingHeaders);
-        cloudHeaders.forEach((hdr, id) => {
-          const existing = mergedMap.get(id);
-          if (existing) {
-            mergedMap.set(id, hydrateTestWithCloudHeader(existing, hdr));
-          }
-        });
-      }
 
       const mergedList = Array.from(mergedMap.values());
 
@@ -843,36 +972,84 @@ export async function fetchCustomTestsWithMetadata(): Promise<CustomTestWithDeta
 }
 
 /**
- * Fetches a single custom test and resolves all questions in their exact saved order
+ * Fetches a single custom test and resolves all questions in their exact saved order.
+ * Prefers the latest cloud saved test + header config whenever available, falling back
+ * to local storage when offline or when a newer local edit has not yet synced.
  */
 export async function fetchCustomTestWithQuestions(
   testId: string
 ): Promise<{ test: CustomTest; questions: Question[] } | null> {
-  let test: CustomTest | undefined = getLocalTests().find((t) => t.id === testId);
+  if (!testId || getDeletedTestIds().has(testId.trim())) {
+    return null;
+  }
 
-  if (!test && UUID_REGEX.test(testId)) {
+  const localTest = getLocalTests().find((t) => t.id === testId);
+  let cloudTestRow: CustomTest | null = null;
+  let cloudHeader: StoredCloudTestHeader | undefined;
+
+  if (isSupabaseConfigured()) {
     try {
-      const { data: testData } = await supabase
-        .from('custom_tests')
-        .select('*')
-        .eq('id', testId)
-        .maybeSingle();
-      if (testData) test = testData as CustomTest;
+      const [rowRes, hdrRes] = await Promise.all([
+        UUID_REGEX.test(testId)
+          ? withTimeout<{ data: any; error: any }>(
+              supabase
+                .from('custom_tests')
+                .select('*')
+                .eq('id', testId)
+                .maybeSingle(),
+              4500,
+              { data: null, error: null }
+            )
+          : Promise.resolve({ data: null, error: null }),
+        fetchCloudTestHeaderConfig(testId),
+      ]);
+      if (!rowRes?.error && rowRes?.data) {
+        cloudTestRow = rowRes.data as CustomTest;
+      }
+      cloudHeader = hdrRes;
     } catch {
-      // ignore
+      // ignore and fall back to localTest
     }
+  }
+
+  const localTs = parseTimestampMs(localTest?.header_config?.updatedAt);
+  const cloudTs = parseTimestampMs(cloudHeader?._updatedAt || cloudHeader?.updatedAt);
+
+  let test: CustomTest | undefined;
+  if (localTest && localTs > cloudTs) {
+    test = localTest;
+  } else if (cloudTestRow || cloudHeader) {
+    const baseCloudTest: CustomTest = cloudTestRow
+      ? {
+          ...cloudTestRow,
+          // Keep custom non-UUID question_ids only if cloud header didn't store _savedQuestionIds yet
+          question_ids:
+            !cloudHeader?._savedQuestionIds &&
+            localTest?.question_ids?.some((id) => !UUID_REGEX.test(id))
+              ? localTest.question_ids
+              : cloudTestRow.question_ids,
+          header_config: !cloudHeader && !cloudTestRow.header_config ? localTest?.header_config : cloudTestRow.header_config,
+        }
+      : {
+          ...(localTest || {
+            id: testId,
+            user_id: null,
+            title: cloudHeader?.title || 'Custom Assessment',
+            total_marks: cloudHeader?._savedTotalMarks || 0,
+            question_ids: cloudHeader?._savedQuestionIds || [],
+            created_at: new Date().toISOString(),
+          }),
+        };
+
+    test = cloudHeader
+      ? hydrateTestWithCloudHeader(baseCloudTest, cloudHeader, { replaceHeader: true })
+      : baseCloudTest;
+    saveLocalTest(test);
+  } else {
+    test = localTest;
   }
 
   if (!test) return null;
-
-  // Recover cloud-synced header_config (including custom question_ids & questionOverrides) if missing locally
-  if (!test.header_config || !test.header_config.questionOverrides) {
-    const cloudHeader = await fetchCloudTestHeaderConfig(testId);
-    if (cloudHeader) {
-      test = hydrateTestWithCloudHeader(test, cloudHeader);
-      saveLocalTest(test);
-    }
-  }
 
   const questionIds = test.question_ids || [];
 
@@ -891,14 +1068,18 @@ export async function fetchCustomTestWithQuestions(
   }
 
   const questionsMap = new Map<string, Question>();
-  if (chunks.length > 0) {
+  if (chunks.length > 0 && isSupabaseConfigured()) {
     try {
       const results = await Promise.all(
         chunks.map((chunk) =>
-          supabase
-            .from('questions')
-            .select('*')
-            .in('id', chunk)
+          withTimeout<{ data: any; error: any }>(
+            supabase
+              .from('questions')
+              .select('*')
+              .in('id', chunk),
+            5000,
+            { data: null, error: null }
+          )
         )
       );
 
@@ -929,6 +1110,13 @@ export async function fetchCustomTestWithQuestions(
       orderedQuestions.push(found);
     }
   });
+
+  if (orderedQuestions.length > 0 && (!Number(test.total_marks) || orderedQuestions.length !== questionIds.length)) {
+    const computedMarks = orderedQuestions.reduce((sum, q) => sum + (Number(q.marks) || 0), 0);
+    if (computedMarks > 0) {
+      test = { ...test, total_marks: computedMarks };
+    }
+  }
 
   return { test, questions: orderedQuestions };
 }
