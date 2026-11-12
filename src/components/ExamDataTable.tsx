@@ -1,5 +1,6 @@
 import React from 'react';
 import type { ExamDataTable as ExamDataTableType, ExamDataTableCell } from '../types/database';
+import { isBlankTableCell } from '../lib/dataTableUtils';
 import { ExamMathText } from './ExamMathText';
 import './ExamDataTable.css';
 
@@ -67,11 +68,7 @@ export const ExamDataTable: React.FC<ExamDataTableProps> = ({
                           ? (cell as ExamDataTableCell)
                           : {
                               value: String(cell ?? ''),
-                              is_blank:
-                                typeof cell === 'string' &&
-                                (/^\[\s*\]$/.test(cell.trim()) ||
-                                  cell.includes('[       ]') ||
-                                  cell.includes('[   ]')),
+                              is_blank: isBlankTableCell(cell),
                             };
 
                         const isBlank = Boolean(cellObj.is_blank);
@@ -92,6 +89,10 @@ export const ExamDataTable: React.FC<ExamDataTableProps> = ({
                                           : 'is-incorrect'
                                         : ''
                                     }`}
+                                    dir="auto"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                    aria-label={`${tableId} row ${rIdx + 1} ${tbl.headers[cIdx] || `column ${cIdx + 1}`}`}
                                     placeholder="Enter answer…"
                                     value={studentVal}
                                     onChange={(e) => onCellChange?.(cellKey, e.target.value)}

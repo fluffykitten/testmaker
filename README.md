@@ -167,6 +167,20 @@ npm run mobile:ios
 
 ## 📜 Changelog
 
+### [v.2.4.8] — Fillable Data Tables, Inline Term-Selection Cloze & Responsive Exam Header Toolbar
+- **Fillable `data_tables` in Exam & Practice Modes**:
+  - Wired [`ExamDataTable`](src/components/ExamDataTable.tsx) and [`dataTableUtils.ts`](src/lib/dataTableUtils.ts) into [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) for both main questions and sub-questions (`data_tables`), stripping duplicate Markdown tables where applicable and suppressing redundant textareas on standalone or table-owning sub-parts.
+  - Hardened Formal Exam sanitization in [`examSubmissionGuards.ts`](src/lib/examSubmissionGuards.ts) to strip `expected_answer` values from student payloads while preserving `mark_scheme._data_tables`, and added round-trip storage (`"${idx}_table"` / `"${q.id}::table"`) so filled table cells grade accurately across [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts), Practice Mode, Exam Mode, and `QuizResultsModal` AI Grade All.
+  - Updated [`formatCandidateAnswer`](src/services/quizSubmissionService.ts) so serialized gap (`{"gap_1":...}`) and table-cell JSON responses render cleanly across Results Modal, PDF reports, and Excel exports.
+- **Inline Term-Selection Cloze (`[term1|term2|...]`)**:
+  - Extracted pure [`inlineGapParser.ts`](src/lib/inlineGapParser.ts) supporting pipe-delimited `[opt1|opt2]` inline dropdown tokens while ignoring LaTeX `$...$` / `$$...$$` math blocks and trailing mark tags.
+  - Added `.sq-gap-select` pickers in [`InlineGapText.tsx`](src/components/InlineGapText.tsx) and fixed `extractGapExpectedMap` in [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts) to parse `Gap N:` / `Blank N:` criteria accurately and disable fuzzy matching on closed-choice selectors.
+- **Responsive Exam Header Toolbar (Two-Row Laptop Layout)**:
+  - Restructured `.sq-runner-header` in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) and [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css) into a 3-zone CSS Grid layout (`title` / `tools` / `actions`) with graceful title ellipsis truncation, light/dark-mode accessible `.sq-tool-btn` pills, and an automatic two-row utility toolbar below `1560px` so reference tools never crowd the exam title or timer on laptop screens.
+  - Synced sticky audio bar, sidebar navigator, and mobile prompt bar offsets via `--sq-header-height` (`ResizeObserver`).
+- **Verification**:
+  - Added unit/regression suites `npm run test:inline-gaps` ([`scripts/test-inline-choice-gaps.mjs`](scripts/test-inline-choice-gaps.mjs)) and `npm run test:fillable-tables` ([`scripts/test-fillable-data-tables.mjs`](scripts/test-fillable-data-tables.mjs)).
+
 ### [v.2.3.7] — Emergency Air-Gapped Offline Fallback & Cryptographic Examination Packages
 - **Cryptographic Offline Packages (`AES-256-GCM`)**:
   - Implemented zero-dependency W3C Web Crypto envelope specification (`testmaker_emergency_v2`) in `src/utils/examCryptoUtils.ts`.

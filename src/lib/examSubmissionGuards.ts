@@ -4,6 +4,7 @@
 // (scripts/test-exam-submission-fixes.mjs) can exercise the tricky decisions in Node.
 
 import type { Question } from '../types/database';
+import { stripDataTableExpectedAnswers } from './dataTableUtils.ts';
 
 // ─── Attempt checks ─────────────────────────────────────────────────────────────
 
@@ -273,6 +274,9 @@ export function buildAnswersByQuestionId(
           map[answerMapKey(q.id, sq.sub_id || sIdx)] = val;
         }
       });
+      if (answers[`${idx}_table`] !== undefined && answers[`${idx}_table`] !== null) {
+        map[answerMapKey(q.id, 'table')] = answers[`${idx}_table`];
+      }
     } else if (answers[idx] !== undefined && answers[idx] !== null) {
       map[q.id] = answers[idx];
     }
@@ -304,12 +308,14 @@ export function resolveStoredAnswer({
   const raw = rawAnswers || {};
 
   if (answersByQuestionId && questionId) {
-    if (subIndex !== undefined) {
+    if (subIndex !== undefined || (subId !== undefined && subId !== null && subId !== '')) {
       const subKeys: string[] = [];
       if (subId !== undefined && subId !== null && subId !== '') {
         subKeys.push(answerMapKey(questionId, subId));
       }
-      subKeys.push(answerMapKey(questionId, subIndex));
+      if (subIndex !== undefined) {
+        subKeys.push(answerMapKey(questionId, subIndex));
+      }
       for (const key of subKeys) {
         const val = answersByQuestionId[key];
         if (val !== undefined) return val;
@@ -331,6 +337,10 @@ export function resolveStoredAnswer({
     return undefined;
   }
 
+  if (subId !== undefined && subId !== null && subId !== '') {
+    return raw[`${index}_${subId}`];
+  }
+
   return raw[index];
 }
 
@@ -347,6 +357,9 @@ export function sanitizeQuestionsForStudent(questions: Question[], stripAnswerKe
     const subs = Array.isArray(q.sub_questions)
       ? q.sub_questions.map((sq) => {
           const clean = { ...sq };
+          if (clean.data_tables) {
+            clean.data_tables = stripDataTableExpectedAnswers(clean.data_tables);
+          }
           delete (clean as any).mark_scheme;
           delete (clean as any).guidance;
           delete (clean as any).common_misconceptions;
@@ -362,9 +375,17 @@ export function sanitizeQuestionsForStudent(questions: Question[], stripAnswerKe
           ? (q.mark_scheme as any)._insert_resources
           : undefined;
 
+    const rawDataTables =
+      Array.isArray(q.data_tables) && q.data_tables.length > 0
+        ? q.data_tables
+        : Array.isArray((q.mark_scheme as any)?._data_tables) && (q.mark_scheme as any)._data_tables.length > 0
+          ? (q.mark_scheme as any)._data_tables
+          : undefined;
+
     const clean: any = {
       ...q,
       ...(preservedInsertResources ? { insert_resources: preservedInsertResources } : {}),
+      ...(rawDataTables ? { data_tables: stripDataTableExpectedAnswers(rawDataTables) } : {}),
       mark_scheme: null,
       scratchpad: undefined,
       sub_questions: subs,

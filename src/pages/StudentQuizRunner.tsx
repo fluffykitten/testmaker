@@ -48,6 +48,13 @@ import {
 import { ExamMathText } from '../components/ExamMathText';
 import { stripDuplicateOptionsFromStem } from '../lib/gemini';
 import { InlineGapText, hasInlineGaps } from '../components/InlineGapText';
+import { ExamDataTable } from '../components/ExamDataTable';
+import { hasMarkdownTable, stripMarkdownTables } from '../lib/markdownTable';
+import {
+  findTableCompletionSubIndex,
+  hasBlankDataTableCells,
+  parseTableCellAnswers,
+} from '../lib/dataTableUtils';
 import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
@@ -664,6 +671,32 @@ export function StudentQuizRunner({
   const questionCardRef = useRef<HTMLDivElement>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+
+  // Sync rendered header height (1-row desktop vs 2-row laptop toolbar) so sticky audio bar & sidebar never overlap
+  useEffect(() => {
+    const headerEl = headerRef.current;
+    const rootEl = containerRef.current;
+    if (!headerEl || !rootEl) return;
+
+    const updateHeaderHeight = () => {
+      const h = Math.ceil(headerEl.getBoundingClientRect().height);
+      if (h > 0) {
+        rootEl.style.setProperty('--sq-header-height', `${h}px`);
+      }
+    };
+
+    updateHeaderHeight();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(updateHeaderHeight);
+      observer.observe(headerEl);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateHeaderHeight);
+    return () => window.removeEventListener('resize', updateHeaderHeight);
+  }, [hasStarted, isSubmitted, isGrading]);
   const submitModalDismiss = useBackdropDismiss(() => setShowSubmitModal(false));
   const emergencyModalDismiss = useBackdropDismiss(() => setShowEmergencyExitModal(false));
   const zoomModalDismiss = useBackdropDismiss(() => setZoomedImage(null));
@@ -709,10 +742,16 @@ export function StudentQuizRunner({
       const q = questions[qIdx];
       const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
       if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
+        const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+        const rawTableAns = answers[`${qIdx}_table`];
+        const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
         for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
           totalItems++;
           const subKey = `${qIdx}_${sIdx}`;
-          const val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          let val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          if (!hasValidStudentResponse(val) && sIdx === tableOwnerSubIdx && hasTableVal) {
+            val = rawTableAns;
+          }
           if (hasValidStudentResponse(val)) {
             answeredItems++;
           }
@@ -742,9 +781,15 @@ export function StudentQuizRunner({
         q.question_style === 'Multiple Select' ||
         Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
       if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
+        const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+        const rawTableAns = answers[`${qIdx}_table`];
+        const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
         return q.sub_questions.some((_, sIdx) => {
           const subKey = `${qIdx}_${sIdx}`;
-          const val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          let val = answers[subKey] !== undefined ? answers[subKey] : (answers[qIdx] as any)?.[sIdx];
+          if (!hasValidStudentResponse(val) && sIdx === tableOwnerSubIdx && hasTableVal) {
+            val = rawTableAns;
+          }
           return hasValidStudentResponse(val);
         });
       }
@@ -2340,10 +2385,16 @@ export function StudentQuizRunner({
 
           if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
+            const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+            const rawTableAns = answers[`${idx}_table`];
+            const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
             for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
               const sq = q.sub_questions[sIdx];
               const subKey = `${idx}_${sIdx}`;
-              const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              let subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              if ((subAns === undefined || subAns === '') && sIdx === tableOwnerSubIdx && hasTableVal && rawTableAns !== undefined) {
+                subAns = rawTableAns;
+              }
               const subMarks = sq.marks || 1;
 
               if (!hasAnswerKey) {
@@ -2584,10 +2635,16 @@ export function StudentQuizRunner({
           const isMcq = q.question_style === 'Multiple Choice' || q.question_style === 'Multiple Select' || (q.options && q.options.length > 0 && q.question_style !== 'Structured');
           if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
+            const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+            const rawTableAns = answers[`${idx}_table`];
+            const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
             for (let sIdx = 0; sIdx < q.sub_questions.length; sIdx++) {
               const sq = q.sub_questions[sIdx];
               const subKey = `${idx}_${sIdx}`;
-              const subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              let subAns = (answers[subKey] !== undefined ? answers[subKey] : (answers[idx] as any)?.[sIdx]) ?? '';
+              if ((subAns === undefined || subAns === '') && sIdx === tableOwnerSubIdx && hasTableVal && rawTableAns !== undefined) {
+                subAns = rawTableAns;
+              }
               const subMarks = sq.marks || 1;
 
               try {
@@ -4099,6 +4156,43 @@ export function StudentQuizRunner({
   const isCurrentInlineGap = Boolean(
     !isCurrentMcq && !hasCurrentSubQuestions && !currentTable && hasInlineGaps(promptText)
   );
+
+  const hasCurrentBlankDataTable = Boolean(
+    currentQuestion && hasBlankDataTableCells(currentQuestion.data_tables)
+  );
+  const shouldShowCurrentDataTables = Boolean(
+    currentQuestion?.data_tables &&
+      currentQuestion.data_tables.length > 0 &&
+      !currentTable &&
+      (hasCurrentBlankDataTable || !hasMarkdownTable(promptText))
+  );
+  const shouldStripStaticMarkdownTable = Boolean(
+    shouldShowCurrentDataTables && hasCurrentBlankDataTable && hasMarkdownTable(promptText)
+  );
+  const stemDisplayText = shouldStripStaticMarkdownTable ? stripMarkdownTables(promptText) : promptText;
+  const dataTableAnswerKey: string | number = hasCurrentSubQuestions
+    ? `${currentIndex}_table`
+    : currentIndex;
+  const currentDataTableAnswers = useMemo(
+    () => parseTableCellAnswers(answers[dataTableAnswerKey]),
+    [answers, dataTableAnswerKey]
+  );
+
+  const handleDataTableCellChange = (
+    targetKey: string | number,
+    cellKey: string,
+    val: string
+  ) => {
+    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+    const prevRaw = answers[targetKey];
+    const nextMap = { ...parseTableCellAnswers(prevRaw), [cellKey]: val };
+    const nextSerialized = JSON.stringify(nextMap);
+    recordAnswerChange(currentIndex, prevRaw, nextSerialized);
+    setAnswers((prev) => ({
+      ...prev,
+      [targetKey]: nextSerialized,
+    }));
+  };
 
   const currentTableSelections = useMemo(() => {
     const map: Record<string, string> = {};
@@ -6177,6 +6271,14 @@ export function StudentQuizRunner({
   }
 
 
+  const hasAnyHeaderTool = Boolean(
+    (examAttachments && examAttachments.length > 0) ||
+    hasResourceBooklet ||
+    (allowPeriodicTable ?? false) ||
+    (allowCalculator ?? false) ||
+    (allowScratchpad ?? false)
+  );
+
   // ─── Active Quiz Runner Screen ─────────────────────────────────────────────
   return (
     <div
@@ -6197,189 +6299,114 @@ export function StudentQuizRunner({
       )}
 
       {/* Top Header Bar */}
-      <header className="sq-runner-header">
+      <header
+        ref={headerRef}
+        className={`sq-runner-header ${hasAnyHeaderTool ? 'sq-runner-header--has-tools' : 'sq-runner-header--no-tools'}`}
+      >
         <div className="sq-runner-title-group">
-          <h2 className="sq-runner-title">{title}</h2>
+          <h2 className="sq-runner-title" title={title}>{title}</h2>
           <span className="sq-runner-subject">{headerConfig?.subject || 'Assessment'}</span>
         </div>
 
-        <div className="sq-runner-header-right">
-          {/* Interactive Exam Reference Tools: Periodic Table, Scientific Calculator, Resource Booklet */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {/* Teacher-Uploaded Reference Attachments */}
-            {examAttachments && examAttachments.length > 0 && (
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'rgba(16, 185, 129, 0.15)',
-                  color: '#34d399',
-                  border: '1px solid rgba(16, 185, 129, 0.35)',
-                  borderRadius: '8px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  padding: '6px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setShowAttachmentModal(true)}
-                title="Open Reference Attachments uploaded by teacher"
-              >
-                <span>📎</span>
-                <span>Attachments</span>
-                <span style={{ fontSize: '0.6875rem', background: 'rgba(16, 185, 129, 0.3)', padding: '1px 6px', borderRadius: '999px' }}>
-                  {examAttachments.length}
-                </span>
-              </button>
-            )}
-
-            {/* Cambridge Insert / Resource Booklet (Only if exam contains explicit insert questions) */}
-            {hasResourceBooklet && (
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'rgba(14, 165, 233, 0.15)',
-                  color: '#38bdf8',
-                  border: '1px solid rgba(14, 165, 233, 0.35)',
-                  borderRadius: '8px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  padding: '6px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => {
-                  if (currentQuestionBookletTrigger) {
-                    openResourceBooklet(currentQuestionBookletTrigger.refId);
-                    return;
-                  }
-                  for (const sub of currentQuestion?.sub_questions || []) {
-                    const subTrig = getSubQuestionBookletTrigger(
-                      sub,
-                      currentQuestion,
-                      currentIndex,
-                      bookletResources
-                    );
-                    if (subTrig) {
-                      openResourceBooklet(subTrig.refId);
-                      return;
-                    }
-                  }
-                  openResourceBooklet(null);
-                }}
-                title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
-              >
-                <span>📖</span>
-                <span>Resource Booklet</span>
-              </button>
-            )}
-
-            {(allowPeriodicTable ?? false) && (
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'rgba(56, 189, 248, 0.15)',
-                  color: '#38bdf8',
-                  border: '1px solid rgba(56, 189, 248, 0.35)',
-                  borderRadius: '8px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  padding: '6px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setShowPeriodicTable(true)}
-                title="Open Cambridge Periodic Table of Elements & Physical Constants"
-              >
-                <span>🧪</span>
-                <span>Periodic Table</span>
-              </button>
-            )}
-
-            {(allowCalculator ?? false) && (
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'rgba(147, 51, 234, 0.15)',
-                  color: '#c084fc',
-                  border: '1px solid rgba(147, 51, 234, 0.35)',
-                  borderRadius: '8px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  padding: '6px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setShowCalculator(true)}
-                title={calculatorType === 'basic' ? "Open Basic Calculator" : "Open Scientific Calculator"}
-              >
-                <span>🧮</span>
-                <span>Calculator</span>
-              </button>
-            )}
-
-            {(allowScratchpad ?? false) && (
-              <button
-                type="button"
-                className="sq-btn"
-                style={{
-                  background: 'rgba(234, 179, 8, 0.15)',
-                  color: '#facc15',
-                  border: '1px solid rgba(234, 179, 8, 0.35)',
-                  borderRadius: '8px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  padding: '6px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setShowScratchpad(true)}
-                title="Open In-Exam Rough Work & Scratchpad Sheet"
-              >
-                <span>📝</span>
-                <span>Scratchpad</span>
-              </button>
-            )}
-
-            {/* Quick Question Jump Pill in Sticky Header */}
+        {/* Interactive Exam Reference Tools (Row 2 on laptops <= 1439px, inline on wide desktops) */}
+        <div className="sq-header-tools" role="toolbar" aria-label="Exam Reference Tools">
+          {/* Teacher-Uploaded Reference Attachments */}
+          {examAttachments && examAttachments.length > 0 && (
             <button
               type="button"
-              className="sq-btn sq-header-nav-btn"
-              style={{
-                background: 'rgba(99, 102, 241, 0.15)',
-                color: '#818cf8',
-                border: '1px solid rgba(99, 102, 241, 0.35)',
-                borderRadius: '8px',
-                fontSize: '0.8125rem',
-                fontWeight: 700,
-                padding: '6px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                cursor: 'pointer',
-              }}
-              onClick={() => setShowMobileNav(true)}
-              title="Open Question Navigator Matrix"
+              className="sq-btn sq-tool-btn sq-tool-btn--attachments"
+              onClick={() => setShowAttachmentModal(true)}
+              title="Open Reference Attachments uploaded by teacher"
             >
-              <span>📋</span>
-              <span>Q {currentIndex + 1}/{questions.length}</span>
-              <span style={{ fontSize: '0.6875rem', opacity: 0.85 }}>({quizStats.answeredItems}/{quizStats.totalItems})</span>
+              <span>📎</span>
+              <span>Attachments</span>
+              <span className="sq-tool-badge">
+                {examAttachments.length}
+              </span>
             </button>
-          </div>
+          )}
 
+          {/* Cambridge Insert / Resource Booklet (Only if exam contains explicit insert questions) */}
+          {hasResourceBooklet && (
+            <button
+              type="button"
+              className="sq-btn sq-tool-btn sq-tool-btn--booklet"
+              onClick={() => {
+                if (currentQuestionBookletTrigger) {
+                  openResourceBooklet(currentQuestionBookletTrigger.refId);
+                  return;
+                }
+                for (const sub of currentQuestion?.sub_questions || []) {
+                  const subTrig = getSubQuestionBookletTrigger(
+                    sub,
+                    currentQuestion,
+                    currentIndex,
+                    bookletResources
+                  );
+                  if (subTrig) {
+                    openResourceBooklet(subTrig.refId);
+                    return;
+                  }
+                }
+                openResourceBooklet(null);
+              }}
+              title="Open Cambridge Insert / Resource Booklet (Maps, Photos, Figures)"
+            >
+              <span>📖</span>
+              <span>Resource Booklet</span>
+            </button>
+          )}
+
+          {(allowPeriodicTable ?? false) && (
+            <button
+              type="button"
+              className="sq-btn sq-tool-btn sq-tool-btn--periodic"
+              onClick={() => setShowPeriodicTable(true)}
+              title="Open Cambridge Periodic Table of Elements & Physical Constants"
+            >
+              <span>🧪</span>
+              <span>Periodic Table</span>
+            </button>
+          )}
+
+          {(allowCalculator ?? false) && (
+            <button
+              type="button"
+              className="sq-btn sq-tool-btn sq-tool-btn--calculator"
+              onClick={() => setShowCalculator(true)}
+              title={calculatorType === 'basic' ? "Open Basic Calculator" : "Open Scientific Calculator"}
+            >
+              <span>🧮</span>
+              <span>Calculator</span>
+            </button>
+          )}
+
+          {(allowScratchpad ?? false) && (
+            <button
+              type="button"
+              className="sq-btn sq-tool-btn sq-tool-btn--scratchpad"
+              onClick={() => setShowScratchpad(true)}
+              title="Open In-Exam Rough Work & Scratchpad Sheet"
+            >
+              <span>📝</span>
+              <span>Scratchpad</span>
+            </button>
+          )}
+
+          {/* Quick Question Jump Pill (visible on compact viewports where sidebar navigator collapses) */}
+          <button
+            type="button"
+            className="sq-btn sq-tool-btn sq-tool-btn--qnav sq-header-nav-btn"
+            onClick={() => setShowMobileNav(true)}
+            title="Open Question Navigator Matrix"
+          >
+            <span>📋</span>
+            <span>Q {currentIndex + 1}/{questions.length}</span>
+            <span className="sq-tool-subcount">({quizStats.answeredItems}/{quizStats.totalItems})</span>
+          </button>
+        </div>
+
+        <div className="sq-header-actions">
           {/* Violations Badge */}
           {securityEnabled && (strikeCount > 0 || violations.length > 0) && (
             <div className="sq-violation-badge" title="Security alerts recorded">
@@ -6400,25 +6427,13 @@ export function StudentQuizRunner({
           {!hideEmergencyExamButton && (
             <button
               type="button"
-              className="sq-btn sq-btn-emergency-exit"
-              style={{
-                background: 'rgba(245, 158, 11, 0.14)',
-                color: '#fbbf24',
-                border: '1px solid rgba(245, 158, 11, 0.35)',
-                borderRadius: '8px',
-                fontSize: '0.8125rem',
-                fontWeight: 700,
-                padding: '6px 12px',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                cursor: 'pointer',
-              }}
+              className="sq-btn sq-tool-btn sq-tool-btn--emergency sq-btn-emergency-exit"
               onClick={() => setShowEmergencyExitModal(true)}
               title="Emergency Save & Exit (Use only if Wi-Fi is permanently down, device battery is critically low, or room evacuation is ordered)"
             >
               <span>⚠️</span>
-              <span>Emergency Save</span>
+              <span className="sq-emergency-label-full">Emergency Save</span>
+              <span className="sq-emergency-label-short">Save</span>
             </button>
           )}
 
@@ -6652,7 +6667,7 @@ export function StudentQuizRunner({
                   >
                     {isCurrentInlineGap ? (
                       <InlineGapText
-                        content={promptText}
+                        content={stemDisplayText}
                         values={(() => {
                           const raw = answers[currentIndex];
                           if (!raw) return {};
@@ -6682,12 +6697,24 @@ export function StudentQuizRunner({
                         }}
                       />
                     ) : (
-                      <ExamMathText content={promptText} />
+                      <ExamMathText content={stemDisplayText} />
                     )}
                   </div>
                 );
               })()}
             </div>
+
+            {/* Structured / Fillable Data Tables (e.g. Table 6.1) */}
+            {shouldShowCurrentDataTables && currentQuestion?.data_tables && (
+              <div style={{ margin: '10px 0 16px' }}>
+                <ExamDataTable
+                  tables={currentQuestion.data_tables}
+                  isInteractive={!isSubmitted && hasCurrentBlankDataTable}
+                  userAnswers={currentDataTableAnswers}
+                  onCellChange={(cellKey, val) => handleDataTableCellChange(dataTableAnswerKey, cellKey, val)}
+                />
+              </div>
+            )}
 
             {/* Insert / Resource Booklet Trigger Button */}
             {currentQuestionBookletTrigger && (
@@ -6956,8 +6983,46 @@ export function StudentQuizRunner({
                         </div>
                       ) : null}
 
+                      {/* Sub-Question Data Tables if attached directly to this sub-part */}
+                      {sub.data_tables && sub.data_tables.length > 0 && (hasBlankDataTableCells(sub.data_tables) || !hasMarkdownTable(sub.question_text || '')) && (
+                        <div style={{ margin: '8px 0 12px' }}>
+                          <ExamDataTable
+                            tables={sub.data_tables}
+                            isInteractive={!isSubmitted && hasBlankDataTableCells(sub.data_tables)}
+                            userAnswers={parseTableCellAnswers(answers[subKey])}
+                            onCellChange={(cellKey, val) => handleDataTableCellChange(subKey, cellKey, val)}
+                          />
+                        </div>
+                      )}
+
+                      {/* Status indicator if this sub-question owns the interactive parent table above */}
+                      {hasCurrentBlankDataTable &&
+                        currentQuestion &&
+                        sIdx === findTableCompletionSubIndex(currentQuestion) && (
+                          <div
+                            style={{
+                              margin: '4px 0 10px',
+                              padding: '8px 12px',
+                              borderRadius: '8px',
+                              background: Object.values(currentDataTableAnswers).some(Boolean)
+                                ? 'rgba(16, 185, 129, 0.1)'
+                                : 'rgba(59, 130, 246, 0.08)',
+                              border: Object.values(currentDataTableAnswers).some(Boolean)
+                                ? '1px solid rgba(16, 185, 129, 0.35)'
+                                : '1px solid rgba(59, 130, 246, 0.3)',
+                              fontSize: '0.8125rem',
+                              fontWeight: 600,
+                              color: Object.values(currentDataTableAnswers).some(Boolean) ? '#047857' : '#1d4ed8',
+                            }}
+                          >
+                            {Object.values(currentDataTableAnswers).some(Boolean)
+                              ? `✓ Table cell response recorded (${Object.values(currentDataTableAnswers).filter(Boolean).join(', ')})`
+                              : '↑ Type your answer directly into the empty cell in the interactive table above.'}
+                          </div>
+                        )}
+
                       {/* Quick Symbol Insert Bar for sub-question (STEM only) */}
-                      {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && !hasInlineGaps(sub.question_text || '') && (
+                      {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && !hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && (
                         <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
                           <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
                           {QUICK_CHEM_SYMBOLS.map((sym) => (
@@ -6983,7 +7048,7 @@ export function StudentQuizRunner({
                         </div>
                       )}
 
-                      {!hasInlineGaps(sub.question_text || '') && (
+                      {!hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && !(hasCurrentBlankDataTable && currentQuestion && sIdx === findTableCompletionSubIndex(currentQuestion)) && (
                         <div className="sq-sub-input-wrap">
                           <textarea
                             className="sq-text-answer-area"
@@ -7109,7 +7174,7 @@ export function StudentQuizRunner({
                   </div>
                 )}
               </div>
-            ) : isCurrentInlineGap ? null : (
+            ) : (isCurrentInlineGap || hasCurrentBlankDataTable) ? null : (
               /* 4. Structured Single Response Text Box */
               <div className="sq-structured-input-box">
                 <div className="sq-input-label-row">

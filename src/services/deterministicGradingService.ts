@@ -4,6 +4,13 @@
 
 import { expandFormulaSearch } from '../lib/formulaSearch.ts';
 import { chooseRegradeMarks, resolveStoredAnswer } from '../lib/examSubmissionGuards.ts';
+import {
+  extractDataTableBlankTargets,
+  findTableCompletionSubIndex,
+  hasBlankDataTableCells,
+  parseTableCellAnswers,
+} from '../lib/dataTableUtils.ts';
+import { hasInlineGaps, parseGapSegments } from '../lib/inlineGapParser.ts';
 import type { Question } from '../types/database';
 import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissionService';
 
@@ -1062,55 +1069,83 @@ export function resolveQuestionModelAnswer(question: Question, subIndex?: number
  * Extracts a map of gap number to accepted answer strings from mark scheme and question text
  */
 export function extractGapExpectedMap(question: Question, subIndex?: number): Record<string, string[]> {
-  const map: Record<string, string[]> = {};
+  const numberedMap: Record<string, string[]> = {};
+  const unnumberedAnswers: string[] = [];
   const acceptable = extractAcceptableAnswers(question, subIndex);
 
-  // 1. Parse from mark scheme lines (e.g. "[1] Paris / City of Light", "1: 1998", "(1) water")
+  const qText =
+    subIndex !== undefined && question.sub_questions?.[subIndex]
+      ? question.sub_questions[subIndex].question_text
+      : typeof question.question_text === 'string'
+        ? question.question_text
+        : '';
+
+  const splitGapAlternatives = (rawVal: string) =>
+    rawVal
+      .split(/\s*[/;|,]\s*|\s+OR\s+/i)
+      .map((s) => cleanMarkSchemeClause(s).target || s)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  // 1. Parse from mark scheme lines (e.g. "[1] Paris / City of Light", "Gap 1: released", "1: 1998", "(1) water")
   acceptable.forEach((line) => {
     if (!line) return;
     const str = String(line).trim();
 
-    // Check for [1], 1., 1:, (1)
-    const gapMatch = str.match(/^\[?\s*(\d+)\s*\]?[\s:.-]+(.+)$/);
-    if (gapMatch) {
-      const gNum = gapMatch[1];
-      const answers = gapMatch[2]
-        .split(/\s*[/;|,]\s*|\s+OR\s+/i)
-        .map((s) => cleanMarkSchemeClause(s).target || s)
-        .map((s) => s.trim())
-        .filter(Boolean);
+    const gapMatch = str.match(
+      /^(?:(?:gap|blank)\s*#?\s*(\d+)\s*[:.)-]\s*|(?:gap|blank)\s*#?\s*(\d+)\s+|(?:\[(\d+)\]|\((\d+)\))\s*[:.-]?\s*|(\d+)\s*[:.)]\s+|(\d+)\s+-\s+)(.+)$/i
+    );
+    const explicitNum =
+      gapMatch?.[1] ||
+      gapMatch?.[2] ||
+      gapMatch?.[3] ||
+      gapMatch?.[4] ||
+      gapMatch?.[5] ||
+      gapMatch?.[6];
+    const explicitPayload = gapMatch?.[7];
 
-      if (!map[gNum]) map[gNum] = [];
+    if (explicitNum && explicitPayload) {
+      const answers = splitGapAlternatives(explicitPayload);
+      if (!numberedMap[explicitNum]) numberedMap[explicitNum] = [];
       answers.forEach((a) => {
-        if (!map[gNum].includes(a)) map[gNum].push(a);
+        if (!numberedMap[explicitNum].includes(a)) numberedMap[explicitNum].push(a);
       });
     } else {
-      // If line has no leading gap number, treat as gap 1 or split if only 1 gap
-      if (!map['1']) map['1'] = [];
-      const answers = str
-        .split(/\s*[/;|,]\s*|\s+OR\s+/i)
-        .map((s) => cleanMarkSchemeClause(s).target || s)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      answers.forEach((a) => {
-        if (!map['1'].includes(a)) map['1'].push(a);
+      splitGapAlternatives(str).forEach((a) => {
+        if (!unnumberedAnswers.includes(a)) unnumberedAnswers.push(a);
       });
     }
   });
 
   // 2. Also check question_text for inline embedded answer syntax e.g. [1: Springfield]
-  const qText = subIndex !== undefined && question.sub_questions?.[subIndex]
-    ? question.sub_questions[subIndex].question_text
-    : (typeof question.question_text === 'string' ? question.question_text : '');
-
   if (qText) {
     const inlineMatches = qText.matchAll(/\[\s*(\d+)\s*:\s*([^\]]+)\]/g);
     for (const m of inlineMatches) {
       const gNum = m[1];
       const ans = m[2].trim();
-      if (!map[gNum]) map[gNum] = [];
-      if (!map[gNum].includes(ans)) map[gNum].push(ans);
+      if (!numberedMap[gNum]) numberedMap[gNum] = [];
+      if (!numberedMap[gNum].includes(ans)) numberedMap[gNum].push(ans);
     }
+  }
+
+  // If explicit Gap/numbered labels exist, preserve exact per-gap isolation without
+  // collapsing unnumbered `acceptable_answers` into gap 1.
+  if (Object.keys(numberedMap).length > 0) {
+    return numberedMap;
+  }
+
+  const map: Record<string, string[]> = {};
+  const parsedGaps = parseGapSegments(qText || '').filter((s) => s.type === 'gap');
+  if (parsedGaps.length > 1 && unnumberedAnswers.length === parsedGaps.length) {
+    parsedGaps.forEach((g, idx) => {
+      const key = String(g.gapNum);
+      map[key] = [unnumberedAnswers[idx]];
+    });
+    return map;
+  }
+
+  if (unnumberedAnswers.length > 0) {
+    map['1'] = unnumberedAnswers;
   }
 
   return map;
@@ -1169,6 +1204,20 @@ export function parseStudentGapAnswers(rawAnswer: string | number | undefined): 
   // 3. Fallback: single answer string maps to gap 1
   result['1'] = str;
   return result;
+}
+
+export function resolveDataTableTargetsForEval(question: Question, subIndex?: number) {
+  if (subIndex !== undefined) {
+    const sq = question.sub_questions?.[subIndex];
+    if (sq && hasBlankDataTableCells(sq.data_tables)) {
+      return extractDataTableBlankTargets(sq.data_tables);
+    }
+    if (subIndex === findTableCompletionSubIndex(question)) {
+      return extractDataTableBlankTargets(question.data_tables);
+    }
+    return [];
+  }
+  return extractDataTableBlankTargets(question.data_tables);
 }
 
 /**
@@ -1337,7 +1386,8 @@ export function gradeDeterministicAnswer(
     ? question.sub_questions[subIndex].question_text
     : (typeof question.question_text === 'string' ? question.question_text : '')) || '';
 
-  const isGapFillStyle = question.question_style === 'Fill in the Blank' || /(\[\s*\d+\s*\]|\[\s*(?:blank|gap)\s*\d*\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\])/i.test(qText);
+  const parsedGapSegments = parseGapSegments(qText).filter((s) => s.type === 'gap');
+  const isGapFillStyle = question.question_style === 'Fill in the Blank' || hasInlineGaps(qText);
 
   if (isGapFillStyle) {
     const gapExpectedMap = extractGapExpectedMap(question, subIndex);
@@ -1353,10 +1403,17 @@ export function gradeDeterministicAnswer(
       for (const gNum of gapKeys) {
         const expectedList = gapExpectedMap[gNum] || [];
         const studentAns = (studentGapAnswers[gNum] || studentGapAnswers[`gap_${gNum}`] || '').trim();
+        const segForGap = parsedGapSegments.find((s) => String(s.gapNum) === String(gNum));
+        const isClosedChoiceGap = Boolean(segForGap?.choices && segForGap.choices.length >= 2);
 
         const isMatch = expectedList.some((exp) => {
           if (!studentAns) return false;
           if (studentAns.toLowerCase() === exp.toLowerCase()) return true;
+          // Closed-set dropdown choices must not allow fuzzy Levenshtein/substring overlap (e.g. increase vs increased)
+          if (isClosedChoiceGap) {
+            const numRes = isNumericEquivalent(studentAns, exp);
+            return numRes.isMatch;
+          }
           if (isChemicalEquivalent(studentAns, exp)) return true;
           if (isKeywordMatch(studentAns, [exp])) return true;
           const numRes = isNumericEquivalent(studentAns, exp);
@@ -1386,6 +1443,82 @@ export function gradeDeterministicAnswer(
           : `${earnedMarks > 0 ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): ` : '✗ '}${feedbackParts.join('; ')}`,
         matchedCriteria,
         acceptedAnswers: gapKeys.map((k) => `[${k}] ${(gapExpectedMap[k] || []).join(' / ')}`),
+      };
+    }
+  }
+
+  // ─── 0B. Interactive Fillable Data Table Cell Evaluation ─────────────────
+  const tableBlankTargets = resolveDataTableTargetsForEval(question, subIndex);
+  if (tableBlankTargets.length > 0) {
+    const cellMap = parseTableCellAnswers(rawAnswerStr);
+    const hasMappedKeys = Object.keys(cellMap).length > 0;
+    const fallbackAcceptable = extractAcceptableAnswers(question, subIndex);
+
+    let correctCells = 0;
+    let missingKey = false;
+    const feedbackParts: string[] = [];
+    const matchedCriteria: string[] = [];
+
+    for (const target of tableBlankTargets) {
+      const studentCellVal = (
+        hasMappedKeys
+          ? (cellMap[target.cellKey] ?? '')
+          : tableBlankTargets.length === 1
+            ? rawAnswerStr
+            : ''
+      ).trim();
+
+      const expectedOptions: string[] = [];
+      if (target.expectedAnswer) {
+        target.expectedAnswer
+          .split(/\s*[/;|]\s*|\s+OR\s+/i)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .forEach((s) => expectedOptions.push(s));
+      } else if (tableBlankTargets.length === 1 && fallbackAcceptable.length > 0) {
+        expectedOptions.push(...fallbackAcceptable);
+      }
+
+      if (expectedOptions.length === 0) {
+        missingKey = true;
+        break;
+      }
+
+      const isCellMatch = expectedOptions.some((exp) => {
+        if (!studentCellVal) return false;
+        if (studentCellVal.toLowerCase() === exp.toLowerCase()) return true;
+        if (isChemicalEquivalent(studentCellVal, exp)) return true;
+        if (isKeywordMatch(studentCellVal, [exp])) return true;
+        const numRes = isNumericEquivalent(studentCellVal, exp);
+        return numRes.isMatch;
+      });
+
+      const cellLabel = `${target.tableId} (${target.rowLabel}, ${target.colHeader})`;
+      if (isCellMatch) {
+        correctCells++;
+        feedbackParts.push(`✓ ${cellLabel}: ${studentCellVal}`);
+        matchedCriteria.push(`${cellLabel}: ${studentCellVal}`);
+      } else {
+        feedbackParts.push(
+          `✗ ${cellLabel}: ${studentCellVal ? `"${studentCellVal}"` : '(blank)'} (Expected: ${expectedOptions.join(' / ')})`
+        );
+      }
+    }
+
+    if (!missingKey) {
+      const earnedMarks = Math.round((correctCells / tableBlankTargets.length) * maxMarks);
+      const isAllCorrect = correctCells === tableBlankTargets.length;
+      return {
+        isHandled: true,
+        earnedMarks,
+        maxMarks,
+        isCorrect: isAllCorrect,
+        matchType: 'numeric',
+        feedback: isAllCorrect
+          ? `✓ All ${tableBlankTargets.length} table cell${tableBlankTargets.length > 1 ? 's' : ''} correct: ${feedbackParts.join('; ')}`
+          : `${earnedMarks > 0 ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): ` : '✗ '}${feedbackParts.join('; ')}`,
+        matchedCriteria,
+        acceptedAnswers: tableBlankTargets.map((t) => t.expectedAnswer || '').filter(Boolean),
       };
     }
   }
@@ -1602,6 +1735,16 @@ export function gradeSubmissionDeterministically(
 
     if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
       let totalSubEarned = 0;
+      const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+      const rawTableAns = resolveStoredAnswer({
+        rawAnswers,
+        answersByQuestionId: answersById,
+        questionId: q.id,
+        subId: 'table',
+        index: idx,
+      });
+      const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
+
       for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
         const sq = q.sub_questions[sqIdx];
         let subAns = resolveStoredAnswer({
@@ -1612,6 +1755,9 @@ export function gradeSubmissionDeterministically(
           index: idx,
           subIndex: sqIdx,
         });
+        if ((subAns === undefined || subAns === '') && sqIdx === tableOwnerSubIdx && hasTableVal && rawTableAns !== undefined) {
+          subAns = rawTableAns;
+        }
         const previousSub =
           prevResult?.subQuestionResults?.find((sr: any) => sr.subId === sq.sub_id) ||
           prevResult?.subQuestionResults?.[sqIdx];

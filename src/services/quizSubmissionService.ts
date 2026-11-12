@@ -783,6 +783,39 @@ export function formatCandidateAnswer(
     return `Option ${letter}`;
   }
 
+  // Format serialized inline gap / fillable data-table JSON maps into readable text
+  if (str.startsWith('{') && str.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(str);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const entries = Object.entries(parsed);
+        if (entries.length === 0) return '(No response)';
+        const isGapKeys = entries.every(([k]) => /^(?:gap_?)?\d+$/i.test(k));
+        if (isGapKeys) {
+          const ordered = entries
+            .slice()
+            .sort((a, b) => Number(a[0].replace(/^gap_?/i, '')) - Number(b[0].replace(/^gap_?/i, '')))
+            .map(([k, v]) => `[${k.replace(/^gap_?/i, '')}] ${String(v ?? '').trim() || '(blank)'}`);
+          const joined = ordered.join('; ');
+          return compact && joined.length > 22 ? joined.substring(0, 20) + '…' : joined;
+        }
+        const tableEntries = entries.map(([k, v]) => {
+          const valStr = String(v ?? '').trim() || '(blank)';
+          if (entries.length === 1) return valStr;
+          const coordMatch = k.match(/^(.*)-r(\d+)-c(\d+)$/);
+          if (coordMatch) {
+            return `${coordMatch[1]} [R${Number(coordMatch[2]) + 1}, C${Number(coordMatch[3]) + 1}]: ${valStr}`;
+          }
+          return `${k}: ${valStr}`;
+        });
+        const joined = tableEntries.join('; ');
+        return compact && joined.length > 22 ? joined.substring(0, 20) + '…' : joined;
+      }
+    } catch {
+      // Fall through to raw string formatting
+    }
+  }
+
   if (compact && str.length > 22) {
     return str.substring(0, 20) + '…';
   }

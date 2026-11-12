@@ -1,14 +1,9 @@
 import React, { useId, useMemo } from 'react';
 import { ExamMathText } from './ExamMathText';
+import { hasInlineGaps, parseGapSegments, type GapSegment } from '../lib/inlineGapParser';
 import './InlineGapText.css';
 
-export interface GapSegment {
-  type: 'text' | 'gap';
-  content?: string;
-  gapId: string;
-  gapNum: number;
-  expectedAnswer?: string;
-}
+export { hasInlineGaps, parseGapSegments, type GapSegment };
 
 export interface GapEvaluation {
   gapId: string;
@@ -25,93 +20,6 @@ interface InlineGapTextProps {
   isReadOnly?: boolean;
   onGapChange?: (gapId: string, value: string) => void;
   className?: string;
-}
-
-/**
- * Checks if a string contains inline gap tokens like [1], [blank], ____, {{1}}
- * Avoids false positives on trailing exam mark allocations like "State the colour change. [1]"
- */
-export function hasInlineGaps(text: string): boolean {
-  if (!text) return false;
-  // Explicit unambiguous gap tokens
-  const explicitGapPattern = /(\[\s*(?:blank|gap)\s*\d*\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\]|\[\s*\d+\s*:\s*[^\]]+\])/i;
-  if (explicitGapPattern.test(text)) return true;
-
-  // Strip trailing mark allocations at the end of lines/sentences like ". [1]", "? [2]", or "). [3]"
-  const withoutTrailingMarks = text
-    .trim()
-    .replace(/([.?!:])\s*\[\s*\d+\s*(?:marks?|m|pts?)?\s*\]\s*$/gim, '$1');
-  return /\[\s*\d+\s*\]/.test(withoutTrailingMarks);
-}
-
-/**
- * Parses question text into text blocks and numbered gap objects
- */
-export function parseGapSegments(text: string): GapSegment[] {
-  if (!text) return [];
-
-  const segments: GapSegment[] = [];
-  const gapRegex = /(\[\s*\d+\s*\]|\[\s*(?:blank|gap)\s*(\d*)\s*\]|\{\{\s*\d+\s*\}\}|_{3,}|\[_{2,}\]|\[\s*(\d+)\s*:\s*([^\]]+)\])/gi;
-
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let autoGapCounter = 1;
-
-  while ((match = gapRegex.exec(text)) !== null) {
-    const matchedStr = match[0];
-    const isSimpleBracketNumber = /^\[\s*\d+\s*\]$/.test(matchedStr);
-    const beforeText = text.substring(0, match.index);
-    const afterText = text.substring(match.index + matchedStr.length);
-    // Ignore trailing mark allocation at the end of a line/prompt after sentence punctuation (e.g. ". [2]")
-    if (isSimpleBracketNumber && /[.?!:]\s*$/.test(beforeText) && /^\s*(?:\n|$)/.test(afterText)) {
-      continue;
-    }
-
-    // 1. Preceding text segment
-    if (match.index > lastIndex) {
-      const textChunk = text.substring(lastIndex, match.index);
-      if (textChunk) {
-        segments.push({ type: 'text', content: textChunk, gapId: '', gapNum: 0 });
-      }
-    }
-    let gapNum = autoGapCounter;
-    let expectedAnswer: string | undefined = undefined;
-
-    // Check if matched format has an explicit gap number
-    const numMatch = matchedStr.match(/\d+/);
-    if (numMatch) {
-      gapNum = parseInt(numMatch[0], 10);
-    } else {
-      gapNum = autoGapCounter;
-    }
-
-    // Check for inline answer syntax e.g. [1: Springfield]
-    const keyMatch = matchedStr.match(/\[\s*\d+\s*:\s*([^\]]+)\]/);
-    if (keyMatch) {
-      expectedAnswer = keyMatch[1].trim();
-    }
-
-    const gapId = `gap_${gapNum}`;
-    segments.push({
-      type: 'gap',
-      gapId,
-      gapNum,
-      expectedAnswer,
-    });
-
-    autoGapCounter = Math.max(autoGapCounter + 1, gapNum + 1);
-    lastIndex = match.index + matchedStr.length;
-  }
-
-  // 2. Trailing text segment
-  if (lastIndex < text.length) {
-    const trailing = text.substring(lastIndex);
-    if (trailing) {
-      segments.push({ type: 'text', content: trailing, gapId: '', gapNum: 0 });
-    }
-  }
-
-  return segments;
 }
 
 export function InlineGapText({
@@ -183,18 +91,36 @@ export function InlineGapText({
         return (
           <span key={idx} className="sq-gap-input-wrap">
             <span className="sq-gap-badge">{seg.gapNum}</span>
-            <input
-              type="text"
-              id={`gap-input-${compId}-${seg.gapNum}`}
-              className={`sq-gap-input sq-cloze-input-${compId}`}
-              dir="auto"
-              value={gapVal}
-              placeholder={`[ ${seg.gapNum} ]`}
-              onChange={(e) => onGapChange?.(seg.gapId, e.target.value)}
-              onKeyDown={(e) => handleKeyDown(e, currentGapIndex)}
-              autoComplete="off"
-              spellCheck="false"
-            />
+            {seg.choices && seg.choices.length >= 2 ? (
+              <select
+                id={`gap-input-${compId}-${seg.gapNum}`}
+                className={`sq-gap-select sq-cloze-input-${compId} ${gapVal ? 'sq-gap-select--filled' : ''}`}
+                dir="auto"
+                value={gapVal}
+                aria-label={`Select term for blank ${seg.gapNum}`}
+                onChange={(e) => onGapChange?.(seg.gapId, e.target.value)}
+              >
+                <option value="">Select term…</option>
+                {seg.choices.map((choice, cIdx) => (
+                  <option key={cIdx} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                id={`gap-input-${compId}-${seg.gapNum}`}
+                className={`sq-gap-input sq-cloze-input-${compId}`}
+                dir="auto"
+                value={gapVal}
+                placeholder={`[ ${seg.gapNum} ]`}
+                onChange={(e) => onGapChange?.(seg.gapId, e.target.value)}
+                onKeyDown={(e) => handleKeyDown(e, currentGapIndex)}
+                autoComplete="off"
+                spellCheck="false"
+              />
+            )}
           </span>
         );
       })}

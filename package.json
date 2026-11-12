@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.4.7",
+  "version": "2.4.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,8 @@
     "test:pilot-exam": "node --import ./scripts/register-ts.mjs scripts/test-pilot-exam-resolution.mjs",
     "test:custom-subject": "node --import ./scripts/register-ts.mjs scripts/test-custom-subject-and-latency.mjs",
     "test:keyboard-controls": "node --import ./scripts/register-ts.mjs scripts/test-exam-keyboard-controls.mjs",
+    "test:inline-gaps": "node --import ./scripts/register-ts.mjs scripts/test-inline-choice-gaps.mjs",
+    "test:fillable-tables": "node --import ./scripts/register-ts.mjs scripts/test-fillable-data-tables.mjs",
     "test:submission-tombstones": "node scripts/test-submission-deletion-tombstones.mjs",
     "test:resource-booklet": "node --import ./scripts/register-ts.mjs scripts/test-resource-booklet.mjs",
     "test:saved-test-source": "node --import ./scripts/register-ts.mjs scripts/test-saved-test-source-of-truth.mjs",

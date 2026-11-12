@@ -113,6 +113,8 @@
   border-radius: 4px;
   background: #ffffff;
   color: #0f172a;
+  user-select: auto;
+  pointer-events: auto;
   transition: all 0.2s ease;
 }
 

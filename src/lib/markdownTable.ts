@@ -13,3 +13,20 @@ export function hasMarkdownTable(text: string | null | undefined): boolean {
   if (!text) return false;
   return text.includes('|') && text.includes('\n|');
 }
+
+/**
+ * Removes contiguous Markdown pipe-table blocks when an interactive structured
+ * `<ExamDataTable>` replaces the static printed table in the exam runner.
+ */
+export function stripMarkdownTables(text: string | null | undefined): string {
+  if (!text || !hasMarkdownTable(text)) return text || '';
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const isPipeRow = trimmed.startsWith('|') && (trimmed.match(/\|/g) || []).length >= 2;
+    if (isPipeRow) continue;
+    kept.push(lines[i]);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}

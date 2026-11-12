@@ -74,6 +74,44 @@
   border-color: #94a3b8;
 }
 
+/* Interactive In-place Term Selector */
+.sq-gap-select {
+  background: #ffffff;
+  border: 1.5px solid #cbd5e1;
+  border-left: none;
+  border-radius: 0 8px 8px 0;
+  padding: 4px 28px 4px 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #475569;
+  height: 32px;
+  min-width: 135px;
+  max-width: 260px;
+  box-sizing: border-box;
+  outline: none;
+  cursor: pointer;
+  user-select: auto;
+  pointer-events: auto;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.sq-gap-select--filled {
+  color: #0f172a;
+  background: #f0f9ff;
+  border-color: #38bdf8;
+}
+
+.sq-gap-select:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+  background: #ffffff;
+}
+
+.sq-gap-select:hover:not(:focus) {
+  border-color: #94a3b8;
+}
+
 /* ─── Review & Graded Mode State ─────────────────────────────────────────── */
 .sq-gap-review-pill {
   display: inline-flex;

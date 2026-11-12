@@ -40,6 +40,10 @@ import {
   partitionAnalyticsSubmissions,
   resolveStoredAnswer,
 } from '../lib/examSubmissionGuards';
+import {
+  findTableCompletionSubIndex,
+  parseTableCellAnswers,
+} from '../lib/dataTableUtils';
 import { ExamMathText } from './ExamMathText';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { GradeThresholdEditor } from './GradeThresholdEditor';
@@ -584,6 +588,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           // Case A: Sub-questions (excluding MCQ/Multiple Select)
           if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
             let totalSubEarned = 0;
+            const tableOwnerSubIdx = findTableCompletionSubIndex(q);
+            const rawTableAns = resolveStoredAnswer({
+              rawAnswers,
+              answersByQuestionId: answersById,
+              questionId: q.id,
+              subId: 'table',
+              index: idx,
+            });
+            const hasTableVal = Object.values(parseTableCellAnswers(rawTableAns)).some(Boolean);
+
             for (let sqIdx = 0; sqIdx < q.sub_questions.length; sqIdx++) {
               const sq = q.sub_questions[sqIdx];
               const prevSub =
@@ -597,6 +611,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                 index: idx,
                 subIndex: sqIdx,
               });
+              if ((subAns === undefined || subAns === '') && sqIdx === tableOwnerSubIdx && hasTableVal && rawTableAns !== undefined) {
+                subAns = rawTableAns;
+              }
               if (subAns === undefined || subAns === '') {
                 if (prevSub?.studentAnswer !== undefined && prevSub.studentAnswer !== '') {
                   subAns = prevSub.studentAnswer;
@@ -2475,7 +2492,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                                     <div style={{ color: 'var(--color-text-secondary)' }}>
                                       Candidate Answer:{' '}
                                       <strong style={{ color: 'var(--color-text-primary)' }}>
-                                        <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                                        <ExamMathText content={formatCandidateAnswer(sub.studentAnswer)} />
                                       </strong>
                                     </div>
                                     {sub.feedback && (
