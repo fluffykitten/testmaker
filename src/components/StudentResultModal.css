@@ -1025,3 +1025,11 @@
   color: #e11d48;
   border: 1px solid #fecdd3;
 }
+
+@media print {
+  .srm-overlay,
+  .srm-modal {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}

@@ -561,6 +561,7 @@ export function QuizManagerPage({
       enableWatermark: currentSettings.defaultEnableWatermark ? (quiz.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (quiz.enableMultiMonitorDetection ?? false) : false,
       hideEmergencyExamButton: quiz.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
+      allowStudentScriptDownload: quiz.allowStudentScriptDownload ?? false,
     });
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
@@ -661,6 +662,7 @@ export function QuizManagerPage({
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (activeQuizDraft.enableMultiMonitorDetection ?? false) : false,
       hideEmergencyExamButton: activeQuizDraft.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
       showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
+      allowStudentScriptDownload: Boolean(activeQuizDraft.allowStudentScriptDownload),
       updatedAt: new Date().toISOString(),
     };
 
@@ -2251,6 +2253,23 @@ export function QuizManagerPage({
                           </label>
                         </div>
                       )}
+
+                      {/* Post-Exam Full Script PDF / Stem Review Policy (safe-by-default OFF) */}
+                      <div className="qm-checkbox-row" style={{ marginTop: '12px' }}>
+                        <label className="qm-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(activeQuizDraft.allowStudentScriptDownload)}
+                            onChange={(e) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                allowStudentScriptDownload: e.target.checked,
+                              })
+                            }
+                          />
+                          <span>Allow students to view &amp; download Full Script PDF (question text + marking breakdown) after results release</span>
+                        </label>
+                      </div>
                     </div>
                   )}
                 </section>

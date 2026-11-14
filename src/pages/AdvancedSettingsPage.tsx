@@ -17,6 +17,8 @@ import {
   loadAndSyncCreativeModeLandingVisibility,
   saveEmergencyExamButtonVisibility,
   loadAndSyncEmergencyExamButtonVisibility,
+  saveTeacherAccountClaimingSetting,
+  loadAndSyncTeacherAccountClaiming,
   getGeminiExtractionModel,
   saveGeminiExtractionModel,
   syncGeminiExtractionModelToCloud,
@@ -180,6 +182,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
         setSettingsState((prev) => ({ ...prev, hideEmergencyExamButton: hide }));
       });
+      loadAndSyncTeacherAccountClaiming().then((enabled) => {
+        setSettingsState((prev) => ({ ...prev, allowTeacherAccountClaiming: enabled }));
+      });
       loadAndSyncSecurityTiers().then((tiers) => {
         if (tiers && tiers.length > 0) {
           setSecurityTiers(tiers);
@@ -232,6 +237,16 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       hide
         ? '✓ Emergency Save button is now HIDDEN in student exam runner'
         : '✓ Emergency Save button is now VISIBLE in student exam runner'
+    );
+  };
+
+  const handleToggleTeacherAccountClaiming = (enabled: boolean) => {
+    updateSetting('allowTeacherAccountClaiming', enabled);
+    saveTeacherAccountClaimingSetting(enabled);
+    showNotice(
+      enabled
+        ? '✓ Educator account creation & profile claiming ENABLED on login screen'
+        : '✓ Educator account creation & profile claiming DISABLED'
     );
   };
 
@@ -1706,6 +1721,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   onClick={() => handleToggleHideEmergencyExamButton(!settings.hideEmergencyExamButton)}
                 >
                   {settings.hideEmergencyExamButton ? 'Hidden (Active)' : 'Visible (Default)'}
+                </button>
+              </div>
+
+              {/* Educator Account Creation & Profile Claiming */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">🔐 Educator Account Claiming & Self-Registration</strong>
+                  <p className="adv-setting-desc">
+                    When enabled, educators can create new accounts or claim passwordless legacy profiles from the Educator Portal login screen using the 6-digit School Master PIN. Keep disabled when accounts are managed centrally.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.allowTeacherAccountClaiming ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => handleToggleTeacherAccountClaiming(!settings.allowTeacherAccountClaiming)}
+                >
+                  {settings.allowTeacherAccountClaiming ? 'Enabled' : 'Disabled (Default)'}
                 </button>
               </div>
             </div>

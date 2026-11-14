@@ -12,7 +12,6 @@ import { GameProfileStudioModal } from '../components/game/GameProfileStudioModa
 import { GameAvatarRenderer } from '../components/game/GameAvatarRenderer';
 import { getActiveGameProfile } from '../services/gameProfileService';
 import type { GameProfile } from '../types/database';
-import { prefetchAccessPin } from '../components/PinGate';
 import { TurnstileWidget } from '../components/TurnstileWidget';
 import { verifyTurnstileToken } from '../services/turnstileService';
 import { ICM_LOGO_PATH, CAMBRIDGE_LOGO_PATH } from '../assets/logoConstants';
@@ -401,7 +400,11 @@ export function PortalLandingPage({
   }, [isFlushingOutbox, refreshPendingOutbox]);
 
   useEffect(() => {
-    prefetchAccessPin();
+    try {
+      localStorage.removeItem('testmaker_cached_access_pin');
+    } catch {
+      // ignore storage access issues
+    }
     const receipts = getDeviceReceipts();
     setRecentReceipts(receipts);
     if (receipts.length > 0) {

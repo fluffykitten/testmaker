@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.4.8",
+  "version": "2.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,6 +29,10 @@
     "test:resource-booklet": "node --import ./scripts/register-ts.mjs scripts/test-resource-booklet.mjs",
     "test:saved-test-source": "node --import ./scripts/register-ts.mjs scripts/test-saved-test-source-of-truth.mjs",
     "test:manual-grading": "node --import ./scripts/register-ts.mjs scripts/test-manual-grading-persistence.mjs",
+    "test:phase1-security": "node --import ./scripts/register-ts.mjs scripts/test-phase1-security-hardening.mjs",
+    "test:phase2-security": "node --import ./scripts/register-ts.mjs scripts/test-phase2-auth-rls-rpcs.mjs",
+    "test:phase25-security": "node --import ./scripts/register-ts.mjs scripts/test-phase25-anti-tamper.mjs",
+    "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",
     "deploy:draft": "npm run build && npx netlify deploy --dir=dist",

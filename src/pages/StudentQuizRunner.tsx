@@ -93,6 +93,14 @@ import {
   type StudentExamStatus,
 } from '../services/examProctorRealtimeService';
 import {
+  isAllowedProctorCommand,
+  claimCommandId,
+  clampAddTimeMinutes,
+  sanitizeAnnouncement,
+  recentViolationsSlice,
+} from '../lib/proctorGuards';
+import { recordProctorAuditEvent } from '../services/proctorAuditLogService';
+import {
   getSchoolClasses,
   loadAndSyncSchoolClasses,
   getSavedSettings,
@@ -442,6 +450,8 @@ export function StudentQuizRunner({
     () => savedExam?.audioProgress || {}
   );
   const [isExamMode, setIsExamMode] = useState<boolean>(() => savedExam?.isExamMode ?? true); // true = Strict Timed Exam, false = Practice Mode
+  const [showInstantSolutions, setShowInstantSolutions] = useState<boolean>(() => savedExam?.showInstantSolutions ?? false);
+  const [allowStudentScriptDownload, setAllowStudentScriptDownload] = useState<boolean>(() => savedExam?.allowStudentScriptDownload ?? false);
   const [isTeacherLocked, setIsTeacherLocked] = useState<boolean>(() => !!testIdOrCode);
   const [hasStarted, setHasStarted] = useState<boolean>(() => savedExam?.hasStarted || false);
   const [isSubmitted, setIsSubmitted] = useState<boolean>(() => savedExam?.isSubmitted || false);
@@ -579,6 +589,9 @@ export function StudentQuizRunner({
   const sessionPayloadRef = useRef<Record<string, unknown> | null>(null);
   const sessionPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persistSessionRef = useRef<() => void>(() => { });
+  const latestCloudDraftRef = useRef<ExamDraftPayload | null>(null);
+  const cloudDraftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushCloudDraftRef = useRef<(keepalive?: boolean) => void>(() => { });
 
   // 🕵️ Forensic Telemetry Refs (Answer Change History & Dwell Times)
   const answerChangeHistoryRef = useRef<AnswerChangeLogEntry[]>([]);
@@ -868,6 +881,12 @@ export function StudentQuizRunner({
           if (data.isExamMode !== undefined) {
             setIsExamMode(data.isExamMode);
           }
+          if (data.showInstantSolutions !== undefined) {
+            setShowInstantSolutions(Boolean(data.showInstantSolutions));
+          }
+          if (data.allowStudentScriptDownload !== undefined) {
+            setAllowStudentScriptDownload(Boolean(data.allowStudentScriptDownload));
+          }
           if (data.securityEnabled !== undefined) {
             setSecurityEnabled(data.securityEnabled);
           }
@@ -981,49 +1000,67 @@ export function StudentQuizRunner({
 
       const shouldLock = requireTeacherUnlock && isExamMode && !options?.skipLock;
       const finalStrikeLimit = securityTiers[securityTiers.length - 1]?.strikeCount || 4;
+      const emitStudentViolationAndAudit = (
+        telemetry: ProctorStudentState,
+        auditEvent: { type: string; detail: string; severity: 'info' | 'warning' | 'critical' }
+      ) => {
+        if (!resolvedQuizCode) return;
+        const eventId = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        sendStudentViolation(resolvedQuizCode, telemetry, { id: eventId, ...auditEvent });
+        recordProctorAuditEvent({
+          id: eventId,
+          quizCode: resolvedQuizCode,
+          studentId: sessionHash,
+          studentName: candidateName || 'Candidate',
+          candidateNumber,
+          candidateClass,
+          eventType: auditEvent.type,
+          severity: auditEvent.severity,
+          detail: auditEvent.detail,
+          actor: 'student',
+          createdAt: nowIso,
+        });
+      };
 
       // If skipLock is requested (e.g. initial 5s fullscreen grace warning), broadcast telemetry without strike count increment
       if (!shouldLock) {
-        if (resolvedQuizCode) {
-          sendStudentViolation(
-            resolvedQuizCode,
-            {
-              studentId: sessionHash,
-              studentName: candidateName || 'Candidate',
-              candidateNumber,
-              candidateClass,
-              status: options?.customStatus || 'warning',
-              answeredCount: quizStats.answeredItems,
-              totalQuestions: quizStats.totalItems,
-              currentIndex: currentIndex + 1,
-              timeLeftSeconds: timeLeft,
-              violationsCount: violations.length + 1,
-              strikeCount,
-              currentTierName: activeLockedTier?.name,
-              currentTierAction: activeLockedTier?.action,
-              totalPenaltySeconds,
-              autoSubmittedBySecurity: isFinalSecurityLock,
-              lastViolation: detail,
-              lockReason: undefined,
-              multiMonitorDetected,
-              lastHeartbeat: Date.now(),
-              exceededMaxViolations: false,
-              maxViolations: finalStrikeLimit,
-              quizCode: resolvedQuizCode,
-              quizTitle: title,
-              recentViolations: [...violations, rec].map((v) => ({
-                timestamp: v.timestamp,
-                detail: v.detail,
-                type: v.type,
-              })),
-            },
-            {
-              type,
-              detail,
-              severity: 'warning',
-            }
-          );
-        }
+        emitStudentViolationAndAudit(
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: options?.customStatus || 'warning',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: timeLeft,
+            violationsCount: violations.length + 1,
+            strikeCount,
+            currentTierName: activeLockedTier?.name,
+            currentTierAction: activeLockedTier?.action,
+            totalPenaltySeconds,
+            autoSubmittedBySecurity: isFinalSecurityLock,
+            lastViolation: detail,
+            lockReason: undefined,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+            exceededMaxViolations: false,
+            maxViolations: finalStrikeLimit,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
+          },
+          {
+            type,
+            detail,
+            severity: 'warning',
+          }
+        );
         setSecurityAlert(`⚠️ SECURITY NOTICE: ${detail} (Recorded at ${formatProctorTimestamp(nowIso)})`);
         return;
       }
@@ -1038,46 +1075,43 @@ export function StudentQuizRunner({
 
       if (!shouldCount) {
         // Log recorded in violations list above, but strike counter does not increment
-        if (resolvedQuizCode) {
-          sendStudentViolation(
-            resolvedQuizCode,
-            {
-              studentId: sessionHash,
-              studentName: candidateName || 'Candidate',
-              candidateNumber,
-              candidateClass,
-              status: isLockedByProctor ? 'locked' : 'warning',
-              answeredCount: quizStats.answeredItems,
-              totalQuestions: quizStats.totalItems,
-              currentIndex: currentIndex + 1,
-              timeLeftSeconds: timeLeft,
-              violationsCount: violations.length + 1,
-              strikeCount,
-              currentTierName: activeLockedTier?.name,
-              currentTierAction: activeLockedTier?.action,
-              totalPenaltySeconds,
-              autoSubmittedBySecurity: isFinalSecurityLock,
-              lastViolation: detail,
-              lockReason: isLockedByProctor ? lockReason : undefined,
-              multiMonitorDetected,
-              lastHeartbeat: Date.now(),
-              exceededMaxViolations: isFinalSecurityLock,
-              maxViolations: finalStrikeLimit,
-              quizCode: resolvedQuizCode,
-              quizTitle: title,
-              recentViolations: [...violations, rec].map((v) => ({
-                timestamp: v.timestamp,
-                detail: v.detail,
-                type: v.type,
-              })),
-            },
-            {
-              type,
-              detail: `[Logged] ${detail}`,
-              severity: 'warning',
-            }
-          );
-        }
+        emitStudentViolationAndAudit(
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: isLockedByProctor ? 'locked' : 'warning',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: timeLeft,
+            violationsCount: violations.length + 1,
+            strikeCount,
+            currentTierName: activeLockedTier?.name,
+            currentTierAction: activeLockedTier?.action,
+            totalPenaltySeconds,
+            autoSubmittedBySecurity: isFinalSecurityLock,
+            lastViolation: detail,
+            lockReason: isLockedByProctor ? lockReason : undefined,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+            exceededMaxViolations: isFinalSecurityLock,
+            maxViolations: finalStrikeLimit,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
+          },
+          {
+            type,
+            detail: `[Logged] ${detail}`,
+            severity: 'warning',
+          }
+        );
         return;
       }
 
@@ -1111,46 +1145,43 @@ export function StudentQuizRunner({
         setPinError(null);
         setPinInput('');
 
-        if (resolvedQuizCode) {
-          sendStudentViolation(
-            resolvedQuizCode,
-            {
-              studentId: sessionHash,
-              studentName: candidateName || 'Candidate',
-              candidateNumber,
-              candidateClass,
-              status: 'locked',
-              answeredCount: quizStats.answeredItems,
-              totalQuestions: quizStats.totalItems,
-              currentIndex: currentIndex + 1,
-              timeLeftSeconds: timeLeft,
-              violationsCount: violations.length + 1,
-              strikeCount: newStrike,
-              currentTierName: tierName,
-              currentTierAction: tierAction,
-              totalPenaltySeconds,
-              autoSubmittedBySecurity: false,
-              lastViolation: detail,
-              lockReason: reason,
-              multiMonitorDetected,
-              lastHeartbeat: Date.now(),
-              exceededMaxViolations: false,
-              maxViolations: finalStrikeLimit,
-              quizCode: resolvedQuizCode,
-              quizTitle: title,
-              recentViolations: [...violations, rec].map((v) => ({
-                timestamp: v.timestamp,
-                detail: v.detail,
-                type: v.type,
-              })),
-            },
-            {
-              type,
-              detail: `🚨 [${tierName}] ${detail}`,
-              severity: 'critical',
-            }
-          );
-        }
+        emitStudentViolationAndAudit(
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: 'locked',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: timeLeft,
+            violationsCount: violations.length + 1,
+            strikeCount: newStrike,
+            currentTierName: tierName,
+            currentTierAction: tierAction,
+            totalPenaltySeconds,
+            autoSubmittedBySecurity: false,
+            lastViolation: detail,
+            lockReason: reason,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+            exceededMaxViolations: false,
+            maxViolations: finalStrikeLimit,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
+          },
+          {
+            type,
+            detail: `🚨 [${tierName}] ${detail}`,
+            severity: 'critical',
+          }
+        );
       } else if (tierAction === 'time_penalty') {
         const penaltyMinutes = matchedTier?.penaltyMinutes || 5;
         const currentTarget = targetEndTime || (nowMs + timeLeft * 1000);
@@ -1173,46 +1204,43 @@ export function StudentQuizRunner({
         setPinError(null);
         setPinInput('');
 
-        if (resolvedQuizCode) {
-          sendStudentViolation(
-            resolvedQuizCode,
-            {
-              studentId: sessionHash,
-              studentName: candidateName || 'Candidate',
-              candidateNumber,
-              candidateClass,
-              status: 'locked',
-              answeredCount: quizStats.answeredItems,
-              totalQuestions: quizStats.totalItems,
-              currentIndex: currentIndex + 1,
-              timeLeftSeconds: penaltyResult.remainingSeconds,
-              violationsCount: violations.length + 1,
-              strikeCount: newStrike,
-              currentTierName: tierName,
-              currentTierAction: tierAction,
-              totalPenaltySeconds: newTotalPenalty,
-              autoSubmittedBySecurity: false,
-              lastViolation: detail,
-              lockReason: reason,
-              multiMonitorDetected,
-              lastHeartbeat: Date.now(),
-              exceededMaxViolations: false,
-              maxViolations: finalStrikeLimit,
-              quizCode: resolvedQuizCode,
-              quizTitle: title,
-              recentViolations: [...violations, rec].map((v) => ({
-                timestamp: v.timestamp,
-                detail: v.detail,
-                type: v.type,
-              })),
-            },
-            {
-              type,
-              detail: `🚨 [${tierName}] ${detail} (-${penaltyMinutes}m deducted)`,
-              severity: 'critical',
-            }
-          );
-        }
+        emitStudentViolationAndAudit(
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: 'locked',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: penaltyResult.remainingSeconds,
+            violationsCount: violations.length + 1,
+            strikeCount: newStrike,
+            currentTierName: tierName,
+            currentTierAction: tierAction,
+            totalPenaltySeconds: newTotalPenalty,
+            autoSubmittedBySecurity: false,
+            lastViolation: detail,
+            lockReason: reason,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+            exceededMaxViolations: false,
+            maxViolations: finalStrikeLimit,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
+          },
+          {
+            type,
+            detail: `🚨 [${tierName}] ${detail} (-${penaltyMinutes}m deducted)`,
+            severity: 'critical',
+          }
+        );
       } else if (tierAction === 'auto_submit') {
         setIsFinalSecurityLock(true);
         setIsLockedByProctor(true);
@@ -1221,46 +1249,43 @@ export function StudentQuizRunner({
         setLockReason(reason);
         setLockTime(nowIso);
 
-        if (resolvedQuizCode) {
-          sendStudentViolation(
-            resolvedQuizCode,
-            {
-              studentId: sessionHash,
-              studentName: candidateName || 'Candidate',
-              candidateNumber,
-              candidateClass,
-              status: 'submitted',
-              answeredCount: quizStats.answeredItems,
-              totalQuestions: quizStats.totalItems,
-              currentIndex: currentIndex + 1,
-              timeLeftSeconds: 0,
-              violationsCount: violations.length + 1,
-              strikeCount: newStrike,
-              currentTierName: tierName,
-              currentTierAction: tierAction,
-              totalPenaltySeconds,
-              autoSubmittedBySecurity: true,
-              lastViolation: detail,
-              lockReason: reason,
-              multiMonitorDetected,
-              lastHeartbeat: Date.now(),
-              exceededMaxViolations: true,
-              maxViolations: finalStrikeLimit,
-              quizCode: resolvedQuizCode,
-              quizTitle: title,
-              recentViolations: [...violations, rec].map((v) => ({
-                timestamp: v.timestamp,
-                detail: v.detail,
-                type: v.type,
-              })),
-            },
-            {
-              type: 'exceeded_limit',
-              detail: `🛑 FINAL VIOLATION: ${tierName} - Exam Auto-Submitted`,
-              severity: 'critical',
-            }
-          );
-        }
+        emitStudentViolationAndAudit(
+          {
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            status: 'submitted',
+            answeredCount: quizStats.answeredItems,
+            totalQuestions: quizStats.totalItems,
+            currentIndex: currentIndex + 1,
+            timeLeftSeconds: 0,
+            violationsCount: violations.length + 1,
+            strikeCount: newStrike,
+            currentTierName: tierName,
+            currentTierAction: tierAction,
+            totalPenaltySeconds,
+            autoSubmittedBySecurity: true,
+            lastViolation: detail,
+            lockReason: reason,
+            multiMonitorDetected,
+            lastHeartbeat: Date.now(),
+            exceededMaxViolations: true,
+            maxViolations: finalStrikeLimit,
+            quizCode: resolvedQuizCode,
+            quizTitle: title,
+            recentViolations: [...violations, rec].map((v) => ({
+              timestamp: v.timestamp,
+              detail: v.detail,
+              type: v.type,
+            })),
+          },
+          {
+            type: 'exceeded_limit',
+            detail: `🛑 FINAL VIOLATION: ${tierName} - Exam Auto-Submitted`,
+            severity: 'critical',
+          }
+        );
 
         if (submitExamRef.current) {
           submitExamRef.current();
@@ -1850,6 +1875,38 @@ export function StudentQuizRunner({
   }, [hasStarted, isSubmitted, isGrading, securityEnabled, isExamMode, enableMultiMonitorDetection, multiMonitorDetected, logViolation]);
 
   // ─── 3C. Real-time Proctor Live Channel & Command Listener ─────────────────
+  const executedCommandIdsRef = useRef<Set<string>>(new Set());
+  const latestCommandStateRef = useRef({
+    isFinalSecurityLock,
+    targetEndTime,
+    timeLeft,
+    quizStats,
+    currentIndex,
+    violations,
+    strikeCount,
+    currentTierName: activeLockedTier?.name as string | undefined,
+    currentTierAction: activeLockedTier?.action as SecurityTierAction | undefined,
+    totalPenaltySeconds,
+    candidateName,
+    candidateNumber,
+    candidateClass,
+  });
+  latestCommandStateRef.current = {
+    isFinalSecurityLock,
+    targetEndTime,
+    timeLeft,
+    quizStats,
+    currentIndex,
+    violations,
+    strikeCount,
+    currentTierName: activeLockedTier?.name,
+    currentTierAction: activeLockedTier?.action,
+    totalPenaltySeconds,
+    candidateName,
+    candidateNumber,
+    candidateClass,
+  };
+
   useEffect(() => {
     if (!hasStarted || !resolvedQuizCode) return;
 
@@ -1884,10 +1941,14 @@ export function StudentQuizRunner({
     };
 
     const handleCommand = (cmd: ProctorCommand) => {
+      if (!cmd || !isAllowedProctorCommand(cmd.type)) return;
+      if (!claimCommandId(executedCommandIdsRef.current, cmd.id)) return;
+      const live = latestCommandStateRef.current;
+
       if (cmd.type === 'unlock') {
-        if (isFinalSecurityLock) return;
+        if (isFinalSecurityLockRef.current || live.isFinalSecurityLock) return;
         const unlockClock = resolveUnlockClock({
-          targetEndTime: targetEndTime || (Date.now() + timeLeft * 1000),
+          targetEndTime: live.targetEndTime || (Date.now() + live.timeLeft * 1000),
           nowMs: Date.now(),
           graceSeconds: PENALTY_GRACE_SECONDS,
         });
@@ -1912,39 +1973,40 @@ export function StudentQuizRunner({
         requestSecureFullscreen().catch(() => { });
         setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'add_time') {
-        const extraSec = (cmd.minutes || 5) * 60;
+        const addedMinutes = clampAddTimeMinutes(cmd.minutes);
+        const extraSec = addedMinutes * 60;
         setTimeLeft((prev) => prev + extraSec);
         setTargetEndTime((prev) => (prev ? prev + extraSec * 1000 : Date.now() + extraSec * 1000));
-        setSecurityAlert(`⏱️ TIME EXTENSION: Invigilator granted +${cmd.minutes || 5} minutes extra time.`);
+        setSecurityAlert(`⏱️ TIME EXTENSION: Invigilator granted +${addedMinutes} minutes extra time.`);
         setTimeout(() => setSecurityAlert(null), 7000);
         setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'force_submit') {
         setSecurityAlert('🛑 Examination submission requested by invigilator.');
-        // Notify proctor channel immediately of forced submission
+        // Notify proctor channel immediately of forced submission using live state ref
         const submitTelemetry: ProctorStudentState = {
           studentId: sessionHash,
-          studentName: candidateName || 'Candidate',
-          candidateNumber: candidateNumber || '',
-          candidateClass: candidateClass || '',
+          studentName: live.candidateName || 'Candidate',
+          candidateNumber: live.candidateNumber || '',
+          candidateClass: live.candidateClass || '',
           status: 'submitted',
-          answeredCount: quizStats.answeredItems,
-          totalQuestions: quizStats.totalItems,
-          currentIndex: currentIndex + 1,
+          answeredCount: live.quizStats.answeredItems,
+          totalQuestions: live.quizStats.totalItems,
+          currentIndex: live.currentIndex + 1,
           timeLeftSeconds: 0,
-          violationsCount: violations.length,
-          strikeCount,
-          currentTierName: activeLockedTier?.name,
-          currentTierAction: activeLockedTier?.action,
-          totalPenaltySeconds,
+          violationsCount: live.violations.length,
+          strikeCount: live.strikeCount,
+          currentTierName: live.currentTierName,
+          currentTierAction: live.currentTierAction,
+          totalPenaltySeconds: live.totalPenaltySeconds,
           autoSubmittedBySecurity: false,
-          lastViolation: violations[violations.length - 1]?.detail,
+          lastViolation: live.violations[live.violations.length - 1]?.detail,
           lockReason: undefined,
           multiMonitorDetected: false,
           deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
           lastHeartbeat: Date.now(),
           quizCode: resolvedQuizCode,
           quizTitle: title,
-          recentViolations: violations.map((v) => ({
+          recentViolations: live.violations.map((v) => ({
             timestamp: v.timestamp,
             detail: v.detail,
             type: v.type,
@@ -1958,13 +2020,13 @@ export function StudentQuizRunner({
         });
         submitExamRef.current();
       } else if (cmd.type === 'pardon') {
-        if (isFinalSecurityLock) return;
+        if (isFinalSecurityLockRef.current || live.isFinalSecurityLock) return;
         setViolations([]);
         setStrikeCount(0);
         lastStrikeAtRef.current = null;
         setActiveLockedTier(null);
         const unlockClock = resolveUnlockClock({
-          targetEndTime: targetEndTime || (Date.now() + timeLeft * 1000),
+          targetEndTime: live.targetEndTime || (Date.now() + live.timeLeft * 1000),
           nowMs: Date.now(),
           graceSeconds: PENALTY_GRACE_SECONDS,
         });
@@ -1986,15 +2048,16 @@ export function StudentQuizRunner({
         requestSecureFullscreen().catch(() => { });
         setTimeout(() => sendCurrentHeartbeatRef.current(), 100);
       } else if (cmd.type === 'announcement') {
-        setTeacherAnnouncement(cmd.message || null);
+        const cleanMsg = sanitizeAnnouncement(cmd.message);
+        setTeacherAnnouncement(cleanMsg || null);
       }
     };
 
     joinProctorSession(resolvedQuizCode, initialTelemetry, {
       onCommandReceived: handleCommand,
       onSyncRequested: () => {
-        // Distribute response bursts across 100ms - 2500ms to protect Supabase message rate limit
-        const jitterMs = Math.floor(Math.random() * 2400) + 100;
+        // Spread 200-way sync replies across 200ms - 8000ms to prevent WebSocket/REST fallback drops
+        const jitterMs = Math.floor(Math.random() * 7800) + 200;
         setTimeout(() => {
           sendCurrentHeartbeatRef.current(true);
         }, jitterMs);
@@ -2063,7 +2126,7 @@ export function StudentQuizRunner({
           : 'active';
 
     const isExceeded = s.autoSubmittedBySecurity || (s.maxViolations > 0 && s.violations.length >= s.maxViolations);
-    const violationsList = fullSync ? s.violations : s.violations.slice(-5);
+    const violationsList = recentViolationsSlice(s.violations, false, fullSync ? 20 : 5);
 
     sendStudentHeartbeat({
       studentId: sessionHash,
@@ -3215,6 +3278,8 @@ export function StudentQuizRunner({
       flaggedIndices: Array.from(flaggedIndices),
       audioProgress,
       isExamMode,
+      showInstantSolutions,
+      allowStudentScriptDownload,
       hasStarted,
       isSubmitted,
       completedSubmission: syncStatus === 'offline_failed' ? completedSubmission : null,
@@ -3263,6 +3328,8 @@ export function StudentQuizRunner({
     flaggedIndices,
     audioProgress,
     isExamMode,
+    showInstantSolutions,
+    allowStudentScriptDownload,
     hasStarted,
     isSubmitted,
     completedSubmission,
@@ -3288,67 +3355,82 @@ export function StudentQuizRunner({
     isFinalSecurityLock,
   ]);
 
-  // Immediate flush when the tab is backgrounded or the page is being discarded.
+  // Immediate flush when the tab is backgrounded, browser closes, or laptop suspends/shuts down.
   useEffect(() => {
-    const flush = () => persistSessionRef.current();
-    const handleVisibility = () => {
-      if (document.visibilityState === 'hidden') flush();
+    const flushOnExit = () => {
+      persistSessionRef.current();
+      flushCloudDraftRef.current(true);
     };
-    window.addEventListener('pagehide', flush);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flushOnExit();
+    };
+    window.addEventListener('pagehide', flushOnExit);
+    window.addEventListener('beforeunload', flushOnExit);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('pagehide', flushOnExit);
+      window.removeEventListener('beforeunload', flushOnExit);
       document.removeEventListener('visibilitychange', handleVisibility);
       if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
+      if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
     };
   }, []);
 
-  // Periodic Cloud Auto-Save (Every 50 seconds in background via UPSERT to app_config)
+  // Keep latest cloud draft snapshot fresh on every edit without tearing down periodic timers.
   useEffect(() => {
-    if (!hasStarted || isSubmitted || isGrading) return;
+    if (!hasStarted || isSubmitted || isGrading) {
+      latestCloudDraftRef.current = null;
+      return;
+    }
     const identifier = studentPinInput || candidateName;
-    if (!identifier || !resolvedQuizCode) return;
+    if (!identifier || !resolvedQuizCode) {
+      latestCloudDraftRef.current = null;
+      return;
+    }
 
-    const performSync = () => {
-      saveExamDraft({
-        quizCode: resolvedQuizCode,
-        quizId: effectiveDraftQuizId,
-        studentName: candidateName,
-        candidateNumber,
-        candidateClass,
-        studentPin: studentPinInput || undefined,
-        answers,
-        currentIndex,
-        timeLeftSeconds: timeLeft,
-        startTime,
-        targetEndTime,
-        flaggedIndices: Array.from(flaggedIndices),
-        audioProgress,
-        violations,
-        isLockedByProctor,
-        lockReason,
-        lockTime,
-        lastSavedAt: new Date().toISOString(),
-        status: 'in_progress',
-        securityTiersSnapshot: securityTiers,
-        strikeCount,
-        lastStrikeAt: lastStrikeAtRef.current,
-        totalPenaltySeconds,
-        tierHistory,
-        autoSubmittedBySecurity: isFinalSecurityLock,
-      }).catch(() => { });
+    latestCloudDraftRef.current = {
+      quizCode: resolvedQuizCode,
+      quizId: effectiveDraftQuizId,
+      studentName: candidateName,
+      candidateNumber,
+      candidateClass,
+      studentPin: studentPinInput || undefined,
+      answers,
+      currentIndex,
+      timeLeftSeconds: timeLeft,
+      startTime,
+      targetEndTime,
+      flaggedIndices: Array.from(flaggedIndices),
+      audioProgress,
+      violations,
+      isLockedByProctor,
+      lockReason,
+      lockTime,
+      lastSavedAt: new Date().toISOString(),
+      status: 'in_progress',
+      securityTiersSnapshot: securityTiers,
+      strikeCount,
+      lastStrikeAt: lastStrikeAtRef.current,
+      totalPenaltySeconds,
+      tierHistory,
+      autoSubmittedBySecurity: isFinalSecurityLock,
     };
 
-    const interval = setInterval(performSync, 50000);
-    return () => clearInterval(interval);
+    flushCloudDraftRef.current = (keepalive = false) => {
+      if (cloudDraftDebounceRef.current) {
+        clearTimeout(cloudDraftDebounceRef.current);
+        cloudDraftDebounceRef.current = null;
+      }
+      const snapshot = latestCloudDraftRef.current;
+      if (!snapshot) return;
+      saveExamDraft(snapshot, keepalive ? { keepalive: true } : undefined).catch(() => { });
+    };
   }, [
     hasStarted,
     isSubmitted,
     isGrading,
     resolvedQuizCode,
-    resolvedPublishedId,
-    resolvedTestId,
-    testIdOrCode,
+    effectiveDraftQuizId,
     candidateName,
     candidateNumber,
     candidateClass,
@@ -3370,6 +3452,44 @@ export function StudentQuizRunner({
     tierHistory,
     isFinalSecurityLock,
   ]);
+
+  // Debounced cloud draft sync (~2.5s after student changes an answer, flag, question, or lock state)
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading) return;
+    if (!latestCloudDraftRef.current) return;
+
+    if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
+    cloudDraftDebounceRef.current = setTimeout(() => {
+      flushCloudDraftRef.current(false);
+    }, 2500);
+
+    return () => {
+      if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
+    };
+  }, [
+    hasStarted,
+    isSubmitted,
+    isGrading,
+    answers,
+    currentIndex,
+    flaggedIndices,
+    violations,
+    isLockedByProctor,
+    strikeCount,
+    isFinalSecurityLock,
+  ]);
+
+  // Stable 25-second periodic cloud heartbeat (intentionally excludes volatile `timeLeft` so it never resets every second)
+  useEffect(() => {
+    if (!hasStarted || isSubmitted || isGrading) return;
+    const identifier = studentPinInput || candidateName;
+    if (!identifier || !resolvedQuizCode) return;
+
+    const interval = setInterval(() => {
+      flushCloudDraftRef.current(false);
+    }, 25000);
+    return () => clearInterval(interval);
+  }, [hasStarted, isSubmitted, isGrading, resolvedQuizCode, effectiveDraftQuizId, candidateName, studentPinInput]);
 
   // ─── 5. Absolute Epoch Countdown Timer & Device Sleep / Tab Sync ─────────
   useEffect(() => {
@@ -4403,6 +4523,8 @@ export function StudentQuizRunner({
                   );
                   setTimeLeft(resolvedDuration * 60);
                   if (refreshed.isExamMode !== undefined) setIsExamMode(refreshed.isExamMode);
+                  if (refreshed.showInstantSolutions !== undefined) setShowInstantSolutions(Boolean(refreshed.showInstantSolutions));
+                  if (refreshed.allowStudentScriptDownload !== undefined) setAllowStudentScriptDownload(Boolean(refreshed.allowStudentScriptDownload));
                   if (refreshed.securityEnabled !== undefined) setSecurityEnabled(refreshed.securityEnabled);
                   if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
                   if (refreshed.enableMultiMonitorDetection !== undefined) setEnableMultiMonitorDetection(refreshed.enableMultiMonitorDetection);
@@ -5900,7 +6022,8 @@ export function StudentQuizRunner({
             </div>
           )}
 
-          {/* Solutions & Detailed Diagnostic Walkthrough */}
+          {/* Solutions & Detailed Diagnostic Walkthrough (only if enabled by examiner) */}
+          {(allowStudentScriptDownload || (!isExamMode && showInstantSolutions)) && (
           <div className="results-solutions-box">
             <h3 className="results-section-heading">🔑 Question-by-Question Marking & AI Examiner Review</h3>
             <div className="solutions-list">
@@ -6139,6 +6262,7 @@ export function StudentQuizRunner({
               })}
             </div>
           </div>
+          )}
 
           <div className="results-footer-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '24px', flexWrap: 'wrap' }}>
             <button
@@ -6200,6 +6324,7 @@ export function StudentQuizRunner({
               🎓 1-Page Report Card (PDF)
             </button>
 
+            {allowStudentScriptDownload && (
             <button
               className="sq-btn sq-btn-secondary"
               style={{
@@ -6258,6 +6383,7 @@ export function StudentQuizRunner({
             >
               📄 Full Script PDF
             </button>
+            )}
 
             {onExit && (
               <button className="sq-btn sq-btn-primary" onClick={onExit}>

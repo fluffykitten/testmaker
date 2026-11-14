@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, hasActiveTeacherSession } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import { fetchCustomTestWithQuestions, type ExamHeaderConfig } from './testBuilderService';
 import {
@@ -34,6 +34,7 @@ export interface StudentQuizData {
   teacherPinHash?: string;
   maxViolations?: number;
   showInstantSolutions?: boolean;
+  allowStudentScriptDownload?: boolean;
   requireStudentPin?: boolean;
   limitOneAttempt?: boolean;
   targetClass?: string;
@@ -203,6 +204,130 @@ export async function resolveStudentQuiz(codeOrId: string): Promise<StudentQuizD
   }
 }
 
+function buildStudentQuizData(params: {
+  published: PublishedQuiz;
+  rawQuestions: Question[];
+  savedHeader?: ExamHeaderConfig;
+  savedTotalMarks?: number;
+  hasSavedTest: boolean;
+  teacherPinHash: string;
+  schoolSecurityTiers: SecurityViolationTier[];
+}): StudentQuizData {
+  const {
+    published,
+    rawQuestions,
+    savedHeader: rawSavedHeader,
+    savedTotalMarks,
+    hasSavedTest,
+    teacherPinHash,
+    schoolSecurityTiers,
+  } = params;
+  const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
+  let questions = rawQuestions;
+
+  // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
+  // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
+  // Safeguard: Check that question numbers are unique sequential integers (not a multi-paper custom exam with duplicate Q1, Q2, etc.)
+  const parsedNums = questions.map((q) => parseInt(String(q.question_number), 10)).filter((n) => !isNaN(n));
+  const isSinglePaperSequential =
+    parsedNums.length === questions.length &&
+    new Set(parsedNums).size === questions.length &&
+    Math.min(...parsedNums) === 1 &&
+    Math.max(...parsedNums) === questions.length;
+
+  const isAlphabeticallyMuddled =
+    isSinglePaperSequential &&
+    questions.length >= 10 &&
+    questions.some((q, idx) => {
+      if (idx > 0) {
+        const prevNum = parseInt(String(questions[idx - 1].question_number), 10);
+        const currNum = parseInt(String(q.question_number), 10);
+        return prevNum === 1 && currNum === 10;
+      }
+      return false;
+    });
+
+  if (isAlphabeticallyMuddled) {
+    questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
+  }
+
+  // A candidate browser must never receive the invigilator PIN or the test
+  // overrides (they are full Question objects and therefore contain mark schemes).
+  const publishedHeader = { ...(published.headerConfig || {}) } as ExamHeaderConfig;
+  const savedHeader = rawSavedHeader ? ({ ...rawSavedHeader } as ExamHeaderConfig) : undefined;
+  const headerSource = {
+    ...publishedHeader,
+    ...(savedHeader || {}),
+  } as ExamHeaderConfig;
+  delete (headerSource as any).teacherPin;
+  delete (headerSource as any).questionOverrides;
+  delete (headerSource as any).updatedAt;
+
+  const syncedHeader: ExamHeaderConfig = {
+    ...headerSource,
+    title: published.title || publishedHeader.title || savedHeader?.title || 'Examination Assessment',
+    schoolName: savedHeader?.schoolName || publishedHeader.schoolName || '',
+    subject: published.subject || publishedHeader.subject || savedHeader?.subject || 'Assessment',
+    subjectCode: savedHeader?.subjectCode || publishedHeader.subjectCode || '',
+    durationMinutes: effectiveDuration,
+    instructions: savedHeader?.instructions ?? publishedHeader.instructions ?? '',
+    additionalMaterials: savedHeader?.additionalMaterials ?? publishedHeader.additionalMaterials,
+    teacherPinHash,
+  };
+
+  // In formal Exam Mode the browser is not allowed to see answer keys at all.
+  // (Practice mode keeps them so instant solutions can still be rendered.)
+  const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
+  const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
+  const computedQuestionMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+  const effectiveTotalMarks = hasSavedTest
+    ? (computedQuestionMarks > 0 ? computedQuestionMarks : (savedTotalMarks || published.totalMarks))
+    : (published.totalMarks || computedQuestionMarks);
+
+  return {
+    publishedId: published.id,
+    testId: published.testId,
+    quizCode: published.quizCode,
+    title: published.title,
+    headerConfig: syncedHeader,
+    questions: studentQuestions,
+    totalMarks: effectiveTotalMarks,
+    durationMinutes: effectiveDuration,
+    isExamMode: published.isExamMode,
+    isActive: published.isActive !== undefined ? published.isActive : true,
+    securityEnabled: published.securityEnabled,
+    enableWatermark: published.enableWatermark ?? false,
+    enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
+    hideEmergencyExamButton: published.hideEmergencyExamButton ?? false,
+    securityTiers: schoolSecurityTiers,
+    requireTeacherUnlock: published.requireTeacherUnlock,
+    teacherPinHash,
+    maxViolations: published.maxViolations,
+    showInstantSolutions: published.showInstantSolutions,
+    allowStudentScriptDownload: Boolean(published.allowStudentScriptDownload),
+    requireStudentPin: published.requireStudentPin ?? false,
+    limitOneAttempt: published.limitOneAttempt ?? true,
+    targetClass: published.targetClass,
+    // Student Exam Reference Tools Suite
+    allowCalculator: published.allowCalculator,
+    calculatorType: published.calculatorType,
+    allowPeriodicTable: published.allowPeriodicTable,
+    allowScratchpad: published.allowScratchpad,
+    allowFormulaSheet: published.allowFormulaSheet,
+    attachments: published.attachments,
+    // Game mode fields
+    quizMode: published.quizMode,
+    enablePowerUps: published.enablePowerUps,
+    enableStreaks: published.enableStreaks,
+    enableFunSounds: published.enableFunSounds,
+    enableMemes: published.enableMemes,
+    pointsPerQuestion: published.pointsPerQuestion,
+    questionTimerSeconds: published.questionTimerSeconds,
+    shuffleQuestions: published.shuffleQuestions,
+    shuffleOptions: published.shuffleOptions,
+  };
+}
+
 async function resolveStudentQuizUncached(
   codeOrId: string,
   cleanInput: string
@@ -222,8 +347,51 @@ async function resolveStudentQuizUncached(
     console.warn('Local published lookup error:', err);
   }
 
-  // 2. If not found locally (e.g., fresh student device / incognito), try fast per-code cloud index first, then full cloud list
-  if (!published) {
+  let allowLegacyCloudTableFallback = !isSupabaseConfigured() || hasActiveTeacherSession();
+
+  // 2A. On student devices with Supabase configured, deliver exam via hardened SECURITY DEFINER RPC first
+  if (!published && isSupabaseConfigured() && !hasActiveTeacherSession()) {
+    try {
+      const rpcRes = await withTimeout<{ data: any; error: any }>(
+        (supabase as any).rpc('get_student_exam_paper', { p_code: cleanInput }),
+        5000,
+        { data: null, error: { message: 'timeout' } }
+      );
+
+      if (!rpcRes.error && rpcRes.data && rpcRes.data.publishedQuiz) {
+        const rpcPaper = rpcRes.data;
+        const rpcPublished = rpcPaper.publishedQuiz as PublishedQuiz;
+        const rpcQuestions = Array.isArray(rpcPaper.questions)
+          ? rpcPaper.questions.map((raw: any) => normalizeQuestionRecord(raw))
+          : [];
+        const schoolSecurityTiers = await withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers());
+
+        const result = buildStudentQuizData({
+          published: rpcPublished,
+          rawQuestions: rpcQuestions,
+          savedHeader: (rpcPaper.headerConfig || undefined) as ExamHeaderConfig | undefined,
+          savedTotalMarks: rpcPaper.customTest?.total_marks,
+          hasSavedTest: Boolean(rpcPaper.customTest || rpcQuestions.length > 0),
+          teacherPinHash: rpcPaper.teacherPinHash || '',
+          schoolSecurityTiers,
+        });
+
+        resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+        return result;
+      }
+
+      if (rpcRes.error) {
+        // Migration 021 not yet applied / transient error — fall back cleanly
+        allowLegacyCloudTableFallback = true;
+      }
+    } catch (err) {
+      console.warn('get_student_exam_paper RPC fallback:', err);
+      allowLegacyCloudTableFallback = true;
+    }
+  }
+
+  // 2B. Teacher workspace or pre-migration 021 fallback: try per-code cloud index first, then full cloud list
+  if (!published && allowLegacyCloudTableFallback) {
     try {
       const byCode = await fetchPublishedQuizByCodeFromSupabase(cleanInput);
       if (byCode) {
@@ -231,16 +399,6 @@ async function resolveStudentQuizUncached(
       } else {
         const cloudQuizzes = await fetchPublishedQuizzesFromSupabase();
         published = cloudQuizzes.find(matchQuiz);
-      }
-      if (published) {
-        try {
-          const localList = getPublishedQuizzes();
-          if (!localList.some((q) => q.id === published!.id)) {
-            localStorage.setItem('fluffykitten_published_quizzes', JSON.stringify([published, ...localList]));
-          }
-        } catch {
-          // ignore local caching error
-        }
       }
     } catch (err) {
       console.warn('Cloud published quiz lookup error:', err);
@@ -250,24 +408,17 @@ async function resolveStudentQuizUncached(
   // 3. Fallback to Pre-configured 170-Student Pilot Drill (ICM170)
   if (!published && (cleanInput === PILOT_QUIZ_CODE || cleanInput === PILOT_EXAM_ID.toUpperCase())) {
     published = PILOT_EXAM_170_PUBLISHED_QUIZ;
-    try {
-      const localList = getPublishedQuizzes();
-      if (!localList.some((q) => q.id === published!.id) && typeof localStorage !== 'undefined') {
-        localStorage.setItem('fluffykitten_published_quizzes', JSON.stringify([published, ...localList]));
-      }
-    } catch {
-      // ignore
-    }
   }
 
   if (published) {
-    const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
     const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
 
     // Saved test is the single source of truth for paper questions, overrides, mark schemes, and total marks.
     // Falls back to published.questionIds only when published.testId does not resolve to a saved test (e.g. offline import).
     const [savedTestData, teacherPinHash, schoolSecurityTiers] = await Promise.all([
-      published.testId ? fetchCustomTestWithQuestions(published.testId) : Promise.resolve(null),
+      published.testId && allowLegacyCloudTableFallback
+        ? fetchCustomTestWithQuestions(published.testId)
+        : Promise.resolve(null),
       hashTeacherPin(published.quizCode, effectiveTeacherPin),
       withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers()),
     ]);
@@ -277,110 +428,15 @@ async function resolveStudentQuizUncached(
       ? savedTestData!.questions
       : await fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides);
 
-    let questions = rawQuestions;
-
-    // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
-    // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
-    // Safeguard: Check that question numbers are unique sequential integers (not a multi-paper custom exam with duplicate Q1, Q2, etc.)
-    const parsedNums = questions.map((q) => parseInt(String(q.question_number), 10)).filter((n) => !isNaN(n));
-    const isSinglePaperSequential =
-      parsedNums.length === questions.length &&
-      new Set(parsedNums).size === questions.length &&
-      Math.min(...parsedNums) === 1 &&
-      Math.max(...parsedNums) === questions.length;
-
-    const isAlphabeticallyMuddled =
-      isSinglePaperSequential &&
-      questions.length >= 10 &&
-      questions.some((q, idx) => {
-        if (idx > 0) {
-          const prevNum = parseInt(String(questions[idx - 1].question_number), 10);
-          const currNum = parseInt(String(q.question_number), 10);
-          return prevNum === 1 && currNum === 10;
-        }
-        return false;
-      });
-
-    if (isAlphabeticallyMuddled) {
-      questions = [...questions].sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
-    }
-
-    // A candidate browser must never receive the invigilator PIN or the test
-    // overrides (they are full Question objects and therefore contain mark schemes).
-    const publishedHeader = { ...(published.headerConfig || {}) } as ExamHeaderConfig;
-    const savedHeader = hasSavedTest
-      ? ({ ...(savedTestData!.test.header_config || {}) } as ExamHeaderConfig)
-      : undefined;
-    const headerSource = {
-      ...publishedHeader,
-      ...(savedHeader || {}),
-    } as ExamHeaderConfig;
-    delete (headerSource as any).teacherPin;
-    delete (headerSource as any).questionOverrides;
-    delete (headerSource as any).updatedAt;
-
-    const syncedHeader: ExamHeaderConfig = {
-      ...headerSource,
-      title: published.title || publishedHeader.title || savedHeader?.title || 'Examination Assessment',
-      schoolName: savedHeader?.schoolName || publishedHeader.schoolName || '',
-      subject: published.subject || publishedHeader.subject || savedHeader?.subject || 'Assessment',
-      subjectCode: savedHeader?.subjectCode || publishedHeader.subjectCode || '',
-      durationMinutes: effectiveDuration,
-      instructions: savedHeader?.instructions ?? publishedHeader.instructions ?? '',
-      additionalMaterials: savedHeader?.additionalMaterials ?? publishedHeader.additionalMaterials,
+    const result = buildStudentQuizData({
+      published,
+      rawQuestions,
+      savedHeader: hasSavedTest ? savedTestData!.test.header_config : undefined,
+      savedTotalMarks: hasSavedTest ? savedTestData!.test.total_marks : undefined,
+      hasSavedTest,
       teacherPinHash,
-    };
-
-    // In formal Exam Mode the browser is not allowed to see answer keys at all.
-    // (Practice mode keeps them so instant solutions can still be rendered.)
-    const stripAnswerKeys = Boolean(published.isExamMode && !published.showInstantSolutions);
-    const studentQuestions = sanitizeQuestionsForStudent(questions, stripAnswerKeys);
-    const computedQuestionMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
-    const effectiveTotalMarks = hasSavedTest
-      ? (computedQuestionMarks > 0 ? computedQuestionMarks : (savedTestData!.test.total_marks || published.totalMarks))
-      : (published.totalMarks || computedQuestionMarks);
-
-    const result: StudentQuizData = {
-      publishedId: published.id,
-      testId: published.testId,
-      quizCode: published.quizCode,
-      title: published.title,
-      headerConfig: syncedHeader,
-      questions: studentQuestions,
-      totalMarks: effectiveTotalMarks,
-      durationMinutes: effectiveDuration,
-      isExamMode: published.isExamMode,
-      isActive: published.isActive !== undefined ? published.isActive : true,
-      securityEnabled: published.securityEnabled,
-      enableWatermark: published.enableWatermark ?? false,
-      enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
-      hideEmergencyExamButton: published.hideEmergencyExamButton ?? false,
-      securityTiers: schoolSecurityTiers,
-      requireTeacherUnlock: published.requireTeacherUnlock,
-      teacherPinHash,
-      maxViolations: published.maxViolations,
-      showInstantSolutions: published.showInstantSolutions,
-      requireStudentPin: published.requireStudentPin ?? false,
-      limitOneAttempt: published.limitOneAttempt ?? true,
-      targetClass: published.targetClass,
-      // Student Exam Reference Tools Suite
-      allowCalculator: published.allowCalculator,
-      calculatorType: published.calculatorType,
-      allowPeriodicTable: published.allowPeriodicTable,
-      allowScratchpad: published.allowScratchpad,
-      allowFormulaSheet: published.allowFormulaSheet,
-      attachments: published.attachments,
-      // Game mode fields
-      quizMode: published.quizMode,
-      enablePowerUps: published.enablePowerUps,
-      enableStreaks: published.enableStreaks,
-      enableFunSounds: published.enableFunSounds,
-      enableMemes: published.enableMemes,
-      pointsPerQuestion: published.pointsPerQuestion,
-      questionTimerSeconds: published.questionTimerSeconds,
-      shuffleQuestions: published.shuffleQuestions,
-      shuffleOptions: published.shuffleOptions,
-    };
+      schoolSecurityTiers,
+    });
 
     resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
     return result;
@@ -417,8 +473,9 @@ async function resolveStudentQuizUncached(
     console.warn('Local test resolution error:', err);
   }
 
-  // 5. Query Supabase custom_tests table (explicit columns only; bounded timeout)
-  try {
+  // 5. Query Supabase custom_tests table (only for authenticated teachers or pre-migration fallback)
+  if (allowLegacyCloudTableFallback) {
+    try {
     const trimmedInput = codeOrId.trim();
     if (UUID_REGEX.test(trimmedInput)) {
       const { data: test, error } = await withTimeout<{ data: CustomTest | null; error: any }>(
@@ -496,8 +553,9 @@ async function resolveStudentQuizUncached(
   } catch (err) {
     console.error('Supabase test lookup error:', err);
   }
+  }
 
-  // 5. Live Multiplayer Room Fallback (Connects to Realtime Broadcast Host Session)
+  // 6. Live Multiplayer Room Fallback (Connects to Realtime Broadcast Host Session)
   if (cleanInput.length >= 3) {
     return {
       testId: cleanInput,
@@ -537,7 +595,10 @@ export async function verifyTeacherUnlockPin(
       p_quiz_code: cleanCode,
       p_pin: cleanPin,
     });
-    if (!error && typeof data === 'boolean') return data;
+    if (!error && data === true) return true;
+    // If the RPC returned false for an exam without expectedHash (cloud Mode A), trust false;
+    // if an offline package / pre-023 paper supplied expectedHash, allow hash verification below.
+    if (!error && data === false && !expectedHash) return false;
   } catch {
     // RPC not deployed yet — fall through to the offline hash check.
   }

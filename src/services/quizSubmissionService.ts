@@ -2,7 +2,7 @@
 // Stores and tracks student quiz attempts, responses, scores, and proctoring audit logs.
 // Supports Excel (.xlsx) exports for individual candidates and class-wide gradebooks.
 
-import { supabase } from '../lib/supabase';
+import { supabase, hasActiveTeacherSession } from '../lib/supabase';
 import {
   exportAllSubmissionsExcelICM,
   exportSingleSubmissionExcelICM,
@@ -1385,14 +1385,37 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
         updated_at: updatedIso,
       };
 
-      const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
-
-      if (!error) {
-        tableSuccess = true;
-        markOutboxSynced(stampedSubmission.id);
+      let writeError: { message?: string } | null = null;
+      if (!hasActiveTeacherSession()) {
+        const rpcRes = await (supabase as any).rpc('submit_student_exam_attempt', { p_row: row });
+        if (!rpcRes?.error && rpcRes?.data === true) {
+          tableSuccess = true;
+          markOutboxSynced(stampedSubmission.id);
+        } else if (rpcRes?.error) {
+          // Pre-migration 021 fallback
+          const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
+          if (!error) {
+            tableSuccess = true;
+            markOutboxSynced(stampedSubmission.id);
+          } else {
+            writeError = error;
+          }
+        } else {
+          writeError = { message: 'Submission RPC rejected row payload.' };
+        }
       } else {
-        saveToSubmissionOutbox(stampedSubmission, 'failed', error.message);
-        console.warn('Could not sync submission to Supabase table:', error.message);
+        const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
+        if (!error) {
+          tableSuccess = true;
+          markOutboxSynced(stampedSubmission.id);
+        } else {
+          writeError = error;
+        }
+      }
+
+      if (!tableSuccess && writeError) {
+        saveToSubmissionOutbox(stampedSubmission, 'failed', writeError.message);
+        console.warn('Could not sync submission to Supabase table:', writeError.message);
       }
     } catch (err: any) {
       saveToSubmissionOutbox(
@@ -1403,10 +1426,9 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
       console.warn('Error pushing submission to Supabase table:', err);
     }
 
-    // 3. Only use the app_config mirror when the primary table write failed. The
-    // mirror is a read-modify-write of one shared JSON blob, so doing it on every
-    // successful submit made concurrent end-of-exam papers overwrite each other.
-    if (!tableSuccess) {
+    // 3. Only use the app_config mirror when an authenticated teacher session fails table write.
+    // Anonymous student browsers are strictly blocked by Phase 2 RLS from reading/writing shared app_config blobs.
+    if (!tableSuccess && hasActiveTeacherSession()) {
       try {
         const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
         const mergedMap = new Map<string, StudentSubmission>();
@@ -1939,13 +1961,18 @@ export async function fetchStudentResultsCloud(
   quizCode: string,
   identifier: string,
   pin?: string
-): Promise<{ submissions: StudentSubmission[]; hasUnreleased: boolean; pinMismatch?: boolean }> {
+): Promise<{
+  submissions: StudentSubmission[];
+  hasUnreleased: boolean;
+  pinMismatch?: boolean;
+  allowStudentScriptDownload?: boolean;
+}> {
   const cleanCode = quizCode.trim().toUpperCase();
   const cleanQuery = identifier.trim();
   const cleanId = normalizeIdentityPart(identifier);
   const cleanPin = (pin || '').trim();
 
-  // 1. Scoped server-side lookup (migration 019). Falls through if not deployed.
+  // 1. Scoped server-side lookup (migration 019/022). Falls through if not deployed.
   try {
     const { data, error } = await (supabase as any).rpc('lookup_student_exam_result', {
       p_quiz_code: cleanCode,
@@ -1955,12 +1982,21 @@ export async function fetchStudentResultsCloud(
 
     if (!error && data && typeof data === 'object') {
       if (data.status === 'pin_mismatch') {
-        return { submissions: [], hasUnreleased: false, pinMismatch: true };
+        return {
+          submissions: [],
+          hasUnreleased: false,
+          pinMismatch: true,
+          allowStudentScriptDownload: Boolean(data.allowStudentScriptDownload),
+        };
       }
       const rows = Array.isArray(data.submissions) ? data.submissions : [];
       return {
         submissions: rows.map(mapRowToSubmission),
         hasUnreleased: data.hasUnreleased === true,
+        allowStudentScriptDownload:
+          typeof data.allowStudentScriptDownload === 'boolean'
+            ? data.allowStudentScriptDownload
+            : undefined,
       };
     }
   } catch (err) {

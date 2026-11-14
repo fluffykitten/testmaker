@@ -12,7 +12,11 @@ import {
   exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
 import { ExamMathText } from './ExamMathText';
-import { getPublishedQuizzes } from '../services/quizManagerService';
+import {
+  getPublishedQuizzes,
+  fetchPublishedQuizByCodeFromSupabase,
+  type PublishedQuiz,
+} from '../services/quizManagerService';
 import { deriveGradeFromPercentage } from '../utils/gradeThresholdUtils';
 import './StudentResultModal.css';
 
@@ -36,12 +40,16 @@ export function StudentResultModal({
   const [hasUnreleased, setHasUnreleased] = useState<boolean>(false);
   const [pinMismatch, setPinMismatch] = useState<boolean>(false);
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
+  const [cloudQuizPolicy, setCloudQuizPolicy] = useState<PublishedQuiz | null>(null);
+  const [rpcAllowScriptDownload, setRpcAllowScriptDownload] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     if (!isOpen || !quizCode || !candidateIdentifier) {
       setSubmissions([]);
       setSelectedSubmission(null);
       setPinMismatch(false);
+      setCloudQuizPolicy(null);
+      setRpcAllowScriptDownload(undefined);
       return;
     }
 
@@ -49,12 +57,19 @@ export function StudentResultModal({
     setLoading(true);
     setPinMismatch(false);
 
+    fetchPublishedQuizByCodeFromSupabase(quizCode)
+      .then((policy) => {
+        if (isMounted) setCloudQuizPolicy(policy);
+      })
+      .catch(() => {});
+
     fetchStudentResultsCloud(quizCode, candidateIdentifier, pin)
       .then((res) => {
         if (!isMounted) return;
         setSubmissions(res.submissions);
         setHasUnreleased(res.hasUnreleased);
         setPinMismatch(!!res.pinMismatch);
+        setRpcAllowScriptDownload(res.allowStudentScriptDownload);
         // If there is exactly one published submission, auto-select it directly
         if (res.submissions.length === 1) {
           setSelectedSubmission(res.submissions[0]);
@@ -86,8 +101,14 @@ export function StudentResultModal({
     }
   }, [quizCode]);
 
+  const effectiveQuizPolicy = cloudQuizPolicy || matchingQuiz;
+  const allowScriptDownload =
+    typeof rpcAllowScriptDownload === 'boolean'
+      ? rpcAllowScriptDownload
+      : Boolean(effectiveQuizPolicy?.allowStudentScriptDownload);
+
   const getGradeInfo = (percentage: number) => {
-    const detail = deriveGradeFromPercentage(percentage, matchingQuiz?.gradeThresholds);
+    const detail = deriveGradeFromPercentage(percentage, effectiveQuizPolicy?.gradeThresholds);
     const className =
       detail.grade === 'A*' || detail.grade === 'A'
         ? 'srm-grade-pill--a'
@@ -299,7 +320,7 @@ export function StudentResultModal({
                   <button
                     type="button"
                     className="srm-btn-report-card"
-                    onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { gradeThresholds: matchingQuiz?.gradeThresholds })}
+                    onClick={() => exportStudentFeedbackReportPdf(selectedSubmission, undefined, { gradeThresholds: effectiveQuizPolicy?.gradeThresholds })}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                       <span>🎓</span> 1-Page Report Card
@@ -307,16 +328,18 @@ export function StudentResultModal({
                     <span style={{ opacity: 0.7 }}>⬇</span>
                   </button>
 
+                  {allowScriptDownload && (
                   <button
                     type="button"
                     className="srm-btn-full-script"
-                    onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { gradeThresholds: matchingQuiz?.gradeThresholds })}
+                    onClick={() => exportIndividualStudentReportPdf(selectedSubmission, { gradeThresholds: effectiveQuizPolicy?.gradeThresholds })}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                       <span>📄</span> Full Script PDF
                     </span>
                     <span style={{ color: '#94a3b8' }}>↗</span>
                   </button>
+                  )}
                 </div>
               </div>
 
@@ -355,6 +378,7 @@ export function StudentResultModal({
               )}
 
               {/* Detailed Response Analysis (Question-by-Question Script & Feedback) */}
+              {allowScriptDownload ? (
               <div>
                 <h3 className="srm-section-title">
                   <span>📝</span> Detailed Response Analysis
@@ -467,6 +491,21 @@ export function StudentResultModal({
                   })}
                 </div>
               </div>
+              ) : (
+                <div
+                  style={{
+                    background: '#f8fafc',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '12px',
+                    padding: '14px 18px',
+                    color: '#475569',
+                    fontSize: '0.875rem',
+                    marginBottom: '20px',
+                  }}
+                >
+                  🔒 <strong>Full question script and marking breakdown download</strong> are disabled by your examiner for this assessment. You can still download your <strong>1-Page Report Card</strong> above.
+                </div>
+              )}
 
               {/* Institutional Footer Branding */}
               <footer className="srm-footer-branding">

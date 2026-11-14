@@ -26,7 +26,6 @@
     "isExamMode": true,
     "securityEnabled": true,
     "requireTeacherUnlock": true,
-    "teacherPin": "2026",
     "allowCalculator": true,
     "calculatorType": "scientific",
     "allowPeriodicTable": true,
@@ -41,8 +40,7 @@
       "subject": "Cambridge Multi-Discipline Orientation",
       "subjectCode": "0001",
       "durationMinutes": 20,
-      "instructions": "Answer all 10 questions. Test each on-screen tool: Periodic Table (Q1), Scientific Calculator (Q2), Audio Player (Q3), Leaf Anatomy Diagram (Q4), Resource Booklet (Q5), Data Table (Q6), Multi-Select (Q7), Inline Cloze (Q8), Arabic RTL (Q9), and Bahasa Indonesia (Q10). Do not press Esc, Alt+Tab, or F11 during the examination.",
-      "teacherPin": "2026"
+      "instructions": "Answer all 10 questions. Test each on-screen tool: Periodic Table (Q1), Scientific Calculator (Q2), Audio Player (Q3), Leaf Anatomy Diagram (Q4), Resource Booklet (Q5), Data Table (Q6), Multi-Select (Q7), Inline Cloze (Q8), Arabic RTL (Q9), and Bahasa Indonesia (Q10). Do not press Esc, Alt+Tab, or F11 during the examination."
     }
   }
 }

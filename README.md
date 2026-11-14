@@ -126,14 +126,14 @@ VITE_GEMINI_API_KEY=your-gemini-api-key
 ```
 
 ### 4. Database Setup
-Run the SQL migrations in order in your **Supabase SQL Editor**:
-1. `supabase/migrations/001_initial_schema.sql` — Tables for syllabuses, questions, custom tests
-2. `supabase/migrations/002_fix_custom_tests_rls.sql` — RLS policies for custom tests
-3. `supabase/migrations/003_fix_all_rls_policies.sql` — Public read and modification policies
-4. `supabase/migrations/004_app_config.sql` — PIN configuration
-5. `supabase/migrations/005_add_options_column.sql` — Multiple choice options support
-6. `supabase/migrations/006_add_insert_diagram_columns.sql` — Resource insert and diagram reference columns
-7. `supabase/migrations/007_quiz_submissions.sql` — Student submissions, scores, and proctoring logs
+Run the SQL migrations in order (`001` through `023`) in your **Supabase SQL Editor**:
+1. `supabase/migrations/001_initial_schema.sql` through `007_quiz_submissions.sql` — Core tables for syllabuses, questions, custom tests, config, options, diagrams/inserts, and student submissions
+2. `supabase/migrations/008_add_audio_columns.sql` through `017_add_cognitive_level_column.sql` — Audio tracks, natural sorting, PIN verification, varchar expansion, teacher/game profiles, source PDF metadata, and Bloom's cognitive levels
+3. `supabase/migrations/018_proctor_audit_events.sql` & `019_exam_submission_security_rpcs.sql` — Persistent proctoring audit log & submission security RPCs
+4. `supabase/migrations/020_verify_teacher_access_pin_rpc.sql` — Server-side teacher Master PIN verification (`verify_teacher_access_pin`)
+5. `supabase/migrations/021_phase2_teacher_login_rls_and_exam_rpcs.sql` — Educator login/session auth (`teacher_auth_sessions`), strict workspace RLS, and sanitized exam delivery/draft/submission/result RPCs
+6. `supabase/migrations/022_exam_anti_tamper_and_rate_guards.sql` — Draft ownership locks (`exam_draft_locks`), server-side Exam Mode score zeroing, single-attempt enforcement, lookup download gating, and audit rate/size triggers
+7. `supabase/migrations/023_proctor_security_and_pin_parity.sql` — Unlock PIN lookup parity and ECDSA P-256 proctor public key registry (`proctor_channel_keys`)
 
 ### 5. Run Locally
 ```bash
@@ -166,6 +166,23 @@ npm run mobile:ios
 ---
 
 ## 📜 Changelog
+
+### [v.2.5.0] — Unified Educator Auth, Strict DB RLS, Anti-Tamper Exam RPCs, Crash-Safe Drafts & Signed Live Proctoring
+- **Phase 1 — Client, PDF Viewer & Export Hardening (`020`)**:
+  - Removed unauthenticated Question Bank pre-warming in [`App.tsx`](src/App.tsx), eliminated PIN caching in [`PinGate.tsx`](src/components/PinGate.tsx) and [`PortalLandingPage.tsx`](src/pages/PortalLandingPage.tsx), moved Master PIN verification server-side via `verify_teacher_access_pin`, and stopped writing resolved quizzes into `localStorage` on student browsers.
+  - Replaced native PDF browser frames in [`ExamAttachmentModal.tsx`](src/components/ExamAttachmentModal.tsx) with a canvas-based `pdfjs-dist` renderer (no browser download/print toolbar), added `@media print` suppression across exam/result views, and gated **Full Script PDF** downloads behind `allowStudentScriptDownload`.
+- **Phase 2 — Unified Educator Auth, Strict RLS & Exam RPCs (`021`)**:
+  - Replaced the shared teacher keypad in [`PinGate.tsx`](src/components/PinGate.tsx) with Email/Username + Password authentication (`teacherProfileService.ts`), 12-hour `x-teacher-session` tokens injected by [`supabase.ts`](src/lib/supabase.ts), Master-PIN-gated provisioning/reset, and optional account-claiming controls in [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx).
+  - Enabled strict Row-Level Security (`RLS`) across workspace tables and routed student exam loading, cloud drafts, submissions, and result lookup through sanitized `SECURITY DEFINER` RPCs (`get_student_exam_paper`, `save/get/delete_student_exam_draft`, `submit_student_exam_attempt`, `lookup_student_exam_result`).
+- **Phase 2.5 — Anti-Tamper Guards & Crash-Safe Draft Persistence (`022`)**:
+  - Added per-student `exam_draft_locks` ownership tokens in [`examDraftService.ts`](src/services/examDraftService.ts), 256 KB draft payload caps, server-side Exam Mode score zeroing, single-attempt enforcement, blank-PIN overwrite protection, set-based `get_student_exam_paper`, and `proctor_audit_events` field/rate triggers.
+  - Hardened [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) cloud draft persistence with `latestCloudDraftRef`, 2.5s answer-edit debounced saves, a decoupled 25s interval, and `beforeunload`/`pagehide`/`visibilitychange` `keepalive` exit flushes so progress survives sudden shutdowns or browser closes.
+- **Live Proctoring Hardening & Cryptographic Command Auth (`023`)**:
+  - Added ephemeral WebCrypto ECDSA P-256 command signing and verification in [`proctorCommandAuth.ts`](src/lib/proctorCommandAuth.ts) backed by `proctor_channel_keys` (`register_proctor_public_key` / `get_proctor_public_key`) in [`examProctorRealtimeService.ts`](src/services/examProctorRealtimeService.ts), and wired `proctorGuards.ts` (`isAllowedProctorCommand`, `claimCommandId`, `clampAddTimeMinutes`, `sanitizeAnnouncement`) in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx).
+  - Eliminated `handleCommand` closure staleness using `latestCommandStateRef` and `isFinalSecurityLockRef`, aligned `verify_teacher_unlock_pin` lookup parity across `quiz_by_code_*`, `previousCodes`, and `headerConfig` (with offline `expectedHash` fallback in [`quizCodeService.ts`](src/services/quizCodeService.ts)), and widened sync burst jitter to `200ms–8000ms` with bounded violation slices.
+  - Propagated canonical `studentId`/`candidateClass` on `ProctorLogEvent`, persisted discrete student violations and bulk invigilator actions directly via [`proctorAuditLogService.ts`](src/services/proctorAuditLogService.ts) with UTF-8 byte clamping and quiet `23505` duplicate handling, and surfaced expired teacher session banners in [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx).
+- **Verification**:
+  - Added security, stress-test, and proctoring verification suites: `npm run test:phase1-security`, `npm run test:phase2-security`, `npm run test:phase25-security`, `npm run test:stress-200`, [`scripts/test-proctor-hardening-023.mjs`](scripts/test-proctor-hardening-023.mjs), [`scripts/test-proctor-p1-p2-p3.mjs`](scripts/test-proctor-p1-p2-p3.mjs), [`scripts/verify-proctor-remote-unlock.mjs`](scripts/verify-proctor-remote-unlock.mjs), and [`scripts/diagnose-proctoring-system.mjs`](scripts/diagnose-proctoring-system.mjs).
 
 ### [v.2.4.8] — Fillable Data Tables, Inline Term-Selection Cloze & Responsive Exam Header Toolbar
 - **Fillable `data_tables` in Exam & Practice Modes**:

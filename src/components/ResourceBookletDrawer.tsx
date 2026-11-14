@@ -154,6 +154,7 @@ export function ResourceBookletDrawer({
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
       >
         {/* Header */}
         <div className="rbd-header">

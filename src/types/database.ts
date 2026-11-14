@@ -254,6 +254,11 @@ export interface TeacherProfile {
   id: string;                                 // UUID
   name: string;                               // e.g. "Dr. Budi Santoso"
   title?: string | null;                      // e.g. "Dr.", "Mr.", "Ibu"
+  email?: string | null;
+  username?: string | null;
+  role?: 'teacher' | 'admin';
+  has_password?: boolean;
+  last_login_at?: string | null;
   subject: string;                            // e.g. "Chemistry"
   subject_code: string;                       // e.g. "0620"
   pin_hash?: string | null;                   // SHA-256 hashed 4-digit PIN (null if PIN-free)

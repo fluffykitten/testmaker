@@ -34,6 +34,7 @@ export interface AppSettings {
   enableQuizizzMode?: boolean;            // Quizizz gamified mode feature flag (default: false)
   hideCreativeModeOnLanding?: boolean;    // Hide Creative Mode Hub & Avatar Studio on landing page (default: false)
   hideEmergencyExamButton?: boolean;      // Hide Emergency Save & Exit button during student exams (default: false)
+  allowTeacherAccountClaiming?: boolean;  // Allow creating/claiming teacher accounts from login screen (default: false)
   securityTiers?: SecurityViolationTier[]; // Dynamic list of strike escalation penalty tiers
   geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
   geminiApiKeyTier?: GeminiApiKeyTier;    // Active Cloudflare-configured API Key Tier: 'auto' | 'paid' | 'free'
@@ -87,6 +88,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableQuizizzMode: false,
   hideCreativeModeOnLanding: false,
   hideEmergencyExamButton: false,
+  allowTeacherAccountClaiming: false,
   securityTiers: DEFAULT_SECURITY_TIERS,
   geminiExtractionModel: 'gemini-3.5-flash-lite',
   geminiApiKeyTier: 'auto',
@@ -537,6 +539,76 @@ export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolea
     }
   } catch (err) {
     console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
+  }
+
+  return localVal;
+}
+
+/**
+ * Updates educator account creation/claiming availability locally and syncs to Supabase app_config
+ */
+export function saveTeacherAccountClaimingSetting(enabled: boolean): void {
+  const current = getSavedSettings();
+  const updated: AppSettings = {
+    ...current,
+    allowTeacherAccountClaiming: enabled,
+  };
+  saveSettings(updated);
+  syncTeacherAccountClaimingToCloud(enabled).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('teacher_account_claiming_updated', {
+        detail: { allowTeacherAccountClaiming: enabled },
+      })
+    );
+  }
+}
+
+export async function syncTeacherAccountClaimingToCloud(enabled: boolean): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: 'allow_teacher_account_claiming',
+      value: JSON.stringify(enabled),
+    });
+    if (error) {
+      console.warn('Teacher account claiming cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for teacher account claiming setting:', err);
+    return false;
+  }
+}
+
+export async function loadAndSyncTeacherAccountClaiming(): Promise<boolean> {
+  const current = getSavedSettings();
+  const localVal = Boolean(current.allowTeacherAccountClaiming);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', 'allow_teacher_account_claiming')
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const parsed = JSON.parse(data.value);
+      const cloudVal = Boolean(parsed);
+      if (current.allowTeacherAccountClaiming !== cloudVal) {
+        const updated = { ...current, allowTeacherAccountClaiming: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('teacher_account_claiming_updated', {
+              detail: { allowTeacherAccountClaiming: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch teacher account claiming setting from cloud:', err);
   }
 
   return localVal;

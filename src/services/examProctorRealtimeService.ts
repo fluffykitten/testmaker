@@ -20,6 +20,13 @@ import {
   retryBroadcast,
   stampHeartbeatReceipt,
 } from '../lib/proctorGuards';
+import {
+  generateProctorSigningSession,
+  signProctorCommand,
+  verifyProctorCommandSignature,
+  type ProctorSigningSession,
+  type PublicKeyLookupResult,
+} from '../lib/proctorCommandAuth';
 
 // ─── Types & Interfaces ────────────────────────────────────────────────────────
 
@@ -71,13 +78,19 @@ export interface ProctorCommand {
   minutes?: number;            // For 'add_time' (e.g. +5)
   message?: string;            // For 'announcement'
   timestamp: number;
+  quizCode?: string;
+  issuedAt?: number;
+  keyId?: string;
+  sig?: string;
 }
 
 export interface ProctorLogEvent {
   id: string;
   timestamp: string;
+  studentId?: string;
   studentName: string;
   candidateNumber?: string;
+  candidateClass?: string;
   quizCode?: string;
   quizTitle?: string;
   type:
@@ -164,6 +177,48 @@ function enqueueOrSendStudent(event: string, payload: unknown): void {
   void sendBroadcastWithRetry(studentChannel, event, payload);
 }
 
+const publicKeyCache = new Map<string, PublicKeyLookupResult>();
+
+function isMissingRpcError(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  return (
+    error.code === '42883' ||
+    error.code === 'PGRST202' ||
+    /could not find the function|does not exist/i.test(error.message || '')
+  );
+}
+
+async function resolveProctorPublicKey(
+  quizCode: string,
+  keyId: string
+): Promise<PublicKeyLookupResult> {
+  const code = quizCode.trim().toUpperCase();
+  const cacheKey = `${code}::${keyId}`;
+  const cached = publicKeyCache.get(cacheKey);
+  if (cached?.found) return cached;
+
+  try {
+    const { data, error } = await (supabase as any).rpc('get_proctor_public_key', {
+      p_quiz_code: code,
+      p_key_id: keyId,
+    });
+    if (error) {
+      if (isMissingRpcError(error)) {
+        return { found: false, rpcUnavailable: true };
+      }
+      return { found: false };
+    }
+    if (data?.found && data?.isActive !== false && data?.publicJwk) {
+      const result: PublicKeyLookupResult = { found: true, publicJwk: data.publicJwk };
+      publicKeyCache.set(cacheKey, result);
+      return result;
+    }
+    return { found: false };
+  } catch {
+    return { found: false };
+  }
+}
+
 /**
  * Connects a student client to the live proctor channel.
  * `sessionToken` scopes teardown to this sitting (defaults to the student id).
@@ -189,7 +244,7 @@ export function joinProctorSession(
     config: { broadcast: { self: false } },
   });
 
-  // Listen for commands broadcast by teacher
+  // Listen for commands broadcast by teacher (verified asynchronously before execution)
   studentChannel.on('broadcast', { event: 'proctor_cmd' }, ({ payload }) => {
     const cmd = payload as ProctorCommand;
     if (!cmd) return;
@@ -203,9 +258,16 @@ export function joinProctorSession(
       (Boolean(currentStudentClass) &&
         cmd.targetClass.trim().toLowerCase() === currentStudentClass.toLowerCase());
 
-    if (matchesStudent && matchesClass) {
-      callbacks.onCommandReceived(cmd);
-    }
+    if (!matchesStudent || !matchesClass) return;
+
+    const channelCode = studentChannelCode;
+    void verifyProctorCommandSignature(cmd, channelCode, resolveProctorPublicKey).then((verdict) => {
+      if (verdict.status === 'valid' || verdict.status === 'legacy_fallback') {
+        callbacks.onCommandReceived(cmd);
+      } else {
+        console.warn('[proctor] dropped unverified command:', verdict.reason, cmd.type);
+      }
+    });
   });
 
   // Listen for proctor immediate state sync requests
@@ -240,7 +302,7 @@ export function sendStudentHeartbeat(state: ProctorStudentState): void {
 export function sendStudentViolation(
   quizCode: string,
   studentState: ProctorStudentState,
-  violation: { type: string; detail: string; severity?: 'info' | 'warning' | 'critical' }
+  violation: { id?: string; type: string; detail: string; severity?: 'info' | 'warning' | 'critical' }
 ): void {
   if (!studentChannel) return;
 
@@ -252,10 +314,12 @@ export function sendStudentViolation(
   }
 
   const eventPayload: ProctorLogEvent = {
-    id: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    id: violation.id || `evt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     timestamp: new Date().toISOString(),
+    studentId: studentState.studentId,
     studentName: studentState.studentName,
     candidateNumber: studentState.candidateNumber,
+    candidateClass: studentState.candidateClass,
     quizCode: normalizedCode || studentChannelCode,
     quizTitle: studentState.quizTitle,
     type: (violation.type as any) || 'blur',
@@ -298,9 +362,90 @@ const pendingHostCommands = new Map<string, ProctorCommand[]>();
 const lastHeartbeatAt = new Map<string, number>();
 const logRateState = new Map<string, { windowStart: number; count: number; warned: boolean }>();
 
+let hostSigningSessionPromise: Promise<ProctorSigningSession | null> | null = null;
+const registeredHostKeys = new Set<string>();
+const hostKeyRegPromises = new Map<string, Promise<{ registered: boolean; rpcMissing: boolean }>>();
+let hostAuthErrorCallback: ((detail: string) => void) | undefined;
+
 export interface ProctorDashboardCallbacks {
   onHeartbeat: (student: ProctorStudentState) => void;
   onLogEvent: (event: ProctorLogEvent) => void;
+  onAuthError?: (detail: string) => void;
+}
+
+function getOrCreateHostSigningSession(): Promise<ProctorSigningSession | null> {
+  if (!hostSigningSessionPromise) {
+    hostSigningSessionPromise = generateProctorSigningSession().catch(() => null);
+  }
+  return hostSigningSessionPromise;
+}
+
+async function ensureHostKeyRegistered(
+  code: string
+): Promise<{ session: ProctorSigningSession | null; registered: boolean; rpcMissing: boolean }> {
+  const session = await getOrCreateHostSigningSession();
+  if (!session) return { session: null, registered: false, rpcMissing: false };
+
+  const regKey = `${code}::${session.keyId}`;
+  if (registeredHostKeys.has(regKey)) {
+    return { session, registered: true, rpcMissing: false };
+  }
+
+  let inflight = hostKeyRegPromises.get(regKey);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const { error } = await (supabase as any).rpc('register_proctor_public_key', {
+          p_quiz_code: code,
+          p_key_id: session.keyId,
+          p_public_jwk: session.publicJwk,
+        });
+        if (!error) {
+          registeredHostKeys.add(regKey);
+          return { registered: true, rpcMissing: false };
+        }
+        if (isMissingRpcError(error)) {
+          return { registered: false, rpcMissing: true };
+        }
+        if (error.code === '42501') {
+          hostAuthErrorCallback?.(error.message || 'Invigilator authentication expired');
+        }
+        return { registered: false, rpcMissing: false };
+      } catch {
+        return { registered: false, rpcMissing: false };
+      }
+    })();
+    hostKeyRegPromises.set(regKey, inflight);
+  }
+
+  const res = await inflight;
+  if (!res.registered) {
+    hostKeyRegPromises.delete(regKey);
+  }
+  return { session, registered: res.registered, rpcMissing: res.rpcMissing };
+}
+
+async function dispatchSignedHostCommand(
+  ch: RealtimeChannel,
+  code: string,
+  cmd: ProctorCommand
+): Promise<void> {
+  const { session, registered, rpcMissing } = await ensureHostKeyRegistered(code);
+  if (session && registered) {
+    try {
+      const signed = await signProctorCommand(session, { ...cmd, quizCode: code });
+      void sendBroadcastWithRetry(ch, 'proctor_cmd', signed);
+      return;
+    } catch {
+      // fall through only if signing API itself failed in an unsupported runtime
+    }
+  }
+  if (!rpcMissing && registered === false) {
+    // Migration 023 is live or key registration was rejected due to auth — do not send unsigned command.
+    console.warn('[proctor] command blocked: signing key not registered (verify teacher session)');
+    return;
+  }
+  void sendBroadcastWithRetry(ch, 'proctor_cmd', { ...cmd, quizCode: code });
 }
 
 function flushHostQueue(code: string): void {
@@ -309,7 +454,7 @@ function flushHostQueue(code: string): void {
   if (!ch || !queue || !hostSubscribed.get(code)) return;
   pendingHostCommands.set(code, []);
   queue.forEach((cmd) => {
-    void sendBroadcastWithRetry(ch, 'proctor_cmd', cmd);
+    void dispatchSignedHostCommand(ch, code, cmd);
   });
 }
 
@@ -321,12 +466,14 @@ export function subscribeMultiProctorDashboard(
   callbacks: ProctorDashboardCallbacks
 ): void {
   destroyProctorSession();
+  hostAuthErrorCallback = callbacks.onAuthError;
 
   const normalizedCodes = Array.from(
     new Set(quizCodes.map((c) => c.trim().toUpperCase()).filter(Boolean))
   );
 
   normalizedCodes.forEach((code) => {
+    void ensureHostKeyRegistered(code);
     const channelName = getChannelName(code);
     const ch = supabase.channel(channelName, {
       config: { broadcast: { self: false } },
@@ -440,7 +587,7 @@ export function sendProctorCommand(
     return;
   }
 
-  void sendBroadcastWithRetry(ch, 'proctor_cmd', cmd);
+  void dispatchSignedHostCommand(ch, code, cmd);
 }
 
 /**
@@ -455,4 +602,7 @@ export function destroyProctorSession(): void {
   pendingHostCommands.clear();
   lastHeartbeatAt.clear();
   logRateState.clear();
+  registeredHostKeys.clear();
+  hostKeyRegPromises.clear();
+  hostAuthErrorCallback = undefined;
 }

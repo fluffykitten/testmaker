@@ -40,6 +40,7 @@ export interface PublishedQuiz {
   teacherPin?: string;                   // Configurable teacher/invigilator unlock PIN (e.g. "1234")
   maxViolations: number;                 // Auto-submit after N tab violations
   showInstantSolutions: boolean;         // Show step-by-step breakdown on submit
+  allowStudentScriptDownload?: boolean;  // Allow students to view/download Full Script PDF & stems after submit/release (default: false)
   requireStudentPin?: boolean;           // Require 4-digit student PIN from school roster (default: false)
   limitOneAttempt?: boolean;             // Limit candidate to 1 attempt (default: true for exams)
   targetClass?: string;                  // Optional target class cohort filter (e.g. "10-A")

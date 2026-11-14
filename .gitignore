@@ -37,6 +37,8 @@ scratch/
 
 # Local test & backup data
 backup/
+artifacts/
+*.jsonl
 
 # Superdesign temporary outputs
 .superdesign/tmp/

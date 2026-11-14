@@ -2400,3 +2400,17 @@
   -webkit-touch-callout: none !important;
   pointer-events: auto;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PRINT / SAVE-AS-PDF LOCKDOWN FOR STUDENT EXAMS & RESULTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media print {
+  .student-runner-root,
+  .student-results-wrap,
+  .sq-lockdown-overlay,
+  .exam-att-backdrop,
+  .rbd-backdrop {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}

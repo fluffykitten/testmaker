@@ -16,7 +16,12 @@ import {
 } from '../services/quizSubmissionService';
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
 import { clampTelemetry, highWaterViolations } from '../lib/proctorGuards';
-import { recordProctorAuditEvent, loadProctorAuditEvents } from '../services/proctorAuditLogService';
+import {
+  recordProctorAuditEvent,
+  loadProctorAuditEvents,
+  onProctorAuditAuthError,
+} from '../services/proctorAuditLogService';
+import { supabase, hasActiveTeacherSession } from '../lib/supabase';
 import { getSchoolClasses } from '../lib/settings';
 import {
   getSchoolRoster,
@@ -98,6 +103,44 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
   const [showLogDrawer, setShowLogDrawer] = useState(false);
+  const [cloudAuthWarning, setCloudAuthWarning] = useState<string | null>(null);
+
+  // Verify live teacher cloud session on mount and subscribe to RLS auth failures
+  useEffect(() => {
+    let active = true;
+    const expiredMessage =
+      'Cloud invigilator session expired or not signed in — live WebSocket telemetry continues, but cloud audit logs, command signing, and result syncing are paused until you sign in again.';
+
+    const checkSession = async () => {
+      if (!hasActiveTeacherSession()) {
+        if (active) setCloudAuthWarning(expiredMessage);
+        return;
+      }
+      try {
+        const { data, error } = await (supabase as any).rpc('is_authenticated_teacher');
+        if (!active) return;
+        if (error || data !== true) {
+          setCloudAuthWarning(expiredMessage);
+        } else {
+          setCloudAuthWarning(null);
+        }
+      } catch {
+        // Keep current banner state on transient network errors
+      }
+    };
+
+    void checkSession();
+    const intervalId = setInterval(() => void checkSession(), 60_000);
+    const unsubAuditErr = onProctorAuditAuthError(() => {
+      if (active) setCloudAuthWarning(expiredMessage);
+    });
+
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+      unsubAuditErr();
+    };
+  }, []);
 
   // ─── Air-Gapped Emergency Offline Paper Ingestion State ────────────────────
   const [showEmergencyIngestModal, setShowEmergencyIngestModal] = useState(false);
@@ -407,13 +450,17 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       recordProctorAuditEvent({
         id: enriched.id,
         quizCode: qCode,
-        studentId: getCanonicalProctorStudentId({
-          quizCode: qCode,
-          studentName: enriched.studentName,
-          candidateNumber: enriched.candidateNumber,
-        }),
+        studentId:
+          enriched.studentId ||
+          getCanonicalProctorStudentId({
+            quizCode: qCode,
+            studentName: enriched.studentName,
+            candidateNumber: enriched.candidateNumber,
+            studentClass: enriched.candidateClass,
+          }),
         studentName: enriched.studentName,
         candidateNumber: enriched.candidateNumber,
+        candidateClass: enriched.candidateClass,
         eventType: enriched.type,
         severity: enriched.severity,
         detail: enriched.detail,
@@ -425,6 +472,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     subscribeMultiProctorDashboard(codes, {
       onHeartbeat: handleHeartbeat,
       onLogEvent: handleLogEvent,
+      onAuthError: () =>
+        setCloudAuthWarning(
+          'Cloud invigilator session expired or not signed in — live WebSocket telemetry continues, but cloud audit logs, command signing, and result syncing are paused until you sign in again.'
+        ),
     });
 
     // Rebuild the violation/intervention trail after a reload or on a second invigilator's
@@ -1030,17 +1081,33 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       return next;
     });
 
+    const createdAt = new Date().toISOString();
+    const detail = `Unlocked ${lockedTargets.length} locked candidate(s)`;
     setLogEvents((prev) => [
       {
         id: `evt-${Date.now()}`,
-        timestamp: new Date().toISOString(),
+        timestamp: createdAt,
         studentName: scopeLabel,
         type: 'unlocked',
-        detail: `Unlocked ${lockedTargets.length} locked candidate(s)`,
+        detail,
         severity: 'info',
       },
       ...prev,
     ]);
+    codesToSend.forEach((code) => {
+      recordProctorAuditEvent({
+        id: `audit-bulk-unlock-${code}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        quizCode: code,
+        studentId: targetClass ? `ALL::${targetClass}` : 'ALL',
+        studentName: scopeLabel,
+        candidateClass: targetClass,
+        eventType: 'unlocked',
+        severity: 'info',
+        detail,
+        actor: 'invigilator',
+        createdAt,
+      });
+    });
   }, [scopeStudents, selectedKey, isMultiExam, monitoredQuizzes.length, sidebarMode, secondaryFilter, scopeLabel]);
 
   // Scoped Bulk: Add Time
@@ -1092,17 +1159,33 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         return next;
       });
 
+      const createdAt = new Date().toISOString();
+      const detail = `Added +${minutes}m extra time to ${activeTargets.length} candidate(s)`;
       setLogEvents((prev) => [
         {
           id: `evt-${Date.now()}`,
-          timestamp: new Date().toISOString(),
+          timestamp: createdAt,
           studentName: scopeLabel,
           type: 'time_extended',
-          detail: `Added +${minutes}m extra time to ${activeTargets.length} candidate(s)`,
+          detail,
           severity: 'info',
         },
         ...prev,
       ]);
+      codesToSend.forEach((code) => {
+        recordProctorAuditEvent({
+          id: `audit-bulk-time-${code}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          quizCode: code,
+          studentId: targetClass ? `ALL::${targetClass}` : 'ALL',
+          studentName: scopeLabel,
+          candidateClass: targetClass,
+          eventType: 'time_extended',
+          severity: 'info',
+          detail,
+          actor: 'invigilator',
+          createdAt,
+        });
+      });
     },
     [scopeStudents, selectedKey, isMultiExam, monitoredQuizzes.length, sidebarMode, secondaryFilter, scopeLabel]
   );
@@ -1389,6 +1472,26 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             </button>
           </div>
         </header>
+
+        {cloudAuthWarning && (
+          <div
+            role="alert"
+            style={{
+              background: 'rgba(245, 158, 11, 0.16)',
+              borderBottom: '1px solid rgba(245, 158, 11, 0.45)',
+              color: '#fde68a',
+              padding: '8px 18px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+            }}
+          >
+            <span>⚠️ {cloudAuthWarning}</span>
+          </div>
+        )}
 
         {/* Global / Scoped Stats Metrics Bar */}
         <div className="lip-stats-bar">

@@ -351,7 +351,14 @@ export function resolveStoredAnswer({
  * The UI already hides solutions, but the payload itself was readable in DevTools.
  */
 export function sanitizeQuestionsForStudent(questions: Question[], stripAnswerKeys: boolean): Question[] {
-  if (!stripAnswerKeys) return questions;
+  if (!stripAnswerKeys) {
+    return questions.map((q) => {
+      const clean: any = { ...q };
+      delete clean.source_pdf_url;
+      delete clean.metadata;
+      return clean as Question;
+    });
+  }
 
   return questions.map((q) => {
     const subs = Array.isArray(q.sub_questions)
@@ -394,6 +401,7 @@ export function sanitizeQuestionsForStudent(questions: Question[], stripAnswerKe
     delete clean.common_misconceptions;
     delete clean.acceptable_answers;
     delete clean.metadata;
+    delete clean.source_pdf_url;
     return clean as Question;
   });
 }

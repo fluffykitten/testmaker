@@ -70,9 +70,11 @@ export function TeacherProfileProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener('teacher_profile_changed', handleProfileChanged);
     window.addEventListener('teacher_profile_updated', handleProfileChanged);
+    window.addEventListener('teacher_session_authenticated', handleProfileChanged);
     return () => {
       window.removeEventListener('teacher_profile_changed', handleProfileChanged);
       window.removeEventListener('teacher_profile_updated', handleProfileChanged);
+      window.removeEventListener('teacher_session_authenticated', handleProfileChanged);
     };
   }, [loadProfiles]);
 

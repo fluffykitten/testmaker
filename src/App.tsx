@@ -18,7 +18,8 @@ import {
 import { PortalLandingPage } from './pages/PortalLandingPage';
 import { resolveStudentQuiz } from './services/quizCodeService';
 import type { PublishedQuiz } from './services/quizManagerService';
-import { supabase } from './lib/supabase';
+import { supabase, TEACHER_SESSION_TOKEN_KEY } from './lib/supabase';
+import { logoutTeacherSession } from './services/teacherProfileService';
 import type { Question, CustomTest } from './types/database';
 import { getLocalTests, type ExamHeaderConfig } from './services/testBuilderService';
 import { useMobileLifecycle } from './hooks/useMobileLifecycle';
@@ -149,14 +150,6 @@ function App() {
     loadAndSyncGeminiExtractionModel().catch(() => {});
     loadAndSyncGeminiApiKeyTier().catch(() => {});
     loadAndSyncSecurityTiers().catch(() => {});
-
-    // Proactively pre-warm Question Bank chunk and database cache in background
-    const prewarmTimer = setTimeout(() => {
-      import('./pages/QuestionBankPage');
-      prewarmQuestionBankData();
-    }, 1200);
-
-    return () => clearTimeout(prewarmTimer);
   }, []);
 
   // Sync selected questions to sessionStorage
@@ -241,7 +234,9 @@ function App() {
   };
 
   const handleLockApp = () => {
+    logoutTeacherSession().catch(() => {});
     sessionStorage.removeItem('testmaker_pin_verified');
+    sessionStorage.removeItem(TEACHER_SESSION_TOKEN_KEY);
     setAppMode('portal');
   };
 
