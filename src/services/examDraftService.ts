@@ -34,7 +34,7 @@ export interface ExamDraftPayload {
   status: 'in_progress' | 'submitted';
 }
 
-function getDraftKey(quizCode: string, studentIdentifier: string): string {
+export function getDraftKey(quizCode: string, studentIdentifier: string): string {
   const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
   const cleanId = (studentIdentifier || 'anonymous')
     .trim()
@@ -47,7 +47,7 @@ const LOCAL_DRAFT_PREFIX = 'fluffykitten_exam_draft_';
 const LOCAL_DRAFT_SECRET_PREFIX = 'fluffykitten_draft_secret_';
 const inMemoryDraftSecrets = new Map<string, string>();
 
-function resolveDraftOwnerToken(
+export function resolveDraftOwnerToken(
   quizCode: string,
   draftKey: string,
   studentPin?: string,
@@ -81,6 +81,55 @@ function resolveDraftOwnerToken(
     }
     return existingMem;
   }
+}
+
+export function getDraftLockCredentials(
+  quizCode: string,
+  studentName: string,
+  studentPin?: string
+): { draftKey: string; ownerToken: string } {
+  const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
+  const identifier = (studentPin || '').trim() || (studentName || '').trim();
+  const draftKey = getDraftKey(cleanCode, identifier);
+  const ownerToken = resolveDraftOwnerToken(cleanCode, draftKey, studentPin, identifier);
+  return { draftKey, ownerToken };
+}
+
+async function sha256HexString(input: string): Promise<string> {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle) {
+    const data = new TextEncoder().encode(input);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `fnv_${(h >>> 0).toString(16)}`;
+}
+
+/** Computes the per-session anti-spoofing proctor heartbeat proof (`VULN-P3-10`). */
+export async function computeStudentHeartbeatKey(
+  quizCode: string,
+  draftKey: string,
+  ownerToken: string
+): Promise<string> {
+  const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
+  const raw = `${cleanCode}::${draftKey}::${String(ownerToken || '').slice(0, 16)}`;
+  return sha256HexString(raw);
+}
+
+export async function getActiveStudentHeartbeatProof(
+  quizCode: string,
+  studentName: string,
+  studentPin?: string
+): Promise<{ draftKey: string; heartbeatKey: string }> {
+  const { draftKey, ownerToken } = getDraftLockCredentials(quizCode, studentName, studentPin);
+  const heartbeatKey = await computeStudentHeartbeatKey(quizCode, draftKey, ownerToken);
+  return { draftKey, heartbeatKey };
 }
 
 /**

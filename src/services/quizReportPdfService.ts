@@ -5,7 +5,7 @@
 
 import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissionService';
 import { formatProctorTimestamp, formatCandidateAnswer, formatSubmissionDateTime } from './quizSubmissionService';
-import { formatLatexForHtml } from './pdfExportService';
+import { formatLatexForHtml, escapeHtml } from './pdfExportService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { deriveGradeFromPercentage, sanitizeGradeThresholds, type GradeThresholds } from '../utils/gradeThresholdUtils';
 import { generateStudentImprovementPlan, generateDeterministicStudentImprovementPlan, type StudentImprovementPlan } from './aiGradingService';
@@ -127,7 +127,7 @@ export function exportClassQuizReportPdf(
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Class Performance Report - ${quiz.title} (${quiz.quizCode})</title>
+  <title>Class Performance Report - ${escapeHtml(quiz.title)} (${escapeHtml(quiz.quizCode)})</title>
   <style>
     @page { size: A4 portrait; margin: 14mm; }
     body {
@@ -174,13 +174,13 @@ export function exportClassQuizReportPdf(
       <div style="width: 1px; height: 32px; background: #cbd5e1;"></div>
       <div class="report-title-box">
         <h1>📊 Class Assessment Summary Report</h1>
-        <div class="report-subtitle">${quiz.title} • ${quiz.subject || 'General'} ${selectedClass !== 'all' ? `• Class Section: ${selectedClass}` : ''}</div>
+        <div class="report-subtitle">${escapeHtml(quiz.title)} • ${escapeHtml(quiz.subject || 'General')} ${selectedClass !== 'all' ? `• Class Section: ${escapeHtml(selectedClass)}` : ''}</div>
       </div>
     </div>
     <div style="display: flex; align-items: center; gap: 14px;">
       <img src="${DEFAULT_CAMBRIDGE_LOGO}" alt="Cambridge International School" style="height: 34px; max-width: 180px; object-fit: contain; display: block;" />
       <div class="report-badge-box">
-        <div class="report-code-badge">CODE: ${quiz.quizCode}</div>
+        <div class="report-code-badge">CODE: ${escapeHtml(quiz.quizCode)}</div>
         <div class="report-date">Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
       </div>
     </div>
@@ -237,7 +237,7 @@ export function exportClassQuizReportPdf(
     <tbody>
       ${Object.entries(topicStats).map(([topic, stat]) => {
     const pct = Math.round((stat.totalEarned / stat.totalAvailable) * 100);
-    return `<tr><td><strong>${topic}</strong></td><td><div style="display: flex; align-items: center; gap: 8px;"><span style="font-weight: 700; width: 35px;">${pct}%</span><div class="pct-bar-bg" style="flex: 1;"><div class="pct-bar-fill" style="width: ${pct}%; background: ${pct >= 75 ? '#16a34a' : pct >= 50 ? '#3b82f6' : '#dc2626'};"></div></div></div></td><td style="text-align: center; color: #64748b;">${stat.totalEarned} / ${stat.totalAvailable}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(topic)}</strong></td><td><div style="display: flex; align-items: center; gap: 8px;"><span style="font-weight: 700; width: 35px;">${pct}%</span><div class="pct-bar-bg" style="flex: 1;"><div class="pct-bar-fill" style="width: ${pct}%; background: ${pct >= 75 ? '#16a34a' : pct >= 50 ? '#3b82f6' : '#dc2626'};"></div></div></div></td><td style="text-align: center; color: #64748b;">${stat.totalEarned} / ${stat.totalAvailable}</td></tr>`;
   }).join('')}
     </tbody>
   </table>
@@ -271,11 +271,11 @@ export function exportClassQuizReportPdf(
       : isClean
         ? 'Clean (0)'
         : `⚠️ ${strikesVal}${penaltyText}`;
-    return `<tr><td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td><td><strong>${sub.studentName}</strong></td><td>${sub.studentClass || 'General'}</td><td style="text-align: center; font-family: monospace;">${sub.candidateNumber || '-'}</td><td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td><td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td><td style="text-align: center;"><span class="grade-badge" style="background: ${color};">${grade}</span></td>${!isOffline ? `<td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td><td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">${strikeText}</td>` : ''}</tr>`;
+    return `<tr><td style="text-align: center; font-weight: 800; color: #64748b;">#${rIdx + 1}</td><td><strong>${escapeHtml(sub.studentName)}</strong></td><td>${escapeHtml(sub.studentClass || 'General')}</td><td style="text-align: center; font-family: monospace;">${escapeHtml(sub.candidateNumber || '-')}</td><td style="text-align: center; font-weight: 700;">${sub.score} / ${sub.totalMarks}</td><td style="text-align: center; font-weight: 800;">${Math.round(sub.percentage)}%</td><td style="text-align: center;"><span class="grade-badge" style="background: ${color};">${grade}</span></td>${!isOffline ? `<td style="text-align: center; font-size: 8pt; color: #64748b;">${mins}m ${secs}s</td><td style="text-align: center; font-size: 7.5pt; font-weight: 700; color: ${isClean ? '#16a34a' : '#ea580c'};">${strikeText}</td>` : ''}</tr>`;
   }).join('')}
     </tbody>
   </table>
-  <div class="footer-note">Assessment Code: ${quiz.quizCode} | Generated by ICM Exam Platform • Insan Cendekia Madani</div>
+  <div class="footer-note">Assessment Code: ${escapeHtml(quiz.quizCode)} | Generated by ICM Exam Platform • Insan Cendekia Madani</div>
   <script>window.addEventListener('load', () => setTimeout(window.print, 300));</script>
 </body>
 </html>`;
@@ -371,13 +371,13 @@ function formatReportCardQuestionRow(
 
       const ptColor = subEarned >= subMax ? '#15803d' : subEarned > 0 ? '#b45309' : '#dc2626';
       subAnswerLines.push(
-        `<div class="sub-line"><span class="sub-part-id">(${cleanId})</span> <span class="sub-ans-txt">${ansText}</span> <span class="sub-pt-pill" style="color:${ptColor};">[${subEarned}/${subMax}]</span></div>`
+        `<div class="sub-line"><span class="sub-part-id">(${escapeHtml(cleanId)})</span> <span class="sub-ans-txt">${ansText}</span> <span class="sub-pt-pill" style="color:${ptColor};">[${subEarned}/${subMax}]</span></div>`
       );
 
       const expectedFromFb = extractConciseExpectedFromFeedback(sub.feedback);
       if (expectedFromFb) {
         subSchemeLines.push(
-          `<div class="sub-line"><span class="sub-part-id">(${cleanId})</span> <span>${formatLatexForHtml(truncateReportText(expectedFromFb, 48))}</span></div>`
+          `<div class="sub-line"><span class="sub-part-id">(${escapeHtml(cleanId)})</span> <span>${formatLatexForHtml(truncateReportText(expectedFromFb, 48))}</span></div>`
         );
       }
     });
@@ -441,12 +441,12 @@ function formatReportCardQuestionRow(
     earnedMarks >= maxMarks ? 'full' : earnedMarks > 0 ? 'partial' : 'zero';
 
   const formattedStudent = isMcq
-    ? formatCandidateAnswer(rawStandalone, qr.options, qr.gradingMethod, true)
+    ? escapeHtml(formatCandidateAnswer(rawStandalone, qr.options, qr.gradingMethod, true))
     : formatLatexForHtml(truncateReportText(formatCandidateAnswer(rawStandalone, qr.options, qr.gradingMethod, false), 65));
 
   const rawCorrect = qr.correctAnswer || (statusType === 'full' ? rawStandalone : undefined);
   const formattedCorrect = isMcq
-    ? formatCandidateAnswer(rawCorrect, qr.options, qr.gradingMethod, true)
+    ? escapeHtml(formatCandidateAnswer(rawCorrect, qr.options, qr.gradingMethod, true))
     : formatLatexForHtml(truncateReportText(formatCandidateAnswer(rawCorrect, qr.options, qr.gradingMethod, false), 65));
 
   const ansColor = statusType === 'full' ? '#15803d' : statusType === 'partial' ? '#b45309' : '#dc2626';
@@ -938,7 +938,7 @@ export function renderSingleStudentFeedbackReportHtml(
         <div class="header-title-box">
           <h1>Student Performance & Diagnostic Report</h1>
           <div class="header-sub">
-            ${submission.quizTitle} • ${submission.subject || 'Chemistry'}
+            ${escapeHtml(submission.quizTitle)} • ${escapeHtml(submission.subject || 'Chemistry')}
           </div>
         </div>
       </div>
@@ -959,15 +959,15 @@ export function renderSingleStudentFeedbackReportHtml(
     <div class="meta-bar">
       <div class="meta-item">
         <span>Candidate Name:</span>
-        <strong>${submission.studentName}</strong>
+        <strong>${escapeHtml(submission.studentName)}</strong>
       </div>
       <div class="meta-item">
         <span>Class / Section:</span>
-        <strong>${submission.studentClass || 'General'}</strong>
+        <strong>${escapeHtml(submission.studentClass || 'General')}</strong>
       </div>
       <div class="meta-item">
         <span>Candidate ID:</span>
-        <strong style="font-family: monospace;">${submission.candidateNumber || '-'}</strong>
+        <strong style="font-family: monospace;">${escapeHtml(submission.candidateNumber || '-')}</strong>
       </div>
       <div class="meta-item">
         <span>Total Marks Awarded:</span>
@@ -1012,7 +1012,7 @@ export function renderSingleStudentFeedbackReportHtml(
     return `
                   <tr>
                     <td class="col-qnum" style="text-align: center; font-weight: 800; color: #1e293b;">Q${qNum}</td>
-                    <td class="col-topic" style="color: #334155; font-weight: 600;">${normalizeTopicName(qr.topic)}</td>
+                    <td class="col-topic" style="color: #334155; font-weight: 600;">${escapeHtml(normalizeTopicName(qr.topic))}</td>
                     <td class="col-answer">${studentAnswerHtml}</td>
                     <td class="col-ms" style="color: #334155;">${markSchemeHtml}</td>
                     <td class="col-result" style="text-align: center; white-space: nowrap;">
@@ -1059,7 +1059,7 @@ export function renderSingleStudentFeedbackReportHtml(
     return `
               <div class="topic-bar-item">
                 <div class="topic-bar-top">
-                  <span class="topic-bar-name">${tm.topic}</span>
+                  <span class="topic-bar-name">${escapeHtml(tm.topic)}</span>
                   <span class="topic-bar-score" style="color: ${barColor};">${tm.earned}/${tm.total} (${tm.pct}%)</span>
                 </div>
                 <div class="topic-bar-track">
@@ -1079,7 +1079,7 @@ export function renderSingleStudentFeedbackReportHtml(
           ${plan.teacherSummary ? `
           <div class="plan-card plan-card--summary">
             <div class="plan-card-title" style="color: #1b3570;">📌 Examiner Summary</div>
-            <div style="font-size: 6.7pt; color: #1e293b; line-height: 1.28;">${plan.teacherSummary}</div>
+            <div style="font-size: 6.7pt; color: #1e293b; line-height: 1.28;">${escapeHtml(plan.teacherSummary)}</div>
           </div>
           ` : ''}
 
@@ -1087,7 +1087,7 @@ export function renderSingleStudentFeedbackReportHtml(
           <div class="plan-card plan-card--strengths">
             <div class="plan-card-title" style="color: #166534;">🌟 Key Strengths Demonstrated</div>
             <ul class="plan-list" style="color: #14532d;">
-              ${(plan.strengths || []).map((s) => `<li>${s}</li>`).join('')}
+              ${(plan.strengths || []).map((s) => `<li>${escapeHtml(s)}</li>`).join('')}
             </ul>
           </div>
 
@@ -1096,7 +1096,7 @@ export function renderSingleStudentFeedbackReportHtml(
           <div class="plan-card plan-card--weaknesses">
             <div class="plan-card-title" style="color: #991b1b;">⚠️ Priority Focus Areas</div>
             <ul class="plan-list" style="color: #7f1d1d;">
-              ${plan.weaknesses.map((w) => `<li>${w}</li>`).join('')}
+              ${plan.weaknesses.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}
             </ul>
           </div>
           ` : ''}
@@ -1105,7 +1105,7 @@ export function renderSingleStudentFeedbackReportHtml(
           <div class="plan-card plan-card--action">
             <div class="plan-card-title" style="color: #1e40af;">🎯 Targeted Revision Action Plan</div>
             <ul class="plan-list" style="color: #1e3a8a;">
-              ${(plan.improvementSteps || []).map((step) => `<li>${step}</li>`).join('')}
+              ${(plan.improvementSteps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join('')}
             </ul>
           </div>
 
@@ -1155,7 +1155,7 @@ export async function exportStudentFeedbackReportPdf(
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Student Performance & Feedback Report - ${submission.studentName}</title>
+  <title>Student Performance & Feedback Report - ${escapeHtml(submission.studentName)}</title>
   ${getReportCardStyles()}
 </head>
 <body class="${showMarkScheme ? '' : 'hide-mark-scheme'}">
@@ -1163,7 +1163,7 @@ export async function exportStudentFeedbackReportPdf(
   <!-- Non-Printing Control Bar -->
   <div class="no-print" style="position: sticky; top: 0; z-index: 1000; background: #0f172a; color: #ffffff; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
     <div style="font-weight: 800; font-size: 12px; display: flex; align-items: center; gap: 6px;">
-      <span>📄</span> 1-Page Student Report Card: <strong>${submission.studentName}</strong> (${submission.studentClass || 'General'})
+      <span>📄</span> 1-Page Student Report Card: <strong>${escapeHtml(submission.studentName)}</strong> (${escapeHtml(submission.studentClass || 'General')})
     </div>
     <div style="display: flex; align-items: center; gap: 10px;">
       <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; cursor: pointer; user-select: none; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);">
@@ -1264,7 +1264,7 @@ export async function exportBatchStudentFeedbackReportPdf(
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Batch Student Report Cards - ${titleText} (${classLabel})</title>
+  <title>Batch Student Report Cards - ${escapeHtml(titleText)} (${escapeHtml(classLabel)})</title>
   ${getReportCardStyles()}
 </head>
 <body class="${showMarkScheme ? '' : 'hide-mark-scheme'}">
@@ -1278,7 +1278,7 @@ export async function exportBatchStudentFeedbackReportPdf(
           Batch Student Report Cards (${filteredSubmissions.length} Candidates — 1 Page Each)
         </div>
         <div style="font-size: 10px; color: #94a3b8;">
-          ${titleText} • ${classLabel}
+          ${escapeHtml(titleText)} • ${escapeHtml(classLabel)}
         </div>
       </div>
     </div>
@@ -1358,7 +1358,7 @@ export function exportIndividualStudentReportPdf(
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Candidate Diagnostic Report - ${submission.studentName}</title>
+  <title>Candidate Diagnostic Report - ${escapeHtml(submission.studentName)}</title>
   <style>
     @page { size: A4 portrait; margin: 12mm; }
     body { font-family: sans-serif; color: #0f172a; font-size: 9pt; line-height: 1.45; margin: 0; padding: 0; }
@@ -1387,7 +1387,7 @@ export function exportIndividualStudentReportPdf(
   <!-- Non-Printing Control Bar -->
   <div class="no-print" style="position: sticky; top: 0; z-index: 1000; background: #0f172a; color: #ffffff; padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
     <div style="font-weight: 800; font-size: 12px;">
-      📄 Candidate Diagnostic Script: ${submission.studentName} (${submission.quizCode || 'General'})
+      📄 Candidate Diagnostic Script: ${escapeHtml(submission.studentName)} (${escapeHtml(submission.quizCode || 'General')})
     </div>
     <div style="display: flex; align-items: center; gap: 10px;">
       <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; cursor: pointer; user-select: none; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);">
@@ -1408,9 +1408,9 @@ export function exportIndividualStudentReportPdf(
       <img src="${DEFAULT_SCHOOL_LOGO}" alt="ICM Logo" style="height: 38px; max-width: 160px; object-fit: contain; display: block;" />
       <div style="width: 1px; height: 34px; background: #cbd5e1;"></div>
       <div>
-        <h1 style="font-size: 14pt; font-weight: 800; margin: 0 0 2px 0;">${submission.studentName}</h1>
+        <h1 style="font-size: 14pt; font-weight: 800; margin: 0 0 2px 0;">${escapeHtml(submission.studentName)}</h1>
         <div style="font-size: 8.5pt; color: #475569; font-weight: 600;">
-          ${submission.quizTitle} • ${submission.subject || 'General'} • <strong>Class: ${submission.studentClass || 'General'}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${submission.candidateNumber}</strong>` : ''}
+          ${escapeHtml(submission.quizTitle)} • ${escapeHtml(submission.subject || 'General')} • <strong>Class: ${escapeHtml(submission.studentClass || 'General')}</strong>${submission.candidateNumber ? ` • <strong>Cand #: ${escapeHtml(submission.candidateNumber)}</strong>` : ''}
         </div>
       </div>
     </div>
@@ -1427,15 +1427,15 @@ export function exportIndividualStudentReportPdf(
   <div class="meta-bar">
     <div class="meta-item">
       <span>Class / Section:</span>
-      <strong>${submission.studentClass || 'General'}</strong>
+      <strong>${escapeHtml(submission.studentClass || 'General')}</strong>
     </div>
     <div class="meta-item">
       <span>Candidate ID:</span>
-      <strong style="font-family: monospace;">${submission.candidateNumber || 'N/A'}</strong>
+      <strong style="font-family: monospace;">${escapeHtml(submission.candidateNumber || 'N/A')}</strong>
     </div>
     <div class="meta-item">
       <span>Assessment:</span>
-      <strong>${isOffline ? 'Offline Paper Exam' : submission.quizCode}</strong>
+      <strong>${isOffline ? 'Offline Paper Exam' : escapeHtml(submission.quizCode)}</strong>
     </div>
     ${!isOffline ? `
     <div class="meta-item">
@@ -1467,7 +1467,7 @@ export function exportIndividualStudentReportPdf(
         <div class="q-script-header">
           <div>
             <span class="q-script-title">Question ${idx + 1}</span>
-            <span class="q-topic-tag">${q.topic}</span>
+            <span class="q-topic-tag">${escapeHtml(q.topic)}</span>
           </div>
           <span class="q-score-badge ${badgeClass}">
             ${q.earnedMarks} / ${q.maxMarks} Mark${q.maxMarks !== 1 ? 's' : ''}
@@ -1494,7 +1494,7 @@ export function exportIndividualStudentReportPdf(
       return `
                 <div class="sub-q-box">
                   <div class="sub-q-head">
-                    <span><strong>Part (${cleanSubId})</strong></span>
+                    <span><strong>Part (${escapeHtml(cleanSubId)})</strong></span>
                     <span style="color: ${subCorrect ? '#16a34a' : (Number(sub.earnedMarks) || 0) > 0 ? '#b45309' : '#dc2626'}; font-size: 8pt; font-weight: 700;">
                       ${sub.earnedMarks} / ${sub.maxMarks} mark${sub.maxMarks !== 1 ? 's' : ''}
                     </span>
@@ -1572,9 +1572,9 @@ export function exportIndividualStudentReportPdf(
       <tbody>
         ${submission.proctoringLogs.map((p) => `
           <tr>
-            <td style="color: #64748b;">${formatProctorTimestamp(p.timestamp)}</td>
+            <td style="color: #64748b;">${escapeHtml(formatProctorTimestamp(p.timestamp))}</td>
             <td style="text-align: center; font-weight: 800; color: #ea580c;">Strike ${p.strike}</td>
-            <td>${p.event}</td>
+            <td>${escapeHtml(p.event)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1582,7 +1582,7 @@ export function exportIndividualStudentReportPdf(
   ` : ''}
 
   <div class="footer-note">
-    ICM Exam Platform Assessment Diagnostic Report • Candidate: ${submission.studentName} (${submission.quizCode})
+    ICM Exam Platform Assessment Diagnostic Report • Candidate: ${escapeHtml(submission.studentName)} (${escapeHtml(submission.quizCode)})
   </div>
 
   <script>

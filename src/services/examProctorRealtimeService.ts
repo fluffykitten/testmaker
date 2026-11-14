@@ -43,6 +43,8 @@ export interface ProctorStudentState {
   studentName: string;
   candidateNumber?: string;
   candidateClass?: string;
+  draftKey?: string;
+  heartbeatKey?: string;
   status: StudentExamStatus;
   answeredCount: number;
   totalQuestions: number;
@@ -91,6 +93,8 @@ export interface ProctorLogEvent {
   studentName: string;
   candidateNumber?: string;
   candidateClass?: string;
+  draftKey?: string;
+  heartbeatKey?: string;
   quizCode?: string;
   quizTitle?: string;
   type:
@@ -320,6 +324,8 @@ export function sendStudentViolation(
     studentName: studentState.studentName,
     candidateNumber: studentState.candidateNumber,
     candidateClass: studentState.candidateClass,
+    draftKey: studentState.draftKey,
+    heartbeatKey: studentState.heartbeatKey,
     quizCode: normalizedCode || studentChannelCode,
     quizTitle: studentState.quizTitle,
     type: (violation.type as any) || 'blur',

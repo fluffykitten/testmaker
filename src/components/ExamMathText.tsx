@@ -10,7 +10,7 @@ interface ExamMathTextProps {
 
 const KATEX_OPTIONS = {
   throwOnError: false,
-  trust: true,
+  trust: false,
   strict: false,
   macros: {
     '\\degree': '^\\circ',

@@ -124,6 +124,7 @@ import {
   fetchExamDraft,
   clearExamDraft,
   checkStudentAttemptSubmitted,
+  getActiveStudentHeartbeatProof,
   type ExamDraftPayload,
 } from '../services/examDraftService';
 import {
@@ -1005,8 +1006,14 @@ export function StudentQuizRunner({
         auditEvent: { type: string; detail: string; severity: 'info' | 'warning' | 'critical' }
       ) => {
         if (!resolvedQuizCode) return;
+        const proof = heartbeatProofRef.current;
+        const enrichedTelemetry: ProctorStudentState = {
+          ...telemetry,
+          draftKey: telemetry.draftKey || proof.draftKey,
+          heartbeatKey: telemetry.heartbeatKey || proof.heartbeatKey,
+        };
         const eventId = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        sendStudentViolation(resolvedQuizCode, telemetry, { id: eventId, ...auditEvent });
+        sendStudentViolation(resolvedQuizCode, enrichedTelemetry, { id: eventId, ...auditEvent });
         recordProctorAuditEvent({
           id: eventId,
           quizCode: resolvedQuizCode,
@@ -1907,6 +1914,28 @@ export function StudentQuizRunner({
     candidateClass,
   };
 
+  const heartbeatProofRef = useRef<{ draftKey?: string; heartbeatKey?: string }>({});
+
+  useEffect(() => {
+    if (!hasStarted || !resolvedQuizCode) return;
+    let cancelled = false;
+    void getActiveStudentHeartbeatProof(
+      resolvedQuizCode,
+      candidateName || 'Candidate',
+      studentPinInput || undefined
+    )
+      .then((proof) => {
+        if (!cancelled) {
+          heartbeatProofRef.current = proof;
+          setTimeout(() => sendCurrentHeartbeatRef.current(), 50);
+        }
+      })
+      .catch(() => { });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasStarted, resolvedQuizCode, candidateName, studentPinInput]);
+
   useEffect(() => {
     if (!hasStarted || !resolvedQuizCode) return;
 
@@ -1915,6 +1944,8 @@ export function StudentQuizRunner({
       studentName: candidateName || 'Candidate',
       candidateNumber: candidateNumber || '',
       candidateClass: candidateClass || '',
+      draftKey: heartbeatProofRef.current.draftKey,
+      heartbeatKey: heartbeatProofRef.current.heartbeatKey,
       status: isSubmitted ? 'submitted' : isLockedByProctor ? 'locked' : 'active',
       answeredCount: quizStats.answeredItems,
       totalQuestions: quizStats.totalItems,
@@ -1988,6 +2019,8 @@ export function StudentQuizRunner({
           studentName: live.candidateName || 'Candidate',
           candidateNumber: live.candidateNumber || '',
           candidateClass: live.candidateClass || '',
+          draftKey: heartbeatProofRef.current.draftKey,
+          heartbeatKey: heartbeatProofRef.current.heartbeatKey,
           status: 'submitted',
           answeredCount: live.quizStats.answeredItems,
           totalQuestions: live.quizStats.totalItems,
@@ -2133,6 +2166,8 @@ export function StudentQuizRunner({
       studentName: candidateName || 'Candidate',
       candidateNumber: candidateNumber || '',
       candidateClass: candidateClass || '',
+      draftKey: heartbeatProofRef.current.draftKey,
+      heartbeatKey: heartbeatProofRef.current.heartbeatKey,
       status: currentStatus,
       answeredCount: s.quizStats.answeredItems,
       totalQuestions: s.quizStats.totalItems,
@@ -2346,6 +2381,7 @@ export function StudentQuizRunner({
       finalTierReached: activeLockedTier?.name || (tierHistory.length > 0 ? tierHistory[tierHistory.length - 1]?.tierName : undefined),
       autoSubmittedBySecurity: isFinalSecurityLock,
       tierHistory: [...tierHistory],
+      studentPin: studentPinInput || undefined,
     };
   }, [
     questions,
@@ -2358,6 +2394,7 @@ export function StudentQuizRunner({
     strikeCount,
     activeLockedTier,
     tierHistory,
+    studentPinInput,
   ]);
 
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
@@ -2378,6 +2415,8 @@ export function StudentQuizRunner({
       studentName: candidateName || 'Candidate',
       candidateNumber: candidateNumber || '',
       candidateClass: candidateClass || '',
+      draftKey: heartbeatProofRef.current.draftKey,
+      heartbeatKey: heartbeatProofRef.current.heartbeatKey,
       status: 'submitted',
       answeredCount: quizStats.answeredItems,
       totalQuestions: quizStats.totalItems,

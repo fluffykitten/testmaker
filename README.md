@@ -1,324 +1,198 @@
-# 🏛️ ICM Exam Platform • Cambridge International School
+# ICM Exam Platform
 
-An intelligent, AI-powered examination authoring studio and interactive student assessment platform for **Insan Cendekia Madani (ICM)** in partnership with **Cambridge Assessment International Education**. Upload past paper PDFs, extract questions, options, and diagrams automatically with Google Gemini multimodal AI, build customized Cambridge-grade exam papers, host live gamified quiz arenas, conduct proctored assessments, evaluate offline paper exams with automated Excel grading, and generate printable student diagnostic reports.
+**Version `2.5.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-
----
-
-## ✨ Key Features
-
-### 🧠 1. Multimodal AI Extraction & Fault-Tolerant Parsing
-- **Gemini Multimodal AI**: Automatically parses past paper PDFs and mark schemes into structured question stems, sub-questions ((a)(i), (b)), MCQ options, topics, difficulty ratings, and official marking criteria.
-- **IELTS & Cambridge Cloze / Gap-Fill Parsing**: Automatically converts dotted/underlined blanks in listening forms, sentence completion, and notes completion into structured `[1]`, `[2]` inline gap tokens with per-blank mark scheme criteria.
-- **High-Resolution Diagram Cropper**: Automatic canvas-based diagram detection with interactive bounding-box cropping, multi-pass boundary expansion, and WebP compression.
-- **Robust JSON Repair Engine**: Multi-pass repair and balanced-brace fallback algorithms that smoothly recover questions even during network anomalies or long token generations.
-- **LaTeX Math & Chemistry Normalization**: Automatic formatting and KaTeX rendering for nuclide/isotope symbols (`^{40}_{20}\text{Ca}`), chemical ions/formulas (`Ca^{2+}`, `SO_4^{2-}`), escaped percentages, temperatures (`°C`), and reaction arrows.
-
-### 🎧 2. IELTS & Cambridge Audio Listening Suite
-- **Persistent Top Listening Bar**:
-  - Persistent audio player positioned below the exam navigation bar that stays active and plays uninterrupted across related question ranges.
-  - **🔒 Strict Exam Security**: In Formal Exam Mode, rewind, fast-forward, and seeking are completely disabled with a real-time read-only progress meter. Speed is locked strictly at $1.0\times$ and transcript access is gated.
-  - **⏱️ Play Limit Enforcement**: Supports 1 Play (Strict Exam), 2 Plays (Cambridge standard), 3 Plays, or Unlimited Practice with real-time remaining play counters.
-- **Multi-Section Audio Timeline & Mapping Manager**:
-  - Visual segmented coverage meter showing all questions with color-coded listening sections.
-  - **`🪄 4 IELTS Sections` Auto-Divider**: Instantly partitions assessments into 4 equal quarters (e.g. Q1–10, Q11–20, Q21–30, Q31–40).
-  - Configure multiple audio tracks simultaneously with customizable start/end question ranges.
-- **Central Audio Library & Gallery**:
-  - Cloud-stored audio repository for reusing listening tracks across quizzes with automatic canonical key deduplication.
-  - Supports browser file uploads (compressed via Opus audio), direct microphone voice recording, and AI Text-to-Speech (TTS).
-
-### ✍️ 3. IELTS-Style Inline Gap Fill (Cloze & Form Completion)
-- **In-Place Interactive Inputs**:
-  - Gaps defined in question stems or sub-questions (e.g. `Customer Name: [1]`, `Address: 42 [2] Avenue`) are rendered as focused input fields embedded directly in the flow of the sentence, form, or table.
-  - **Keyboard Navigation**: Pressing `Tab` or `Enter` seamlessly cycles to the next numbered blank.
-- **Deterministic Multi-Gap Grading Engine**:
-  - Evaluates each gap individually against mark scheme alternative keys (e.g. `[1] John Smith / J. Smith`).
-  - Casing-tolerant, whitespace-normalized, punctuation-stripped, and handles numeric vs number word equivalence (`15` $\leftrightarrow$ `fifteen`).
-  - Proportional mark scoring accurately awards partial credit per correct blank.
-- **Solutions & Review Feedback**:
-  - Renders student responses inline with green checkmarks and expected answer hints during solution review and PDF diagnostic exports.
-
-### 🏛️ 4. Publication-Quality Cambridge & School Exam Export
-- **Authentic Cambridge IGCSE Cover Pages**:
-  - Dual Header Logos (School Crest on top left, Cambridge Assessment on top right).
-  - Dynamic instructions adapting for Paper 1/2 (Multiple Choice) vs. Paper 3/4 (Theory & Structured).
-  - Accurate bold page counts and centered examination headers.
-- **🧪 Cambridge IGCSE Chemistry Periodic Table Drawer**:
-  - Official 118-element periodic table including Lanthanoid and Actinoid series, key legend, and gas volume constant ($24\text{ dm}^3$ at r.t.p.).
-  - Available as an upright landscape reference drawer with interactive zoom and pan during digital exams, as well as an exportable print sheet.
-- **🗺️ Social Science & Humanities Insert Booklets**:
-  - Standalone Resource Insert generation for Geography, History, Sociology, Economics, and Business Studies.
-  - Automatic figure and table renumbering across assembled multi-question exam papers.
-  - Export Resource Booklets to both **Microsoft Word (`.docx`)** and printable **PDF** formats with authentic Cambridge layouts.
-- **📄 Multi-Format High-Fidelity Exports**:
-  - **Microsoft Word (`.docx`)**: Native mathematical formulas, sub/superscripts, Cambridge headers, and mark scheme tables.
-  - **Camera-Ready PDF**: Printable student test papers, mark schemes, and MCQ bubble answer sheets with ~8mm handwriting lines.
-  - **Standalone Offline HTML Quizzes**: Completely self-contained interactive quizzes that run in any web browser without an internet connection or server.
-
-### 🎮 5. Interactive Student Assessment & Gamified Arenas
-- **Dual Assessment Modes**:
-  - **🚀 Quizizz-Inspired Gamified Sprint Arena**: Synthesized Web Audio engine (`gameSoundEngine.ts`) with custom chords, thuds, streak fanfares, countdown ticks, and finish jingles. Features streak multipliers, speed bonuses, and interactive celebration confetti.
-  - **🛡️ Formal Proctored Exam Mode**: Fullscreen exam lockdown with automatic re-entry, tab-switch and blur detection, proctor strike logging, 5-minute and 1-minute audio-visual time alerts, and invigilator PIN unlock gates.
-- **🧑‍🏫 Live Multiplayer Game Host Controller**:
-  - Teachers can launch live multiplayer quiz sessions with real-time student leaderboards, live answer monitoring, and podium celebrations.
-- **In-App Student Tooling**:
-  - Integrated Cambridge Periodic Table drawer, on-screen Scientific Calculator (trig, roots, powers, parentheses), and Resource Booklet drawers.
-
-### 📝 6. Offline Exam Grading & Batch Excel Workflow
-- **Custom Excel Mark-Entry Templates**:
-  - Generates bespoke multi-sheet Excel templates matching the exact questions, sub-questions, and official mark schemes of any assembled exam.
-- **Deterministic Auto-Grading & Header Mapping**:
-  - Robust column mapping with word-boundary matching and duplicate collision prevention.
-  - Automatic MCQ answer normalization (handles `D`, `Option D`, `(D)`, or option text) evaluated against official Cambridge mark keys.
-- **Central Gradebook Integration**:
-  - Saves offline scored exam results directly into the assessment hub for permanent record-keeping, item analysis, and report generation.
-
-### 📊 7. 3-Tier Diagnostic Reports & Personalized Feedback
-- **🎓 1-Page Student Performance & Improvement Report**:
-  - Compact, single A4 page printable report designed to give directly to students.
-  - Displays total score, percentage, question-by-question candidate response vs official mark scheme, and topic mastery bars.
-  - **Personalized Diagnostic & Improvement Plan**: Highlights *What Went Well*, *Priority Focus Areas*, *Targeted Next Steps*, and encouraging teacher guidance.
-  - **Ink-Saving Clean Design**: High-contrast, ink-friendly layout with no heavy background fills.
-  - **Review Signatures**: Designated signature areas for **Subject Teacher** and **Parent / Guardian** acknowledgment.
-- **🌟 Prestige Grade Tier-List Color Hierarchy**:
-  - Distinct rarity color scheme: **A\*** (Legendary Gold), **A** (Epic Emerald), **B** (Rare Sapphire), **C** (Uncommon Amethyst), **D** (Bronze), **E** (Ruby Coral), **U** (Shadow Slate).
-- **🏫 Class-by-Class & Cohort Summary Reports**:
-  - Filterable by class/section (`10-A`, `10-B`, or All Classes).
-  - Cohort KPI ribbons (class average, highest/lowest scores, pass rates), grade band distributions, topic mastery bars, and student rankings.
-- **📥 Master Excel Gradebook**:
-  - Multi-tab workbook with student rosters, question-level item analysis, accuracy percentages, and average earned marks.
+[![Version](https://img.shields.io/badge/version-2.5.1-0f4c81.svg)](#changelog)
+[![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
+[![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](#license)
 
 ---
 
-## 🛠️ Tech Stack
+## Contents
 
-- **Frontend**: React 19, TypeScript, Vite, Vanilla CSS Design System
-- **Math & Chemistry**: KaTeX, Custom Formula & Chemical Ion Parser
-- **PDF Engine**: PDF.js with high-resolution offscreen canvas rendering & `pdf-lib`
-- **Audio Engine**: Web Audio API Synthesizer (`gameSoundEngine.ts`), Opus WebP Audio Compression
-- **AI Backend**: Google Gemini Multimodal APIs (Flash & Pro with dynamic discovery)
-- **Database & Storage**: Supabase (PostgreSQL + Supabase Storage for diagrams and audio)
-- **Export Engines**: `docx` (Word), `pdf-lib` / HTML5 Print Engine (PDF), `xlsx` (Excel)
+- [Overview](#overview)
+- [Core Capabilities](#core-capabilities)
+- [Security Architecture](#security-architecture)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [Database Migrations](#database-migrations)
+- [Verification & Diagnostics](#verification--diagnostics)
+- [Changelog](#changelog)
+- [License](#license)
 
 ---
 
-## 🚀 Getting Started
+## Overview
 
-### 1. Prerequisites
-- [Node.js](https://nodejs.org/) (v18 or higher)
-- A free [Supabase](https://supabase.com) account
-- A free [Google AI Studio](https://aistudio.google.com/apikey) API key
+ICM Exam Platform is a full-stack digital examination authoring, live proctoring, and diagnostic reporting system designed around **Cambridge Assessment International Education** and **IELTS** workflows. Teachers can extract past-paper PDFs and mark schemes with Google Gemini multimodal AI, assemble balanced assessments with Table of Specifications validation, administer proctored online or air-gapped offline exams, host live multiplayer game arenas, ingest paper exam spreadsheets, and export publication-grade PDFs and `.docx` booklets.
 
-### 2. Clone & Install
+---
+
+## Core Capabilities
+
+| Domain | Capabilities |
+| :--- | :--- |
+| **AI Paper Extraction** | Multimodal Gemini PDF & mark scheme extraction for MCQ, structured sub-parts (`(a)(i)`), IELTS cloze `[1]` / `[term1\|term2]` inline gaps, fillable `data_tables`, Bloom's taxonomy (C1–C6), and canvas diagram cropping with WebP compression. |
+| **Audio Listening Suite** | Persistent top listening bar with strict exam seek/speed locks ($1.0\times$), play-limit enforcement (1–3 plays or unlimited), 4-section IELTS range auto-divider, Opus compression, mic recording, and AI TTS. |
+| **Cambridge & Office Exports** | Authentic IGCSE / AS & A Level cover pages, interactive & printable 118-element Chemistry Periodic Table drawer, Humanities Resource Insert booklets (`.docx` & PDF), MCQ bubble sheets, and standalone offline HTML papers. |
+| **Formal Proctored Exam Mode** | Fullscreen lockdown with blur/tab-switch detection, tiered security strike policies, 5-min / 1-min alerts, canonical roster ID binding, per-student `exam_draft_locks`, `AES-256-GCM` air-gapped `.exam` emergency packages, and canvas `pdfjs-dist` attachment viewer. |
+| **Live Invigilator Cockpit** | Multi-class real-time monitoring dashboard with heartbeat micro-batching, ECDSA P-256 signed commands (`unlock`, `add_time`, `force_submit`, `pardon`), SHA-256 student heartbeat binding, and persistent `proctor_audit_events`. |
+| **Live Game Arena** | Multiplayer host controller and solo sprint runner with synthesized Web Audio (`gameSoundEngine.ts`), signed host broadcasts, server-side answer verification, and streak leaderboards. |
+| **Offline Grading & Reports** | Custom multi-sheet Excel mark-entry templates with deterministic auto-grading, 1-page ink-saving A4 student diagnostic reports, class/cohort analytics, and A\*–U grade boundary curves. |
+
+---
+
+## Security Architecture
+
+- **Educator Authentication & Workspace RLS**: Password-authenticated educator accounts (`teacherProfileService.ts`) backed by 12-hour `x-teacher-session` tokens and strict PostgreSQL Row-Level Security across workspace tables (`021`, `024`).
+- **Student Data Isolation**: Student exams load via sanitized `SECURITY DEFINER` RPCs (`get_student_exam_paper`, `get_student_game_paper`) with mark schemes, `source_pdf_url`, metadata, and `teacherPinHash` stripped (`021`, `022`, `024`).
+- **Draft & Submission Integrity**: Single-device `exam_draft_locks` ownership tokens (`022`), 256 KB draft caps, server-side Exam Mode score zeroing, single-attempt locks, roster PIN verification, and 6-digit CSPRNG result PINs (`024`).
+- **Abuse & Rate Protection**: `security_rate_limits` lockouts across Master PIN, educator login/reset, student PIN, game PIN, and result lookups (`024`), plus audit table payload/frequency triggers (`022`).
+- **Client & AI Output Hardening**: KaTeX `trust: false` and escaped HTML/PDF template interpolation (XSS prevention), CSV/Excel formula prefix neutralization, AES-256-GCM mandatory enforcement on `.exam` emergency ingestion with server-side question re-grading, WebCrypto ECDSA P-256 signed proctor commands & game broadcasts, and randomized nonce isolation with prompt-injection flagging in AI examiner prompts (`023`, `2.5.1`).
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| **Frontend** | React 19, TypeScript, Vite, Vanilla CSS Design System |
+| **Mobile Wrapper** | Capacitor 8 (Android & iOS with 1:1 web parity) |
+| **Math, PDF & Media** | KaTeX, `pdfjs-dist`, `pdf-lib`, Web Audio API, Opus audio compression |
+| **Document Exports** | `docx` (Word), `exceljs` / `xlsx` (Excel gradebooks), HTML5 Print Engine (PDF) |
+| **Backend & AI** | Supabase (PostgreSQL, RLS, Realtime Broadcast, Storage), Google Gemini Multimodal APIs |
+
+---
+
+## Getting Started
+
+### Prerequisites
+- [Node.js](https://nodejs.org/) v18 or higher
+- A [Supabase](https://supabase.com) project
+- A [Google AI Studio](https://aistudio.google.com/apikey) API key (optional server proxy supported)
+
+### Install & Run
 ```bash
 git clone https://github.com/fluffykitten/testmaker.git
 cd testmaker
 npm install
 ```
 
-### 3. Environment Variables
-Create a `.env.local` file in the project root:
-
+Create `.env.local` in the repository root:
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 VITE_GEMINI_API_KEY=your-gemini-api-key
 ```
 
-### 4. Database Setup
-Run the SQL migrations in order (`001` through `023`) in your **Supabase SQL Editor**:
-1. `supabase/migrations/001_initial_schema.sql` through `007_quiz_submissions.sql` — Core tables for syllabuses, questions, custom tests, config, options, diagrams/inserts, and student submissions
-2. `supabase/migrations/008_add_audio_columns.sql` through `017_add_cognitive_level_column.sql` — Audio tracks, natural sorting, PIN verification, varchar expansion, teacher/game profiles, source PDF metadata, and Bloom's cognitive levels
-3. `supabase/migrations/018_proctor_audit_events.sql` & `019_exam_submission_security_rpcs.sql` — Persistent proctoring audit log & submission security RPCs
-4. `supabase/migrations/020_verify_teacher_access_pin_rpc.sql` — Server-side teacher Master PIN verification (`verify_teacher_access_pin`)
-5. `supabase/migrations/021_phase2_teacher_login_rls_and_exam_rpcs.sql` — Educator login/session auth (`teacher_auth_sessions`), strict workspace RLS, and sanitized exam delivery/draft/submission/result RPCs
-6. `supabase/migrations/022_exam_anti_tamper_and_rate_guards.sql` — Draft ownership locks (`exam_draft_locks`), server-side Exam Mode score zeroing, single-attempt enforcement, lookup download gating, and audit rate/size triggers
-7. `supabase/migrations/023_proctor_security_and_pin_parity.sql` — Unlock PIN lookup parity and ECDSA P-256 proctor public key registry (`proctor_channel_keys`)
-
-### 5. Run Locally
+Run locally or build for production:
 ```bash
-npm run dev
-```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
-
-### 6. Build for Production
-```bash
-npm run build
+npm run dev      # Start local dev server at http://localhost:5173
+npm run build    # Type-check (tsc -b) and build production bundle (dist/)
 ```
 
-### 7. Native Mobile Apps (Android & iOS)
-This project is packaged with **Capacitor** for **1:1 feature parity** across Web, Android, and iOS.
-
+### Native Mobile Builds (Android & iOS)
 ```bash
-# Build web assets and sync to native Android and iOS folders
-npm run mobile:build
-
-# Open the project in Android Studio (Windows, Mac, Linux)
-npm run mobile:android
-
-# Open the project in Xcode (macOS)
-npm run mobile:ios
+npm run mobile:build     # Build web assets and sync Capacitor projects
+npm run mobile:android   # Open Android Studio (build APK / signed AAB)
+npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 ```
-- **Android APK**: In Android Studio, go to `Build > Build Bundle(s) / APK(s) > Build APK(s)`.
-- **Google Play Store**: Generate a signed `.aab` bundle using `Build > Generate Signed Bundle / APK`.
-- **iOS App**: Open in Xcode, select your signing team, and archive for TestFlight / App Store Connect.
 
 ---
 
-## 📜 Changelog
+## Database Migrations
 
-### [v.2.5.0] — Unified Educator Auth, Strict DB RLS, Anti-Tamper Exam RPCs, Crash-Safe Drafts & Signed Live Proctoring
-- **Phase 1 — Client, PDF Viewer & Export Hardening (`020`)**:
-  - Removed unauthenticated Question Bank pre-warming in [`App.tsx`](src/App.tsx), eliminated PIN caching in [`PinGate.tsx`](src/components/PinGate.tsx) and [`PortalLandingPage.tsx`](src/pages/PortalLandingPage.tsx), moved Master PIN verification server-side via `verify_teacher_access_pin`, and stopped writing resolved quizzes into `localStorage` on student browsers.
-  - Replaced native PDF browser frames in [`ExamAttachmentModal.tsx`](src/components/ExamAttachmentModal.tsx) with a canvas-based `pdfjs-dist` renderer (no browser download/print toolbar), added `@media print` suppression across exam/result views, and gated **Full Script PDF** downloads behind `allowStudentScriptDownload`.
-- **Phase 2 — Unified Educator Auth, Strict RLS & Exam RPCs (`021`)**:
-  - Replaced the shared teacher keypad in [`PinGate.tsx`](src/components/PinGate.tsx) with Email/Username + Password authentication (`teacherProfileService.ts`), 12-hour `x-teacher-session` tokens injected by [`supabase.ts`](src/lib/supabase.ts), Master-PIN-gated provisioning/reset, and optional account-claiming controls in [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx).
-  - Enabled strict Row-Level Security (`RLS`) across workspace tables and routed student exam loading, cloud drafts, submissions, and result lookup through sanitized `SECURITY DEFINER` RPCs (`get_student_exam_paper`, `save/get/delete_student_exam_draft`, `submit_student_exam_attempt`, `lookup_student_exam_result`).
-- **Phase 2.5 — Anti-Tamper Guards & Crash-Safe Draft Persistence (`022`)**:
-  - Added per-student `exam_draft_locks` ownership tokens in [`examDraftService.ts`](src/services/examDraftService.ts), 256 KB draft payload caps, server-side Exam Mode score zeroing, single-attempt enforcement, blank-PIN overwrite protection, set-based `get_student_exam_paper`, and `proctor_audit_events` field/rate triggers.
-  - Hardened [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) cloud draft persistence with `latestCloudDraftRef`, 2.5s answer-edit debounced saves, a decoupled 25s interval, and `beforeunload`/`pagehide`/`visibilitychange` `keepalive` exit flushes so progress survives sudden shutdowns or browser closes.
-- **Live Proctoring Hardening & Cryptographic Command Auth (`023`)**:
-  - Added ephemeral WebCrypto ECDSA P-256 command signing and verification in [`proctorCommandAuth.ts`](src/lib/proctorCommandAuth.ts) backed by `proctor_channel_keys` (`register_proctor_public_key` / `get_proctor_public_key`) in [`examProctorRealtimeService.ts`](src/services/examProctorRealtimeService.ts), and wired `proctorGuards.ts` (`isAllowedProctorCommand`, `claimCommandId`, `clampAddTimeMinutes`, `sanitizeAnnouncement`) in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx).
-  - Eliminated `handleCommand` closure staleness using `latestCommandStateRef` and `isFinalSecurityLockRef`, aligned `verify_teacher_unlock_pin` lookup parity across `quiz_by_code_*`, `previousCodes`, and `headerConfig` (with offline `expectedHash` fallback in [`quizCodeService.ts`](src/services/quizCodeService.ts)), and widened sync burst jitter to `200ms–8000ms` with bounded violation slices.
-  - Propagated canonical `studentId`/`candidateClass` on `ProctorLogEvent`, persisted discrete student violations and bulk invigilator actions directly via [`proctorAuditLogService.ts`](src/services/proctorAuditLogService.ts) with UTF-8 byte clamping and quiet `23505` duplicate handling, and surfaced expired teacher session banners in [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx).
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `024`)** in the **Supabase SQL Editor**:
+
+| Migration Range | Purpose |
+| :--- | :--- |
+| `001` – `007` | Core schema: syllabuses, questions, custom tests, app config, options, diagrams/inserts, quiz submissions |
+| `008` – `019` | Audio columns, natural sorting, student PIN verification, teacher/game profiles, Bloom's cognitive level, proctor audit log & submission RPCs |
+| [`020_verify_teacher_access_pin_rpc.sql`](supabase/migrations/020_verify_teacher_access_pin_rpc.sql) | Server-side teacher Master PIN verification (`verify_teacher_access_pin`) |
+| [`021_phase2_teacher_login_rls_and_exam_rpcs.sql`](supabase/migrations/021_phase2_teacher_login_rls_and_exam_rpcs.sql) | Educator auth/session tokens (`teacher_auth_sessions`), strict table RLS, and sanitized exam/draft/submission/result RPCs |
+| [`022_exam_anti_tamper_and_rate_guards.sql`](supabase/migrations/022_exam_anti_tamper_and_rate_guards.sql) | `exam_draft_locks`, Exam Mode server score zeroing, single-attempt enforcement, download gating, set-based paper assembly, and audit triggers |
+| [`023_proctor_security_and_pin_parity.sql`](supabase/migrations/023_proctor_security_and_pin_parity.sql) | Unlock PIN lookup parity and `proctor_channel_keys` ECDSA P-256 key registry |
+| [`024_phase3_deep_rls_ratelimit_and_game_security.sql`](supabase/migrations/024_phase3_deep_rls_ratelimit_and_game_security.sql) | `teacherPinHash` removal, `game_profiles` RLS & reward caps, `security_rate_limits` lockouts, roster PIN & draft-lock submission enforcement, and `get_student_game_paper` / `check_game_question_answer` |
+
+---
+
+## Verification & Diagnostics
+
+| Suite | Command | Coverage |
+| :--- | :--- | :--- |
+| **Phase 1 Security** | `npm run test:phase1-security` | Client bundle leaks, Master PIN RPC, PDF canvas & print guards |
+| **Phase 2 Auth & RLS** | `npm run test:phase2-security` | Teacher sessions, strict RLS policies, sanitized RPC contracts |
+| **Phase 2.5 Anti-Tamper** | `npm run test:phase25-security` | Draft locks, score zeroing, single-attempt enforcement, crash recovery |
+| **Phase 3A Client Security** | `npm run test:phase3a-security` | XSS & KaTeX `trust: false`, CSV neutralization, `.exam` crypto/re-grading, prompt-injection isolation |
+| **Phase 3B Deep Security** | `npm run test:phase3b-security` | Migration `024` contracts, `game_profiles` RLS/caps, rate limits, signed game frames, heartbeat proofs |
+| **Emergency Fallback** | `npm run test:emergency` & `npm run test:emergency:sim` | `AES-256-GCM` `.exam` encryption, outbox retries, conflict resolution |
+| **Proctoring Hardening** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-hardening-023.mjs` | ECDSA P-256 command auth, UTF-8 byte clamping, `023` audit guards |
+| **Proctoring State Machine** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-p1-p2-p3.mjs` | Heartbeat throttling, command replay protection, strike/pardon guards |
+| **200-Student Live Load & Red-Team** | `npm run test:stress-200` | Concurrent 200-student Supabase stress simulation & exploit probes ([latest report](Plan/student_200_stress_test_report.md)) |
+| **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
+
+---
+
+## Changelog
+
+### [v.2.5.1] — Deep Client, Database & Live Game Security Hardening (`024`)
+- **Phase 3A — Client XSS, Export, Emergency Re-Grading & Prompt-Injection Hardening**:
+  - Locked KaTeX rendering (`trust: false`) in [`ExamMathText.tsx`](src/components/ExamMathText.tsx) and [`pdfExportService.ts`](src/services/pdfExportService.ts), HTML-escaped untrusted metadata across PDF reports ([`quizReportPdfService.ts`](src/services/quizReportPdfService.ts)) and Cambridge covers ([`cambridgeCoverService.ts`](src/services/cambridgeCoverService.ts)), and neutralized spreadsheet formula injection (`=`, `+`, `-`, `@`, `\t`, `\r`) via `sanitizeSpreadsheetCell` in [`icmExcelExportService.ts`](src/services/icmExcelExportService.ts).
+  - Enforced encrypted `AES-256-GCM` `.exam` envelope ingestion by default and authoritative question-bank re-grading in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts), [`QuizResultsModal.tsx`](src/components/QuizResultsModal.tsx), and [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx).
+  - Isolated untrusted student answers inside randomized nonce delimiters and added prompt-injection flagging in [`aiGradingService.ts`](src/services/aiGradingService.ts).
+- **Phase 3B — Database RLS, Rate Limiting, Draft Binding & Cryptographic Broadcasts (`024`)**:
+  - Removed `teacherPinHash` from `get_student_exam_paper` (`024` & [`quizCodeService.ts`](src/services/quizCodeService.ts)) and tightened `D2` verification in [`diagnose-proctoring-system.mjs`](scripts/diagnose-proctoring-system.mjs).
+  - Enabled RLS on `public.game_profiles`, stripped `pin_hash` from RPC responses, capped match rewards (`coins <= 500`, `xp <= 1000`), and migrated [`gameProfileService.ts`](src/services/gameProfileService.ts) to authenticated RPC calls (`auth_game_profile`, `update_game_profile_student`, `sync_game_match_rewards`).
+  - Added `public.security_rate_limits` across auth, PIN, and result-lookup RPCs, gated `reset_teacher_password_with_master_pin`, upgraded `generateResultPin()` to 6-digit CSPRNG PINs, and enforced roster PIN + `exam_draft_locks.owner_token_hash` verification inside `submit_student_exam_attempt`.
+  - Stripped game-mode answer keys from student payloads (`get_student_game_paper`, `check_game_question_answer`), signed Live Game host broadcasts with ephemeral ECDSA P-256 keys ([`gameRealtimeService.ts`](src/services/gameRealtimeService.ts), [`proctorCommandAuth.ts`](src/lib/proctorCommandAuth.ts)), and enforced first-seen SHA-256 `heartbeatKey` binding on student proctor telemetry and logs ([`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx)).
 - **Verification**:
-  - Added security, stress-test, and proctoring verification suites: `npm run test:phase1-security`, `npm run test:phase2-security`, `npm run test:phase25-security`, `npm run test:stress-200`, [`scripts/test-proctor-hardening-023.mjs`](scripts/test-proctor-hardening-023.mjs), [`scripts/test-proctor-p1-p2-p3.mjs`](scripts/test-proctor-p1-p2-p3.mjs), [`scripts/verify-proctor-remote-unlock.mjs`](scripts/verify-proctor-remote-unlock.mjs), and [`scripts/diagnose-proctoring-system.mjs`](scripts/diagnose-proctoring-system.mjs).
+  - Added [`scripts/test-phase3a-client-security.mjs`](scripts/test-phase3a-client-security.mjs) (12/12) and [`scripts/test-phase3b-deep-security.mjs`](scripts/test-phase3b-deep-security.mjs) (16/16), updated [`scripts/simulate-200-students-stress-and-redteam.mjs`](scripts/simulate-200-students-stress-and-redteam.mjs) with `draft_key`/`draft_owner_token` and live `PHASE-3B-LIVE` checks (200/200 lobby reads, 600/600 draft saves, 198/200 expected valid submissions), and verified all Phase 1–3B suites plus `npm run build`.
 
-### [v.2.4.8] — Fillable Data Tables, Inline Term-Selection Cloze & Responsive Exam Header Toolbar
-- **Fillable `data_tables` in Exam & Practice Modes**:
-  - Wired [`ExamDataTable`](src/components/ExamDataTable.tsx) and [`dataTableUtils.ts`](src/lib/dataTableUtils.ts) into [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) for both main questions and sub-questions (`data_tables`), stripping duplicate Markdown tables where applicable and suppressing redundant textareas on standalone or table-owning sub-parts.
-  - Hardened Formal Exam sanitization in [`examSubmissionGuards.ts`](src/lib/examSubmissionGuards.ts) to strip `expected_answer` values from student payloads while preserving `mark_scheme._data_tables`, and added round-trip storage (`"${idx}_table"` / `"${q.id}::table"`) so filled table cells grade accurately across [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts), Practice Mode, Exam Mode, and `QuizResultsModal` AI Grade All.
-  - Updated [`formatCandidateAnswer`](src/services/quizSubmissionService.ts) so serialized gap (`{"gap_1":...}`) and table-cell JSON responses render cleanly across Results Modal, PDF reports, and Excel exports.
-- **Inline Term-Selection Cloze (`[term1|term2|...]`)**:
-  - Extracted pure [`inlineGapParser.ts`](src/lib/inlineGapParser.ts) supporting pipe-delimited `[opt1|opt2]` inline dropdown tokens while ignoring LaTeX `$...$` / `$$...$$` math blocks and trailing mark tags.
-  - Added `.sq-gap-select` pickers in [`InlineGapText.tsx`](src/components/InlineGapText.tsx) and fixed `extractGapExpectedMap` in [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts) to parse `Gap N:` / `Blank N:` criteria accurately and disable fuzzy matching on closed-choice selectors.
-- **Responsive Exam Header Toolbar (Two-Row Laptop Layout)**:
-  - Restructured `.sq-runner-header` in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) and [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css) into a 3-zone CSS Grid layout (`title` / `tools` / `actions`) with graceful title ellipsis truncation, light/dark-mode accessible `.sq-tool-btn` pills, and an automatic two-row utility toolbar below `1560px` so reference tools never crowd the exam title or timer on laptop screens.
-  - Synced sticky audio bar, sidebar navigator, and mobile prompt bar offsets via `--sq-header-height` (`ResizeObserver`).
-- **Verification**:
-  - Added unit/regression suites `npm run test:inline-gaps` ([`scripts/test-inline-choice-gaps.mjs`](scripts/test-inline-choice-gaps.mjs)) and `npm run test:fillable-tables` ([`scripts/test-fillable-data-tables.mjs`](scripts/test-fillable-data-tables.mjs)).
+### [v.2.5.0] — Unified Educator Auth, Strict DB RLS, Anti-Tamper Exam RPCs & Signed Proctoring (`020`–`023`)
+- **Phase 1 — Client, PDF Viewer & Export Hardening (`020`)**: Removed unauthenticated Question Bank pre-warming in [`App.tsx`](src/App.tsx), moved Master PIN verification server-side (`verify_teacher_access_pin`), replaced PDF `<iframe>` viewers with canvas `pdfjs-dist` rendering in [`ExamAttachmentModal.tsx`](src/components/ExamAttachmentModal.tsx), suppressed print views, and gated Full Script PDF downloads.
+- **Phase 2 — Unified Educator Auth, Strict RLS & Exam RPCs (`021`)**: Added email/username + password authentication (`teacherProfileService.ts`), 12-hour `x-teacher-session` tokens in [`supabase.ts`](src/lib/supabase.ts), workspace RLS policies, and sanitized exam delivery/draft/submission/result RPCs.
+- **Phase 2.5 — Anti-Tamper Guards & Crash-Safe Drafts (`022`)**: Added `exam_draft_locks`, 256 KB draft payload caps, Exam Mode server score zeroing, single-attempt enforcement, `beforeunload`/`pagehide`/`visibilitychange` `keepalive` exit flushes in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), and `proctor_audit_events` rate/size triggers.
+- **Live Proctoring Hardening (`023`)**: Added WebCrypto ECDSA P-256 signed proctor commands (`proctorCommandAuth.ts`), `proctorGuards.ts`, stale-closure ref fixes, `verify_teacher_unlock_pin` parity, direct student/bulk audit persistence, and expired teacher session banners.
 
-### [v.2.3.7] — Emergency Air-Gapped Offline Fallback & Cryptographic Examination Packages
-- **Cryptographic Offline Packages (`AES-256-GCM`)**:
-  - Implemented zero-dependency W3C Web Crypto envelope specification (`testmaker_emergency_v2`) in `src/utils/examCryptoUtils.ts`.
-  - Authenticated Additional Data (AAD) header binding (`version`, `quizCode`, `candidateId`, `exportedAt`) prevents header or body tampering; any alteration triggers AES-GCM tag rejection.
-  - Standardized filename pattern: `[QuizCode]_[Candidate]_[Timestamp].exam`.
-- **Auto-Trigger & Guarded Emergency Exit in Student Runner**:
-  - Automatically intercepts failed cloud submissions (exhausted 3 verification retries) and auto-downloads the encrypted `.exam` package without losing candidate inputs.
-  - Added guarded top-header **⚠️ Emergency Save** dialog in `StudentQuizRunner.tsx` with structured reason logging (*Wi-Fi outage*, *Critical battery*, *Evacuation*) embedded in forensics.
-  - Preserves pending submissions in the persistent outbox with exponential backoff retry metadata.
-- **Teacher Batch Ingestion Dropzone & Live Invigilator Synchronization**:
-  - Added multi-file drag-and-drop dropzone in `QuizResultsModal.tsx` and `LiveInvigilatorModal.tsx` with high-throughput batch processing (30 encrypted files in 5.7ms).
-  - Implemented **Newest Timestamp Wins** conflict resolution policy: older offline drafts never overwrite newer cloud submissions; newer offline files update existing scores while preserving canonical database row IDs.
-  - Synchronizes live cockpit status to `submitted`, displays `📥 Offline Ingested` candidate badges, and logs proctor audit events.
-- **Automated Verification**:
-  - Added unit test suite `scripts/test-emergency-fallback.mjs` (27/27 passed).
-  - Added end-to-end lifecycle simulation `scripts/simulate-emergency-auto-trigger-import.mjs` (14/14 passed).
+### [v.2.4.8] — Fillable Data Tables, Inline Term-Selection Cloze & Responsive Exam Toolbar
+- Wired `ExamDataTable` and `dataTableUtils.ts` for interactive fillable tables with end-to-end storage and deterministic grading; added pipe-delimited `[opt1|opt2]` inline cloze pickers (`inlineGapParser.ts`) and two-row responsive CSS Grid header layout in `StudentQuizRunner.tsx`.
 
-### [v.2.3.6] — Bloom's Taxonomy Parity, Test Builder Question Sorting & Proctor Finalization
-- **Bloom's Taxonomy Parity & Persistence**:
-  - Unified Bloom's taxonomy (C1–C6) editing and persistence across Question Bank (`QuestionDetailModal`), Test Builder (`TestQuestionItem`), and Paper Extraction (`ExtractionReview`, `QuestionEditorModal`).
-  - Enabled independent editing for sub-questions without cascading to siblings or overwriting main question levels.
-  - Added deterministic unit verification suite `scripts/test-blooms-parity.mjs` (21/21 passed).
-- **Test Builder Question Sorting & Section A/B Preservation**:
-  - Added question sorting toolbar with 5 presets: Difficulty (Easy → Hard, Hard → Easy), Topic (A → Z), Topic + Difficulty, and Original Order.
-  - Strictly preserves Cambridge paper architecture: Section A (MCQs) always precedes Section B (Structured & Essay questions) across all sorting modes.
-  - Integrated quick Undo banner toast to instantly restore the previous question order.
-  - Added deterministic sorting test suite `scripts/test-builder-sorting.mjs` (11/11 passed).
-- **Live Proctoring & Exam Mode Runner Finalization**:
-  - Wired canonical candidate identity (`getCanonicalProctorStudentId`) in `StudentQuizRunner.tsx` and attached `proctorStudentId` to `ExamForensics`, guaranteeing single-row cockpit identity across reloads (`P1-B`).
-  - Configured bounded heartbeat payloads with 5-violation history window on routine beats and full history on sync/submission (`P3-2`).
-  - Verified proctor hardening test suite `test-proctor-p1-p2-p3.mjs` (48/48 passed).
-  - Formulated comprehensive multi-class proctoring and exam submission test plan in `Plan/proctor_and_exam_mode_testing_plan.md`.
-
-### [v.2.3.5] — Cambridge IGCSE Geography, IGCSE Economics & Proctor/Submission Hardening
-- **Cambridge IGCSE Geography (`0460`) Support**:
-  - Registered syllabus `0460` profile in `subjectClassifier.ts` with insert booklet by default, optional-choice paper rules, and standard total marks (Paper 1: 75 marks, Paper 2: 60 marks).
-  - Enhanced column clustering in `paperOutlineParse.ts` to inspect second tokens (`line.items[1]`) on packed question lines (`1 (a) Study Fig. 1.1...`), ensuring part letter column ($X=72$) correctly wins over roman numeral column ($X=96$) and eliminating false duplicate/unattributed sub-question rejections.
-  - Added 3-tier section option group recognition for Paper 1 ("one from each section"), cleanly partitioning Section A (Q1–Q2), Section B (Q3–Q4), and Section C (Q5–Q6) while preserving 100% compulsory rules for Paper 2.
-  - Added offline verification suite `scripts/verify-igcse-geography.mjs` (7/7 passing across QP, MS, and Insert documents) and multimodal extraction simulation `scripts/simulate-igcse-geography-extraction.mjs` ($150\text{ printed marks}$ sum for Paper 1, $60\text{ printed marks}$ sum for Paper 2).
-- **Cambridge IGCSE Economics (`0455`) Support**:
-  - Full support for Paper 1 30-MCQ papers and Paper 2 structured papers with compulsory Section A (30 marks) and two-tier Section B option groups (`Section B: choose 3 of 4 (Q2–Q5)`).
-  - Added `scripts/verify-economics.mjs` test suite (20/20 passing across 2022–2026 series) and live multimodal simulation.
-- **Exam Mode Submission & Live Proctoring Resilience**:
-  - Unwrapped boolean return on student draft resume (`alreadySubmitted.submitted`), unblocking students from resuming active exam drafts after reload/crash.
-  - Preserved AI and teacher-assigned marks on structured/essay questions during deterministic re-grading (`det.isHandled` check).
-  - Enforced strict deadline preservation on draft resume and candidate-scoped session storage isolation on shared school laptops.
-  - Added offline outbox retry with exponential backoff for failed submissions and isolated student result lookup.
-  - Added proctoring audit log persistence (`018_proctor_audit_events.sql`), host channel cleanup, command deduplication, and presence sweep based on receipt timestamps.
-
-### [v.2.3.4] — Cambridge AS & A Level Geography & Multimodal Timeout Resilience
-- **Cambridge International AS & A Level Geography (`9696`) Support**:
-  - Registered syllabus `9696` profile with automatic insert booklet configuration, two-tier optional-choice paper rules, and 60-mark standard total calculation.
-  - Fixed Section B packed question line parsing in `paperOutlineParse.ts` (`4 (a) (i) Define... [4]` now cleanly captures both the question container and the inline sub-part).
-  - Added section-aware option groups (`Section B: choose 1 of 3 (Q4–Q6)`), preventing mutually exclusive questions from being combined into the same test paper.
-- **Adaptive Gemini Timeout & Output Capacity**:
-  - Raised client-side API timeout from 35s to **150s (2.5 minutes)** for multi-document payloads (Question Paper + Insert Booklet + trimmed Mark Scheme), resolving `AbortError: signal is aborted without reason` when running `gemini-3.8-flash`.
-  - Increased `maxOutputTokens` from 16,384 to **32,768** to prevent truncation of detailed mark scheme rubrics on extended humanities papers.
-- **Verification Suites**:
-  - Added `scripts/verify-as-geography.mjs` verifying outline totals (`10/10/10/30/30/30`), section option groups, rubric-safe trimming, and insert resources across May/June 2025 and Oct/Nov 2024 series (6/6 passing).
-  - Added `scripts/simulate-geography-extraction.mjs` for benchmarking multimodal extraction across Gemini models.
-
-### [v.2.3.3] — Cambridge IGCSE Sociology & Safe Rubric Trimming
-- **Cambridge IGCSE Sociology (`0495`) Pipeline**:
-  - Full support for in-paper stimulus `"Source A"`, shared lead-in definition prompts, and 8–14 mark Level 1–4 response grids.
-  - Safe mark scheme preamble trimmer (`detectMarkSchemeTableStart`) with dual boundary detection, preserving Tables A–D criteria while stripping administrative boilerplate.
-  - Added deterministic subject classification engine (`subjectClassifier.ts`).
-  - Added `scripts/verify-sociology.mjs` test suite (24/24 passing across June and November series).
-- **Client Deployment Resilience**:
-  - Intelligent chunk-reload error boundary handling stale production bundles and lazy-loaded assets.
-  - Paginated `fetchDistinctPastPapersSummary` to eliminate truncation in the Source PDF Manager.
+### [v.2.4.7] — Saved-Test Source of Truth, Manual Grading Persistence & Teacher Guide
+- Consolidated custom test authoring around saved test records, persisted teacher manual marks/notes cleanly on re-grades, expanded Humanities Resource Booklet support, and updated integrated teacher guides.
 
 ### [v.2.3.8] — Gemini API Key Tier Selection & Deterministic Exam Grading Ingestion
-- **Cloudflare-Configured Gemini API Key Selection**:
-  - Choose between **Paid Key** (High Quota), **Free Key** (Zero Cost), or **Auto-Failover** (Paid Primary + Free Backup) directly in Admin Settings.
-  - Secret keys remain shielded inside Cloudflare Worker / environment variables with zero raw-key exposure in web bundles.
-  - Live model and API key availability diagnostics with ping latency and quota checks.
-- **Deterministic Exam Mode MCQ Grading & Sync**:
-  - Automatically scores sanitized Exam Mode submissions against teacher master answer keys upon receipt without manual re-grade button clicks.
-  - Live candidate inspection detail pane synchronization in `QuizResultsModal` without requiring page reloads (`F5`).
-  - Fallback model answer resolution so candidate response review cards always show authentic mark scheme solutions.
+- Added Cloudflare-configured Paid / Free / Auto-Failover Gemini key selection in Admin Settings, automatic deterministic Exam Mode MCQ grading upon submission receipt, and live detail pane syncing in `QuizResultsModal`.
+
+### [v.2.3.7] — Emergency Air-Gapped Offline Fallback (`AES-256-GCM`)
+- Added zero-dependency `AES-256-GCM` `.exam` packages (`examCryptoUtils.ts`) with AAD header binding, automatic download fallback after failed cloud submission retries, guarded **Emergency Save** exit flow, and teacher batch dropzone ingestion with **Newest Timestamp Wins** reconciliation.
+
+### [v.2.3.6] — Bloom's Taxonomy Parity, Test Builder Sorting & Proctor Finalization
+- Unified independent Bloom's taxonomy (C1–C6) editing, added 5 question sorting presets preserving Cambridge Section A/B order, and finalized canonical proctor candidate identities with bounded violation windows.
+
+### [v.2.3.5] — Cambridge IGCSE Geography (`0460`) & Economics (`0455`)
+- Added `0460` Geography & `0455` Economics syllabus profiles, packed sub-question outline parsing, multi-section optional-choice groups, offline retry outboxes, and persistent proctor audit events (`018`).
+
+### [v.2.3.4] — Cambridge AS & A Level Geography (`9696`) & Multimodal Resilience
+- Registered `9696` Geography profile, raised Gemini extraction timeout to 150s and `maxOutputTokens` to 32,768, and added verification benchmarks.
+
+### [v.2.3.3] — Cambridge IGCSE Sociology (`0495`) & Safe Rubric Trimming
+- Added `0495` Sociology stimulus & Level 1–4 response grid extraction, boundary-safe mark scheme trimming (`detectMarkSchemeTableStart`), and stale-chunk reload recovery.
 
 ### [v.2.3.2] — Google Forms Export & Touchscreen Security Shield
-- **Google Forms Integration**:
-  - Export custom assessments directly to auto-graded Google Forms quizzes with custom answer keys, point values, and Apps Script generation.
-- **Touchscreen & Tablet Exam Lockdown**:
-  - Enhanced student exam runner with pinch-to-zoom controls, touch gesture guards, and focus-loss event logging for iPad and Android tablet proctoring.
+- Added direct Google Forms quiz/Apps Script export and tablet/iPad touchscreen gesture lockdown controls.
 
-### [v.2.3.1] — Configurable AI Models & Architecture Plans
-- **Dynamic Model Selection**:
-  - Configurable Gemini extraction model in Admin Settings (`gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-2.5-pro`) with real-time model discovery and cloud sync.
-- **Standardized Architecture Planning**:
-  - Enforced repository standard for feature blueprints and architectural plans in `Plan/`.
+### [v.2.3.0] – [v.2.3.1] — Science Practical Papers, Cloudflare R2 & Dynamic Model Config
+- Added Cambridge IGCSE Paper 5/6 Practical extraction, Cloudflare R2 resource bridging, configurable Gemini model selection, and standardized `Plan/` architecture documentation.
 
-### [v.2.3.0] — Cambridge Science Practical Papers & Cloudflare R2 Storage
-- **Science Practical Examination Pipeline**:
-  - Dedicated parser for Cambridge IGCSE Paper 5 & Paper 6 Practical and Alternative to Practical papers.
-  - Automated qualitative analysis notes extraction, apparatus diagrams, and chemical test reagents catalog.
-- **Cloudflare R2 Storage Bridge**:
-  - High-speed CDN hosting for insert booklet PDFs, high-resolution maps, and Table of Specifications source citations.
-
-### [v.2.2.0] — Multi-Class Live Proctoring & Heartbeat Scalability
-- **Unified School-Wide & Multi-Class Proctoring Cockpit**:
-  - Live proctor dashboard allowing invigilators to monitor multiple concurrent classes with active student progress, time warnings, and violation strike counters.
-- **Heartbeat Jitter & Micro-Batching**:
-  - 300ms heartbeat micro-batching and randomized jitter protection to eliminate server load spikes during high-concurrency school exam sessions.
-  - Dynamic roster reconciliation with automated attendance tracking.
-
-### [v.2.1.0] — Bloom's Taxonomy & Table of Specifications (ToS)
-- **Cognitive Level Tagging**:
-  - Automatic classification of questions into Bloom's Taxonomy levels (C1 Knowledge to C6 Evaluation).
-- **Curriculum Table of Specifications (ToS)**:
-  - One-click export to landscape Microsoft Word (`.docx`) containing question types, cognitive weightings, mark distributions, and Cambridge citation links.
-- **Configurable Grade Thresholds**:
-  - Interactive curve tuner with $A^*$ to $U$ percentage thresholds and exportable diagnostic grade distributions.
-
-### [v.2.0.0] — Platform Redesign & Save My Exams Pack Ingestion
-- Major UI/UX redesign for Insan Cendekia Madani (ICM) Cambridge International School.
-- Ingestion support for Save My Exams structured theory and revision packs.
-- Integrated Web Audio synthesizers (`gameSoundEngine.ts`) for gamified quiz arenas.
+### [v.2.0.0] – [v.2.2.0] — Platform Redesign, Multi-Class Live Proctoring & ToS Exports
+- Redesigned UI for ICM Cambridge International School, added Save My Exams pack ingestion, synthesized game audio, Bloom's & Table of Specifications (`.docx`) exports, grade threshold curves, and 300ms micro-batched multi-class proctoring.
 
 ---
 
-## 📄 License
-MIT License. Created with 🐾 by [fluffykitten](https://github.com/fluffykitten).
+<a id="license"></a>
+## License
+
+MIT License · Maintained by [fluffykitten](https://github.com/fluffykitten)

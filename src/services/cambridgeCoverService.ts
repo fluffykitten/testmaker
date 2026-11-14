@@ -301,13 +301,23 @@ export function getCambridgeCoverDetails(
   };
 }
 
+function escapeCoverHtml(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Renders a clean, modern Standard School Assessment Cover Page HTML (Non-Cambridge)
  */
 export function renderStandardCoverPageHtml(details: CambridgeCoverDetails): string {
-  const schoolLogoSrc = details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
-  const schoolTitle = details.schoolName ? details.schoolName.toUpperCase() : 'ACADEMIC ASSESSMENT';
-  const examTitle = details.title || `${details.subjectName} EXAMINATION`;
+  const schoolLogoSrc = escapeCoverHtml(details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO);
+  const schoolTitle = escapeCoverHtml(details.schoolName ? details.schoolName.toUpperCase() : 'ACADEMIC ASSESSMENT');
+  const examTitle = escapeCoverHtml(details.title || `${details.subjectName} EXAMINATION`);
 
   return `
   <div class="cambridge-cover-page standard-school-cover" style="font-family: Arial, sans-serif;">
@@ -354,8 +364,8 @@ export function renderStandardCoverPageHtml(details: CambridgeCoverDetails): str
 
     <!-- Exam Info Summary Bar -->
     <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #0f172a; color: #fff; border-radius: 4px; margin-bottom: 24px; font-size: 13px; font-weight: 600;">
-      <span><strong>Subject:</strong> ${details.subjectName}</span>
-      <span><strong>Time Allowed:</strong> ${details.durationText}</span>
+      <span><strong>Subject:</strong> ${escapeCoverHtml(details.subjectName)}</span>
+      <span><strong>Time Allowed:</strong> ${escapeCoverHtml(details.durationText)}</span>
       <span><strong>Maximum Marks:</strong> ${details.totalMarks}</span>
       <span><strong>Total Questions:</strong> ${details.questionCount}</span>
     </div>
@@ -439,8 +449,8 @@ export function renderCambridgeCoverPageHtml(details: CambridgeCoverDetails): st
   }
 
   const showCandidateBox = !details.isMcqOnly;
-  const schoolLogoSrc = details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO;
-  const cambridgeLogoSrc = details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO;
+  const schoolLogoSrc = escapeCoverHtml(details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO);
+  const cambridgeLogoSrc = escapeCoverHtml(details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO);
 
   return `
   <div class="cambridge-cover-page">
@@ -508,30 +518,30 @@ export function renderCambridgeCoverPageHtml(details: CambridgeCoverDetails): st
     <!-- Subject & Syllabus Details Block -->
     <div style="margin-bottom: 20px; font-family: 'Arial', sans-serif;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
-        <span style="font-size: 16px; font-weight: 800; color: #000; letter-spacing: 0.2px;">${details.subjectName}</span>
-        <span style="font-size: 16px; font-weight: 800; color: #000;">${details.paperCodeDisplay}</span>
+        <span style="font-size: 16px; font-weight: 800; color: #000; letter-spacing: 0.2px;">${escapeCoverHtml(details.subjectName)}</span>
+        <span style="font-size: 16px; font-weight: 800; color: #000;">${escapeCoverHtml(details.paperCodeDisplay)}</span>
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
-        <span style="font-size: 14px; font-weight: normal; color: #111;">${details.paperName}</span>
-        <span style="font-size: 14px; font-weight: bold; color: #111;">${details.seriesYear}</span>
+        <span style="font-size: 14px; font-weight: normal; color: #111;">${escapeCoverHtml(details.paperName)}</span>
+        <span style="font-size: 14px; font-weight: bold; color: #111;">${escapeCoverHtml(details.seriesYear)}</span>
       </div>
 
       <div style="display: flex; justify-content: flex-end; margin-top: 2px;">
-        <span style="font-size: 14px; font-weight: bold; color: #000;">${details.durationText}</span>
+        <span style="font-size: 14px; font-weight: bold; color: #000;">${escapeCoverHtml(details.durationText)}</span>
       </div>
     </div>
 
     <!-- Mandatory Answering Notice -->
     <div style="font-family: 'Arial', sans-serif; font-size: 13px; color: #111; margin-bottom: 14px; line-height: 1.5;">
-      ${details.mandatoryNotices.map((n) => `<div>${n}</div>`).join('')}
+      ${details.mandatoryNotices.map((n) => `<div>${escapeCoverHtml(n)}</div>`).join('')}
       ${
         details.isMcqOnly && details.additionalMaterials.length > 0
           ? `
         <div style="display: flex; margin-top: 8px;">
           <span style="min-width: 100px;">You will need:</span>
           <div>
-            ${details.additionalMaterials.map((m) => `<div>${m}</div>`).join('')}
+            ${details.additionalMaterials.map((m) => `<div>${escapeCoverHtml(m)}</div>`).join('')}
           </div>
         </div>
         `
@@ -548,7 +558,7 @@ export function renderCambridgeCoverPageHtml(details: CambridgeCoverDetails): st
         INSTRUCTIONS
       </div>
       <ul style="margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.65; color: #111;">
-        ${details.instructions.map((inst) => `<li style="margin-bottom: 3px;">${inst}</li>`).join('')}
+        ${details.instructions.map((inst) => `<li style="margin-bottom: 3px;">${escapeCoverHtml(inst)}</li>`).join('')}
       </ul>
     </div>
 
@@ -558,7 +568,7 @@ export function renderCambridgeCoverPageHtml(details: CambridgeCoverDetails): st
         INFORMATION
       </div>
       <ul style="margin: 0; padding-left: 20px; font-size: 12.5px; line-height: 1.65; color: #111;">
-        ${details.information.map((info) => `<li style="margin-bottom: 3px;">${info}</li>`).join('')}
+        ${details.information.map((info) => `<li style="margin-bottom: 3px;">${escapeCoverHtml(info)}</li>`).join('')}
       </ul>
     </div>
 
@@ -621,7 +631,7 @@ export function renderMcqAnswerSheetHtml(
       <img src="${schoolLogoSrc}" alt="School Logo" style="height: 42px; max-width: 180px; object-fit: contain;" />
       <div style="text-align: center;">
         <h2 style="margin: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase;">Multiple Choice Answer Sheet</h2>
-        <div style="font-size: 12px; color: #333; margin-top: 2px;">${details.subjectName} • ${details.paperCodeDisplay} • ${details.seriesYear}</div>
+        <div style="font-size: 12px; color: #333; margin-top: 2px;">${escapeCoverHtml(details.subjectName)} • ${escapeCoverHtml(details.paperCodeDisplay)} • ${escapeCoverHtml(details.seriesYear)}</div>
       </div>
       <img src="${cambridgeLogoSrc}" alt="Cambridge Logo" style="height: 40px; max-width: 200px; object-fit: contain;" />
     </div>

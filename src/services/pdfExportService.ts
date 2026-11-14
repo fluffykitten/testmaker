@@ -20,7 +20,7 @@ import {
 
 const KATEX_OPTIONS = {
   throwOnError: false,
-  trust: true,
+  trust: false,
   strict: false,
   macros: {
     '\\degree': '^\\circ',
@@ -29,6 +29,37 @@ const KATEX_OPTIONS = {
     '\\ce': '#1',
   },
 };
+
+/**
+ * Escapes HTML special characters in untrusted strings before print/PDF template interpolation.
+ */
+export function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeMediaUrl(url: unknown): string {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (/^(https?:\/\/|data:image\/[a-z0-9+.-]+;base64,|blob:|\/)/i.test(trimmed)) {
+    return escapeHtml(trimmed);
+  }
+  return '';
+}
+
+function sanitizeSvgForPrint(svg: string): string {
+  if (!svg) return '';
+  return svg
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/javascript\s*:/gi, '');
+}
 
 function normalizeLatexForPrint(raw: string): string {
   if (!raw) return '';
@@ -69,15 +100,16 @@ function normalizeLatexForPrint(raw: string): string {
 function formatPlainTextForPrint(raw: string): string {
   if (!raw) return '';
   const chemFormatted = autoFormatChemistryAndMath(raw);
-  return chemFormatted
+  const escaped = escapeHtml(chemFormatted);
+  return escaped
     // Markdown bold: **text** or __text__ -> <strong>text</strong>
     .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+?)__/g, '<strong>$1</strong>')
     // Markdown italic: *text* -> <em>text</em>
     .replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, '$1<em>$2</em>')
     // Replace arrows & special math symbols
-    .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
-    .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
+    .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──&gt; ')
+    .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──&gt; ')
     .replace(/\\rightarrow/g, ' → ')
     .replace(/\\leftarrow/g, ' ← ')
     .replace(/\\rightleftharpoons/g, ' ⇌ ')
@@ -385,7 +417,7 @@ export function renderDataTablesToHtml(tables?: ExamDataTable[]): string {
       let html =
         '<div style="margin: 12px 0; overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; border: 1.5px solid #374151; font-size: 13px; background: white;">';
       if (tbl.id || tbl.title) {
-        html += `<caption style="caption-side: top; text-align: left; font-weight: bold; margin-bottom: 6px; font-size: 13px; color: #1e293b;">${tbl.id ? tbl.id + ': ' : ''}${tbl.title || ''}</caption>`;
+        html += `<caption style="caption-side: top; text-align: left; font-weight: bold; margin-bottom: 6px; font-size: 13px; color: #1e293b;">${tbl.id ? escapeHtml(tbl.id) + ': ' : ''}${escapeHtml(tbl.title || '')}</caption>`;
       }
       html +=
         '<thead><tr>' +
@@ -451,7 +483,7 @@ export function openStudentPaperPrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.title || 'Exam Paper'} — Student Assessment</title>
+  <title>${escapeHtml(headerConfig.title || 'Exam Paper')} — Student Assessment</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page {
@@ -713,7 +745,7 @@ export function openStudentPaperPrintWindow(
         ? `
       <div class="worksheet-header-box">
         <div>
-          ${schoolName || headerConfig.schoolName ? `<div class="worksheet-school-title">${schoolName || headerConfig.schoolName}</div>` : ''}
+          ${schoolName || headerConfig.schoolName ? `<div class="worksheet-school-title">${escapeHtml(schoolName || headerConfig.schoolName)}</div>` : ''}
           <div class="worksheet-cand-details">
             <strong>Student Name:</strong> ___________________________ &nbsp;&nbsp;
             <strong>Class:</strong> _______ &nbsp;&nbsp;
@@ -735,8 +767,8 @@ export function openStudentPaperPrintWindow(
 
     <div class="title-block">
       <div>
-        <h1 class="title">${headerConfig.title || 'Examination Assessment'}</h1>
-        <div class="subtitle">${headerConfig.subject || ''} ${headerConfig.subjectCode ? `(${headerConfig.subjectCode})` : ''}</div>
+        <h1 class="title">${escapeHtml(headerConfig.title || 'Examination Assessment')}</h1>
+        <div class="subtitle">${escapeHtml(headerConfig.subject || '')} ${headerConfig.subjectCode ? `(${escapeHtml(headerConfig.subjectCode)})` : ''}</div>
       </div>
       <div style="text-align: right;">
         <div style="font-weight: bold; font-size: 14px;">${headerConfig.durationMinutes || 45} minutes</div>
@@ -779,15 +811,16 @@ export function openStudentPaperPrintWindow(
             </div>
         `;
 
-        const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
-        const svgContent = q.svg_content || extractSvgFromDiagramUrl(diagramUrl);
+        const diagramUrl = sanitizeMediaUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
+        const rawSvg = q.svg_content || extractSvgFromDiagramUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
+        const svgContent = rawSvg ? sanitizeSvgForPrint(rawSvg) : '';
         const isInsert = isInsertResource(q);
         // Only show diagram on the question paper if an insert booklet is NOT attached, or if it is a QP diagram
         if ((svgContent || diagramUrl) && (!options.includeInsertBooklet || !isInsert)) {
           content += `
             <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
               ${svgContent ? `<div style="max-width: 85%; max-height: 280px; margin: 0 auto; display: inline-block;">${svgContent}</div>` : `<img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />`}
-              <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${q.resource_ref || `Fig. ${qNum}.1`}</div>
+              <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(q.resource_ref || `Fig. ${qNum}.1`)}</div>
             </div>
           `;
         }
@@ -797,7 +830,7 @@ export function openStudentPaperPrintWindow(
             const { letter, text } = parseMcqOption(opt, optIdx);
             content += `
               <div class="mcq-choice" style="display: flex; align-items: baseline; margin: 6px 0 6px 32px; font-size: 14px;">
-                <span style="font-weight: bold; min-width: 28px; margin-right: 14px; font-size: 15px;">${letter}</span>
+                <span style="font-weight: bold; min-width: 28px; margin-right: 14px; font-size: 15px;">${escapeHtml(letter)}</span>
                 <div style="flex: 1; text-align: justify;">${formatLatexForHtml(text)}</div>
               </div>
             `;
@@ -809,7 +842,7 @@ export function openStudentPaperPrintWindow(
             content += `
               <div class="sub-block">
                 <div class="sub-row">
-                  <div class="sub-id">${sub.sub_id}</div>
+                  <div class="sub-id">${escapeHtml(sub.sub_id)}</div>
                   <div class="sub-text">${(() => {
                     const rawSubText = stripDuplicateOptionsFromStem(sub.question_text || '', (sub as any).options || q.options);
                     const hasSubTable = rawSubText.includes('|') && rawSubText.includes('\n|');
@@ -823,15 +856,17 @@ export function openStudentPaperPrintWindow(
                 </div>
             `;
 
-            const subDiagramUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
-            const subSvgContent = (sub as any).svg_content || extractSvgFromDiagramUrl(subDiagramUrl);
+            const subRawUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
+            const subDiagramUrl = sanitizeMediaUrl(subRawUrl);
+            const rawSubSvg = (sub as any).svg_content || extractSvgFromDiagramUrl(subRawUrl);
+            const subSvgContent = rawSubSvg ? sanitizeSvgForPrint(rawSubSvg) : '';
             const isSubInsert = isInsertResource(sub);
             // Only show sub-diagram on question paper if booklet is NOT attached, or if it is a QP diagram
             if ((subSvgContent || subDiagramUrl) && (!options.includeInsertBooklet || !isSubInsert)) {
               content += `
                 <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
                   ${subSvgContent ? `<div style="max-width: 80%; max-height: 220px; margin: 0 auto; display: inline-block;">${subSvgContent}</div>` : `<img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />`}
-                  <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${sub.resource_ref || `Fig. ${qNum}.2`}</div>
+                  <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(sub.resource_ref || `Fig. ${qNum}.2`)}</div>
                 </div>
               `;
             }
@@ -936,7 +971,7 @@ export function openPeriodicTablePrintWindow(headerConfig: ExamHeaderConfig) {
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.subject || 'Chemistry'} — The Periodic Table of Elements</title>
+  <title>${escapeHtml(headerConfig.subject || 'Chemistry')} — The Periodic Table of Elements</title>
   <style>
     @page { size: A4 landscape; margin: 10mm; }
     body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: white; }
@@ -1051,8 +1086,8 @@ export function renderInsertBookletSectionHtml(
     </div>
 
     <div style="text-align: center; margin-bottom: 18px;">
-      <h1 style="font-size: 22px; font-weight: bold; margin: 0 0 6px;">${(headerConfig.subject || 'GEOGRAPHY').toUpperCase()} — INSERT / RESOURCE BOOKLET</h1>
-      <div style="font-size: 14px; font-weight: bold; color: #4b5563;">${headerConfig.title || 'Assessment Resources'} &nbsp;•&nbsp; ${headerConfig.subjectCode || '0460'}</div>
+      <h1 style="font-size: 22px; font-weight: bold; margin: 0 0 6px;">${escapeHtml((headerConfig.subject || 'GEOGRAPHY').toUpperCase())} — INSERT / RESOURCE BOOKLET</h1>
+      <div style="font-size: 14px; font-weight: bold; color: #4b5563;">${escapeHtml(headerConfig.title || 'Assessment Resources')} &nbsp;•&nbsp; ${escapeHtml(headerConfig.subjectCode || '0460')}</div>
     </div>
 
     <div style="border: 1.5px solid #111; padding: 12px 16px; background: #fdfdfd; margin-bottom: 24px; font-family: Arial, sans-serif;">
@@ -1068,9 +1103,9 @@ export function renderInsertBookletSectionHtml(
       ${items.length > 0 ? items.map((it) => `
         <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 16px; margin-bottom: 24px; page-break-inside: avoid; background: white;">
           <div style="font-weight: bold; font-size: 16px; color: #1e3a8a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px;">
-            ${it.header} ${it.topic ? `(${it.topic})` : ''}
+            ${escapeHtml(it.header)} ${it.topic ? `(${escapeHtml(it.topic)})` : ''}
           </div>
-          ${it.diagramUrl ? `<div style="text-align: center; margin: 12px 0;"><img src="${it.diagramUrl}" alt="${it.header}" style="max-width: 95%; max-height: 480px; object-fit: contain;" /></div>` : ''}
+          ${sanitizeMediaUrl(it.diagramUrl) ? `<div style="text-align: center; margin: 12px 0;"><img src="${sanitizeMediaUrl(it.diagramUrl)}" alt="${escapeHtml(it.header)}" style="max-width: 95%; max-height: 480px; object-fit: contain;" /></div>` : ''}
           ${it.tableText ? `<div style="margin-top: 10px;">${convertMarkdownTablesToHtml(it.tableText)}</div>` : ''}
         </div>
       `).join('') : `
@@ -1101,7 +1136,7 @@ export function openInsertBookletPrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.title || 'Exam'} — Insert / Resource Booklet</title>
+  <title>${escapeHtml(headerConfig.title || 'Exam')} — Insert / Resource Booklet</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
@@ -1154,7 +1189,7 @@ export function openMcqAnswerSheetPrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.title || 'Exam'} — Multiple Choice Answer Sheet</title>
+  <title>${escapeHtml(headerConfig.title || 'Exam')} — Multiple Choice Answer Sheet</title>
   <style>
     @page {
       size: A4;
@@ -1225,7 +1260,7 @@ export function openAnswerBookletPrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.title || 'Exam'} — Candidate Answer Booklet</title>
+  <title>${escapeHtml(headerConfig.title || 'Exam')} — Candidate Answer Booklet</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
@@ -1304,8 +1339,8 @@ export function openAnswerBookletPrintWindow(
   </div>
 
   <div class="title-block">
-    <h1 style="font-size: 20px; font-weight: bold; margin: 0 0 4px;">${headerConfig.title || 'Examination Assessment'} — CANDIDATE ANSWER BOOKLET</h1>
-    <div style="font-size: 14px; color: #4b5563;">Subject: ${headerConfig.subject || ''} &nbsp;•&nbsp; Total Marks: ${totalMarks}</div>
+    <h1 style="font-size: 20px; font-weight: bold; margin: 0 0 4px;">${escapeHtml(headerConfig.title || 'Examination Assessment')} — CANDIDATE ANSWER BOOKLET</h1>
+    <div style="font-size: 14px; color: #4b5563;">Subject: ${escapeHtml(headerConfig.subject || '')} &nbsp;•&nbsp; Total Marks: ${totalMarks}</div>
   </div>
 
   ${questions
@@ -1320,7 +1355,7 @@ export function openAnswerBookletPrintWindow(
         q.sub_questions.forEach((sub) => {
           const subLines = Math.max(2, (sub.marks || 1) * linesPerMark);
           res += `
-            <div class="sub-booklet-id">${sub.sub_id} <span style="font-size: 12px; color: #64748b; font-weight: normal;">[${sub.marks || 1}]</span></div>
+            <div class="sub-booklet-id">${escapeHtml(sub.sub_id)} <span style="font-size: 12px; color: #64748b; font-weight: normal;">[${sub.marks || 1}]</span></div>
             <div class="ans-lines">
           `;
           for (let li = 0; li < subLines; li++) {
@@ -1376,7 +1411,7 @@ export function openTeacherMarkSchemePrintWindow(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${headerConfig.title || 'Assessment'} — Comprehensive Teacher Solutions</title>
+  <title>${escapeHtml(headerConfig.title || 'Assessment')} — Comprehensive Teacher Solutions</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.4/dist/katex.min.css" crossorigin="anonymous" />
   <style>
     @page { size: A4; margin: 15mm; }
@@ -1436,7 +1471,7 @@ export function openTeacherMarkSchemePrintWindow(
 
   <div class="title-block">
     <h1 class="title">COMPREHENSIVE TEACHER MARK SCHEME & SOLUTIONS</h1>
-    <div class="subtitle">${headerConfig.title || 'Assessment'} &nbsp;•&nbsp; Subject: ${headerConfig.subject || 'General'} (${headerConfig.subjectCode || ''}) &nbsp;•&nbsp; Maximum Mark: ${totalMarks}</div>
+    <div class="subtitle">${escapeHtml(headerConfig.title || 'Assessment')} &nbsp;•&nbsp; Subject: ${escapeHtml(headerConfig.subject || 'General')} (${escapeHtml(headerConfig.subjectCode || '')}) &nbsp;•&nbsp; Maximum Mark: ${totalMarks}</div>
   </div>
 
   ${questions
@@ -1456,19 +1491,19 @@ export function openTeacherMarkSchemePrintWindow(
       if (q.sub_questions && q.sub_questions.length > 0) {
         subRowsHtml = q.sub_questions
           .map((sub) => {
-            const msText =
+            const msHtml =
               typeof sub.mark_scheme === 'string'
-                ? sub.mark_scheme
+                ? formatLatexForHtml(sub.mark_scheme)
                 : Array.isArray(sub.mark_scheme)
-                ? (sub.mark_scheme as string[]).join('<br />• ')
+                ? (sub.mark_scheme as string[]).map(formatLatexForHtml).join('<br />• ')
                 : 'Credit scientifically accurate answer with appropriate working.';
 
             return `
             <tr>
-              <td style="width: 12%;"><strong>${sub.sub_id}</strong></td>
+              <td style="width: 12%;"><strong>${escapeHtml(sub.sub_id)}</strong></td>
               <td style="width: 58%;">
                 ${sub.question_text ? `<div style="color: #64748b; font-size: 11px; margin-bottom: 3px;"><em>${formatLatexForHtml(sub.question_text)}</em></div>` : ''}
-                • ${formatLatexForHtml(msText)}
+                • ${msHtml}
                 ${sub.guidance ? `<div class="guidance-box">💡 <strong>Examiner Guidance:</strong> ${formatLatexForHtml(sub.guidance)}</div>` : ''}
                 ${sub.common_misconceptions && sub.common_misconceptions.length > 0 ? `<div class="trap-box">⚠️ <strong>Common Trap:</strong> ${sub.common_misconceptions.map(formatLatexForHtml).join('; ')}</div>` : ''}
               </td>
@@ -1499,13 +1534,13 @@ export function openTeacherMarkSchemePrintWindow(
         `;
       }
 
-      const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+      const diagramUrl = sanitizeMediaUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
 
       return `
         <div class="q-section">
           <div class="q-banner">
             <span class="q-banner-title">Question ${qNum} [${q.marks || 1} mark${q.marks !== 1 ? 's' : ''}]</span>
-            <span class="q-banner-meta">${q.topic ? `${q.topic}${q.sub_topic ? ` › ${q.sub_topic}` : ''}` : ''}</span>
+            <span class="q-banner-meta">${q.topic ? `${escapeHtml(q.topic)}${q.sub_topic ? ` › ${escapeHtml(q.sub_topic)}` : ''}` : ''}</span>
           </div>
           <div class="q-stem-box">
             ${stem}

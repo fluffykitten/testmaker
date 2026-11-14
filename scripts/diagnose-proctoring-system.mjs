@@ -182,7 +182,7 @@ async function main() {
     {
       const paperRes = await restCall('rpc/get_student_exam_paper', { method: 'POST', body: { p_code: READ_QUIZ_CODE } });
       const rawPinExposed = Boolean(paperRes.data?.publishedQuiz?.teacherPin || paperRes.data?.headerConfig?.teacherPin || paperRes.data?.teacherPin);
-      const hasPinHashInPaper = JSON.stringify(paperRes.data || {}).includes('teacherPinHash');
+      const hasPinHashInPaper = Boolean(paperRes.data?.teacherPinHash) || JSON.stringify(paperRes.data || {}).includes('sha256:');
       const pinWrongRes = await restCall('rpc/verify_teacher_unlock_pin', {
         method: 'POST',
         body: { p_quiz_code: READ_QUIZ_CODE, p_pin: '__DIAG_WRONG_PIN__' },
@@ -197,7 +197,7 @@ async function main() {
 
       logDiag(
         'D2',
-        !pinChecksQuizByCode || !pinChecksPrevCodes || !pinChecksHeaderCfg || !fallsBackOnRpcFalse ? 'ISSUE' : 'PASS',
+        rawPinExposed || hasPinHashInPaper || !pinChecksQuizByCode || !pinChecksPrevCodes || !pinChecksHeaderCfg || !fallsBackOnRpcFalse ? 'ISSUE' : 'PASS',
         'verify_teacher_unlock_pin Parity (023 vs 022)',
         `Live paper ok=${paperRes.ok} (rawPinExposed=${rawPinExposed}, teacherPinHashPresent=${hasPinHashInPaper}); verify_teacher_unlock_pin wrong-pin=${pinWrongRes.data} (HTTP ${pinWrongRes.status}); 023 checks quiz_by_code_=${pinChecksQuizByCode}, previousCodes=${pinChecksPrevCodes}, headerConfig=${pinChecksHeaderCfg}; offline expectedHash fallback on RPC false=${fallsBackOnRpcFalse}`
       );

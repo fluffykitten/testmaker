@@ -24,6 +24,9 @@ import {
 } from '../utils/examCryptoUtils';
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
 import { recordProctorAuditEvent } from './proctorAuditLogService';
+import { gradeSubmissionDeterministically } from './deterministicGradingService';
+import { getDraftLockCredentials } from './examDraftService';
+import type { Question } from '../types/database';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
@@ -322,21 +325,58 @@ function findMatchingCandidateSubmission(
   });
 }
 
+export interface IngestEmergencyOptions {
+  fileName?: string;
+  expectedQuizCode?: string;
+  allowedQuizCodes?: string[];
+  existingSubmissions?: StudentSubmission[];
+  skipCloudSync?: boolean;
+  /** Authoritative question bank used to discard client-claimed scores and re-grade deterministically. */
+  questions?: Question[];
+  /** Per-quiz authoritative question banks keyed by uppercase quizCode (used by multi-exam invigilation). */
+  questionsByQuizCode?: Record<string, Question[]>;
+  quizTotalMarks?: number;
+  /** Disabled by default for security: set true only to import legacy unencrypted EXAM_TOKEN:/JSON formats. */
+  allowLegacyUnencrypted?: boolean;
+}
+
+/**
+ * Strips any client-supplied marks/statuses from an offline `.exam` submission and
+ * recomputes scores deterministically against the teacher's authoritative question bank.
+ */
+export function regradeEmergencySubmission(
+  submission: StudentSubmission,
+  questions: Question[],
+  quizTotalMarks?: number
+): StudentSubmission {
+  const scrubbed: StudentSubmission = {
+    ...submission,
+    score: 0,
+    percentage: 0,
+    teacherAdjustedMarks: 0,
+    teacherNotes: undefined,
+    status: 'submitted',
+    questionResults: [],
+    topicBreakdown: {},
+  };
+  const { updatedSub } = gradeSubmissionDeterministically(scrubbed, questions, quizTotalMarks);
+  return {
+    ...updatedSub,
+    teacherAdjustedMarks: 0,
+    status: 'submitted',
+  };
+}
+
 /**
  * Decodes, decrypts, verifies, and ingests a single emergency `.exam` file or token string,
  * applying the "Newest Timestamp Wins + Audit Flag" conflict resolution policy.
  */
 export async function ingestEmergencySubmissionContent(
   rawContent: string,
-  options: {
-    fileName?: string;
-    expectedQuizCode?: string;
-    allowedQuizCodes?: string[];
-    existingSubmissions?: StudentSubmission[];
-    skipCloudSync?: boolean;
-  } = {}
+  options: IngestEmergencyOptions = {}
 ): Promise<EmergencyFileIngestionItemResult> {
   const fileName = options.fileName || 'emergency_submission.exam';
+  const allowLegacy = Boolean(options.allowLegacyUnencrypted);
   try {
     const raw = (rawContent || '').trim();
     if (!raw) {
@@ -354,6 +394,13 @@ export async function ingestEmergencySubmissionContent(
     let parsedSub: StudentSubmission | null = null;
 
     if (raw.startsWith('EXAM_TOKEN:')) {
+      if (!allowLegacy) {
+        return {
+          fileName,
+          status: 'failed',
+          error: 'Unencrypted legacy EXAM_TOKEN payloads are disabled for security. Please import an encrypted .exam file.',
+        };
+      }
       const b64 = raw.substring('EXAM_TOKEN:'.length).trim();
       const decoded = decodeURIComponent(
         Array.prototype.map
@@ -405,7 +452,14 @@ export async function ingestEmergencySubmissionContent(
 
         parsedSub = await decryptEmergencyPackage(expectedCode || envCode, jsonObj);
       } else {
-        // Legacy fluffykitten_exam_v1 or raw submission JSON
+        if (!allowLegacy) {
+          return {
+            fileName,
+            status: 'failed',
+            error: 'Unencrypted legacy JSON emergency files are disabled for security. Please import an encrypted .exam file.',
+          };
+        }
+        // Legacy fluffykitten_exam_v1 or raw submission JSON (explicit opt-in only)
         parsedSub = jsonObj.submission || jsonObj;
       }
     } else {
@@ -451,7 +505,7 @@ export async function ingestEmergencySubmissionContent(
         studentClass: parsedSub.studentClass,
       });
 
-    const normalizedIncoming: StudentSubmission = {
+    let normalizedIncoming: StudentSubmission = {
       ...parsedSub,
       quizCode: subQuizCode,
       forensics: {
@@ -459,6 +513,41 @@ export async function ingestEmergencySubmissionContent(
         proctorStudentId: canonicalId,
       },
     };
+
+    const authoritativeQuestions =
+      options.questions && options.questions.length > 0
+        ? options.questions
+        : options.questionsByQuizCode?.[subQuizCode];
+
+    if (authoritativeQuestions && authoritativeQuestions.length > 0) {
+      normalizedIncoming = regradeEmergencySubmission(
+        normalizedIncoming,
+        authoritativeQuestions,
+        options.quizTotalMarks
+      );
+    } else if (!options.skipCloudSync) {
+      // Never trust client-claimed marks from an .exam file without an authoritative question bank
+      normalizedIncoming = {
+        ...normalizedIncoming,
+        score: 0,
+        percentage: 0,
+        teacherAdjustedMarks: 0,
+        teacherNotes: undefined,
+        status: 'submitted',
+        questionResults: (normalizedIncoming.questionResults || []).map((qr) => ({
+          ...qr,
+          earnedMarks: 0,
+          isCorrect: false,
+          manualOverride: false,
+          subQuestionResults: (qr.subQuestionResults || []).map((sr: any) => ({
+            ...sr,
+            earnedMarks: 0,
+            isCorrect: false,
+            manualOverride: false,
+          })),
+        })),
+      };
+    }
 
     const currentPool = options.existingSubmissions ?? getAllSubmissions();
     const existingMatch = findMatchingCandidateSubmission(currentPool, normalizedIncoming);
@@ -538,12 +627,7 @@ export async function ingestEmergencySubmissionContent(
  */
 export async function ingestEmergencySubmissionBatch(
   files: Array<{ fileName: string; content: string }>,
-  options: {
-    expectedQuizCode?: string;
-    allowedQuizCodes?: string[];
-    existingSubmissions?: StudentSubmission[];
-    skipCloudSync?: boolean;
-  } = {}
+  options: Omit<IngestEmergencyOptions, 'fileName'> = {}
 ): Promise<BatchEmergencyIngestionSummary> {
   const workingPool: StudentSubmission[] = [
     ...(options.existingSubmissions ?? getAllSubmissions()),
@@ -562,6 +646,10 @@ export async function ingestEmergencySubmissionBatch(
       allowedQuizCodes: options.allowedQuizCodes,
       existingSubmissions: workingPool,
       skipCloudSync: options.skipCloudSync,
+      questions: options.questions,
+      questionsByQuizCode: options.questionsByQuizCode,
+      quizTotalMarks: options.quizTotalMarks,
+      allowLegacyUnencrypted: options.allowLegacyUnencrypted,
     });
 
     results.push(res);
@@ -595,11 +683,12 @@ export async function ingestEmergencySubmissionBatch(
 }
 
 /**
- * Decodes, validates, and imports a student submission from a token string or `.exam` JSON string.
+ * Decodes, validates, and imports a student submission from an encrypted `.exam` package or token string.
  */
 export async function importSubmissionToken(
   tokenOrJson: string,
-  expectedQuizCode?: string
+  expectedQuizCode?: string,
+  options: Pick<IngestEmergencyOptions, 'questions' | 'quizTotalMarks' | 'allowLegacyUnencrypted' | 'existingSubmissions'> = {}
 ): Promise<{
   success: boolean;
   submission?: StudentSubmission;
@@ -610,6 +699,7 @@ export async function importSubmissionToken(
   const res = await ingestEmergencySubmissionContent(tokenOrJson, {
     fileName: 'pasted_token.exam',
     expectedQuizCode,
+    ...options,
   });
 
   if (res.status === 'failed') {
@@ -661,10 +751,15 @@ export async function flushSubmissionOutbox(): Promise<{ syncedCount: number; fa
 }
 
 /**
- * Generates a random 3-digit personal PIN (100–999) for secure result retrieval.
+ * Generates a cryptographically random 6-digit personal PIN (100000–999999) for result retrieval.
  */
 export function generateResultPin(): string {
-  return String(Math.floor(100 + Math.random() * 900));
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
+    const arr = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(arr);
+    return String(100000 + (arr[0] % 900000));
+  }
+  return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 export interface QuestionSubmissionResult {
@@ -877,6 +972,8 @@ export interface ExamForensics {
   autoSubmittedBySecurity?: boolean;
   tierHistory?: SecurityTierEvent[];
   manualTotalScoreOverride?: boolean;
+  /** Optional 4-digit roster PIN used by the client for server-side submission verification. */
+  studentPin?: string;
 }
 
 export interface StudentSubmission {
@@ -1387,18 +1484,37 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
 
       let writeError: { message?: string } | null = null;
       if (!hasActiveTeacherSession()) {
-        const rpcRes = await (supabase as any).rpc('submit_student_exam_attempt', { p_row: row });
+        const studentPin = (stampedSubmission.forensics as any)?.studentPin as string | undefined;
+        const lockCreds = getDraftLockCredentials(
+          stampedSubmission.quizCode,
+          stampedSubmission.studentName,
+          studentPin
+        );
+        const rpcRow = {
+          ...row,
+          draft_key: lockCreds.draftKey,
+          draft_owner_token: lockCreds.ownerToken,
+          ...(studentPin ? { student_pin: studentPin } : {}),
+        };
+        const rpcRes = await (supabase as any).rpc('submit_student_exam_attempt', { p_row: rpcRow });
         if (!rpcRes?.error && rpcRes?.data === true) {
           tableSuccess = true;
           markOutboxSynced(stampedSubmission.id);
         } else if (rpcRes?.error) {
-          // Pre-migration 021 fallback
-          const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
-          if (!error) {
-            tableSuccess = true;
-            markOutboxSynced(stampedSubmission.id);
+          const errMsg = String(rpcRes.error.message || '');
+          const errCode = String(rpcRes.error.code || '');
+          // If server explicitly blocked ownership/PIN conflict (42501), do not fall back to table insert
+          if (errCode === '42501' || /active exam session belongs to another device/i.test(errMsg)) {
+            writeError = rpcRes.error;
           } else {
-            writeError = error;
+            // Pre-migration 021 fallback
+            const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
+            if (!error) {
+              tableSuccess = true;
+              markOutboxSynced(stampedSubmission.id);
+            } else {
+              writeError = error;
+            }
           }
         } else {
           writeError = { message: 'Submission RPC rejected row payload.' };

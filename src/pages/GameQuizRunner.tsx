@@ -46,6 +46,7 @@ import {
 } from '../types/gameTypes';
 import { ExamMathText } from '../components/ExamMathText';
 import { getActiveGameProfile, awardGameMatchRewards } from '../services/gameProfileService';
+import { supabase } from '../lib/supabase';
 import { GameAvatarRenderer } from '../components/game/GameAvatarRenderer';
 import type { GameProfile } from '../types/database';
 import './GameQuizRunner.css';
@@ -431,13 +432,37 @@ export function GameQuizRunner({
     }, 1000);
   };
 
-  const handleSoloSubmit = (answer: number | string) => {
+  const handleSoloSubmit = async (answer: number | string) => {
     if (timerRef.current) clearInterval(timerRef.current);
     setSelectedOption(answer);
     setPhase('feedback');
 
     const item = playableItems[currentQIndex];
-    const evalRes = item ? evaluateGameAnswer(item, answer) : { isCorrect: false, correctDisplay: '' };
+    let evalRes = item ? evaluateGameAnswer(item, answer) : { isCorrect: false, correctDisplay: '' };
+
+    // When answer keys were stripped server-side (`VULN-P3-08`), evaluate via RPC
+    if (
+      item &&
+      !evalRes.correctDisplay &&
+      item.correctOptionIndex === undefined &&
+      testIdOrCode
+    ) {
+      try {
+        const { data, error } = await (supabase.rpc as any)('check_game_question_answer', {
+          p_code: testIdOrCode,
+          p_question_index: currentQIndex,
+          p_answer: String(answer),
+        });
+        if (!error && data?.valid) {
+          evalRes = {
+            isCorrect: Boolean(data.isCorrect),
+            correctDisplay: data.correctAnswerText || (data.correctOptionIndex !== null ? String.fromCharCode(65 + Number(data.correctOptionIndex)) : ''),
+          };
+        }
+      } catch {
+        // offline solo fallback
+      }
+    }
     const isCorrect = evalRes.isCorrect;
     const totalTimeMs = gameConfig.questionTimerSeconds * 1000;
     const elapsedMs = Date.now() - questionStartTimeRef.current;

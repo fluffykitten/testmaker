@@ -38,6 +38,39 @@ async function sha256Hex(plainText: string): Promise<string> {
 // In-memory module cache
 let inMemoryActiveProfile: GameProfile | null = null;
 let inMemoryProfiles: GameProfile[] | null = null;
+const inMemoryPinHashes = new Map<string, string>();
+const GAME_PIN_SESSION_STORAGE_KEY = 'testmaker_game_pin_session_map';
+
+function rememberSessionPinHash(profileId: string, pinHash: string): void {
+  if (!profileId || !pinHash) return;
+  inMemoryPinHashes.set(profileId, pinHash);
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const raw = sessionStorage.getItem(GAME_PIN_SESSION_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      parsed[profileId] = pinHash;
+      sessionStorage.setItem(GAME_PIN_SESSION_STORAGE_KEY, JSON.stringify(parsed));
+    }
+  } catch {}
+}
+
+function getSessionPinHash(profileId: string, fallbackProfile?: GameProfile | null): string {
+  const mem = inMemoryPinHashes.get(profileId);
+  if (mem) return mem;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const raw = sessionStorage.getItem(GAME_PIN_SESSION_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.[profileId]) {
+          inMemoryPinHashes.set(profileId, parsed[profileId]);
+          return parsed[profileId];
+        }
+      }
+    }
+  } catch {}
+  return fallbackProfile?.pin_hash || '';
+}
 
 export function getActiveGameProfile(): GameProfile | null {
   if (inMemoryActiveProfile) return inMemoryActiveProfile;
@@ -122,6 +155,7 @@ export async function loginGameProfile(
 
     if (!error && data?.success && data.profile) {
       const profile = data.profile as GameProfile;
+      rememberSessionPinHash(profile.id, pinHash);
       setActiveGameProfile(profile);
 
       const cached = getCachedGameProfiles();
@@ -181,12 +215,12 @@ export async function registerGameProfile(payload: {
       ? crypto.randomUUID()
       : 'gp_' + Date.now().toString(36);
 
-  const newProfile: GameProfile = {
+  let resolvedProfile: GameProfile = {
     id: newId,
     handle: cleanHandle,
     real_name: payload.realName?.trim() || null,
     class: payload.studentClass.trim() || '10-A',
-    pin_hash: pinHash,
+    pin_hash: '',
     avatar,
     coins: 50,
     xp: 0,
@@ -198,39 +232,39 @@ export async function registerGameProfile(payload: {
     updated_at: new Date().toISOString(),
   };
 
-  // Try saving to Supabase
+  // Register via SECURITY DEFINER RPC (strict RLS blocks direct anon table insert)
   try {
-    const { data, error } = await (supabase.from('game_profiles' as any) as any)
-      .insert({
-        id: newProfile.id,
-        handle: newProfile.handle,
-        real_name: newProfile.real_name,
-        class: newProfile.class,
-        pin_hash: newProfile.pin_hash,
-        avatar: newProfile.avatar,
-        coins: newProfile.coins,
-        xp: newProfile.xp,
-        level: newProfile.level,
-        unlocked_items: newProfile.unlocked_items,
-        topic_mastery: newProfile.topic_mastery,
-        match_history: newProfile.match_history,
-      })
-      .select('*')
-      .single();
+    const { data, error } = await (supabase.rpc as any)('auth_game_profile', {
+      p_handle: cleanHandle,
+      p_pin_hash: pinHash,
+      p_real_name: resolvedProfile.real_name,
+      p_class: resolvedProfile.class,
+      p_avatar: avatar,
+    });
 
-    if (!error && data) {
-      newProfile.id = data.id;
+    if (error) {
+      throw new Error(error.message || 'Could not register profile');
     }
-  } catch (err) {
-    console.warn('Failed to insert game profile into Supabase, saving to local cache:', err);
+    if (data && data.success === false) {
+      throw new Error(data.error || 'Could not register profile');
+    }
+    if (data?.success && data.profile) {
+      resolvedProfile = data.profile as GameProfile;
+    }
+  } catch (err: any) {
+    if (err?.message && /Incorrect 4-digit PIN|required|Too many/i.test(err.message)) {
+      throw err;
+    }
+    console.warn('Failed to register game profile via RPC, saving to local cache:', err);
   }
 
+  rememberSessionPinHash(resolvedProfile.id, pinHash);
   const existing = getCachedGameProfiles();
-  const updated = [...existing.filter((p) => p.id !== newProfile.id), newProfile];
+  const updated = [...existing.filter((p) => p.id !== resolvedProfile.id), resolvedProfile];
   saveCachedGameProfiles(updated);
-  setActiveGameProfile(newProfile);
+  setActiveGameProfile(resolvedProfile);
 
-  return newProfile;
+  return resolvedProfile;
 }
 
 /**
@@ -262,7 +296,7 @@ export async function updateGameAvatar(
     unlocked.add(purchasedItem);
   }
 
-  const updatedProfile: GameProfile = {
+  let updatedProfile: GameProfile = {
     ...baseProfile,
     avatar,
     coins: baseProfile.coins - itemCost,
@@ -271,16 +305,23 @@ export async function updateGameAvatar(
   };
 
   try {
-    await (supabase.from('game_profiles' as any) as any)
-      .update({
-        avatar: updatedProfile.avatar,
-        coins: updatedProfile.coins,
-        unlocked_items: updatedProfile.unlocked_items,
-        updated_at: updatedProfile.updated_at,
-      })
-      .eq('id', profileId);
+    const sessionPinHash = getSessionPinHash(profileId, baseProfile);
+    if (sessionPinHash) {
+      const { data, error } = await (supabase.rpc as any)('update_game_profile_student', {
+        p_profile_id: profileId,
+        p_pin_hash: sessionPinHash,
+        p_avatar: updatedProfile.avatar,
+        p_unlocked_items: updatedProfile.unlocked_items,
+        p_cost: itemCost,
+      });
+      if (!error && data?.success && data.profile) {
+        updatedProfile = data.profile as GameProfile;
+      } else if (data?.error) {
+        console.warn('Supabase update_game_profile_student rejected:', data.error);
+      }
+    }
   } catch (err) {
-    console.warn('Supabase update failed for avatar, updating locally:', err);
+    console.warn('Supabase RPC update failed for avatar, updating locally:', err);
   }
 
   const cached = getCachedGameProfiles();
@@ -327,6 +368,7 @@ export async function awardGameMatchRewards(
 
   // 1. Try Supabase RPC first
   try {
+    const sessionPinHash = getSessionPinHash(profileId, baseProfile);
     const { data, error } = await (supabase.rpc as any)('sync_game_match_rewards', {
       p_profile_id: profileId,
       p_coins: Math.max(0, matchData.coins),
@@ -334,6 +376,7 @@ export async function awardGameMatchRewards(
       p_subject: matchData.subject || 'Chemistry',
       p_topic_results: matchData.topicResults,
       p_match_summary: matchSummary,
+      ...(sessionPinHash ? { p_pin_hash: sessionPinHash } : {}),
     });
 
     if (!error && data?.success && data.profile) {
@@ -413,21 +456,26 @@ export async function updateStudentClass(
     throw new Error('Profile not found');
   }
 
-  const updatedProfile: GameProfile = {
+  let updatedProfile: GameProfile = {
     ...baseProfile,
     class: cleanClass,
     updated_at: new Date().toISOString(),
   };
 
   try {
-    await (supabase.from('game_profiles' as any) as any)
-      .update({
-        class: updatedProfile.class,
-        updated_at: updatedProfile.updated_at,
-      })
-      .eq('id', profileId);
+    const sessionPinHash = getSessionPinHash(profileId, baseProfile);
+    if (sessionPinHash) {
+      const { data, error } = await (supabase.rpc as any)('update_game_profile_student', {
+        p_profile_id: profileId,
+        p_pin_hash: sessionPinHash,
+        p_class: updatedProfile.class,
+      });
+      if (!error && data?.success && data.profile) {
+        updatedProfile = data.profile as GameProfile;
+      }
+    }
   } catch (err) {
-    console.warn('Supabase update failed for student class, updating locally:', err);
+    console.warn('Supabase RPC update failed for student class, updating locally:', err);
   }
 
   const cached = getCachedGameProfiles();

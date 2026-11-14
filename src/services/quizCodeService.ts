@@ -372,7 +372,8 @@ async function resolveStudentQuizUncached(
           savedHeader: (rpcPaper.headerConfig || undefined) as ExamHeaderConfig | undefined,
           savedTotalMarks: rpcPaper.customTest?.total_marks,
           hasSavedTest: Boolean(rpcPaper.customTest || rpcQuestions.length > 0),
-          teacherPinHash: rpcPaper.teacherPinHash || '',
+          // VULN-P3-03: Never store or trust offline teacherPinHash for live cloud exams
+          teacherPinHash: '',
           schoolSecurityTiers,
         });
 

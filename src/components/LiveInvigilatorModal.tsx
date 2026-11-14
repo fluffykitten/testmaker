@@ -14,8 +14,15 @@ import {
   ingestEmergencySubmissionBatch,
   type BatchEmergencyIngestionSummary,
 } from '../services/quizSubmissionService';
+import { fetchAndApplyOverrides } from '../services/quizCodeService';
+import { fetchCustomTestWithQuestions } from '../services/testBuilderService';
+import type { Question } from '../types/database';
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
-import { clampTelemetry, highWaterViolations } from '../lib/proctorGuards';
+import {
+  clampTelemetry,
+  highWaterViolations,
+  verifyAndBindStudentHeartbeatProof,
+} from '../lib/proctorGuards';
 import {
   recordProctorAuditEvent,
   loadProctorAuditEvents,
@@ -99,6 +106,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const pendingHeartbeatsRef = useRef<Record<string, ProctorStudentState>>({});
   /** Composite key → time the teacher pardoned it; lets the strike high-water mark drop once. */
   const pardonedAtRef = useRef<Record<string, number>>({});
+  /** Canonical/draft key → first-seen SHA-256 session proof (`VULN-P3-10`). */
+  const boundHeartbeatKeysRef = useRef<Record<string, string>>({});
   const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
@@ -390,6 +399,15 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       });
       const compKey = `${qCode}::${canonicalId}`;
 
+      const proofCheck = verifyAndBindStudentHeartbeatProof(
+        boundHeartbeatKeysRef.current,
+        compKey,
+        student
+      );
+      if (!proofCheck.accepted) {
+        return;
+      }
+
       pendingHeartbeatsRef.current[compKey] = {
         ...student,
         studentId: canonicalId,
@@ -439,6 +457,22 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     const handleLogEvent = (event: ProctorLogEvent) => {
       const qCode = (event.quizCode || '').trim().toUpperCase();
+      const canonicalId = getCanonicalProctorStudentId({
+        quizCode: qCode,
+        studentName: event.studentName,
+        candidateNumber: event.candidateNumber,
+        studentClass: event.candidateClass,
+      });
+      const compKey = `${qCode}::${canonicalId}`;
+      const proofCheck = verifyAndBindStudentHeartbeatProof(
+        boundHeartbeatKeysRef.current,
+        compKey,
+        event
+      );
+      if (!proofCheck.accepted) {
+        return;
+      }
+
       const enriched: ProctorLogEvent = {
         ...event,
         quizCode: qCode,
@@ -852,6 +886,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     if (!s || !s.quizCode) return;
 
     delete pendingHeartbeatsRef.current[compositeKey];
+    delete boundHeartbeatKeysRef.current[compositeKey];
+    if (s.draftKey) {
+      delete boundHeartbeatKeysRef.current[s.draftKey];
+    }
     sendProctorCommand(s.quizCode, s.studentId, 'unlock');
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
@@ -1071,6 +1109,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     const lockedKeys = new Set(
       lockedTargets.map((t) => `${t.quizCode!.toUpperCase()}::${t.studentId}`)
     );
+    lockedKeys.forEach((k) => {
+      delete boundHeartbeatKeysRef.current[k];
+    });
+    lockedTargets.forEach((t) => {
+      if (t.draftKey) {
+        delete boundHeartbeatKeysRef.current[t.draftKey];
+      }
+    });
     setStudents((prev) => {
       const next = { ...prev };
       Object.keys(next).forEach((k) => {
@@ -1278,8 +1324,38 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           .map((q) => (q.quizCode || '').trim().toUpperCase())
           .filter(Boolean);
 
+        // Load authoritative question banks per monitored quiz so offline .exam scores are re-graded deterministically
+        const questionsByQuizCode: Record<string, Question[]> = {};
+        await Promise.all(
+          monitoredQuizzes.map(async (q) => {
+            const code = (q.quizCode || '').trim().toUpperCase();
+            if (!code || questionsByQuizCode[code]) return;
+            try {
+              if (q.testId) {
+                const customRes = await fetchCustomTestWithQuestions(q.testId);
+                if (customRes?.questions && customRes.questions.length > 0) {
+                  questionsByQuizCode[code] = customRes.questions;
+                  return;
+                }
+              }
+              if (q.questionIds && q.questionIds.length > 0) {
+                const loaded = await fetchAndApplyOverrides(
+                  q.questionIds,
+                  q.headerConfig?.questionOverrides
+                );
+                if (loaded.length > 0) {
+                  questionsByQuizCode[code] = loaded;
+                }
+              }
+            } catch {
+              // Best-effort; ingestEmergencySubmissionContent zeros forged scores if questions unavailable
+            }
+          })
+        );
+
         const summary = await ingestEmergencySubmissionBatch(loadedFiles, {
           allowedQuizCodes: allowedCodes,
+          questionsByQuizCode,
         });
 
         setEmergencyIngestionSummary(summary);

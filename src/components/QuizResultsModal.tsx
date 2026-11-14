@@ -418,7 +418,11 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     setImportSuccessMsg(null);
     setBatchIngestionSummary(null);
     try {
-      const res = await importSubmissionToken(clean, quiz.quizCode);
+      const questions = await loadQuizQuestionsWithOverrides().catch(() => []);
+      const res = await importSubmissionToken(clean, quiz.quizCode, {
+        questions,
+        quizTotalMarks: effectiveTotalMarksRef.current || quiz.totalMarks,
+      });
       if (res.success && res.submission) {
         if (res.status === 'skipped_older') {
           setImportSuccessMsg(
@@ -470,9 +474,12 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
         )
       );
 
+      const questions = await loadQuizQuestionsWithOverrides().catch(() => []);
       const summary = await ingestEmergencySubmissionBatch(loadedFiles, {
         expectedQuizCode: quiz.quizCode,
         existingSubmissions: submissions,
+        questions,
+        quizTotalMarks: effectiveTotalMarksRef.current || quiz.totalMarks,
       });
 
       setBatchIngestionSummary(summary);

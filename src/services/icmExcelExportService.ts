@@ -51,6 +51,19 @@ export const ICM_BRAND = {
   },
 };
 
+/**
+ * Prevents spreadsheet formula/DDE injection (=, +, -, @, tab, CR) on untrusted text cells.
+ */
+export function sanitizeSpreadsheetCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (!str || str === '-') return str;
+  if (/^\s*[=+\-@\t\r]/.test(str)) {
+    return `'${str}`;
+  }
+  return str;
+}
+
 const BORDER_THIN: Partial<ExcelJS.Borders> = {
   top: { style: 'thin', color: { argb: ICM_BRAND.colors.gridBorder } },
   left: { style: 'thin', color: { argb: ICM_BRAND.colors.gridBorder } },
@@ -116,7 +129,7 @@ function renderIcmBanner(
     lblCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
 
     const valCell = ws.getRow(4).getCell(cIdx + 1);
-    valCell.value = item.val;
+    valCell.value = sanitizeSpreadsheetCell(item.val);
     valCell.font = { name: 'Segoe UI', size: 9, bold: false, color: { argb: ICM_BRAND.colors.slateText } };
     valCell.alignment = { horizontal: 'left', vertical: 'middle' };
     valCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
@@ -509,9 +522,9 @@ export async function exportAllSubmissionsExcelICM(
 
     const rowData = [
       idx + 1,
-      s.studentName,
-      s.studentClass || 'General',
-      s.candidateNumber || '-',
+      sanitizeSpreadsheetCell(s.studentName),
+      sanitizeSpreadsheetCell(s.studentClass || 'General'),
+      sanitizeSpreadsheetCell(s.candidateNumber || '-'),
       s.score,
       s.totalMarks || totalMarks,
       p / 100, // Stored as decimal for native Excel percentage formatting
@@ -627,8 +640,8 @@ export async function exportAllSubmissionsExcelICM(
 
       const rowVals = [
         `Q${item.qNum}`,
-        item.topic,
-        item.questionText.length > 50 ? `${item.questionText.substring(0, 48)}…` : item.questionText,
+        sanitizeSpreadsheetCell(item.topic),
+        sanitizeSpreadsheetCell(item.questionText.length > 50 ? `${item.questionText.substring(0, 48)}…` : item.questionText),
         item.maxMarks,
         item.avgEarned,
         item.accuracyPct / 100, // Decimal for native percentage
@@ -764,9 +777,9 @@ export async function exportAllSubmissionsExcelICM(
 
       row.getCell(1).value = sIdx + 1;
       row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
-      row.getCell(2).value = sub.studentName;
+      row.getCell(2).value = sanitizeSpreadsheetCell(sub.studentName);
       row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-      row.getCell(3).value = sub.studentClass || 'General';
+      row.getCell(3).value = sanitizeSpreadsheetCell(sub.studentClass || 'General');
       row.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
 
       [1, 2, 3].forEach((c) => {
@@ -874,14 +887,14 @@ export async function exportAllSubmissionsExcelICM(
               ? `+${Math.floor(log.elapsedExamSeconds / 60)}m ${log.elapsedExamSeconds % 60}s`
               : '-';
           proctorLogs.push({
-            name: sub.studentName,
-            class: sub.studentClass || 'General',
-            candNum: sub.candidateNumber || '-',
+            name: sanitizeSpreadsheetCell(sub.studentName),
+            class: sanitizeSpreadsheetCell(sub.studentClass || 'General'),
+            candNum: sanitizeSpreadsheetCell(sub.candidateNumber || '-'),
             strike: `Strike ${log.strike}`,
             elapsed,
             timestamp: formatProctorTimestamp(log.timestamp),
-            violationType: log.type || 'security_event',
-            event: log.event,
+            violationType: sanitizeSpreadsheetCell(log.type || 'security_event'),
+            event: sanitizeSpreadsheetCell(log.event),
             severity: log.severity.toUpperCase(),
             limitExceeded: (sub.forensics?.autoSubmittedBySecurity || sub.forensics?.exceededMaxViolations || sub.violationsCount >= 3) ? 'YES 🚨' : 'No',
           });
@@ -1003,12 +1016,12 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
 
   // Candidate Overview Table (Rows 6+)
   const overviewRows = [
-    { property: 'Candidate Name', value: submission.studentName },
-    { property: 'Candidate Number / Seat', value: submission.candidateNumber || '-' },
-    { property: 'Class / Cohort', value: submission.studentClass || 'General' },
-    { property: 'Assessment Title', value: submission.quizTitle },
-    { property: 'Subject / Syllabus', value: submission.subject || 'General' },
-    { property: 'Assessment Access Code', value: submission.quizCode },
+    { property: 'Candidate Name', value: sanitizeSpreadsheetCell(submission.studentName) },
+    { property: 'Candidate Number / Seat', value: sanitizeSpreadsheetCell(submission.candidateNumber || '-') },
+    { property: 'Class / Cohort', value: sanitizeSpreadsheetCell(submission.studentClass || 'General') },
+    { property: 'Assessment Title', value: sanitizeSpreadsheetCell(submission.quizTitle) },
+    { property: 'Subject / Syllabus', value: sanitizeSpreadsheetCell(submission.subject || 'General') },
+    { property: 'Assessment Access Code', value: sanitizeSpreadsheetCell(submission.quizCode) },
     { property: 'Score Earned', value: `${submission.score} / ${submission.totalMarks}` },
     { property: 'Percentage Achieved', value: `${submission.percentage.toFixed(1)}%` },
     { property: 'Calculated Grade', value: deriveGradeFromPercentage(submission.percentage, options?.gradeThresholds).grade },
@@ -1108,12 +1121,12 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
 
       const vals = [
         `Q${qr.questionNumber || idx + 1}`,
-        qr.topic || 'General',
+        sanitizeSpreadsheetCell(qr.topic || 'General'),
         `${qr.earnedMarks} / ${qr.maxMarks}`,
         qr.isCorrect ? 'Correct ✓' : 'Incorrect ✗',
-        candAns,
-        modelSol,
-        miscon,
+        sanitizeSpreadsheetCell(candAns),
+        sanitizeSpreadsheetCell(modelSol),
+        sanitizeSpreadsheetCell(miscon),
       ];
 
       vals.forEach((v, cIdx) => {
@@ -1186,8 +1199,8 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
         `Strike ${log.strike}`,
         elapsed,
         formatProctorTimestamp(log.timestamp),
-        log.type || 'security_event',
-        log.event,
+        sanitizeSpreadsheetCell(log.type || 'security_event'),
+        sanitizeSpreadsheetCell(log.event),
         log.severity.toUpperCase(),
       ];
 
@@ -1276,12 +1289,12 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
 
       const vals = [
         `Q${qr.questionNumber || idx + 1}`,
-        qr.topic || 'General',
+        sanitizeSpreadsheetCell(qr.topic || 'General'),
         dwellFormatted,
         dwellSec,
         qta?.visitCount || (dwellSec > 0 ? 1 : 0),
         revs.length,
-        revTrail,
+        sanitizeSpreadsheetCell(revTrail),
         isRapid ? 'RAPID (<5s) ⚠️' : 'Normal',
       ];
 

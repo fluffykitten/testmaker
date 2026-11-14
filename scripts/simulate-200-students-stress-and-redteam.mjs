@@ -570,6 +570,8 @@ async function main() {
         teacher_notes: '',
         result_pin: s.resultPin,
         updated_at: new Date().toISOString(),
+        draft_key: s.draftKey,
+        draft_owner_token: s.draftOwnerToken,
       };
 
       if (s.index === 176) row.raw_answers = { essay: 'X'.repeat(95 * 1024) };
@@ -633,6 +635,8 @@ async function main() {
         total_marks: 22,
         percentage: 73,
         result_pin: s.resultPin,
+        draft_key: s.draftKey,
+        draft_owner_token: s.draftOwnerToken,
       };
       const [r1, r2] = await Promise.all([
         supaRpc('submit_student_exam_attempt', { p_row: retryRow }),
@@ -882,6 +886,48 @@ async function main() {
         forgedHdrRes.data.length === 0 &&
         claimDisabledRes.data?.status === 'error',
       evidence: `Table scraping: [${scrapeResults.join(', ')}]; forged header rows=${Array.isArray(forgedHdrRes.data) ? forgedHdrRes.data.length : forgedHdrRes.status}; claim disabled msg="${claimDisabledRes.data?.error}".`,
+    });
+
+    // Probe P3-B: Phase 3B live verification (teacherPinHash stripped, game_profiles RLS, draft-lock submission hijack, reset gate)
+    const p3PaperCheck = await supaRpc('get_student_exam_paper', { p_code: READ_QUIZ_CODE });
+    const p3HasPinHash = Boolean(p3PaperCheck.data?.teacherPinHash) || JSON.stringify(p3PaperCheck.data || {}).includes('sha256:');
+    const p3GameProfileScrape = await supaRest('game_profiles?select=id,pin_hash&limit=1');
+    const p3SubmitHijack = await supaRpc('submit_student_exam_attempt', {
+      p_row: {
+        id: `stress200-${RUN_TAG}-p3-lock-hijack`,
+        quiz_id: WRITE_QUIZ_ID,
+        quiz_code: WRITE_QUIZ_CODE,
+        student_name: stu001.studentName,
+        student_class: stu001.studentClass,
+        candidate_number: stu001.candidateNumber,
+        draft_key: stu001.draftKey,
+        draft_owner_token: 'attacker-wrong-token',
+        score: 22,
+        total_marks: 22,
+        percentage: 100,
+        result_pin: '123456',
+      },
+    });
+    if (p3SubmitHijack.status === 200 && p3SubmitHijack.data === true) {
+      submittedIds.push(`stress200-${RUN_TAG}-p3-lock-hijack`);
+    }
+    const p3ResetDisabledRes = await supaRpc('reset_teacher_password_with_master_pin', {
+      p_identifier: 'nonexistent_probe_user',
+      p_new_password: 'NewPassword123!',
+      p_master_pin: '000000',
+    });
+    const p3GameProfilesBlocked =
+      p3GameProfileScrape.status === 401 ||
+      p3GameProfileScrape.status === 403 ||
+      (Array.isArray(p3GameProfileScrape.data) && p3GameProfileScrape.data.length === 0);
+    const p3HijackBlocked = p3SubmitHijack.status === 401 || p3SubmitHijack.status === 403 || /42501|another device/i.test(p3SubmitHijack.errorText || '');
+    const p3ResetGated = p3ResetDisabledRes.data?.status === 'error';
+    findings.push({
+      id: 'PHASE-3B-LIVE',
+      severity: 'INFO',
+      title: 'Migration 024 live controls (no teacherPinHash, game_profiles RLS, draft-lock submit guard, reset gate)',
+      confirmed: !p3HasPinHash && p3GameProfilesBlocked && p3HijackBlocked && p3ResetGated,
+      evidence: `teacherPinHashExposed=${p3HasPinHash}; game_profiles=${p3GameProfileScrape.status}(${Array.isArray(p3GameProfileScrape.data) ? p3GameProfileScrape.data.length : 'err'}); draft_lock_hijack=HTTP ${p3SubmitHijack.status}(${p3SubmitHijack.errorText || p3SubmitHijack.data}); reset_gate="${p3ResetDisabledRes.data?.error || p3ResetDisabledRes.data?.status}".`,
     });
 
     waveSummaries.wave4 = {

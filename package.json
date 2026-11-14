@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -32,6 +32,8 @@
     "test:phase1-security": "node --import ./scripts/register-ts.mjs scripts/test-phase1-security-hardening.mjs",
     "test:phase2-security": "node --import ./scripts/register-ts.mjs scripts/test-phase2-auth-rls-rpcs.mjs",
     "test:phase25-security": "node --import ./scripts/register-ts.mjs scripts/test-phase25-anti-tamper.mjs",
+    "test:phase3a-security": "node --import ./scripts/register-ts.mjs scripts/test-phase3a-client-security.mjs",
+    "test:phase3b-security": "node --import ./scripts/register-ts.mjs scripts/test-phase3b-deep-security.mjs",
     "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",

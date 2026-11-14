@@ -180,3 +180,40 @@ export async function retryBroadcast(
   }
   return false;
 }
+
+/**
+ * First-seen session proof binding (`VULN-P3-10`).
+ * Once a canonical candidate row (`fallbackBindingKey`, e.g. `QUIZ::canonicalId`) or
+ * `draftKey` presents a SHA-256 `heartbeatKey`, subsequent heartbeats/log events for
+ * that candidate MUST present the matching `heartbeatKey`. Un-keyed legacy clients are
+ * accepted only before any proof key has been bound for that candidate.
+ */
+export function verifyAndBindStudentHeartbeatProof(
+  boundKeys: Record<string, string>,
+  fallbackBindingKey: string,
+  incoming: { heartbeatKey?: string; draftKey?: string }
+): { accepted: boolean; reason?: string; bindingKey: string } {
+  const primaryKey = (fallbackBindingKey || '').trim();
+  const draftKey = (incoming.draftKey || '').trim();
+  const bindingKey = primaryKey || draftKey;
+  if (!bindingKey) return { accepted: true, bindingKey: '' };
+
+  const incomingKey = (incoming.heartbeatKey || '').trim();
+  const bound = (primaryKey ? boundKeys[primaryKey] : undefined) || (draftKey ? boundKeys[draftKey] : undefined);
+
+  if (bound) {
+    if (!incomingKey) {
+      return { accepted: false, reason: 'missing_heartbeat_key', bindingKey };
+    }
+    if (incomingKey !== bound) {
+      return { accepted: false, reason: 'mismatched_heartbeat_key', bindingKey };
+    }
+    return { accepted: true, bindingKey };
+  }
+
+  if (incomingKey) {
+    if (primaryKey) boundKeys[primaryKey] = incomingKey;
+    if (draftKey) boundKeys[draftKey] = incomingKey;
+  }
+  return { accepted: true, bindingKey };
+}
