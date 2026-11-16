@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import type { AudioMetadata } from '../types/database';
 import { formatAudioDuration, speakTtsPreview, stopTtsSpeech } from '../services/audioService';
+import { getAudioLimitStatus, shouldConsumePlayCount } from '../utils/audioPlaybackUtils';
 import './ExamAudioPlayer.css';
 
 interface ExamAudioPlayerProps {
@@ -58,10 +59,20 @@ export function ExamAudioPlayer({
   // Play limit configuration (maxPlaysAllowed overrides metadata.play_limit if defined)
   const configuredLimit = maxPlaysAllowed !== undefined ? maxPlaysAllowed : (metadata?.play_limit ?? null);
   const [playedCount, setPlayedCount] = useState(initialPlayedCount);
-  const hasConsumedPlayForCurrentRun = useRef(false);
+  const hasConsumedPlayForCurrentRun = useRef(Boolean(initialCurrentTime > 0 && initialPlayedCount > 0));
 
-  const isLimitReached = configuredLimit !== null && configuredLimit > 0 && playedCount >= configuredLimit;
-  const remainingPlays = configuredLimit !== null && configuredLimit > 0 ? Math.max(0, configuredLimit - playedCount) : null;
+  const {
+    isLimitReached,
+    remainingPlays,
+    isPausedMidRun,
+    isPlaybackLocked,
+  } = getAudioLimitStatus({
+    configuredLimit,
+    playedCount,
+    currentTime,
+    isPlaying,
+    hasConsumedCurrentRun: hasConsumedPlayForCurrentRun.current,
+  });
 
   const displayTitle = title || metadata?.title || 'Listening Comprehension Audio';
 
@@ -72,7 +83,7 @@ export function ExamAudioPlayer({
         stopTtsSpeech();
         setIsPlaying(false);
       } else {
-        if (isLimitReached) return;
+        if (isPlaybackLocked) return;
         handlePlayStarted();
         setIsPlaying(true);
         speakTtsPreview(
@@ -94,7 +105,7 @@ export function ExamAudioPlayer({
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      if (isLimitReached) return;
+      if (isPlaybackLocked) return;
 
       try {
         setIsLoading(true);
@@ -130,7 +141,7 @@ export function ExamAudioPlayer({
 
   // When playback starts from beginning, count as a play
   const handlePlayStarted = () => {
-    if (currentTime < 1 && !hasConsumedPlayForCurrentRun.current) {
+    if (shouldConsumePlayCount(currentTime, hasConsumedPlayForCurrentRun.current)) {
       hasConsumedPlayForCurrentRun.current = true;
       const nextCount = playedCount + 1;
       setPlayedCount(nextCount);
@@ -181,11 +192,12 @@ export function ExamAudioPlayer({
     if (prevAudioUrlRef.current !== audioUrl) {
       prevAudioUrlRef.current = audioUrl;
       setIsPlaying(false);
-      hasConsumedPlayForCurrentRun.current = false;
       const initTime = initialCurrentTime || 0;
+      const initPlayed = initialPlayedCount || 0;
+      hasConsumedPlayForCurrentRun.current = Boolean(initTime > 0 && initPlayed > 0);
       setCurrentTime(initTime);
       setDuration(metadata?.duration || 0);
-      setPlayedCount(initialPlayedCount || 0);
+      setPlayedCount(initPlayed);
       if (isTts) stopTtsSpeech();
       if (audioRef.current) {
         audioRef.current.pause();
@@ -244,13 +256,20 @@ export function ExamAudioPlayer({
 
   // Auto-play support
   useEffect(() => {
-    if (autoPlay && audioRef.current && !isLimitReached) {
+    if (autoPlay && audioRef.current && !isPlaybackLocked) {
       audioRef.current.play().catch(() => {});
     }
-  }, [autoPlay, isLimitReached]);
+  }, [autoPlay, isPlaybackLocked]);
 
-  // Clean progress percent
+  // Clean progress percent & consistent Play/Pause / Limit status text
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const playButtonTitle = isPlaybackLocked
+    ? 'Listening limit reached'
+    : isPlaying
+    ? 'Pause Audio'
+    : isPausedMidRun
+    ? 'Resume Audio'
+    : 'Play Audio';
 
   if (compact) {
     return (
@@ -269,10 +288,10 @@ export function ExamAudioPlayer({
         )}
         <button
           type="button"
-          className={`eap-compact-play-btn ${isPlaying ? 'eap-btn--playing' : ''} ${isLimitReached ? 'eap-btn--disabled' : ''}`}
+          className={`eap-compact-play-btn ${isPlaying ? 'eap-btn--playing' : ''} ${isPlaybackLocked ? 'eap-btn--disabled' : ''}`}
           onClick={handleTogglePlay}
-          disabled={isLimitReached && !isPlaying}
-          title={isLimitReached ? 'Playback limit reached' : isPlaying ? 'Pause audio' : 'Play audio'}
+          disabled={isPlaybackLocked}
+          title={playButtonTitle}
         >
           {isPlaying ? '⏸' : '▶'}
         </button>
@@ -282,9 +301,13 @@ export function ExamAudioPlayer({
             {formatAudioDuration(currentTime)} / {formatAudioDuration(duration)}
           </span>
         </div>
-        {configuredLimit !== null && (
-          <span className={`eap-limit-badge ${isLimitReached ? 'eap-limit-badge--exhausted' : ''}`}>
-            {isLimitReached ? '🔒 Limit reached' : `🎧 ${remainingPlays} play${remainingPlays !== 1 ? 's' : ''} left`}
+        {configuredLimit !== null && configuredLimit > 0 && (
+          <span className={`eap-limit-badge ${isPlaybackLocked ? 'eap-limit-badge--exhausted' : ''}`}>
+            {isPlaybackLocked
+              ? '🔒 Limit reached'
+              : isLimitReached
+              ? (isPausedMidRun ? '🎧 Paused (Resume)' : '🎧 Playing last play')
+              : `🎧 ${remainingPlays} play${remainingPlays !== 1 ? 's' : ''} left`}
           </span>
         )}
       </div>
@@ -341,11 +364,13 @@ export function ExamAudioPlayer({
 
         <div className="eap-header-right">
           {configuredLimit !== null && configuredLimit > 0 ? (
-            <div className={`eap-limit-pill ${isLimitReached ? 'eap-limit-pill--exhausted' : ''}`}>
-              <span className="eap-limit-icon">{isLimitReached ? '🔒' : '⏱️'}</span>
+            <div className={`eap-limit-pill ${isPlaybackLocked ? 'eap-limit-pill--exhausted' : ''}`}>
+              <span className="eap-limit-icon">{isPlaybackLocked ? '🔒' : isPausedMidRun ? '🎧' : '⏱️'}</span>
               <span>
-                {isLimitReached
+                {isPlaybackLocked
                   ? 'Limit Reached (0 plays left)'
+                  : isLimitReached
+                  ? (isPausedMidRun ? 'Paused Mid-Play (Resume Allowed)' : 'Final Play Active (0 left)')
                   : `${remainingPlays} of ${configuredLimit} play${configuredLimit !== 1 ? 's' : ''} remaining`}
               </span>
             </div>
@@ -362,10 +387,10 @@ export function ExamAudioPlayer({
         {/* Play/Pause Main Button */}
         <button
           type="button"
-          className={`eap-main-play-btn ${isPlaying ? 'eap-main-play-btn--playing' : ''} ${isLimitReached && !isPlaying ? 'eap-main-play-btn--disabled' : ''}`}
+          className={`eap-main-play-btn ${isPlaying ? 'eap-main-play-btn--playing' : ''} ${isPlaybackLocked ? 'eap-main-play-btn--disabled' : ''}`}
           onClick={handleTogglePlay}
-          disabled={isLimitReached && !isPlaying}
-          title={isLimitReached ? 'Listening limit reached' : isPlaying ? 'Pause Audio' : 'Play Audio'}
+          disabled={isPlaybackLocked}
+          title={playButtonTitle}
         >
           {isLoading ? (
             <span className="eap-spinner" />

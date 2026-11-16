@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.5.4",
+  "version": "2.5.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,6 +25,7 @@
     "test:keyboard-controls": "node --import ./scripts/register-ts.mjs scripts/test-exam-keyboard-controls.mjs",
     "test:inline-gaps": "node --import ./scripts/register-ts.mjs scripts/test-inline-choice-gaps.mjs",
     "test:domain-helper": "node --import ./scripts/register-ts.mjs scripts/test-question-domain-detector.mjs",
+    "test:audio-limit": "node --import ./scripts/register-ts.mjs scripts/test-audio-playback-limit.mjs",
     "test:fillable-tables": "node --import ./scripts/register-ts.mjs scripts/test-fillable-data-tables.mjs",
     "test:passage-editor": "node --import ./scripts/register-ts.mjs scripts/test-reading-passage-and-editor-format.mjs",
     "test:topic-mastery": "node --import ./scripts/register-ts.mjs scripts/test-topic-mastery-excel.mjs",

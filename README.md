@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.4`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.5`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.4-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.5-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -143,6 +143,13 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.5] — Mid-Run Audio Resume Fix Under 1x Playback Limits
+- **Resumable 1x Audio Playback (`ExamAudioPlayer`)**:
+  - Added [`src/utils/audioPlaybackUtils.ts`](src/utils/audioPlaybackUtils.ts) (`getAudioLimitStatus`, `shouldConsumePlayCount`, `isMidAudioRun`) and updated [`ExamAudioPlayer.tsx`](src/components/ExamAudioPlayer.tsx) so pausing mid-track under a `1x` (or final) play limit allows resuming the current run until the track finishes (`onEnded`), instead of locking the button immediately upon pause.
+  - Prevented double-counting plays when resuming at `< 1s` or restoring a mid-track session (`initialCurrentTime > 0 && initialPlayedCount > 0`), and aligned both compact and full player limit badges (`Paused Mid-Play (Resume Allowed)`, `Final Play Active`, `Limit Reached (0 plays left)`).
+- **Verification**:
+  - Added [`scripts/test-audio-playback-limit.mjs`](scripts/test-audio-playback-limit.mjs) (`npm run test:audio-limit`) and verified alongside `npm run test:domain-helper`, `npm run test:inline-gaps`, and `npm run build`.
 
 ### [v.2.5.4] — Printable A4 Candidate Cards, Personal Exam PIN Hardening & Admin Educator Provisioning (`025`–`026`)
 - **Printable 2×3 A4 Duplex Candidate Cards & ICM Workbook Importer**:
