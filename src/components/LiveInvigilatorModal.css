@@ -1320,3 +1320,655 @@
   color: var(--color-text-secondary, #64748b);
   line-height: 1.35;
 }
+
+/* ─── Alert Scope & Sound Controls (Light & Dark Contrast Safe) ────────────── */
+.lip-auth-warning-bar {
+  background: #fef3c7;
+  border-bottom: 1px solid #fcd34d;
+  color: #92400e;
+  padding: 7px 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+[data-theme='dark'] .lip-auth-warning-bar {
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom-color: rgba(245, 158, 11, 0.45);
+  color: #fde68a;
+}
+
+.lip-alert-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lip-alert-chip {
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #cbd5e1);
+  color: var(--color-text-secondary, #475569);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.lip-alert-chip:hover {
+  background: var(--color-surface-sunken, #f1f5f9);
+  color: var(--color-text-primary, #0f172a);
+}
+
+.lip-alert-chip--active {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.lip-alert-chip--sound {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+.lip-alert-chip--muted {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #64748b;
+}
+
+[data-theme='dark'] .lip-alert-chip {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #cbd5e1;
+}
+
+[data-theme='dark'] .lip-alert-chip--active {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #bfdbfe;
+}
+
+[data-theme='dark'] .lip-alert-chip--sound {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(52, 211, 153, 0.35);
+  color: #a7f3d0;
+}
+
+[data-theme='dark'] .lip-alert-chip--muted {
+  background: rgba(100, 116, 139, 0.2);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #94a3b8;
+}
+
+.lip-log-unread-dot {
+  margin-left: 6px;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.lip-sidebar-alert--unread {
+  background: #ef4444;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+/* ─── Sticky > 1 Minute Lock-Screen Triage Banner ───────────────────────────── */
+.lip-overdue-triage-banner {
+  background: linear-gradient(135deg, rgba(185, 28, 28, 0.94), rgba(153, 27, 27, 0.96));
+  border: 1px solid rgba(252, 165, 165, 0.55);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  color: #fef2f2;
+  box-shadow: 0 6px 18px rgba(185, 28, 28, 0.28);
+}
+
+.lip-overdue-triage-head {
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.lip-overdue-triage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lip-overdue-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(254, 202, 202, 0.35);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 0.76rem;
+}
+
+.lip-overdue-chip-name {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.lip-overdue-chip-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.lip-chip-btn {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lip-chip-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.lip-chip-btn--unlock {
+  background: #10b981;
+  border-color: #34d399;
+}
+
+.lip-chip-btn--comp {
+  background: #2563eb;
+  border-color: #60a5fa;
+}
+
+/* ─── Lock Timer Pill & Card Focus Highlight ────────────────────────────────── */
+.lip-student-card--overdue {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.35) !important;
+}
+
+.lip-student-card--focused {
+  box-shadow: 0 0 0 3px #38bdf8, 0 8px 24px rgba(56, 189, 248, 0.35) !important;
+  transition: box-shadow 0.2s ease;
+}
+
+.lip-card-lock-banner--overdue {
+  background: rgba(220, 38, 38, 0.16) !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
+}
+
+.lip-lock-timer-pill {
+  margin-left: auto;
+  background: rgba(15, 23, 42, 0.75);
+  color: #fde68a;
+  font-weight: 800;
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.lip-lock-timer-pill--overdue {
+  background: #dc2626;
+  color: #ffffff;
+  animation: lipOverduePulse 1.4s infinite;
+}
+
+@keyframes lipOverduePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+.lip-card-btn--compensate {
+  background: rgba(37, 99, 235, 0.14);
+  color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.lip-card-btn--notice {
+  background: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.lip-card-btn--log {
+  background: rgba(100, 116, 139, 0.12);
+  color: #475569;
+  border-color: rgba(100, 116, 139, 0.28);
+}
+
+[data-theme='dark'] .lip-card-btn--compensate {
+  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.24);
+}
+
+[data-theme='dark'] .lip-card-btn--notice {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.22);
+}
+
+[data-theme='dark'] .lip-card-btn--log {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+/* ─── Upgraded Class / School Log Drawer ────────────────────────────────────── */
+.lip-log-drawer-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.lip-log-controls {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lip-log-scope-row,
+.lip-log-cat-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lip-log-pill {
+  background: rgba(148, 163, 184, 0.14);
+  color: inherit;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lip-log-pill--active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #3b82f6;
+}
+
+.lip-log-search {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.06);
+  color: inherit;
+  font-size: 0.78rem;
+}
+
+.lip-log-export-btn {
+  background: #16a34a;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lip-log-export-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lip-log-item--clickable {
+  cursor: pointer;
+}
+
+.lip-log-item--clickable:hover {
+  border-color: rgba(59, 130, 246, 0.55);
+}
+
+/* ─── Floating Live Violation Notification Toast Stack ──────────────────────── */
+.lip-toast-stack {
+  position: fixed;
+  top: 72px;
+  right: 22px;
+  z-index: 1200;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.lip-toast {
+  pointer-events: auto;
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  border-left: 5px solid #f59e0b;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+}
+
+.lip-toast--critical,
+.lip-toast--overdue {
+  border-color: rgba(239, 68, 68, 0.75);
+  border-left: 5px solid #ef4444;
+  background: #1f1218;
+}
+
+.lip-toast-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.lip-toast-title {
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #fde68a;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lip-toast--critical .lip-toast-title,
+.lip-toast--overdue .lip-toast-title {
+  color: #fca5a5;
+}
+
+.lip-toast-repeat {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fecaca;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+}
+
+.lip-toast-close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.lip-toast-student {
+  font-size: 0.8rem;
+  color: #f8fafc;
+  margin-bottom: 2px;
+}
+
+.lip-toast-detail {
+  font-size: 0.74rem;
+  color: #cbd5e1;
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+
+.lip-toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lip-toast-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lip-toast-btn--unlock {
+  background: #10b981;
+  border-color: #34d399;
+  color: #ffffff;
+}
+
+.lip-toast-btn--comp {
+  background: #2563eb;
+  border-color: #60a5fa;
+  color: #ffffff;
+}
+
+/* ─── Individual Candidate Log Modal & Direct Notice Templates ──────────────── */
+.lip-student-log-modal {
+  max-width: 680px !important;
+  width: 100%;
+}
+
+.lip-student-log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.lip-student-log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.lip-student-log-timeline {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.lip-quick-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.lip-template-pill {
+  background: #eef2ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lip-template-pill:hover {
+  background: #e0e7ff;
+}
+
+[data-theme='dark'] .lip-template-pill {
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+[data-theme='dark'] .lip-template-pill:hover {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+/* ─── View Mode Switcher & Compact Scannable Table ──────────────────────────── */
+.lip-view-toggle {
+  display: inline-flex;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: var(--radius-md, 8px);
+  padding: 2px;
+  gap: 2px;
+}
+
+.lip-view-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #64748b);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lip-view-btn:hover {
+  color: var(--color-text-primary, #0f172a);
+}
+
+.lip-view-btn--active {
+  background: var(--color-primary, #2563eb);
+  color: #ffffff;
+}
+
+.lip-student-name--compact {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lip-table-wrap {
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 12px;
+  overflow: auto;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+}
+
+.lip-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.lip-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface-raised, #f8fafc);
+  color: var(--color-text-secondary, #475569);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  white-space: nowrap;
+}
+
+.lip-table tbody td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border, #f1f5f9);
+  vertical-align: middle;
+}
+
+.lip-table-row:hover {
+  background: var(--color-surface-raised, #f8fafc);
+}
+
+.lip-table-row--overdue {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.lip-table-row--locked {
+  background: rgba(220, 38, 38, 0.05);
+}
+
+.lip-table-row--exceeded {
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.lip-table-row--warning {
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.lip-table-row--focused {
+  box-shadow: inset 3px 0 0 #0284c7, inset 0 0 0 1px rgba(2, 132, 199, 0.45);
+  background: rgba(56, 189, 248, 0.12) !important;
+}
+
+.lip-table-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lip-table-name {
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.lip-table-lock-reason {
+  font-size: 0.72rem;
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.lip-table-cohort,
+.lip-table-status,
+.lip-table-strikes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lip-table-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 110px;
+}
+
+.lip-progress-track--compact {
+  flex: 1;
+  min-width: 60px;
+  height: 6px;
+}
+
+.lip-table-progress-txt {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--color-text-secondary, #475569);
+  white-space: nowrap;
+}
+
+.lip-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+
+.lip-row-actions .lip-card-btn {
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  flex: 0 0 auto;
+}

@@ -6,6 +6,9 @@ import { supabase, hasActiveTeacherSession } from '../lib/supabase';
 import {
   exportAllSubmissionsExcelICM,
   exportSingleSubmissionExcelICM,
+  exportBatchSingleSubmissionsExcelZipICM,
+  type SingleSubmissionExcelOptions,
+  type BatchSubmissionExcelZipOptions,
 } from './icmExcelExportService';
 import {
   computeNextRetryAt,
@@ -2319,7 +2322,18 @@ export async function exportAllSubmissionsExcel(
  */
 export async function exportSingleSubmissionExcel(
   submission: StudentSubmission,
-  options?: { gradeThresholds?: import('../utils/gradeThresholdUtils').GradeThresholds }
+  options?: SingleSubmissionExcelOptions
 ): Promise<void> {
   return exportSingleSubmissionExcelICM(submission, options);
+}
+
+/**
+ * Exports a ZIP archive of individual candidate Excel diagnostic reports (.xlsx)
+ * respecting active class filtering and configurable Topic Mastery bands.
+ */
+export async function exportBatchSingleSubmissionsExcelZip(
+  submissions: StudentSubmission[],
+  options?: BatchSubmissionExcelZipOptions
+): Promise<{ count: number; zipFilename: string }> {
+  return exportBatchSingleSubmissionsExcelZipICM(submissions, options);
 }

@@ -31,6 +31,9 @@ import {
   getSecurityTiers,
   saveSecurityTiers,
   loadAndSyncSecurityTiers,
+  getTopicMasteryTiers,
+  saveTopicMasteryTiers,
+  loadAndSyncTopicMasteryTiers,
 } from '../lib/settings';
 import {
   type SecurityViolationTier,
@@ -38,6 +41,13 @@ import {
   DEFAULT_SECURITY_TIERS,
   validateSecurityTiers,
 } from '../lib/securityTiers';
+import {
+  type TopicMasteryTier,
+  type MasteryTierColor,
+  DEFAULT_TOPIC_MASTERY_TIERS,
+  validateTopicMasteryTiers,
+  normalizeTopicMasteryTiers,
+} from '../lib/topicMastery';
 import { testR2Connection } from '../services/storageService';
 import { testGeminiModelConnectivity, getConfiguredApiKeyStatus } from '../lib/gemini';
 import {
@@ -97,7 +107,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   // Application & Roster Settings State
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
   const [roster, setRoster] = useState<RosterStudent[]>(() => getSchoolRoster());
-  const [activeSection, setActiveSection] = useState<'roster' | 'security' | 'cloud'>('roster');
+  const [activeSection, setActiveSection] = useState<'roster' | 'security' | 'mastery' | 'cloud'>('roster');
   const [rosterSubTab, setRosterSubTab] = useState<'classes' | 'students' | 'subjects'>('classes');
   const [subjects, setSubjects] = useState<string[]>(() => getSchoolSubjects());
   const [newSubjectInput, setNewSubjectInput] = useState('');
@@ -154,6 +164,14 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [isSavingTiers, setIsSavingTiers] = useState(false);
   const tierValidation = useMemo(() => validateSecurityTiers(securityTiers), [securityTiers]);
 
+  // Topic Mastery Reporting Bands State
+  const [topicMasteryTiers, setTopicMasteryTiers] = useState<TopicMasteryTier[]>(() => getTopicMasteryTiers());
+  const [isSavingMasteryTiers, setIsSavingMasteryTiers] = useState(false);
+  const masteryTierValidation = useMemo(
+    () => validateTopicMasteryTiers(topicMasteryTiers),
+    [topicMasteryTiers]
+  );
+
   // Focus first pin digit on load if locked
   useEffect(() => {
     if (!isUnlocked) {
@@ -188,6 +206,11 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       loadAndSyncSecurityTiers().then((tiers) => {
         if (tiers && tiers.length > 0) {
           setSecurityTiers(tiers);
+        }
+      });
+      loadAndSyncTopicMasteryTiers().then((tiers) => {
+        if (tiers && tiers.length > 0) {
+          setTopicMasteryTiers(tiers);
         }
       });
       loadAndSyncGeminiExtractionModel().then((cloudModel) => {
@@ -317,6 +340,64 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       showNotice('✓ Violation escalation tiers saved and synced to cloud');
     } finally {
       setIsSavingTiers(false);
+    }
+  };
+
+  const handleUpdateMasteryTier = (index: number, patch: Partial<TopicMasteryTier>) => {
+    setTopicMasteryTiers((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  };
+
+  const handleAddMasteryTier = () => {
+    setTopicMasteryTiers((prev) => {
+      const highestBelow100 = prev
+        .map((t) => t.minPercentage)
+        .filter((p) => p < 95);
+      const suggestedMin = highestBelow100.length > 0
+        ? Math.min(95, Math.max(5, Math.round(highestBelow100[0] + 10)))
+        : 60;
+      const newTier: TopicMasteryTier = {
+        id: `mastery_${Date.now()}`,
+        minPercentage: suggestedMin,
+        label: 'Proficient',
+        color: 'blue',
+        recommendation: 'Solid understanding with minor gaps to reinforce.',
+      };
+      return normalizeTopicMasteryTiers([...prev, newTier]);
+    });
+  };
+
+  const handleDeleteMasteryTier = (index: number) => {
+    setTopicMasteryTiers((prev) => {
+      if (prev.length <= 1) return prev;
+      const target = prev[index];
+      if (target && target.minPercentage === 0) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const handleRestoreDefaultMasteryTiers = () => {
+    setTopicMasteryTiers(DEFAULT_TOPIC_MASTERY_TIERS.map((t) => ({ ...t })));
+    showNotice('✓ Restored default 3-band Topic Mastery thresholds (75% / 50% / 0%)');
+  };
+
+  const handleSaveMasteryTiers = async () => {
+    const val = validateTopicMasteryTiers(topicMasteryTiers);
+    if (!val.ok) {
+      showNotice(`Cannot save mastery bands: ${val.errors[0]}`);
+      return;
+    }
+    setIsSavingMasteryTiers(true);
+    try {
+      const normalized = normalizeTopicMasteryTiers(topicMasteryTiers);
+      setTopicMasteryTiers(normalized);
+      saveTopicMasteryTiers(normalized);
+      showNotice('✓ Topic mastery bands saved and synced to cloud');
+    } finally {
+      setIsSavingMasteryTiers(false);
     }
   };
 
@@ -826,6 +907,15 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
           >
             🛡️ Exam Security & Feature Controls
             <span className="adv-tab-counter">Watermarking · Multi-Monitor · Emergency Button · Auto-Lock</span>
+          </button>
+
+          <button
+            type="button"
+            className={`adv-tab-btn ${activeSection === 'mastery' ? 'adv-tab-btn--active' : ''}`}
+            onClick={() => setActiveSection('mastery')}
+          >
+            🎯 Topic Mastery & Reporting
+            <span className="adv-tab-counter">{topicMasteryTiers.length} mastery bands</span>
           </button>
 
           <button
@@ -1744,7 +1834,188 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
           </div>
         )}
 
-        {/* ─── SECTION 3: Cloud Backup & Storage Safety ──────────────────────── */}
+        {/* ─── SECTION 3: Topic Mastery & Academic Reporting Standards ────────── */}
+        {activeSection === 'mastery' && (
+          <div className="adv-section-card">
+            <div className="adv-section-header">
+              <div>
+                <h2 className="adv-section-title">🎯 Topic Mastery & Reporting Bands</h2>
+                <p className="adv-section-subtitle">
+                  Configure percentage cutoffs, labels, color coding, and focus guidance used across individual student Excel reports and diagnostic sheets.
+                </p>
+              </div>
+            </div>
+
+            <div className="adv-tier-policy-card">
+              <div className="adv-tier-header">
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>📊</span>
+                    <h3 className="adv-tier-title">Topic Mastery Classification Bands</h3>
+                    <span className="adv-tier-count-badge">
+                      {topicMasteryTiers.length} {topicMasteryTiers.length === 1 ? 'Band' : 'Bands'}
+                    </span>
+                  </div>
+                  <p className="adv-tier-subtitle">
+                    Scores are matched against the highest tier whose minimum percentage is met (sorted highest to lowest).
+                  </p>
+                </div>
+                <div className="adv-tier-header-actions">
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={handleRestoreDefaultMasteryTiers}
+                    title="Restore default mastery bands (75% Mastered, 50% Developing, 0% Needs Support)"
+                  >
+                    ↺ Restore Defaults
+                  </button>
+                  <button
+                    type="button"
+                    className="adv-btn-primary"
+                    onClick={handleSaveMasteryTiers}
+                    disabled={isSavingMasteryTiers || !masteryTierValidation.ok}
+                  >
+                    {isSavingMasteryTiers ? 'Saving…' : '💾 Save & Sync Bands'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Active Bands Preview */}
+              <div className="adv-tier-flow-bar">
+                <span className="adv-tier-flow-label">Active Bands:</span>
+                <div className="adv-tier-flow-pills">
+                  {[...topicMasteryTiers]
+                    .sort((a, b) => b.minPercentage - a.minPercentage)
+                    .map((tier, idx, arr) => (
+                      <div key={tier.id || idx} className="adv-tier-flow-item">
+                        <div className={`adv-tier-pill adv-tier-pill--mastery-${tier.color}`}>
+                          <span className="adv-tier-pill-strike">&ge; {tier.minPercentage}%:</span>
+                          <span className="adv-tier-pill-name">{tier.label || 'Untitled'}</span>
+                        </div>
+                        {idx < arr.length - 1 && <span className="adv-tier-flow-arrow">·</span>}
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {!masteryTierValidation.ok && (
+                <div className="adv-tier-validation-alert">
+                  <strong>⚠️ Mastery Band Configuration Issues:</strong>
+                  <ul>
+                    {masteryTierValidation.errors.map((err, i) => (
+                      <li key={i}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="adv-tier-list">
+                {topicMasteryTiers.map((tier, idx) => {
+                  const isBaseline = tier.minPercentage === 0;
+                  return (
+                    <div
+                      key={tier.id || idx}
+                      className={`adv-tier-card adv-tier-card--mastery-${tier.color}`}
+                    >
+                      <div className="adv-tier-card-top">
+                        <div className="adv-tier-field adv-tier-field--strike">
+                          <label className="adv-tier-field-label">Min %</label>
+                          <div className="adv-tier-strike-input-wrap">
+                            <input
+                              type="number"
+                              className="adv-input adv-tier-input-strike"
+                              min={0}
+                              max={100}
+                              value={tier.minPercentage}
+                              onChange={(e) =>
+                                handleUpdateMasteryTier(idx, {
+                                  minPercentage: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                                })
+                              }
+                            />
+                          </div>
+                        </div>
+
+                        <div className="adv-tier-field adv-tier-field--name">
+                          <label className="adv-tier-field-label">Mastery Label</label>
+                          <input
+                            type="text"
+                            className="adv-input adv-tier-input-name"
+                            placeholder="e.g. Mastered"
+                            value={tier.label}
+                            onChange={(e) => handleUpdateMasteryTier(idx, { label: e.target.value })}
+                          />
+                        </div>
+
+                        <div className="adv-tier-field adv-tier-field--action">
+                          <label className="adv-tier-field-label">Report Color Tone</label>
+                          <select
+                            className="adv-input adv-tier-select-action"
+                            value={tier.color}
+                            onChange={(e) =>
+                              handleUpdateMasteryTier(idx, { color: e.target.value as MasteryTierColor })
+                            }
+                          >
+                            <option value="emerald">Emerald (Green — High Mastery)</option>
+                            <option value="blue">Blue (Developing / On Track)</option>
+                            <option value="amber">Amber (Caution / Consolidating)</option>
+                            <option value="crimson">Crimson (Red — Needs Support)</option>
+                          </select>
+                        </div>
+
+                        <div className="adv-tier-del-wrap">
+                          <button
+                            type="button"
+                            className="adv-tier-del-btn"
+                            disabled={topicMasteryTiers.length <= 1 || isBaseline}
+                            onClick={() => handleDeleteMasteryTier(idx)}
+                            title={isBaseline ? '0% baseline tier cannot be removed' : 'Remove mastery band'}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="adv-tier-card-bottom">
+                        <div className="adv-tier-field adv-tier-field--notice">
+                          <label className="adv-tier-field-label">
+                            Focus / Examiner Recommendation Note{' '}
+                            <span className="adv-tier-field-hint">(Printed beside matching topics in Excel report)</span>
+                          </label>
+                          <input
+                            type="text"
+                            className="adv-input adv-tier-input-notice"
+                            placeholder="Optional recommendation shown in the Topic Mastery tab..."
+                            value={tier.recommendation || ''}
+                            onChange={(e) =>
+                              handleUpdateMasteryTier(idx, { recommendation: e.target.value })
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="adv-tier-footer-row">
+                <button
+                  type="button"
+                  className="adv-btn-secondary"
+                  onClick={handleAddMasteryTier}
+                  disabled={topicMasteryTiers.length >= 8}
+                >
+                  + Add Mastery Band
+                </button>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
+                  Changes apply automatically to single and batch Excel reports (0% baseline band is required).
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── SECTION 4: Cloud Backup & Storage Safety ──────────────────────── */}
         {activeSection === 'cloud' && (
           <div className="adv-section-card">
             <div className="adv-section-header">

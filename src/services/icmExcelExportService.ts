@@ -4,13 +4,23 @@
 // and a student-by-question response heatmap matrix.
 
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { deriveGradeFromPercentage, type GradeThresholds } from '../utils/gradeThresholdUtils';
+import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
+import {
+  computeSubmissionTopicMastery,
+  resolveMasteryTier,
+  type MasteryTierColor,
+  type TopicMasteryTier,
+} from '../lib/topicMastery';
+import { getTopicMasteryTiers } from '../lib/settings';
 import { exportFileUniversal } from './fileExportBridge';
 import type {
   StudentSubmission,
   AnswerChangeLogEntry,
   QuestionTimeAnalytics,
 } from './quizSubmissionService';
+import type { ProctorLogEvent } from './examProctorRealtimeService';
 import { formatProctorTimestamp, formatSubmissionDateTime, formatCandidateAnswer } from './quizSubmissionService';
 
 // ─── Official ICM Institutional Branding Tokens ──────────────────────────────
@@ -71,8 +81,80 @@ const BORDER_THIN: Partial<ExcelJS.Borders> = {
   right: { style: 'thin', color: { argb: ICM_BRAND.colors.gridBorder } },
 };
 
+const workbookLogoCache = new WeakMap<ExcelJS.Workbook, { icmId: number; cambridgeId: number }>();
+
+const ICM_LOGO_EXT = { width: Math.round(46 * (222 / 71)), height: 46 }; // 144x46 (ratio 3.127 preserved)
+const CAMBRIDGE_LOGO_EXT = { width: Math.round(40 * (215 / 64)), height: 40 }; // 134x40 (ratio 3.359 preserved)
+
+function stripDataUriPrefix(dataUri: string): string {
+  const idx = dataUri.indexOf('base64,');
+  return idx >= 0 ? dataUri.slice(idx + 7) : dataUri;
+}
+
+function getOrRegisterWorkbookLogos(wb: ExcelJS.Workbook): { icmId: number; cambridgeId: number } {
+  const cached = workbookLogoCache.get(wb);
+  if (cached) return cached;
+
+  const icmId = wb.addImage({
+    base64: stripDataUriPrefix(DEFAULT_SCHOOL_LOGO),
+    extension: 'png',
+  });
+  const cambridgeId = wb.addImage({
+    base64: stripDataUriPrefix(DEFAULT_CAMBRIDGE_LOGO),
+    extension: 'png',
+  });
+
+  const ids = { icmId, cambridgeId };
+  workbookLogoCache.set(wb, ids);
+  return ids;
+}
+
+function colLetterToNumber(colLetter: string): number {
+  let num = 0;
+  const clean = colLetter.toUpperCase().replace(/[^A-Z]/g, '');
+  for (let i = 0; i < clean.length; i++) {
+    num = num * 26 + (clean.charCodeAt(i) - 64);
+  }
+  return Math.max(1, num);
+}
+
 /**
- * Helper to build institutional ICM top banner on any worksheet
+ * Estimates a 0-based horizontal column anchor near the right edge of `1..endColNum`
+ * so a fixed-pixel-width logo sits flush inside the right edge without overflowing.
+ */
+function computeRightLogoAnchorCol(ws: ExcelJS.Worksheet, endColNum: number, logoWidthPx: number): number {
+  const TARGET_MARGIN_PX = 10;
+  let remainingPx = logoWidthPx + TARGET_MARGIN_PX;
+
+  for (let colIdx = endColNum; colIdx >= 1; colIdx--) {
+    const charWidth = ws.getColumn(colIdx).width || 14;
+    const colPx = Math.max(48, charWidth * 7.5);
+    if (remainingPx <= colPx) {
+      return Math.max(0.5, colIdx - 1 + (colPx - remainingPx) / colPx);
+    }
+    remainingPx -= colPx;
+  }
+
+  return Math.max(1, endColNum - 1.5);
+}
+
+function getMasteryToneStyle(color: MasteryTierColor): { fill: string; text: string } {
+  switch (color) {
+    case 'emerald':
+      return { fill: ICM_BRAND.colors.emeraldLight, text: ICM_BRAND.colors.emeraldText };
+    case 'blue':
+      return { fill: ICM_BRAND.colors.blueLight, text: ICM_BRAND.colors.blueDark };
+    case 'amber':
+      return { fill: ICM_BRAND.colors.amberLight, text: ICM_BRAND.colors.amberText };
+    case 'crimson':
+    default:
+      return { fill: ICM_BRAND.colors.crimsonLight, text: ICM_BRAND.colors.crimsonText };
+  }
+}
+
+/**
+ * Helper to build clean institutional ICM + Cambridge dual-logo masthead on any worksheet.
+ * Bounded strictly within columns A..endColLetter so narrower sheets never overflow.
  */
 function renderIcmBanner(
   ws: ExcelJS.Worksheet,
@@ -86,56 +168,105 @@ function renderIcmBanner(
     schoolName?: string;
   }
 ): void {
-  // Row 1: Primary School Title Banner
+  const endColNum = colLetterToNumber(endColLetter);
+
+  // Top blue institutional rule + Crisp White Masthead (Rows 1-2)
   ws.mergeCells(`A1:${endColLetter}1`);
   const r1 = ws.getCell('A1');
-  r1.value = metaInfo.schoolName ? metaInfo.schoolName.toUpperCase() : ICM_BRAND.schoolName;
-  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
-  r1.font = { name: 'Segoe UI', size: 15, bold: true, color: { argb: ICM_BRAND.colors.white } };
-  r1.alignment = { horizontal: 'center', vertical: 'middle' };
-  ws.getRow(1).height = 28;
+  r1.value = sanitizeSpreadsheetCell(
+    metaInfo.schoolName ? metaInfo.schoolName.toUpperCase() : ICM_BRAND.schoolName
+  );
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.white } };
+  r1.font = { name: 'Segoe UI', size: 13.5, bold: true, color: { argb: ICM_BRAND.colors.blue } };
+  r1.alignment = { horizontal: 'center', vertical: 'bottom' };
+  r1.border = { top: { style: 'thick', color: { argb: ICM_BRAND.colors.blue } } };
+  ws.getRow(1).height = 30;
 
-  // Row 2: Cambridge Centre Accreditation Subtitle
   ws.mergeCells(`A2:${endColLetter}2`);
   const r2 = ws.getCell('A2');
-  r2.value = `${ICM_BRAND.schoolSub} • ${title.toUpperCase()}`;
-  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueDark } };
-  r2.font = { name: 'Segoe UI', size: 9.5, italic: true, color: { argb: 'FFE2E8F0' } };
-  r2.alignment = { horizontal: 'center', vertical: 'middle' };
-  ws.getRow(2).height = 18;
+  r2.value = sanitizeSpreadsheetCell(`${ICM_BRAND.schoolSub}  •  ${title.toUpperCase()}`);
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.white } };
+  r2.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: ICM_BRAND.colors.mutedText } };
+  r2.alignment = { horizontal: 'center', vertical: 'top' };
+  ws.getRow(2).height = 20;
 
-  // Row 3: Fresh Green Accent Line
+  // Dual Institutional Logos anchored with fixed pixel aspect ratio (never stretched)
+  if (ws.workbook) {
+    const { icmId, cambridgeId } = getOrRegisterWorkbookLogos(ws.workbook);
+    ws.addImage(icmId, {
+      tl: { col: 0.12, row: 0.22 },
+      ext: ICM_LOGO_EXT,
+      editAs: 'oneCell',
+    });
+
+    if (endColNum >= 4) {
+      const rightCol = computeRightLogoAnchorCol(ws, endColNum, CAMBRIDGE_LOGO_EXT.width);
+      ws.addImage(cambridgeId, {
+        tl: { col: rightCol, row: 0.28 },
+        ext: CAMBRIDGE_LOGO_EXT,
+        editAs: 'oneCell',
+      });
+    }
+  }
+
+  // Row 3: ICM Green Accent Divider
   ws.mergeCells(`A3:${endColLetter}3`);
   const r3 = ws.getCell('A3');
   r3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.green } };
-  ws.getRow(3).height = 4.5;
+  ws.getRow(3).height = 4;
 
-  // Row 4: Assessment Metadata Pill Row
-  ws.getRow(4).height = 22;
-  const metaPairs = [
-    { label: 'Assessment:', val: metaInfo.assessmentTitle },
-    { label: 'Subject:', val: metaInfo.subject || 'General' },
-    { label: 'Code:', val: metaInfo.quizCode },
-    { label: 'Cohort:', val: metaInfo.targetClass || 'All Candidates' },
-    { label: 'Export Date:', val: new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) },
-  ];
-
-  let cIdx = 1;
-  metaPairs.forEach((item) => {
-    const lblCell = ws.getRow(4).getCell(cIdx);
-    lblCell.value = item.label;
-    lblCell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
-    lblCell.alignment = { horizontal: 'right', vertical: 'middle' };
-    lblCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
-
-    const valCell = ws.getRow(4).getCell(cIdx + 1);
-    valCell.value = sanitizeSpreadsheetCell(item.val);
-    valCell.font = { name: 'Segoe UI', size: 9, bold: false, color: { argb: ICM_BRAND.colors.slateText } };
-    valCell.alignment = { horizontal: 'left', vertical: 'middle' };
-    valCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
-
-    cIdx += 2;
+  // Row 4: Metadata Strip strictly bounded inside A4:${endColLetter}4
+  ws.getRow(4).height = 23;
+  const exportDateStr = new Date().toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
   });
+
+  const seg1 = `Assessment: ${metaInfo.assessmentTitle}   |   Subject: ${metaInfo.subject || 'General'}`;
+  const seg2 = `Code: ${metaInfo.quizCode || '-'}   |   Cohort: ${metaInfo.targetClass || 'All Candidates'}`;
+  const seg3 = `Exported: ${exportDateStr}`;
+
+  const segments: Array<{ startCol: number; endCol: number; text: string; align: 'left' | 'center' | 'right' }> =
+    endColNum >= 6
+      ? (() => {
+          const split1 = Math.max(2, Math.floor(endColNum * 0.45));
+          const split2 = Math.max(split1 + 2, Math.floor(endColNum * 0.8));
+          const clampedSplit2 = Math.min(endColNum - 1, split2);
+          return [
+            { startCol: 1, endCol: split1, text: seg1, align: 'left' },
+            { startCol: split1 + 1, endCol: clampedSplit2, text: seg2, align: 'center' },
+            { startCol: clampedSplit2 + 1, endCol: endColNum, text: seg3, align: 'right' },
+          ];
+        })()
+      : [
+          {
+            startCol: 1,
+            endCol: endColNum,
+            text: `${seg1}   |   ${seg2}   |   ${seg3}`,
+            align: 'center',
+          },
+        ];
+
+  segments.forEach((seg) => {
+    const startLet = ExcelJS_colLetter(seg.startCol);
+    const endLet = ExcelJS_colLetter(seg.endCol);
+    if (seg.endCol > seg.startCol) {
+      ws.mergeCells(`${startLet}4:${endLet}4`);
+    }
+    const cell = ws.getCell(`${startLet}4`);
+    cell.value = sanitizeSpreadsheetCell(seg.text);
+    cell.font = { name: 'Segoe UI', size: 8.5, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
+    cell.alignment = { horizontal: seg.align, vertical: 'middle', indent: seg.align === 'left' ? 1 : 0 };
+    cell.border = {
+      top: { style: 'thin', color: { argb: ICM_BRAND.colors.blueBorder } },
+      bottom: { style: 'thin', color: { argb: ICM_BRAND.colors.blueBorder } },
+    };
+  });
+
+  // Row 5: Clean breathing spacer before KPIs / Table Headers
+  ws.getRow(5).height = 8;
 }
 
 /**
@@ -987,10 +1118,40 @@ export async function exportAllSubmissionsExcelICM(
 /**
  * Exports an individual student's detailed response report in matching ICM branding.
  */
-export async function exportSingleSubmissionExcelICM(submission: StudentSubmission, options?: { gradeThresholds?: GradeThresholds }): Promise<void> {
+export interface SingleSubmissionExcelOptions {
+  gradeThresholds?: GradeThresholds;
+  masteryTiers?: TopicMasteryTier[];
+}
+
+export interface BatchSubmissionExcelZipOptions extends SingleSubmissionExcelOptions {
+  quizTitle?: string;
+  selectedClass?: string;
+  onProgress?: (completed: number, total: number) => void;
+}
+
+function buildSafeFileSlug(raw: string, fallback = 'candidate'): string {
+  const cleaned = (raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || fallback;
+}
+
+/**
+ * Builds the formatted multi-sheet ExcelJS Workbook for an individual candidate submission.
+ * Shared by both single-student downloads and batch class ZIP exports.
+ */
+export function buildSingleSubmissionWorkbookICM(
+  submission: StudentSubmission,
+  options?: SingleSubmissionExcelOptions
+): { wb: ExcelJS.Workbook; filename: string } {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Sekolah Insan Cendekia Madani (ICM)';
   wb.created = new Date();
+
+  const masteryTiers = options?.masteryTiers ?? getTopicMasteryTiers();
+  const topicEntries = computeSubmissionTopicMastery(submission, masteryTiers);
 
   const isOffline =
     !submission.quizCode ||
@@ -1006,86 +1167,368 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     schoolName: ICM_BRAND.schoolName,
   };
 
-  // Sheet 1: Candidate Overview
+  // Sheet 1: Candidate Overview + Compact Topic Mastery Summary
   const wsOverview = wb.addWorksheet('Candidate Overview', {
     views: [{ state: 'frozen', ySplit: 5 }],
     properties: { tabColor: { argb: ICM_BRAND.colors.blue } },
   });
 
+  const overviewColWidths = [25, 22, 16, 22, 16, 20];
+  overviewColWidths.forEach((w, i) => {
+    wsOverview.getColumn(i + 1).width = w;
+  });
+
   renderIcmBanner(wsOverview, 'Individual Student Diagnostic Report', 'F', metaInfo);
 
-  // Candidate Overview Table (Rows 6+)
-  const overviewRows = [
-    { property: 'Candidate Name', value: sanitizeSpreadsheetCell(submission.studentName) },
-    { property: 'Candidate Number / Seat', value: sanitizeSpreadsheetCell(submission.candidateNumber || '-') },
-    { property: 'Class / Cohort', value: sanitizeSpreadsheetCell(submission.studentClass || 'General') },
-    { property: 'Assessment Title', value: sanitizeSpreadsheetCell(submission.quizTitle) },
-    { property: 'Subject / Syllabus', value: sanitizeSpreadsheetCell(submission.subject || 'General') },
-    { property: 'Assessment Access Code', value: sanitizeSpreadsheetCell(submission.quizCode) },
-    { property: 'Score Earned', value: `${submission.score} / ${submission.totalMarks}` },
-    { property: 'Percentage Achieved', value: `${submission.percentage.toFixed(1)}%` },
-    { property: 'Calculated Grade', value: deriveGradeFromPercentage(submission.percentage, options?.gradeThresholds).grade },
-    { property: 'Assessment Mode', value: isOffline ? 'Offline Paper Exam' : 'Computer-Based (Online)' },
-    { property: 'Time Taken', value: isOffline ? '-' : `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s` },
+  const calcGrade = deriveGradeFromPercentage(submission.percentage, options?.gradeThresholds).grade;
+  const timeTakenStr = isOffline
+    ? '-'
+    : `${Math.floor(submission.durationSeconds / 60)}m ${submission.durationSeconds % 60}s`;
+  const strikesStr = isOffline
+    ? '-'
+    : `${submission.forensics?.finalStrikeCount ?? submission.violationsCount}${
+        submission.forensics?.totalPenaltySeconds
+          ? ` (-${Math.round(submission.forensics.totalPenaltySeconds / 60)}m Penalty)`
+          : ''
+      }`;
+  const integrityStr = isOffline
+    ? 'Offline Paper'
+    : submission.forensics?.autoSubmittedBySecurity
+      ? 'Auto-Submitted (Security Threshold)'
+      : submission.violationsCount === 0
+        ? 'Clean (0 Strikes)'
+        : 'Flagged';
+
+  const profilePairs: Array<{
+    leftLabel: string;
+    leftVal: string;
+    rightLabel: string;
+    rightVal: string;
+  }> = [
     {
-      property: 'Violation Strikes',
-      value: isOffline
-        ? '-'
-        : `${submission.forensics?.finalStrikeCount ?? submission.violationsCount}${
-            submission.forensics?.totalPenaltySeconds
-              ? ` (-${Math.round(submission.forensics.totalPenaltySeconds / 60)}m Penalty)`
-              : ''
-          }`,
+      leftLabel: 'Candidate Name',
+      leftVal: sanitizeSpreadsheetCell(submission.studentName),
+      rightLabel: 'Score Earned',
+      rightVal: `${submission.score} / ${submission.totalMarks}`,
     },
     {
-      property: 'Integrity Status',
-      value: isOffline
-        ? 'Offline'
-        : submission.forensics?.autoSubmittedBySecurity
-          ? 'Auto-Submitted (Security Threshold)'
-          : submission.violationsCount === 0
-            ? 'Clean (0 Strikes)'
-            : 'Flagged',
+      leftLabel: 'Candidate # / Seat',
+      leftVal: sanitizeSpreadsheetCell(submission.candidateNumber || '-'),
+      rightLabel: 'Percentage Achieved',
+      rightVal: `${submission.percentage.toFixed(1)}%`,
     },
-    { property: 'Date Submitted', value: formatSubmissionDateTime(submission.submittedAt) },
+    {
+      leftLabel: 'Class / Cohort',
+      leftVal: sanitizeSpreadsheetCell(submission.studentClass || 'General'),
+      rightLabel: 'Calculated Grade',
+      rightVal: sanitizeSpreadsheetCell(calcGrade),
+    },
+    {
+      leftLabel: 'Assessment Title',
+      leftVal: sanitizeSpreadsheetCell(submission.quizTitle),
+      rightLabel: 'Assessment Mode',
+      rightVal: isOffline ? 'Offline Paper Exam' : 'Computer-Based (Online)',
+    },
+    {
+      leftLabel: 'Subject / Syllabus',
+      leftVal: sanitizeSpreadsheetCell(submission.subject || 'General'),
+      rightLabel: 'Time Taken',
+      rightVal: timeTakenStr,
+    },
+    {
+      leftLabel: 'Assessment Access Code',
+      leftVal: sanitizeSpreadsheetCell(submission.quizCode),
+      rightLabel: 'Violation Strikes',
+      rightVal: strikesStr,
+    },
+    {
+      leftLabel: 'Date Submitted',
+      leftVal: formatSubmissionDateTime(submission.submittedAt),
+      rightLabel: 'Integrity Status',
+      rightVal: integrityStr,
+    },
   ];
 
   wsOverview.getRow(6).height = 24;
-  wsOverview.mergeCells('A6:B6');
+  wsOverview.mergeCells('A6:F6');
   wsOverview.getCell('A6').value = 'CANDIDATE PERFORMANCE PROFILE';
   wsOverview.getCell('A6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
   wsOverview.getCell('A6').font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: ICM_BRAND.colors.white } };
-  wsOverview.getCell('A6').alignment = { horizontal: 'left', vertical: 'middle' };
+  wsOverview.getCell('A6').alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
 
-  wsOverview.getColumn(1).width = 28;
-  wsOverview.getColumn(2).width = 45;
-
-  overviewRows.forEach((row, idx) => {
+  profilePairs.forEach((pair, idx) => {
     const rNum = 7 + idx;
     const r = wsOverview.getRow(rNum);
     r.height = 20;
 
-    r.getCell(1).value = row.property;
-    r.getCell(1).font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
-    r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
-    r.getCell(1).border = BORDER_THIN;
-    r.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
+    wsOverview.mergeCells(`B${rNum}:C${rNum}`);
+    wsOverview.mergeCells(`E${rNum}:F${rNum}`);
 
-    r.getCell(2).value = row.value;
-    r.getCell(2).font = { name: 'Segoe UI', size: 9.5, color: { argb: ICM_BRAND.colors.slateText } };
-    r.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.white } };
-    r.getCell(2).border = BORDER_THIN;
-    r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+    const lbl1 = r.getCell(1);
+    lbl1.value = pair.leftLabel;
+    lbl1.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
+    lbl1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
+    lbl1.border = BORDER_THIN;
+    lbl1.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+    const val1 = r.getCell(2);
+    val1.value = pair.leftVal;
+    val1.font = { name: 'Segoe UI', size: 9.5, bold: idx === 0, color: { argb: ICM_BRAND.colors.slateText } };
+    val1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.white } };
+    val1.border = BORDER_THIN;
+    r.getCell(3).border = BORDER_THIN;
+    val1.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+    const lbl2 = r.getCell(4);
+    lbl2.value = pair.rightLabel;
+    lbl2.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
+    lbl2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
+    lbl2.border = BORDER_THIN;
+    lbl2.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+    const val2 = r.getCell(5);
+    val2.value = pair.rightVal;
+    val2.font = { name: 'Segoe UI', size: 9.5, bold: idx <= 2, color: { argb: ICM_BRAND.colors.slateText } };
+    val2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.white } };
+    val2.border = BORDER_THIN;
+    r.getCell(6).border = BORDER_THIN;
+    val2.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
   });
 
-  // Sheet 2: Responses & Model Solutions
+  // Compact Topic Mastery Summary Block on Candidate Overview (Row 15+)
+  const summaryBannerRow = 15;
+  wsOverview.getRow(14).height = 10;
+  wsOverview.getRow(summaryBannerRow).height = 24;
+  wsOverview.mergeCells(`A${summaryBannerRow}:F${summaryBannerRow}`);
+  const summaryTitleCell = wsOverview.getCell(`A${summaryBannerRow}`);
+  summaryTitleCell.value = 'TOPIC MASTERY SUMMARY';
+  summaryTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
+  summaryTitleCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: ICM_BRAND.colors.white } };
+  summaryTitleCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+  const summaryHeaderRow = summaryBannerRow + 1;
+  const summaryHeaders: Array<{ title: string; align: 'left' | 'center' | 'right' }> = [
+    { title: 'Curriculum Topic', align: 'left' },
+    { title: 'Questions', align: 'left' },
+    { title: 'Marks Earned', align: 'center' },
+    { title: 'Total Marks', align: 'center' },
+    { title: 'Mastery %', align: 'center' },
+    { title: 'Mastery Status', align: 'center' },
+  ];
+
+  const shRow = wsOverview.getRow(summaryHeaderRow);
+  shRow.height = 22;
+  summaryHeaders.forEach((h, i) => {
+    const c = shRow.getCell(i + 1);
+    c.value = h.title;
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueDark } };
+    c.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: ICM_BRAND.colors.white } };
+    c.alignment = { horizontal: h.align, vertical: 'middle', indent: h.align === 'left' ? 1 : 0 };
+    c.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.green } } };
+  });
+
+  if (topicEntries.length === 0) {
+    const emptyRowNum = summaryHeaderRow + 1;
+    wsOverview.mergeCells(`A${emptyRowNum}:F${emptyRowNum}`);
+    const emptyRow = wsOverview.getRow(emptyRowNum);
+    emptyRow.height = 22;
+    const ec = emptyRow.getCell(1);
+    ec.value = 'No topic metadata recorded for this assessment.';
+    ec.font = { name: 'Segoe UI', size: 9, italic: true, color: { argb: ICM_BRAND.colors.mutedText } };
+    ec.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.zebraRow } };
+    ec.alignment = { horizontal: 'center', vertical: 'middle' };
+    ec.border = BORDER_THIN;
+  } else {
+    topicEntries.forEach((entry, idx) => {
+      const rNum = summaryHeaderRow + 1 + idx;
+      const row = wsOverview.getRow(rNum);
+      row.height = 20;
+      const isZebra = idx % 2 === 1;
+      const baseFill = isZebra ? ICM_BRAND.colors.zebraRow : ICM_BRAND.colors.white;
+      const tone = getMasteryToneStyle(entry.tier.color);
+
+      const vals: Array<string | number> = [
+        sanitizeSpreadsheetCell(entry.topic),
+        sanitizeSpreadsheetCell(entry.questionNumbers.length > 0 ? entry.questionNumbers.join(', ') : '-'),
+        entry.earnedMarks,
+        entry.totalMarks,
+        entry.totalMarks > 0 ? entry.percentage / 100 : 0,
+        sanitizeSpreadsheetCell(entry.tier.label),
+      ];
+
+      vals.forEach((val, cIdx) => {
+        const cell = row.getCell(cIdx + 1);
+        cell.value = val;
+        cell.font = { name: 'Segoe UI', size: 9, bold: cIdx === 0, color: { argb: ICM_BRAND.colors.slateText } };
+        cell.border = BORDER_THIN;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: baseFill } };
+        cell.alignment = {
+          horizontal: summaryHeaders[cIdx].align,
+          vertical: 'middle',
+          indent: summaryHeaders[cIdx].align === 'left' ? 1 : 0,
+        };
+        if (cIdx === 4) {
+          cell.numFmt = '0.0%';
+        }
+        if (cIdx === 5) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: tone.fill } };
+          cell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: tone.text } };
+        }
+      });
+    });
+  }
+
+  // Sheet 2: Dedicated Topic Mastery Diagnostics
+  const wsTopic = wb.addWorksheet('Topic Mastery', {
+    views: [{ state: 'frozen', ySplit: 6 }],
+    properties: { tabColor: { argb: ICM_BRAND.colors.emerald } },
+  });
+
+  const topicHeaders: Array<{ title: string; width: number; align: 'left' | 'center' | 'right' }> = [
+    { title: 'Curriculum Topic', width: 28, align: 'left' },
+    { title: 'Questions', width: 22, align: 'left' },
+    { title: 'Items', width: 10, align: 'center' },
+    { title: 'Marks Earned', width: 14, align: 'center' },
+    { title: 'Total Marks', width: 14, align: 'center' },
+    { title: 'Mastery %', width: 14, align: 'center' },
+    { title: 'Mastery Status', width: 18, align: 'center' },
+    { title: 'Focus / Examiner Guidance', width: 44, align: 'left' },
+  ];
+
+  topicHeaders.forEach((h, i) => {
+    wsTopic.getColumn(i + 1).width = h.width;
+  });
+
+  renderIcmBanner(wsTopic, `Topic Mastery Report • ${submission.studentName}`, 'H', metaInfo);
+
+  const tmHeaderRow = wsTopic.getRow(6);
+  tmHeaderRow.height = 28;
+  topicHeaders.forEach((h, idx) => {
+    const cell = tmHeaderRow.getCell(idx + 1);
+    cell.value = h.title;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
+    cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
+    cell.alignment = { horizontal: h.align, vertical: 'middle', indent: h.align === 'left' ? 1 : 0 };
+    cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.green } } };
+  });
+
+  if (topicEntries.length === 0) {
+    wsTopic.mergeCells('A7:H7');
+    const emptyRow = wsTopic.getRow(7);
+    emptyRow.height = 24;
+    const ec = emptyRow.getCell(1);
+    ec.value = 'No topic metadata recorded for this assessment.';
+    ec.font = { name: 'Segoe UI', size: 9.5, italic: true, color: { argb: ICM_BRAND.colors.mutedText } };
+    ec.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.zebraRow } };
+    ec.alignment = { horizontal: 'center', vertical: 'middle' };
+    ec.border = BORDER_THIN;
+  } else {
+    let totalItems = 0;
+    let totalEarnedSum = 0;
+    let totalMaxSum = 0;
+
+    topicEntries.forEach((entry, idx) => {
+      const rNum = 7 + idx;
+      const row = wsTopic.getRow(rNum);
+      row.height = 24;
+      const isZebra = idx % 2 === 1;
+      const baseFill = isZebra ? ICM_BRAND.colors.zebraRow : ICM_BRAND.colors.white;
+      const tone = getMasteryToneStyle(entry.tier.color);
+
+      totalItems += entry.questionCount;
+      totalEarnedSum += entry.earnedMarks;
+      totalMaxSum += entry.totalMarks;
+
+      const guidance = entry.tier.recommendation || '-';
+      const vals: Array<string | number> = [
+        sanitizeSpreadsheetCell(entry.topic),
+        sanitizeSpreadsheetCell(entry.questionNumbers.length > 0 ? entry.questionNumbers.join(', ') : '-'),
+        entry.questionCount > 0 ? entry.questionCount : '-',
+        entry.earnedMarks,
+        entry.totalMarks,
+        entry.totalMarks > 0 ? entry.percentage / 100 : 0,
+        sanitizeSpreadsheetCell(entry.tier.label),
+        sanitizeSpreadsheetCell(guidance),
+      ];
+
+      vals.forEach((v, cIdx) => {
+        const cell = row.getCell(cIdx + 1);
+        cell.value = v;
+        cell.font = {
+          name: 'Segoe UI',
+          size: 9,
+          bold: cIdx === 0 || cIdx === 5,
+          color: { argb: ICM_BRAND.colors.slateText },
+        };
+        cell.border = BORDER_THIN;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: baseFill } };
+        cell.alignment = {
+          horizontal: topicHeaders[cIdx].align,
+          vertical: 'middle',
+          indent: topicHeaders[cIdx].align === 'left' ? 1 : 0,
+          wrapText: cIdx === 1 || cIdx === 7,
+        };
+
+        if (cIdx === 5) {
+          cell.numFmt = '0.0%';
+        }
+        if (cIdx === 6) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: tone.fill } };
+          cell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: tone.text } };
+        }
+      });
+    });
+
+    const overallRowNum = 7 + topicEntries.length;
+    const overallRow = wsTopic.getRow(overallRowNum);
+    overallRow.height = 24;
+    const overallPct = totalMaxSum > 0 ? (totalEarnedSum / totalMaxSum) * 100 : 0;
+    const overallTier = resolveMasteryTier(masteryTiers, overallPct);
+    const overallTone = getMasteryToneStyle(overallTier.color);
+
+    const overallVals: Array<string | number> = [
+      'OVERALL ASSESSMENT TOTAL',
+      `${topicEntries.length} Topics`,
+      totalItems > 0 ? totalItems : '-',
+      Math.round(totalEarnedSum * 100) / 100,
+      Math.round(totalMaxSum * 100) / 100,
+      totalMaxSum > 0 ? overallPct / 100 : 0,
+      sanitizeSpreadsheetCell(overallTier.label),
+      sanitizeSpreadsheetCell(overallTier.recommendation || '-'),
+    ];
+
+    overallVals.forEach((v, cIdx) => {
+      const cell = overallRow.getCell(cIdx + 1);
+      cell.value = v;
+      cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.blueDark } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
+      cell.border = {
+        top: { style: 'medium', color: { argb: ICM_BRAND.colors.blue } },
+        bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.blue } },
+        left: BORDER_THIN.left,
+        right: BORDER_THIN.right,
+      };
+      cell.alignment = {
+        horizontal: topicHeaders[cIdx].align,
+        vertical: 'middle',
+        indent: topicHeaders[cIdx].align === 'left' ? 1 : 0,
+      };
+      if (cIdx === 5) cell.numFmt = '0.0%';
+      if (cIdx === 6) {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: overallTone.fill } };
+        cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: overallTone.text } };
+      }
+    });
+
+    wsTopic.autoFilter = `A6:H${6 + topicEntries.length}`;
+  }
+
+  // Sheet 3: Responses & Model Solutions
   if (submission.questionResults && submission.questionResults.length > 0) {
     const wsResp = wb.addWorksheet('Responses & Solutions', {
       views: [{ state: 'frozen', ySplit: 6 }],
       properties: { tabColor: { argb: ICM_BRAND.colors.green } },
     });
-
-    renderIcmBanner(wsResp, `Candidate Responses • ${submission.studentName}`, 'G', metaInfo);
 
     const respHeaders = [
       { title: 'Question #', width: 12, align: 'center' },
@@ -1096,6 +1539,11 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       { title: 'Model Solution / Key', width: 38, align: 'left' },
       { title: 'Examiner Misconception Note', width: 36, align: 'left' },
     ];
+    respHeaders.forEach((h, idx) => {
+      wsResp.getColumn(idx + 1).width = h.width;
+    });
+
+    renderIcmBanner(wsResp, `Candidate Responses • ${submission.studentName}`, 'G', metaInfo);
 
     const rHeaderRow = wsResp.getRow(6);
     rHeaderRow.height = 28;
@@ -1106,7 +1554,6 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
       cell.alignment = { horizontal: h.align as ExcelJS.Alignment['horizontal'], vertical: 'middle' };
       cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.green } } };
-      wsResp.getColumn(idx + 1).width = h.width;
     });
 
     submission.questionResults.forEach((qr, idx) => {
@@ -1154,14 +1601,12 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     wsResp.autoFilter = `A6:G${6 + submission.questionResults.length}`;
   }
 
-  // Sheet 3: Proctoring Audit Log (if any)
+  // Sheet 4: Proctoring Audit Log (if any)
   if (submission.proctoringLogs && submission.proctoringLogs.length > 0) {
     const wsProctor = wb.addWorksheet('Proctoring Log', {
       views: [{ state: 'frozen', ySplit: 6 }],
       properties: { tabColor: { argb: ICM_BRAND.colors.crimson } },
     });
-
-    renderIcmBanner(wsProctor, `Proctoring Audit Log • ${submission.studentName}`, 'F', metaInfo);
 
     const pHeaders = [
       { title: 'Strike #', width: 12, align: 'center' },
@@ -1171,6 +1616,11 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       { title: 'Security Event Description', width: 44, align: 'left' },
       { title: 'Severity', width: 14, align: 'center' },
     ];
+    pHeaders.forEach((h, idx) => {
+      wsProctor.getColumn(idx + 1).width = h.width;
+    });
+
+    renderIcmBanner(wsProctor, `Proctoring Audit Log • ${submission.studentName}`, 'F', metaInfo);
 
     const rPHeader = wsProctor.getRow(6);
     rPHeader.height = 28;
@@ -1181,7 +1631,6 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
       cell.alignment = { horizontal: h.align as ExcelJS.Alignment['horizontal'], vertical: 'middle' };
       cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.crimson } } };
-      wsProctor.getColumn(idx + 1).width = h.width;
     });
 
     submission.proctoringLogs.forEach((log, idx) => {
@@ -1222,7 +1671,7 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     wsProctor.autoFilter = `A6:F${6 + submission.proctoringLogs.length}`;
   }
 
-  // Sheet 4: Forensic Telemetry & Time Analytics (if any)
+  // Sheet 5: Forensic Telemetry & Time Analytics (if any)
   if (
     submission.forensics &&
     (submission.forensics.questionTimeAnalytics?.length || submission.forensics.answerChangeLogs?.length)
@@ -1230,6 +1679,20 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     const wsTelemetry = wb.addWorksheet('Forensic Telemetry', {
       views: [{ state: 'frozen', ySplit: 6 }],
       properties: { tabColor: { argb: ICM_BRAND.colors.blueDark } },
+    });
+
+    const tHeaders = [
+      { title: 'Question #', width: 12, align: 'center' },
+      { title: 'Topic', width: 26, align: 'left' },
+      { title: 'Total Dwell Time', width: 18, align: 'center' },
+      { title: 'Dwell (Seconds)', width: 16, align: 'right' },
+      { title: 'Visits Count', width: 14, align: 'right' },
+      { title: 'Revisions Count', width: 16, align: 'right' },
+      { title: 'Revision Sequence', width: 42, align: 'left' },
+      { title: 'Rapid Guessing Alert', width: 22, align: 'center' },
+    ];
+    tHeaders.forEach((h, idx) => {
+      wsTelemetry.getColumn(idx + 1).width = h.width;
     });
 
     renderIcmBanner(wsTelemetry, `Dwell Time & Revision Telemetry • ${submission.studentName}`, 'H', metaInfo);
@@ -1246,17 +1709,6 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       revMap.set(rev.questionIndex, list);
     });
 
-    const tHeaders = [
-      { title: 'Question #', width: 12, align: 'center' },
-      { title: 'Topic', width: 26, align: 'left' },
-      { title: 'Total Dwell Time', width: 18, align: 'center' },
-      { title: 'Dwell (Seconds)', width: 16, align: 'right' },
-      { title: 'Visits Count', width: 14, align: 'right' },
-      { title: 'Revisions Count', width: 16, align: 'right' },
-      { title: 'Revision Sequence', width: 42, align: 'left' },
-      { title: 'Rapid Guessing Alert', width: 22, align: 'center' },
-    ];
-
     const rTHeader = wsTelemetry.getRow(6);
     rTHeader.height = 28;
     tHeaders.forEach((h, idx) => {
@@ -1266,7 +1718,6 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
       cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
       cell.alignment = { horizontal: h.align as ExcelJS.Alignment['horizontal'], vertical: 'middle' };
       cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.blueDark } } };
-      wsTelemetry.getColumn(idx + 1).width = h.width;
     });
 
     (submission.questionResults || []).forEach((qr, idx) => {
@@ -1316,10 +1767,252 @@ export async function exportSingleSubmissionExcelICM(submission: StudentSubmissi
     wsTelemetry.autoFilter = `A6:H${6 + (submission.questionResults || []).length}`;
   }
 
+  const safeName = buildSafeFileSlug(submission.studentName, 'candidate');
+  const safeCode = buildSafeFileSlug(submission.quizCode || 'exam', 'exam');
+  const filename = `${safeName}_${safeCode}_icm_report.xlsx`;
+  return { wb, filename };
+}
+
+/**
+ * Exports a single candidate's complete Excel diagnostic report (.xlsx).
+ */
+export async function exportSingleSubmissionExcelICM(
+  submission: StudentSubmission,
+  options?: SingleSubmissionExcelOptions
+): Promise<void> {
+  const { wb, filename } = buildSingleSubmissionWorkbookICM(submission, options);
   const buffer = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const safeName = submission.studentName.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-  const filename = `${safeName}_${submission.quizCode}_icm_report.xlsx`;
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  await exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
+/**
+ * Generates a ZIP archive blob containing one individual .xlsx workbook per student.
+ * Respects `options.selectedClass` filtering and guarantees unique filenames per candidate.
+ */
+export async function buildBatchSingleSubmissionsZipBlobICM(
+  submissions: StudentSubmission[],
+  options?: BatchSubmissionExcelZipOptions
+): Promise<{ blob: Blob; zipFilename: string; count: number; entries: string[] }> {
+  const selectedClass = options?.selectedClass || 'all';
+  const filtered =
+    selectedClass === 'all'
+      ? submissions
+      : submissions.filter(
+          (s) => (s.studentClass || 'General').toLowerCase() === selectedClass.toLowerCase()
+        );
+
+  if (filtered.length === 0) {
+    throw new Error(
+      selectedClass === 'all'
+        ? 'No student submissions available to export.'
+        : `No student submissions found for class "${selectedClass}".`
+    );
+  }
+
+  const masteryTiers = options?.masteryTiers ?? getTopicMasteryTiers();
+  const zip = new JSZip();
+  const usedFilenames = new Map<string, number>();
+  const entries: string[] = [];
+
+  for (let i = 0; i < filtered.length; i++) {
+    const sub = filtered[i];
+    const { wb, filename } = buildSingleSubmissionWorkbookICM(sub, {
+      gradeThresholds: options?.gradeThresholds,
+      masteryTiers,
+    });
+
+    // Ensure unique filenames inside archive when two students sanitize identically
+    let finalName = filename;
+    if (usedFilenames.has(finalName)) {
+      const seatSlug = sub.candidateNumber ? `_${buildSafeFileSlug(sub.candidateNumber, '')}` : '';
+      const candidateBase = filename.replace(/\.xlsx$/i, '');
+      const nextCount = (usedFilenames.get(finalName) || 1) + 1;
+      usedFilenames.set(finalName, nextCount);
+      finalName = seatSlug && !usedFilenames.has(`${candidateBase}${seatSlug}.xlsx`)
+        ? `${candidateBase}${seatSlug}.xlsx`
+        : `${candidateBase}_${nextCount}.xlsx`;
+    }
+    usedFilenames.set(finalName, usedFilenames.get(finalName) || 1);
+
+    const buffer = await wb.xlsx.writeBuffer();
+    zip.file(finalName, buffer);
+    entries.push(finalName);
+
+    if (options?.onProgress) {
+      options.onProgress(i + 1, filtered.length);
+    }
+
+    if (i % 5 === 4) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const quizSlug = buildSafeFileSlug(
+    options?.quizTitle || filtered[0]?.quizCode || 'assessment',
+    'assessment'
+  );
+  const classSlug = selectedClass === 'all' ? 'all_classes' : buildSafeFileSlug(selectedClass, 'class');
+  const zipFilename = `${quizSlug}_${classSlug}_individual_reports.zip`;
+
+  return { blob, zipFilename, count: filtered.length, entries };
+}
+
+/**
+ * Builds and downloads a ZIP archive of individual student Excel diagnostic workbooks.
+ */
+export async function exportBatchSingleSubmissionsExcelZipICM(
+  submissions: StudentSubmission[],
+  options?: BatchSubmissionExcelZipOptions
+): Promise<{ count: number; zipFilename: string }> {
+  const { blob, zipFilename, count } = await buildBatchSingleSubmissionsZipBlobICM(submissions, options);
+  await exportFileUniversal(blob, zipFilename, 'application/zip');
+  return { count, zipFilename };
+}
+
+export interface ProctorAuditExcelExportOptions {
+  reportTitle: string;
+  quizCode?: string;
+  targetClass?: string;
+  subject?: string;
+  schoolName?: string;
+  filenameSlug?: string;
+}
+
+/**
+ * Builds an ICM-branded Proctoring & Invigilation Audit Log workbook (.xlsx)
+ * for an individual candidate, a class cohort, or the entire school sitting.
+ */
+export function buildProctorAuditLogWorkbookICM(
+  events: ProctorLogEvent[],
+  options: ProctorAuditExcelExportOptions
+): { wb: ExcelJS.Workbook; filename: string } {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Sekolah Insan Cendekia Madani (ICM)';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('Proctoring Audit Log', {
+    views: [{ state: 'frozen', ySplit: 6 }],
+    properties: { tabColor: { argb: ICM_BRAND.colors.crimson } },
+  });
+
+  const headers: Array<{ title: string; width: number; align: 'left' | 'center' | 'right' }> = [
+    { title: 'Timestamp', width: 22, align: 'center' },
+    { title: 'Exam Code', width: 14, align: 'center' },
+    { title: 'Class / Cohort', width: 16, align: 'center' },
+    { title: 'Candidate Name', width: 26, align: 'left' },
+    { title: 'Seat #', width: 12, align: 'center' },
+    { title: 'Event Type', width: 18, align: 'center' },
+    { title: 'Severity', width: 13, align: 'center' },
+    { title: 'Security / Invigilator Event Detail', width: 48, align: 'left' },
+  ];
+
+  headers.forEach((h, i) => {
+    ws.getColumn(i + 1).width = h.width;
+  });
+
+  renderIcmBanner(ws, options.reportTitle, 'H', {
+    assessmentTitle: options.reportTitle,
+    subject: options.subject || 'Exam Invigilation',
+    quizCode: options.quizCode || 'ALL EXAMS',
+    targetClass: options.targetClass || 'All Classes',
+    schoolName: options.schoolName || ICM_BRAND.schoolName,
+  });
+
+  const headerRow = ws.getRow(6);
+  headerRow.height = 28;
+  headers.forEach((h, idx) => {
+    const cell = headerRow.getCell(idx + 1);
+    cell.value = h.title;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
+    cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
+    cell.alignment = { horizontal: h.align, vertical: 'middle', indent: h.align === 'left' ? 1 : 0 };
+    cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.crimson } } };
+  });
+
+  if (events.length === 0) {
+    ws.mergeCells('A7:H7');
+    const emptyRow = ws.getRow(7);
+    emptyRow.height = 24;
+    const ec = emptyRow.getCell(1);
+    ec.value = 'No proctoring or violation events recorded for this scope.';
+    ec.font = { name: 'Segoe UI', size: 9.5, italic: true, color: { argb: ICM_BRAND.colors.mutedText } };
+    ec.alignment = { horizontal: 'center', vertical: 'middle' };
+    ec.border = BORDER_THIN;
+  } else {
+    events.forEach((evt, idx) => {
+      const row = ws.getRow(7 + idx);
+      row.height = 22;
+      const isZebra = idx % 2 === 1;
+      const sevUpper = (evt.severity || 'info').toUpperCase();
+
+      const vals = [
+        formatProctorTimestamp(evt.timestamp),
+        sanitizeSpreadsheetCell(evt.quizCode || '-'),
+        sanitizeSpreadsheetCell(evt.candidateClass || 'Unassigned'),
+        sanitizeSpreadsheetCell(evt.studentName),
+        sanitizeSpreadsheetCell(evt.candidateNumber || '-'),
+        sanitizeSpreadsheetCell(String(evt.type || 'event').replace(/_/g, ' ').toUpperCase()),
+        sevUpper,
+        sanitizeSpreadsheetCell(evt.detail),
+      ];
+
+      vals.forEach((v, cIdx) => {
+        const cell = row.getCell(cIdx + 1);
+        cell.value = v;
+        cell.font = { name: 'Segoe UI', size: 9, color: { argb: ICM_BRAND.colors.slateText } };
+        cell.border = BORDER_THIN;
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: isZebra ? ICM_BRAND.colors.zebraRow : ICM_BRAND.colors.white },
+        };
+        cell.alignment = {
+          horizontal: headers[cIdx].align,
+          vertical: 'middle',
+          indent: headers[cIdx].align === 'left' ? 1 : 0,
+          wrapText: cIdx === 7,
+        };
+
+        if (cIdx === 6) {
+          cell.font = { name: 'Segoe UI', size: 9, bold: true };
+          if (evt.severity === 'critical') {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.crimsonLight } };
+            cell.font.color = { argb: ICM_BRAND.colors.crimsonText };
+          } else if (evt.severity === 'warning') {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.amberLight } };
+            cell.font.color = { argb: ICM_BRAND.colors.amberText };
+          } else {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blueLight } };
+            cell.font.color = { argb: ICM_BRAND.colors.blueDark };
+          }
+        }
+      });
+    });
+
+    ws.autoFilter = `A6:H${6 + events.length}`;
+  }
+
+  const slug = buildSafeFileSlug(options.filenameSlug || options.targetClass || options.quizCode || 'proctor', 'proctor');
+  const filename = `${slug}_proctor_audit_log.xlsx`;
+  return { wb, filename };
+}
+
+/**
+ * Exports a proctoring audit log workbook (.xlsx) for a candidate, class, or school scope.
+ */
+export async function exportProctorAuditLogExcelICM(
+  events: ProctorLogEvent[],
+  options: ProctorAuditExcelExportOptions
+): Promise<void> {
+  const { wb, filename } = buildProctorAuditLogWorkbookICM(events, options);
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
   await exportFileUniversal(blob, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 

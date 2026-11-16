@@ -21,6 +21,7 @@ import {
   TabStopType,
   TabStopPosition,
   LeaderType,
+  UnderlineType,
 } from 'docx';
 import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
@@ -31,6 +32,7 @@ import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConst
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
+import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
 import {
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
@@ -77,12 +79,14 @@ async function loadImageData(urlOrBase64: string): Promise<{ data: Uint8Array; w
  */
 export function parseFormattedTextToDocxRuns(
   rawText: string,
-  baseOpts: { size?: number; bold?: boolean; color?: string; italics?: boolean; font?: string } = {}
+  baseOpts: { size?: number; bold?: boolean; color?: string; italics?: boolean; underline?: boolean; font?: string } = {}
 ): TextRun[] {
   if (!rawText) return [];
+  const cleanRaw = stripPassageControlTags(rawText);
+  if (!cleanRaw) return [];
 
   // Step 1: Pre-process common LaTeX math symbols and standard chemistry/physics replacements
-  const protectedText = protectCurrencySymbols(rawText);
+  const protectedText = protectCurrencySymbols(cleanRaw);
   let processed = protectedText
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
@@ -203,9 +207,10 @@ export function parseFormattedTextToDocxRuns(
     processed = processed.replaceAll(uni, `^{${asc}}`);
   }
 
-  // Tokenize string by subscript _{...}, superscript ^{...}, and bold **...**
+  // Tokenize string by subscript _{...}, superscript ^{...}, [u]...[/u], ***...***, **...**, and *...*
+  const underlineStyle = baseOpts.underline ? { type: UnderlineType.SINGLE } : undefined;
   const runs: TextRun[] = [];
-  const tokenRegex = /(_\{[^{}]*\}|\^\{[^{}]*\}|\*\*[^*]+\*\*)/g;
+  const tokenRegex = /(_\{[^{}]*\}|\^\{[^{}]*\}|\[u\][\s\S]*?\[\/u\]|\*\*\*[^\s*][\s\S]*?\*\*\*|\*\*[^*]+\*\*|\*(?!\s)(?:[^*\n]*?\S)?\*)/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -220,6 +225,7 @@ export function parseFormattedTextToDocxRuns(
             bold: baseOpts.bold,
             color: baseOpts.color,
             italics: baseOpts.italics,
+            underline: underlineStyle,
             font: baseOpts.font,
           })
         );
@@ -237,6 +243,8 @@ export function parseFormattedTextToDocxRuns(
             size: baseOpts.size,
             bold: baseOpts.bold,
             color: baseOpts.color,
+            italics: baseOpts.italics,
+            underline: underlineStyle,
             font: baseOpts.font,
           })
         );
@@ -251,18 +259,31 @@ export function parseFormattedTextToDocxRuns(
             size: baseOpts.size,
             bold: baseOpts.bold,
             color: baseOpts.color,
+            italics: baseOpts.italics,
+            underline: underlineStyle,
             font: baseOpts.font,
           })
         );
       }
+    } else if (/^\[u\]/i.test(matchedStr) && /\[\/u\]$/i.test(matchedStr)) {
+      const inner = matchedStr.slice(3, -4);
+      if (inner) {
+        runs.push(...parseFormattedTextToDocxRuns(inner, { ...baseOpts, underline: true }));
+      }
+    } else if (matchedStr.startsWith('***') && matchedStr.endsWith('***') && matchedStr.length > 6) {
+      const inner = matchedStr.slice(3, -3);
+      if (inner) {
+        runs.push(...parseFormattedTextToDocxRuns(inner, { ...baseOpts, bold: true, italics: true }));
+      }
     } else if (matchedStr.startsWith('**') && matchedStr.endsWith('**')) {
       const boldContent = matchedStr.slice(2, -2);
       if (boldContent) {
-        const innerRuns = parseFormattedTextToDocxRuns(boldContent, {
-          ...baseOpts,
-          bold: true,
-        });
-        runs.push(...innerRuns);
+        runs.push(...parseFormattedTextToDocxRuns(boldContent, { ...baseOpts, bold: true }));
+      }
+    } else if (matchedStr.startsWith('*') && matchedStr.endsWith('*') && matchedStr.length > 2) {
+      const italicContent = matchedStr.slice(1, -1);
+      if (italicContent) {
+        runs.push(...parseFormattedTextToDocxRuns(italicContent, { ...baseOpts, italics: true }));
       }
     }
 
@@ -279,6 +300,7 @@ export function parseFormattedTextToDocxRuns(
           bold: baseOpts.bold,
           color: baseOpts.color,
           italics: baseOpts.italics,
+          underline: underlineStyle,
           font: baseOpts.font,
         })
       );
@@ -287,7 +309,7 @@ export function parseFormattedTextToDocxRuns(
 
   return runs.length > 0
     ? runs
-    : [new TextRun({ text: rawText, size: baseOpts.size, bold: baseOpts.bold, color: baseOpts.color, font: baseOpts.font })];
+    : [new TextRun({ text: cleanRaw, size: baseOpts.size, bold: baseOpts.bold, color: baseOpts.color, italics: baseOpts.italics, underline: underlineStyle, font: baseOpts.font })];
 }
 
 /**
@@ -885,6 +907,20 @@ export async function exportStudentPaperDocx(
     const instructionText =
       headerConfig.instructions ||
       'Read each question carefully before answering. Write your answers neatly in the spaces provided.';
+    const instructionBlocks = parseInstructionLines(instructionText);
+    const singlePlainLine = instructionBlocks.length === 1 && instructionBlocks[0].type === 'paragraph';
+    const instructionParagraphs = instructionBlocks.map(
+      (b) =>
+        new Paragraph({
+          children: [
+            ...(b.type === 'bullet' || singlePlainLine
+              ? [new TextRun({ text: '• ', size: 16, font: 'Arial' })]
+              : []),
+            ...parseFormattedTextToDocxRuns(b.text, { size: 16, font: 'Arial' }),
+          ],
+          spacing: { after: 30 },
+        })
+    );
 
     const instTable = new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
@@ -898,9 +934,7 @@ export async function exportStudentPaperDocx(
                   children: [new TextRun({ text: 'INSTRUCTIONS TO CANDIDATES:', bold: true, size: 16, font: 'Arial' })],
                   spacing: { after: 40 },
                 }),
-                new Paragraph({
-                  children: [new TextRun({ text: `• ${instructionText}`, size: 16, font: 'Arial' })],
-                }),
+                ...instructionParagraphs,
                 ...(headerConfig.additionalMaterials
                   ? [
                       new Paragraph({

@@ -34,6 +34,12 @@ import {
   shouldResetSessionForCandidate,
 } from '../lib/examSubmissionGuards';
 import {
+  splitPassageAndPrompt as splitPassageAndPromptPure,
+  resolveInheritedStimulusPassage,
+  parseInstructionLines,
+  type QuestionParts,
+} from '../lib/readingPassageUtils';
+import {
   guardEntriesToSeed,
   isEdgeTouchStart,
   isRapidPop,
@@ -300,6 +306,49 @@ function cleanOptionText(text: string, oIdx: number): string {
   return cleanMcqOptionContent(text, oIdx);
 }
 
+interface McqChoiceDisplayState {
+  canonicalLetter: string;
+  displayLetter: string;
+  isSelected: boolean;
+  isArabicQ: boolean;
+}
+
+function getMcqChoiceDisplayState(
+  question: { question_text?: string | null; options?: string[] | null },
+  answerValue: unknown,
+  optionIndex: number,
+  isMultiSelect: boolean
+): McqChoiceDisplayState {
+  const canonicalLetter = String.fromCharCode(65 + optionIndex);
+  const isArabicQ =
+    isArabicText(question.question_text || '') ||
+    Boolean(question.options?.some((o) => isArabicText(o)));
+  const displayLetter =
+    isArabicQ && optionIndex < ARABIC_OPTION_LETTERS.length
+      ? ARABIC_OPTION_LETTERS[optionIndex]
+      : canonicalLetter;
+
+  let isSelected = false;
+  if (isMultiSelect) {
+    const selectedTokens: string[] =
+      String(answerValue || '')
+        .toUpperCase()
+        .match(/[A-Z\u0621-\u064A]/g) ?? [];
+    isSelected =
+      selectedTokens.includes(canonicalLetter) ||
+      selectedTokens.includes(displayLetter.toUpperCase());
+  } else {
+    isSelected =
+      answerValue !== undefined &&
+      answerValue !== null &&
+      answerValue !== '' &&
+      !Number.isNaN(Number(answerValue)) &&
+      Number(answerValue) === optionIndex;
+  }
+
+  return { canonicalLetter, displayLetter, isSelected, isArabicQ };
+}
+
 function getWordCount(text: string): { words: number; chars: number } {
   if (!text || !text.trim()) return { words: 0, chars: 0 };
   const trimmed = text.trim();
@@ -325,11 +374,6 @@ function hasValidStudentResponse(val: string | number | undefined): boolean {
   return true;
 }
 
-interface QuestionParts {
-  passageText: string | null;
-  promptText: string;
-}
-
 function splitPassageAndPrompt(
   text: string,
   options?: string[] | null,
@@ -337,49 +381,10 @@ function splitPassageAndPrompt(
 ): QuestionParts {
   if (!text) return { passageText: null, promptText: '' };
   const clean = cleanQuestionStem(text, options);
-
-  // If text is short (< 180 chars), it's just a direct question
-  if (clean.length < 180) {
-    return { passageText: null, promptText: clean };
-  }
-
-  // 1. Explicit Header Split (e.g. ### Text 1 / ### Passage / ### Wacana / ### Bacaan)
-  // For STEM/Chemistry exams (!allowParagraphHeuristic), only split if an explicit Reading Passage / Wacana header is used
-  const explicitHeaderRegex = opts?.allowParagraphHeuristic
-    ? /^([\s\S]*?(?:###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i
-    : /^([\s\S]*?(?:###\s*(?:Reading\s+Passage|Wacana|Bacaan)\s*\d*[\s\S]*?\n\s*\n))([\s\S]+)$/i;
-
-  const headerMatch = clean.match(explicitHeaderRegex);
-  if (headerMatch && headerMatch[1] && headerMatch[2]) {
-    return {
-      passageText: headerMatch[1].trim(),
-      promptText: headerMatch[2].trim(),
-    };
-  }
-
-  // 2. Paragraph Split Heuristic: ONLY enabled for language/reading comprehension exams without sub-questions.
-  // Never split multi-paragraph STEM/Chemistry stems (which contain equations, data tables, or experimental setups).
-  if (opts?.allowParagraphHeuristic) {
-    const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-    if (paragraphs.length >= 2) {
-      const lastP = paragraphs[paragraphs.length - 1];
-      const precedingText = paragraphs.slice(0, -1).join('\n\n');
-      const hasMathOrTable = precedingText.includes('$$') || /^\s*\|.*\|/m.test(precedingText);
-      const isPrompt =
-        lastP.includes('?') ||
-        /^(?:which|what|how|why|where|when|who|explain|state|describe|determine|identify|suggest|compare|evaluate|discuss|complete|select|choose|berdasarkan|mengapa|apakah|bagaimana|jelaskan)/i.test(lastP) ||
-        lastP.length < 200;
-
-      if (isPrompt && precedingText.length >= 220 && !hasMathOrTable) {
-        return {
-          passageText: precedingText,
-          promptText: lastP,
-        };
-      }
-    }
-  }
-
-  return { passageText: null, promptText: clean };
+  return splitPassageAndPromptPure(text, options, {
+    ...opts,
+    cleanText: clean,
+  });
 }
 
 export function StudentQuizRunner({
@@ -559,6 +564,14 @@ export function StudentQuizRunner({
   const [showFinalReceipt, setShowFinalReceipt] = useState<boolean>(false);
   const isLockedByProctorRef = useRef(isLockedByProctor);
   isLockedByProctorRef.current = isLockedByProctor;
+  const prevLockedSyncRef = useRef(isLockedByProctor);
+  const lockedSinceMsRef = useRef<number | undefined>(
+    savedExam?.isLockedByProctor ? (Date.parse(savedExam?.lockTime || '') || Date.now()) : undefined
+  );
+  if (isLockedByProctor !== prevLockedSyncRef.current) {
+    prevLockedSyncRef.current = isLockedByProctor;
+    lockedSinceMsRef.current = isLockedByProctor ? Date.now() : undefined;
+  }
   const isFinalSecurityLockRef = useRef(isFinalSecurityLock);
   isFinalSecurityLockRef.current = isFinalSecurityLock;
 
@@ -1782,7 +1795,7 @@ export function StudentQuizRunner({
         e.stopPropagation();
         try {
           e.clipboardData?.setData('text/plain', '');
-        } catch {}
+        } catch { }
         flushClipboard();
       }
     };
@@ -2113,6 +2126,7 @@ export function StudentQuizRunner({
     isGrading,
     isSubmitting: isSubmittingRef.current,
     isLockedByProctor,
+    lockedSince: lockedSinceMsRef.current,
     lockReason,
     multiMonitorDetected,
     documentHidden: typeof document !== 'undefined' ? document.hidden : false,
@@ -2134,6 +2148,7 @@ export function StudentQuizRunner({
       isGrading,
       isSubmitting: isSubmittingRef.current,
       isLockedByProctor,
+      lockedSince: lockedSinceMsRef.current,
       lockReason,
       multiMonitorDetected,
       documentHidden: typeof document !== 'undefined' ? document.hidden : false,
@@ -2186,6 +2201,7 @@ export function StudentQuizRunner({
       autoSubmittedBySecurity: s.autoSubmittedBySecurity,
       lastViolation: s.violations[s.violations.length - 1]?.detail,
       lockReason: s.isLockedByProctor ? s.lockReason : undefined,
+      lockedSince: s.isLockedByProctor ? s.lockedSince : undefined,
       multiMonitorDetected: isSubmittingOrFinished ? false : s.multiMonitorDetected,
       deviceOS: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
       lastHeartbeat: Date.now(),
@@ -2652,7 +2668,7 @@ export function StudentQuizRunner({
           setSyncErrorMessage(
             syncResult.error || 'Server did not acknowledge upload. Encrypted .exam backup downloaded to device.'
           );
-          exportSubmissionToFile(submission).catch(() => {});
+          exportSubmissionToFile(submission).catch(() => { });
         }
 
         isSubmittedRef.current = true;
@@ -2700,7 +2716,7 @@ export function StudentQuizRunner({
         setCompletedSubmission(fallback);
         setSyncStatus('offline_failed');
         setSyncErrorMessage(err?.message || 'Network error occurred during submission. Encrypted .exam backup downloaded.');
-        exportSubmissionToFile(fallback).catch(() => {});
+        exportSubmissionToFile(fallback).catch(() => { });
         isSubmittedRef.current = true;
         setIsSubmitted(true);
       } finally {
@@ -2910,7 +2926,7 @@ export function StudentQuizRunner({
         setSyncErrorMessage(
           syncResult.error || 'Server did not acknowledge upload. Encrypted .exam backup downloaded to device.'
         );
-        exportSubmissionToFile(submission).catch(() => {});
+        exportSubmissionToFile(submission).catch(() => { });
       }
 
       isSubmittedRef.current = true;
@@ -2993,7 +3009,7 @@ export function StudentQuizRunner({
     releaseKeyboardLock();
 
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
+      document.exitFullscreen().catch(() => { });
     }
 
     try {
@@ -3998,45 +4014,38 @@ export function StudentQuizRunner({
   // Active Stimulus Passage detection for multi-question reading texts (e.g. Text 1 for Q1-Q4)
   // Restricted to language questions so STEM/Math questions never inherit reading passages in mixed exams
   const activeStimulusPassage = useMemo(() => {
-    if (!isLanguageExam || currentQuestionDomain.isStemOrMath) return null;
-    const currentQ = questions[currentIndex];
-    if (!currentQ) return null;
-    const currentText = currentQ.question_text || '';
-
-    // If current question already has a full stimulus passage header, don't duplicate
-    if (/###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+/i.test(currentText)) {
-      return null;
-    }
-
-    // Scan backwards to find the nearest previous question with a stimulus passage, stopping at STEM boundaries
-    for (let i = currentIndex - 1; i >= 0; i--) {
-      const prevDomain = classifyQuestionDomain(questions[i], undefined, examDomainContext);
-      if (prevDomain.isStemOrMath) break;
-      const prevText = questions[i]?.question_text || '';
-      const match = prevText.match(/(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i);
-      if (match && match[1]) {
-        return match[1].trim();
-      }
-    }
-    return null;
+    return resolveInheritedStimulusPassage(questions, currentIndex, {
+      isLanguageExam,
+      isCurrentStemOrMath: currentQuestionDomain.isStemOrMath,
+      isQuestionStemOrMath: (q) => classifyQuestionDomain(q, undefined, examDomainContext).isStemOrMath,
+      cleanStem: (raw, q) => cleanQuestionStem(raw, q.options),
+    });
   }, [questions, currentIndex, isLanguageExam, currentQuestionDomain, examDomainContext]);
+
+  const getStickyHeaderOffset = () => {
+    const raw =
+      typeof window !== 'undefined'
+        ? getComputedStyle(document.documentElement).getPropertyValue('--sq-header-height')
+        : '';
+    return Math.max(56, parseInt(raw || '60', 10) || 60);
+  };
 
   const handleScrollToQuestionStem = () => {
     if (questionTargetRef.current) {
-      const yOffset = -76;
+      const yOffset = -(getStickyHeaderOffset() + 16);
       const y = questionTargetRef.current.getBoundingClientRect().top + window.pageYOffset + yOffset;
-      window.scrollTo({ top: y, behavior: 'smooth' });
+      window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
     }
   };
 
-  // Track when question stem has scrolled past top navigation header (57px)
+  // Track when question stem has scrolled past top navigation header
   useEffect(() => {
     if (!hasStarted || isSubmitted) return;
 
     const handleScroll = () => {
       if (!questionTargetRef.current) return;
       const rect = questionTargetRef.current.getBoundingClientRect();
-      setIsStemScrolledPast(rect.bottom < 60);
+      setIsStemScrolledPast(rect.bottom < getStickyHeaderOffset());
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -4297,9 +4306,9 @@ export function StudentQuizRunner({
   );
   const shouldShowCurrentDataTables = Boolean(
     currentQuestion?.data_tables &&
-      currentQuestion.data_tables.length > 0 &&
-      !currentTable &&
-      (hasCurrentBlankDataTable || !hasMarkdownTable(promptText))
+    currentQuestion.data_tables.length > 0 &&
+    !currentTable &&
+    (hasCurrentBlankDataTable || !hasMarkdownTable(promptText))
   );
   const shouldStripStaticMarkdownTable = Boolean(
     shouldShowCurrentDataTables && hasCurrentBlankDataTable && hasMarkdownTable(promptText)
@@ -4799,12 +4808,48 @@ export function StudentQuizRunner({
             </div>
           </div>
 
-          {headerConfig?.instructions && (
-            <div className="student-lobby-instructions" style={{ marginBottom: '14px' }}>
-              <strong>Instructions to Candidate:</strong>
-              <p>{headerConfig.instructions}</p>
-            </div>
-          )}
+          {headerConfig?.instructions && (() => {
+            const instBlocks = parseInstructionLines(headerConfig.instructions);
+            if (instBlocks.length === 0) return null;
+
+            const groupedNodes: React.ReactNode[] = [];
+            let bulletBuf: string[] = [];
+            const flushBullets = (keyPrefix: string) => {
+              if (bulletBuf.length === 0) return;
+              const items = [...bulletBuf];
+              bulletBuf = [];
+              groupedNodes.push(
+                <ul key={keyPrefix} className="student-lobby-inst-list">
+                  {items.map((text, bi) => (
+                    <li key={bi}>
+                      <ExamMathText content={text} />
+                    </li>
+                  ))}
+                </ul>
+              );
+            };
+
+            instBlocks.forEach((b, idx) => {
+              if (b.type === 'bullet') {
+                bulletBuf.push(b.text);
+              } else {
+                flushBullets(`ul-${idx}`);
+                groupedNodes.push(
+                  <div key={`p-${idx}`} className="student-lobby-inst-line">
+                    <ExamMathText content={b.text} />
+                  </div>
+                );
+              }
+            });
+            flushBullets('ul-end');
+
+            return (
+              <div className="student-lobby-instructions" style={{ marginBottom: '14px' }}>
+                <strong>Instructions to Candidate:</strong>
+                <div className="student-lobby-inst-body">{groupedNodes}</div>
+              </div>
+            );
+          })()}
 
           {/* Security & Invigilator Rules */}
           <div
@@ -6118,244 +6163,244 @@ export function StudentQuizRunner({
 
           {/* Solutions & Detailed Diagnostic Walkthrough (only if enabled by examiner) */}
           {(allowStudentScriptDownload || (!isExamMode && showInstantSolutions)) && (
-          <div className="results-solutions-box">
-            <h3 className="results-section-heading">🔑 Question-by-Question Marking & AI Examiner Review</h3>
-            <div className="solutions-list">
-              {questions.map((q, idx) => {
-                const qRes = results.questionResults.find((r) => r.questionNumber === idx + 1);
-                const earnedM = qRes?.earnedMarks ?? (answers[idx] !== undefined ? q.marks || 1 : 0);
-                const maxM = q.marks || 1;
-                const isFullCredit = earnedM === maxM;
+            <div className="results-solutions-box">
+              <h3 className="results-section-heading">🔑 Question-by-Question Marking & AI Examiner Review</h3>
+              <div className="solutions-list">
+                {questions.map((q, idx) => {
+                  const qRes = results.questionResults.find((r) => r.questionNumber === idx + 1);
+                  const earnedM = qRes?.earnedMarks ?? (answers[idx] !== undefined ? q.marks || 1 : 0);
+                  const maxM = q.marks || 1;
+                  const isFullCredit = earnedM === maxM;
 
-                return (
-                  <div key={idx} className="solution-item-card">
-                    <div className="sol-card-header">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <strong>Question {idx + 1}</strong>
-                        {qRes?.gradingMethod && (
-                          <span className="sq-grading-method-tag">
-                            {qRes.gradingMethod === 'mcq'
-                              ? '🔘 MCQ'
-                              : qRes.gradingMethod === 'deterministic'
-                                ? '⚡ Fast-Match'
-                                : '🤖 AI Examiner'}
-                          </span>
-                        )}
-                      </div>
-                      <span
-                        className="sq-score-badge"
-                        style={{
-                          background: isFullCredit ? 'rgba(34, 197, 94, 0.15)' : earnedM > 0 ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                          color: isFullCredit ? '#22c55e' : earnedM > 0 ? '#eab308' : '#ef4444',
-                          fontWeight: 800,
-                          padding: '4px 10px',
-                          borderRadius: '999px',
-                          fontSize: '0.8125rem',
-                        }}
-                      >
-                        {isFullCredit ? '✓ ' : earnedM > 0 ? '⚠️ ' : '✗ '}
-                        {earnedM} / {maxM} Mark{maxM !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-
-                    <div className="sol-stem">
-                      <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
-                    </div>
-
-                    {/* Question Diagram / SVG if present */}
-                    {q.svg_content ? (
-                      <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
-                        <div
-                          className="exam-svg-wrap"
-                          style={{ margin: '0 auto', maxWidth: '600px' }}
-                          dangerouslySetInnerHTML={{ __html: q.svg_content }}
-                        />
-                      </div>
-                    ) : q.diagram_url ? (
-                      <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
-                        <img
-                          src={q.diagram_url}
-                          alt={`Diagram for Question ${idx + 1}`}
-                          loading="lazy"
-                          decoding="async"
-                          draggable={false}
-                          onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                  return (
+                    <div key={idx} className="solution-item-card">
+                      <div className="sol-card-header">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <strong>Question {idx + 1}</strong>
+                          {qRes?.gradingMethod && (
+                            <span className="sq-grading-method-tag">
+                              {qRes.gradingMethod === 'mcq'
+                                ? '🔘 MCQ'
+                                : qRes.gradingMethod === 'deterministic'
+                                  ? '⚡ Fast-Match'
+                                  : '🤖 AI Examiner'}
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className="sq-score-badge"
                           style={{
-                            maxWidth: '100%',
-                            maxHeight: '340px',
-                            borderRadius: 'var(--radius-md)',
-                            border: '1px solid var(--color-border)',
-                            cursor: 'zoom-in',
-                            background: '#ffffff',
-                            userSelect: 'none',
+                            background: isFullCredit ? 'rgba(34, 197, 94, 0.15)' : earnedM > 0 ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                            color: isFullCredit ? '#22c55e' : earnedM > 0 ? '#eab308' : '#ef4444',
+                            fontWeight: 800,
+                            padding: '4px 10px',
+                            borderRadius: '999px',
+                            fontSize: '0.8125rem',
                           }}
-                          onClick={() => setZoomedImage(q.diagram_url || null)}
-                          title="Click to zoom diagram"
-                        />
+                        >
+                          {isFullCredit ? '✓ ' : earnedM > 0 ? '⚠️ ' : '✗ '}
+                          {earnedM} / {maxM} Mark{maxM !== 1 ? 's' : ''}
+                        </span>
                       </div>
-                    ) : null}
 
-                    {/* Sub-Questions Results Breakdown if present */}
-                    {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
-                      <div className="sol-sub-results-list" style={{ margin: '12px 0', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {qRes.subQuestionResults.map((sub, sIdx) => {
-                          const subQ = q.sub_questions?.[sIdx];
-                          return (
-                            <div
-                              key={sIdx}
-                              style={{
-                                background: 'var(--color-surface-sunken)',
-                                padding: '12px 16px',
-                                borderRadius: 'var(--radius-md)',
-                                border: '1px solid var(--color-border)',
-                              }}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                                <strong>Part ({sub.subId})</strong>
-                                <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
-                                  {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
-                                </span>
-                              </div>
-
-                              {/* Sub Question Prompt & Table if present */}
-                              {subQ?.question_text && (
-                                <div style={{ fontSize: '0.875rem', marginBottom: 8, color: 'var(--color-text-primary)' }}>
-                                  <ExamMathText content={subQ.question_text} />
-                                </div>
-                              )}
-
-                              {/* Sub Question Diagram / SVG if present */}
-                              {subQ?.svg_content ? (
-                                <div style={{ margin: '8px 0', textAlign: 'center' }}>
-                                  <div
-                                    className="exam-svg-wrap"
-                                    style={{ margin: '0 auto', maxWidth: '540px' }}
-                                    dangerouslySetInnerHTML={{ __html: subQ.svg_content }}
-                                  />
-                                </div>
-                              ) : subQ?.diagram_url ? (
-                                <div style={{ margin: '8px 0', textAlign: 'center' }}>
-                                  <img
-                                    src={subQ.diagram_url}
-                                    alt={`Diagram for Part (${sub.subId})`}
-                                    loading="lazy"
-                                    decoding="async"
-                                    draggable={false}
-                                    onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                                    style={{
-                                      maxWidth: '100%',
-                                      maxHeight: '260px',
-                                      borderRadius: 'var(--radius-md)',
-                                      border: '1px solid var(--color-border)',
-                                      cursor: 'zoom-in',
-                                      background: '#ffffff',
-                                      userSelect: 'none',
-                                    }}
-                                    onClick={() => setZoomedImage(subQ.diagram_url || null)}
-                                    title="Click to zoom diagram"
-                                  />
-                                </div>
-                              ) : null}
-
-                              <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
-                                Your Answer:{' '}
-                                <strong style={{ color: 'var(--color-text-primary)' }}>
-                                  <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
-                                </strong>
-                              </div>
-                              {sub.feedback && (
-                                <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
-                                  <ExamMathText content={sub.feedback} />
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
+                      <div className="sol-stem">
+                        <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
                       </div>
-                    )}
 
-                    {/* Point-by-Point Criteria Breakdown */}
-                    {qRes?.criteriaBreakdown && qRes.criteriaBreakdown.length > 0 && (
-                      <div className="sol-criteria-box" style={{ margin: '12px 0' }}>
-                        <strong style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6 }}>
-                          📋 Mark Scheme Criteria Breakdown:
-                        </strong>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          {qRes.criteriaBreakdown.map((crit, cIdx) => (
-                            <div
-                              key={cIdx}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'flex-start',
-                                gap: '8px',
-                                fontSize: '0.8125rem',
-                                color: crit.achieved ? '#22c55e' : 'var(--color-text-secondary)',
-                                background: crit.achieved ? 'rgba(34, 197, 94, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                                padding: '6px 10px',
-                                borderRadius: 'var(--radius-sm)',
-                                border: `1px solid ${crit.achieved ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
-                              }}
-                            >
-                              <span style={{ fontWeight: 800 }}>{crit.achieved ? '✓' : '✗'}</span>
-                              <div style={{ flex: 1 }}>
-                                <div>
-                                  <ExamMathText content={crit.point} />
+                      {/* Question Diagram / SVG if present */}
+                      {q.svg_content ? (
+                        <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
+                          <div
+                            className="exam-svg-wrap"
+                            style={{ margin: '0 auto', maxWidth: '600px' }}
+                            dangerouslySetInnerHTML={{ __html: q.svg_content }}
+                          />
+                        </div>
+                      ) : q.diagram_url ? (
+                        <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
+                          <img
+                            src={q.diagram_url}
+                            alt={`Diagram for Question ${idx + 1}`}
+                            loading="lazy"
+                            decoding="async"
+                            draggable={false}
+                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                            style={{
+                              maxWidth: '100%',
+                              maxHeight: '340px',
+                              borderRadius: 'var(--radius-md)',
+                              border: '1px solid var(--color-border)',
+                              cursor: 'zoom-in',
+                              background: '#ffffff',
+                              userSelect: 'none',
+                            }}
+                            onClick={() => setZoomedImage(q.diagram_url || null)}
+                            title="Click to zoom diagram"
+                          />
+                        </div>
+                      ) : null}
+
+                      {/* Sub-Questions Results Breakdown if present */}
+                      {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
+                        <div className="sol-sub-results-list" style={{ margin: '12px 0', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          {qRes.subQuestionResults.map((sub, sIdx) => {
+                            const subQ = q.sub_questions?.[sIdx];
+                            return (
+                              <div
+                                key={sIdx}
+                                style={{
+                                  background: 'var(--color-surface-sunken)',
+                                  padding: '12px 16px',
+                                  borderRadius: 'var(--radius-md)',
+                                  border: '1px solid var(--color-border)',
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                                  <strong>Part ({sub.subId})</strong>
+                                  <span style={{ color: sub.isCorrect ? '#22c55e' : '#ef4444', fontWeight: 700, fontSize: '0.8125rem' }}>
+                                    {sub.earnedMarks} / {sub.maxMarks} mark{sub.maxMarks !== 1 ? 's' : ''}
+                                  </span>
                                 </div>
-                                {crit.examinerNote && (
-                                  <div style={{ fontSize: '0.75rem', opacity: 0.85, marginTop: 2, fontStyle: 'italic' }}>
-                                    <ExamMathText content={`Note: ${crit.examinerNote}`} />
+
+                                {/* Sub Question Prompt & Table if present */}
+                                {subQ?.question_text && (
+                                  <div style={{ fontSize: '0.875rem', marginBottom: 8, color: 'var(--color-text-primary)' }}>
+                                    <ExamMathText content={subQ.question_text} />
+                                  </div>
+                                )}
+
+                                {/* Sub Question Diagram / SVG if present */}
+                                {subQ?.svg_content ? (
+                                  <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                                    <div
+                                      className="exam-svg-wrap"
+                                      style={{ margin: '0 auto', maxWidth: '540px' }}
+                                      dangerouslySetInnerHTML={{ __html: subQ.svg_content }}
+                                    />
+                                  </div>
+                                ) : subQ?.diagram_url ? (
+                                  <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                                    <img
+                                      src={subQ.diagram_url}
+                                      alt={`Diagram for Part (${sub.subId})`}
+                                      loading="lazy"
+                                      decoding="async"
+                                      draggable={false}
+                                      onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                      style={{
+                                        maxWidth: '100%',
+                                        maxHeight: '260px',
+                                        borderRadius: 'var(--radius-md)',
+                                        border: '1px solid var(--color-border)',
+                                        cursor: 'zoom-in',
+                                        background: '#ffffff',
+                                        userSelect: 'none',
+                                      }}
+                                      onClick={() => setZoomedImage(subQ.diagram_url || null)}
+                                      title="Click to zoom diagram"
+                                    />
+                                  </div>
+                                ) : null}
+
+                                <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
+                                  Your Answer:{' '}
+                                  <strong style={{ color: 'var(--color-text-primary)' }}>
+                                    <ExamMathText content={String(sub.studentAnswer || '(blank)')} />
+                                  </strong>
+                                </div>
+                                {sub.feedback && (
+                                  <div style={{ fontSize: '0.75rem', color: sub.isCorrect ? '#22c55e' : 'var(--color-text-secondary)', marginTop: 2 }}>
+                                    <ExamMathText content={sub.feedback} />
                                   </div>
                                 )}
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* AI Feedback & Missing Keypoints */}
-                    {qRes?.aiFeedback && (
-                      <div
-                        className="sol-ai-feedback"
-                        style={{
-                          background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(59, 130, 246, 0.12))',
-                          border: '1px solid rgba(139, 92, 246, 0.35)',
-                          borderRadius: 'var(--radius-md)',
-                          padding: '10px 14px',
-                          margin: '10px 0',
-                          fontSize: '0.8125rem',
-                        }}
-                      >
-                        <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 4 }}>💡 Examiner Feedback:</strong>
-                        <div style={{ margin: 0, color: 'var(--color-text-primary)' }}>
-                          <ExamMathText content={qRes.aiFeedback} />
+                      {/* Point-by-Point Criteria Breakdown */}
+                      {qRes?.criteriaBreakdown && qRes.criteriaBreakdown.length > 0 && (
+                        <div className="sol-criteria-box" style={{ margin: '12px 0' }}>
+                          <strong style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6 }}>
+                            📋 Mark Scheme Criteria Breakdown:
+                          </strong>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {qRes.criteriaBreakdown.map((crit, cIdx) => (
+                              <div
+                                key={cIdx}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'flex-start',
+                                  gap: '8px',
+                                  fontSize: '0.8125rem',
+                                  color: crit.achieved ? '#22c55e' : 'var(--color-text-secondary)',
+                                  background: crit.achieved ? 'rgba(34, 197, 94, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                                  padding: '6px 10px',
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: `1px solid ${crit.achieved ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
+                                }}
+                              >
+                                <span style={{ fontWeight: 800 }}>{crit.achieved ? '✓' : '✗'}</span>
+                                <div style={{ flex: 1 }}>
+                                  <div>
+                                    <ExamMathText content={crit.point} />
+                                  </div>
+                                  {crit.examinerNote && (
+                                    <div style={{ fontSize: '0.75rem', opacity: 0.85, marginTop: 2, fontStyle: 'italic' }}>
+                                      <ExamMathText content={`Note: ${crit.examinerNote}`} />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Official Cambridge Mark Scheme Structured Breakdown */}
-                    <div className="sol-points" style={{ marginTop: '12px' }}>
-                      <strong style={{ display: 'block', marginBottom: '6px', color: 'var(--color-text-primary)' }}>
-                        Official Model Answer & Mark Scheme:
-                      </strong>
-                      {renderStructuredModelAnswer(q.mark_scheme)}
+                      {/* AI Feedback & Missing Keypoints */}
+                      {qRes?.aiFeedback && (
+                        <div
+                          className="sol-ai-feedback"
+                          style={{
+                            background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(59, 130, 246, 0.12))',
+                            border: '1px solid rgba(139, 92, 246, 0.35)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '10px 14px',
+                            margin: '10px 0',
+                            fontSize: '0.8125rem',
+                          }}
+                        >
+                          <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 4 }}>💡 Examiner Feedback:</strong>
+                          <div style={{ margin: 0, color: 'var(--color-text-primary)' }}>
+                            <ExamMathText content={qRes.aiFeedback} />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Official Cambridge Mark Scheme Structured Breakdown */}
+                      <div className="sol-points" style={{ marginTop: '12px' }}>
+                        <strong style={{ display: 'block', marginBottom: '6px', color: 'var(--color-text-primary)' }}>
+                          Official Model Answer & Mark Scheme:
+                        </strong>
+                        {renderStructuredModelAnswer(q.mark_scheme)}
+                      </div>
+
+                      {q.mark_scheme?.guidance && q.mark_scheme.guidance.length > 0 && (
+                        <div className="sol-guidance" style={{ marginTop: 8 }}>
+                          💡 <strong>Examiner Guidance:</strong> <ExamMathText content={q.mark_scheme.guidance.join('; ')} />
+                        </div>
+                      )}
+                      {q.mark_scheme?.common_misconceptions && q.mark_scheme.common_misconceptions.length > 0 && (
+                        <div className="sol-traps" style={{ marginTop: 6 }}>
+                          ⚠️ <strong>Common Pitfall:</strong> <ExamMathText content={q.mark_scheme.common_misconceptions.join('; ')} />
+                        </div>
+                      )}
                     </div>
-
-                    {q.mark_scheme?.guidance && q.mark_scheme.guidance.length > 0 && (
-                      <div className="sol-guidance" style={{ marginTop: 8 }}>
-                        💡 <strong>Examiner Guidance:</strong> <ExamMathText content={q.mark_scheme.guidance.join('; ')} />
-                      </div>
-                    )}
-                    {q.mark_scheme?.common_misconceptions && q.mark_scheme.common_misconceptions.length > 0 && (
-                      <div className="sol-traps" style={{ marginTop: 6 }}>
-                        ⚠️ <strong>Common Pitfall:</strong> <ExamMathText content={q.mark_scheme.common_misconceptions.join('; ')} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
           )}
 
           <div className="results-footer-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '24px', flexWrap: 'wrap' }}>
@@ -6419,64 +6464,64 @@ export function StudentQuizRunner({
             </button>
 
             {allowStudentScriptDownload && (
-            <button
-              className="sq-btn sq-btn-secondary"
-              style={{
-                background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
-                color: '#ffffff',
-                fontWeight: 800,
-                padding: '12px 24px',
-                borderRadius: '10px',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: '0.9375rem',
-                boxShadow: '0 4px 12px rgba(220, 38, 38, 0.3)',
-              }}
-              onClick={() => {
-                const results = calculateResults();
-                const submissionToExport: StudentSubmission = completedSubmission || {
-                  id: `sub_${Date.now()}`,
-                  quizId: testIdOrCode || 'direct_quiz',
-                  quizCode: testIdOrCode || 'EXAM',
-                  quizTitle: title,
-                  subject: headerConfig?.subject || 'Chemistry',
-                  studentName: candidateName.trim() || 'Candidate',
-                  submittedAt: new Date().toISOString(),
-                  durationSeconds: Math.floor((Date.now() - startTime) / 1000),
-                  score: results.mcqEarned,
-                  totalMarks: results.mcqTotal,
-                  percentage: results.percentage,
-                  violationsCount: violations.length,
-                  proctoringLogs: violations.map((v, i) => ({
-                    timestamp: v.timestamp,
-                    event: v.detail,
-                    strike: i + 1,
-                    severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
-                    type: v.type,
-                    detail: v.detail,
-                    elapsedExamSeconds: v.elapsedExamSeconds,
-                  })),
-                  questionResults: results.questionResults,
-                  topicBreakdown: Object.fromEntries(
-                    Object.entries(results.topicStats).map(([topic, stat]) => [
-                      topic,
-                      {
-                        totalMarks: stat.total,
-                        earnedMarks: stat.earned,
-                        percentage: stat.total > 0 ? Math.round((stat.earned / stat.total) * 100) : 0,
-                      },
-                    ])
-                  ),
-                  forensics: buildExamForensics(),
-                };
-                exportIndividualStudentReportPdf(submissionToExport);
-              }}
-            >
-              📄 Full Script PDF
-            </button>
+              <button
+                className="sq-btn sq-btn-secondary"
+                style={{
+                  background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  padding: '12px 24px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '0.9375rem',
+                  boxShadow: '0 4px 12px rgba(220, 38, 38, 0.3)',
+                }}
+                onClick={() => {
+                  const results = calculateResults();
+                  const submissionToExport: StudentSubmission = completedSubmission || {
+                    id: `sub_${Date.now()}`,
+                    quizId: testIdOrCode || 'direct_quiz',
+                    quizCode: testIdOrCode || 'EXAM',
+                    quizTitle: title,
+                    subject: headerConfig?.subject || 'Chemistry',
+                    studentName: candidateName.trim() || 'Candidate',
+                    submittedAt: new Date().toISOString(),
+                    durationSeconds: Math.floor((Date.now() - startTime) / 1000),
+                    score: results.mcqEarned,
+                    totalMarks: results.mcqTotal,
+                    percentage: results.percentage,
+                    violationsCount: violations.length,
+                    proctoringLogs: violations.map((v, i) => ({
+                      timestamp: v.timestamp,
+                      event: v.detail,
+                      strike: i + 1,
+                      severity: v.type === 'blocked_shortcut' || v.type === 'multi_monitor' ? 'critical' : 'warning',
+                      type: v.type,
+                      detail: v.detail,
+                      elapsedExamSeconds: v.elapsedExamSeconds,
+                    })),
+                    questionResults: results.questionResults,
+                    topicBreakdown: Object.fromEntries(
+                      Object.entries(results.topicStats).map(([topic, stat]) => [
+                        topic,
+                        {
+                          totalMarks: stat.total,
+                          earnedMarks: stat.earned,
+                          percentage: stat.total > 0 ? Math.round((stat.earned / stat.total) * 100) : 0,
+                        },
+                      ])
+                    ),
+                    forensics: buildExamForensics(),
+                  };
+                  exportIndividualStudentReportPdf(submissionToExport);
+                }}
+              >
+                📄 Full Script PDF
+              </button>
             )}
 
             {onExit && (
@@ -6877,622 +6922,620 @@ export function StudentQuizRunner({
 
               <div className={isReadingSplitActive ? 'sq-question-work-pane' : undefined}>
 
-            {/* Question Stem & Interactive Target Area */}
-            <div ref={questionTargetRef} className="sq-question-interactive-target">
-              {(() => {
-                const isStemArabic = isArabicText(promptText || '') || isArabicText(currentQuestion?.question_text || '');
-                return (
-                  <div
-                    className={`sq-q-stem ${isStemArabic ? 'sq-q-stem--arabic' : ''}`}
-                    dir={isStemArabic ? 'rtl' : 'auto'}
-                  >
-                    {isCurrentInlineGap ? (
-                      <InlineGapText
-                        content={stemDisplayText}
-                        values={(() => {
-                          const raw = answers[currentIndex];
-                          if (!raw) return {};
-                          if (typeof raw === 'object') return raw;
-                          const str = String(raw).trim();
-                          if (str.startsWith('{')) {
-                            try { return JSON.parse(str); } catch { }
-                          }
-                          return { 'gap_1': str, '1': str };
-                        })()}
-                        onGapChange={(gapId, val) => {
-                          if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
-                          const raw = answers[currentIndex];
-                          let currentMap: Record<string, string> = {};
-                          if (typeof raw === 'string' && raw.startsWith('{')) {
-                            try { currentMap = JSON.parse(raw); } catch { }
-                          } else if (raw) {
-                            currentMap['gap_1'] = String(raw);
-                          }
-                          currentMap[gapId] = val;
-                          const nextSerialized = JSON.stringify(currentMap);
-                          recordAnswerChange(currentIndex, raw, nextSerialized);
-                          setAnswers((prev) => ({
-                            ...prev,
-                            [currentIndex]: nextSerialized,
-                          }));
-                        }}
-                      />
-                    ) : (
-                      <ExamMathText content={stemDisplayText} />
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Structured / Fillable Data Tables (e.g. Table 6.1) */}
-            {shouldShowCurrentDataTables && currentQuestion?.data_tables && (
-              <div style={{ margin: '10px 0 16px' }}>
-                <ExamDataTable
-                  tables={currentQuestion.data_tables}
-                  isInteractive={!isSubmitted && hasCurrentBlankDataTable}
-                  userAnswers={currentDataTableAnswers}
-                  onCellChange={(cellKey, val) => handleDataTableCellChange(dataTableAnswerKey, cellKey, val)}
-                />
-              </div>
-            )}
-
-            {/* Insert / Resource Booklet Trigger Button */}
-            {currentQuestionBookletTrigger && (
-              <div style={{ margin: '8px 0 12px' }}>
-                <button
-                  type="button"
-                  className="sq-btn"
-                  style={{
-                    background: 'rgba(14, 165, 233, 0.12)',
-                    color: '#0284c7',
-                    border: '1px solid rgba(14, 165, 233, 0.35)',
-                    borderRadius: '8px',
-                    fontSize: '0.8125rem',
-                    fontWeight: 700,
-                    padding: '6px 14px',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => openResourceBooklet(currentQuestionBookletTrigger.refId)}
-                  title="Open Resource Booklet to view maps, photos, notes, or diagrams referenced in this question"
-                >
-                  <span>📖</span>
-                  <span>Open {currentQuestionBookletTrigger.label} in Resource Booklet</span>
-                </button>
-              </div>
-            )}
-
-            {/* Diagram / SVG Visual if available */}
-            {currentQuestion?.svg_content ? (
-              <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
-                <div
-                  className="exam-svg-wrap"
-                  style={{ margin: '0 auto', maxWidth: '620px' }}
-                  dangerouslySetInnerHTML={{ __html: currentQuestion.svg_content }}
-                />
-                {securityEnabled && enableWatermark && (
-                  <CandidateWatermark
-                    candidateName={candidateName}
-                    candidateNumber={candidateNumber}
-                    candidateClass={candidateClass}
-                    quizCode={resolvedQuizCode}
-                    sessionHash={sessionHash}
-                    variant="diagram"
-                  />
-                )}
-              </div>
-            ) : currentQuestion?.diagram_url ? (
-              <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
-                <img
-                  src={currentQuestion.diagram_url}
-                  alt={`Diagram for Question ${currentIndex + 1}`}
-                  className="sq-q-diagram-img"
-                  loading="lazy"
-                  decoding="async"
-                  draggable={false}
-                  onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                  onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
-                  title="Click to zoom diagram"
-                />
-                {securityEnabled && enableWatermark && (
-                  <CandidateWatermark
-                    candidateName={candidateName}
-                    candidateNumber={candidateNumber}
-                    candidateClass={candidateClass}
-                    quizCode={resolvedQuizCode}
-                    sessionHash={sessionHash}
-                    variant="diagram"
-                  />
-                )}
-              </div>
-            ) : null}
-
-            {/* 1. MCQ / Multi-Select Choices Input */}
-            {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (
-              <div className="sq-choices-list">
-                {isMultiSelect && (
-                  <div style={{ marginBottom: 8, fontSize: '0.8125rem', color: '#2563eb', fontWeight: 700 }}>
-                    ☑ Multiple Select: Tick all choices that apply
-                  </div>
-                )}
-                {currentQuestion.options.map((optionText, oIdx) => {
-                  const isArabicQ = isArabicText(currentQuestion.question_text || '') || currentQuestion.options?.some((o) => isArabicText(o));
-                  const letter = isArabicQ && oIdx < ARABIC_OPTION_LETTERS.length
-                    ? ARABIC_OPTION_LETTERS[oIdx]
-                    : String.fromCharCode(65 + oIdx);
-                  const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
-                  const isSelected = isMultiSelect
-                    ? selectedLetters.includes(String.fromCharCode(65 + oIdx)) || selectedLetters.includes(letter)
-                    : Number(answers[currentIndex]) === oIdx;
-                  return (
-                    <button
-                      key={oIdx}
-                      type="button"
-                      className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''} ${isArabicQ ? 'sq-choice-btn--arabic' : ''}`}
-                      onClick={() => handleSelectOption(oIdx)}
-                      dir={isArabicQ ? 'rtl' : 'auto'}
-                    >
-                      <span
-                        className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
-                        style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                {/* Question Stem & Interactive Target Area */}
+                <div ref={questionTargetRef} className="sq-question-interactive-target">
+                  {(() => {
+                    const isStemArabic = isArabicText(promptText || '') || isArabicText(currentQuestion?.question_text || '');
+                    return (
+                      <div
+                        className={`sq-q-stem ${isStemArabic ? 'sq-q-stem--arabic' : ''}`}
+                        dir={isStemArabic ? 'rtl' : 'auto'}
                       >
-                        {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
-                      </span>
-                      <span className="sq-choice-text"><ExamMathText content={cleanOptionText(optionText, oIdx)} /></span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && !currentTable && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
-              /* 2. Multi-Part Sub-Questions Stream if structured */
-              <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {currentQuestion.sub_questions.map((sub, sIdx) => {
-                  const subKey = `${currentIndex}_${sIdx}`;
-                  const subVal = String(answers[subKey] || '');
-                  return (
-                    <div
-                      key={sIdx}
-                      className="sq-sub-card"
-                      style={{
-                        background: 'var(--color-surface-sunken)',
-                        padding: '16px',
-                        borderRadius: 'var(--radius-lg)',
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
-                      <div className="sq-sub-header" style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
-                        <span className="sq-sub-id" style={{ fontWeight: 800, color: 'var(--color-primary-500)' }}>({sub.sub_id})</span>
-                        <div className="sq-sub-text" style={{ flex: 1 }}>
-                          {hasInlineGaps(sub.question_text || '') ? (
-                            <InlineGapText
-                              content={sub.question_text || ''}
-                              values={(() => {
-                                const raw = answers[subKey];
-                                if (!raw) return {};
-                                if (typeof raw === 'object') return raw;
-                                const str = String(raw).trim();
-                                if (str.startsWith('{')) {
-                                  try { return JSON.parse(str); } catch { }
-                                }
-                                return { 'gap_1': str, '1': str };
-                              })()}
-                              onGapChange={(gapId, val) => {
-                                if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
-                                const raw = answers[subKey];
-                                let currentMap: Record<string, string> = {};
-                                if (typeof raw === 'string' && raw.startsWith('{')) {
-                                  try { currentMap = JSON.parse(raw); } catch { }
-                                } else if (raw) {
-                                  currentMap['gap_1'] = String(raw);
-                                }
-                                currentMap[gapId] = val;
-                                const nextSerialized = JSON.stringify(currentMap);
-                                recordAnswerChange(currentIndex, raw, nextSerialized);
-                                setAnswers((prev) => ({
-                                  ...prev,
-                                  [subKey]: nextSerialized,
-                                }));
-                              }}
-                            />
-                          ) : (
-                            <ExamMathText content={sub.question_text || ''} />
-                          )}
-                        </div>
-                        <span className="sq-sub-marks" style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                          [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
-                        </span>
-                      </div>
-
-                      {/* Sub-Question Audio Indicator */}
-                      {sub.audio_url && (
-                        <div className="sq-sub-audio-chip" style={{ margin: '6px 0 10px', fontSize: '0.8125rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>🎧</span>
-                          <span>Part ({sub.sub_id}) Audio active in top listening bar</span>
-                        </div>
-                      )}
-
-                      {/* Sub-Question Resource Booklet Trigger */}
-                      {(() => {
-                        const subTrigger = getSubQuestionBookletTrigger(
-                          sub,
-                          currentQuestion,
-                          currentIndex,
-                          bookletResources
-                        );
-                        if (
-                          !subTrigger ||
-                          (currentQuestionBookletTrigger &&
-                            normalizeResourceKey(subTrigger.refId) ===
-                              normalizeResourceKey(currentQuestionBookletTrigger.refId))
-                        ) {
-                          return null;
-                        }
-                        return (
-                          <div style={{ margin: '6px 0 10px' }}>
-                            <button
-                              type="button"
-                              className="sq-btn"
-                              style={{
-                                background: 'rgba(14, 165, 233, 0.12)',
-                                color: '#0284c7',
-                                border: '1px solid rgba(14, 165, 233, 0.35)',
-                                borderRadius: '8px',
-                                fontSize: '0.8125rem',
-                                fontWeight: 700,
-                                padding: '6px 12px',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                cursor: 'pointer',
-                              }}
-                              onClick={() => openResourceBooklet(subTrigger.refId)}
-                              title="Open Resource Booklet for this sub-question"
-                            >
-                              <span>📖</span>
-                              <span>Open {subTrigger.label} in Resource Booklet</span>
-                            </button>
-                          </div>
-                        );
-                      })()}
-
-                      {/* Sub-Question Diagram / SVG (if specifically attached to this sub-part) */}
-                      {sub.svg_content ? (
-                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
-                          <div
-                            className="exam-svg-wrap"
-                            style={{ margin: '0 auto', maxWidth: '540px' }}
-                            dangerouslySetInnerHTML={{ __html: sub.svg_content }}
-                          />
-                          {securityEnabled && enableWatermark && (
-                            <CandidateWatermark
-                              candidateName={candidateName}
-                              candidateNumber={candidateNumber}
-                              candidateClass={candidateClass}
-                              quizCode={resolvedQuizCode}
-                              sessionHash={sessionHash}
-                              variant="diagram"
-                            />
-                          )}
-                        </div>
-                      ) : sub.diagram_url ? (
-                        <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
-                          <img
-                            src={sub.diagram_url}
-                            alt={`Diagram for ${sub.sub_id}`}
-                            className="sq-q-diagram-img"
-                            loading="lazy"
-                            decoding="async"
-                            draggable={false}
-                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                            style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
-                            onClick={() => setZoomedImage(sub.diagram_url || null)}
-                            title="Click to zoom diagram"
-                          />
-                          {securityEnabled && enableWatermark && (
-                            <CandidateWatermark
-                              candidateName={candidateName}
-                              candidateNumber={candidateNumber}
-                              candidateClass={candidateClass}
-                              quizCode={resolvedQuizCode}
-                              sessionHash={sessionHash}
-                              variant="diagram"
-                            />
-                          )}
-                        </div>
-                      ) : null}
-
-                      {/* Sub-Question Data Tables if attached directly to this sub-part */}
-                      {sub.data_tables && sub.data_tables.length > 0 && (hasBlankDataTableCells(sub.data_tables) || !hasMarkdownTable(sub.question_text || '')) && (
-                        <div style={{ margin: '8px 0 12px' }}>
-                          <ExamDataTable
-                            tables={sub.data_tables}
-                            isInteractive={!isSubmitted && hasBlankDataTableCells(sub.data_tables)}
-                            userAnswers={parseTableCellAnswers(answers[subKey])}
-                            onCellChange={(cellKey, val) => handleDataTableCellChange(subKey, cellKey, val)}
-                          />
-                        </div>
-                      )}
-
-                      {/* Status indicator if this sub-question owns the interactive parent table above */}
-                      {hasCurrentBlankDataTable &&
-                        currentQuestion &&
-                        sIdx === findTableCompletionSubIndex(currentQuestion) && (
-                          <div
-                            style={{
-                              margin: '4px 0 10px',
-                              padding: '8px 12px',
-                              borderRadius: '8px',
-                              background: Object.values(currentDataTableAnswers).some(Boolean)
-                                ? 'rgba(16, 185, 129, 0.1)'
-                                : 'rgba(59, 130, 246, 0.08)',
-                              border: Object.values(currentDataTableAnswers).some(Boolean)
-                                ? '1px solid rgba(16, 185, 129, 0.35)'
-                                : '1px solid rgba(59, 130, 246, 0.3)',
-                              fontSize: '0.8125rem',
-                              fontWeight: 600,
-                              color: Object.values(currentDataTableAnswers).some(Boolean) ? '#047857' : '#1d4ed8',
-                            }}
-                          >
-                            {Object.values(currentDataTableAnswers).some(Boolean)
-                              ? `✓ Table cell response recorded (${Object.values(currentDataTableAnswers).filter(Boolean).join(', ')})`
-                              : '↑ Type your answer directly into the empty cell in the interactive table above.'}
-                          </div>
-                        )}
-
-                      {!hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && !(hasCurrentBlankDataTable && currentQuestion && sIdx === findTableCompletionSubIndex(currentQuestion)) && (() => {
-                        const subDomainInfo = classifyQuestionDomain(currentQuestion, sub, examDomainContext);
-                        const isSubWritingTask = Boolean(
-                          /(?:write|minimum(?:\s+of)?)\s+(?:at\s+least\s+)?\d{2,4}\s+words\b/i.test(sub.question_text || '') ||
-                          (/^writing\b/i.test(currentQuestion?.topic || '') && subDomainInfo.isLanguage)
-                        );
-                        const autoShowSubTools = !isSubWritingTask && subDomainInfo.isStemOrMath;
-                        const showSubSymbolBar =
-                          manualMathHelperTargets[subKey] !== undefined
-                            ? manualMathHelperTargets[subKey]
-                            : autoShowSubTools;
-
-                        return (
-                          <div className="sq-sub-input-wrap">
-                            {showSubSymbolBar && renderQuickSymbolToolbar(subKey, subDomainInfo.domain, true)}
-                            <textarea
-                              ref={(el) => {
-                                structuredTextareaRefs.current[subKey] = el;
-                              }}
-                              className="sq-text-answer-area"
-                              dir="auto"
-                              placeholder={
-                                subDomainInfo.isStemOrMath || showSubSymbolBar
-                                  ? `Type answer, equation, or steps for (${sub.sub_id})...`
-                                  : `Type answer for part (${sub.sub_id})...`
+                        {isCurrentInlineGap ? (
+                          <InlineGapText
+                            content={stemDisplayText}
+                            values={(() => {
+                              const raw = answers[currentIndex];
+                              if (!raw) return {};
+                              if (typeof raw === 'object') return raw;
+                              const str = String(raw).trim();
+                              if (str.startsWith('{')) {
+                                try { return JSON.parse(str); } catch { }
                               }
-                              value={subVal}
-                              onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
-                              rows={3}
-                              spellCheck={false}
-                              autoCorrect="off"
-                              autoCapitalize="none"
-                              style={{
-                                width: '100%',
-                                minHeight: '80px',
-                                padding: '10px 14px',
-                                borderRadius: 'var(--radius-md)',
-                                border: '1.5px solid var(--color-border)',
-                                background: 'var(--color-surface)',
-                                color: 'var(--color-text-primary)',
-                                fontSize: '0.875rem',
-                                outline: 'none',
-                                boxSizing: 'border-box',
-                                resize: 'vertical',
-                              }}
-                            />
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginTop: 4, fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
-                              <span>Auto-saved continuously</span>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                {!isSubWritingTask && renderMathHelperToggleButton(subKey, showSubSymbolBar)}
-                                {subVal.trim() && (
-                                  <span style={{ fontWeight: 600 }}>
-                                    {getWordCount(subVal).words} word{getWordCount(subVal).words !== 1 ? 's' : ''} • {getWordCount(subVal).chars} chars
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            {subVal.trim() && (
-                              <div className="sq-answer-preview-card" style={{ marginTop: 6 }}>
-                                <div className="sq-answer-preview-header">
-                                  <span>👁️</span>
-                                  <span>Part ({sub.sub_id}) Formatted Preview</span>
-                                </div>
-                                <ExamMathText content={subVal} />
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : currentTable ? (
-              /* 3. Interactive Matching / Classification Table Response */
-              <div className="sq-interactive-table-card animate-fade-in">
-                <div className="sq-table-hint-bar">
-                  <span className="sq-table-hint-tag">
-                    <span>📊</span>
-                    <span>Interactive Classification Table: Click your choice for each row</span>
-                  </span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                      {Object.keys(currentTableSelections).length} of {currentTable.rows.length} rows answered
-                    </span>
-                    {Object.keys(currentTableSelections).length > 0 && !isSubmitted && (
-                      <button
-                        type="button"
-                        onClick={handleClearTable}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: '#ef4444',
-                          fontSize: '0.75rem',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          textDecoration: 'underline',
-                        }}
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
+                              return { 'gap_1': str, '1': str };
+                            })()}
+                            onGapChange={(gapId, val) => {
+                              if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+                              const raw = answers[currentIndex];
+                              let currentMap: Record<string, string> = {};
+                              if (typeof raw === 'string' && raw.startsWith('{')) {
+                                try { currentMap = JSON.parse(raw); } catch { }
+                              } else if (raw) {
+                                currentMap['gap_1'] = String(raw);
+                              }
+                              currentMap[gapId] = val;
+                              const nextSerialized = JSON.stringify(currentMap);
+                              recordAnswerChange(currentIndex, raw, nextSerialized);
+                              setAnswers((prev) => ({
+                                ...prev,
+                                [currentIndex]: nextSerialized,
+                              }));
+                            }}
+                          />
+                        ) : (
+                          <ExamMathText content={stemDisplayText} />
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
-                <div className="sq-interactive-table-wrap">
-                  <table className="sq-interactive-table">
-                    <thead>
-                      <tr>
-                        <th><ExamMathText content={currentTable.headerCells[0] || 'Item / Prompt'} /></th>
-                        {currentTable.headerCells.slice(1).map((h, hi) => (
-                          <th key={hi}><ExamMathText content={h} /></th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {currentTable.rows.map((row, ri) => (
-                        <tr key={ri}>
-                          <td>
-                            <span className="sq-table-row-label"><ExamMathText content={row.label} /></span>
-                          </td>
-                          {currentTable.headerCells.slice(1).map((colName, ci) => {
-                            const isSelected = currentTableSelections[row.label] === colName;
+                {/* Structured / Fillable Data Tables (e.g. Table 6.1) */}
+                {shouldShowCurrentDataTables && currentQuestion?.data_tables && (
+                  <div style={{ margin: '10px 0 16px' }}>
+                    <ExamDataTable
+                      tables={currentQuestion.data_tables}
+                      isInteractive={!isSubmitted && hasCurrentBlankDataTable}
+                      userAnswers={currentDataTableAnswers}
+                      onCellChange={(cellKey, val) => handleDataTableCellChange(dataTableAnswerKey, cellKey, val)}
+                    />
+                  </div>
+                )}
+
+                {/* Insert / Resource Booklet Trigger Button */}
+                {currentQuestionBookletTrigger && (
+                  <div style={{ margin: '8px 0 12px' }}>
+                    <button
+                      type="button"
+                      className="sq-btn"
+                      style={{
+                        background: 'rgba(14, 165, 233, 0.12)',
+                        color: '#0284c7',
+                        border: '1px solid rgba(14, 165, 233, 0.35)',
+                        borderRadius: '8px',
+                        fontSize: '0.8125rem',
+                        fontWeight: 700,
+                        padding: '6px 14px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        cursor: 'pointer',
+                      }}
+                      onClick={() => openResourceBooklet(currentQuestionBookletTrigger.refId)}
+                      title="Open Resource Booklet to view maps, photos, notes, or diagrams referenced in this question"
+                    >
+                      <span>📖</span>
+                      <span>Open {currentQuestionBookletTrigger.label} in Resource Booklet</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Diagram / SVG Visual if available */}
+                {currentQuestion?.svg_content ? (
+                  <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
+                    <div
+                      className="exam-svg-wrap"
+                      style={{ margin: '0 auto', maxWidth: '620px' }}
+                      dangerouslySetInnerHTML={{ __html: currentQuestion.svg_content }}
+                    />
+                    {securityEnabled && enableWatermark && (
+                      <CandidateWatermark
+                        candidateName={candidateName}
+                        candidateNumber={candidateNumber}
+                        candidateClass={candidateClass}
+                        quizCode={resolvedQuizCode}
+                        sessionHash={sessionHash}
+                        variant="diagram"
+                      />
+                    )}
+                  </div>
+                ) : currentQuestion?.diagram_url ? (
+                  <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
+                    <img
+                      src={currentQuestion.diagram_url}
+                      alt={`Diagram for Question ${currentIndex + 1}`}
+                      className="sq-q-diagram-img"
+                      loading="lazy"
+                      decoding="async"
+                      draggable={false}
+                      onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                      onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
+                      title="Click to zoom diagram"
+                    />
+                    {securityEnabled && enableWatermark && (
+                      <CandidateWatermark
+                        candidateName={candidateName}
+                        candidateNumber={candidateNumber}
+                        candidateClass={candidateClass}
+                        quizCode={resolvedQuizCode}
+                        sessionHash={sessionHash}
+                        variant="diagram"
+                      />
+                    )}
+                  </div>
+                ) : null}
+
+                {/* 1. MCQ / Multi-Select Choices Input */}
+                {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (
+                  <div className="sq-choices-list">
+                    {isMultiSelect && (
+                      <div style={{ marginBottom: 8, fontSize: '0.8125rem', color: '#2563eb', fontWeight: 700 }}>
+                        ☑ Multiple Select: Tick all choices that apply
+                      </div>
+                    )}
+                    {currentQuestion.options.map((optionText, oIdx) => {
+                      const { displayLetter, isSelected, isArabicQ } = getMcqChoiceDisplayState(
+                        currentQuestion,
+                        answers[currentIndex],
+                        oIdx,
+                        isMultiSelect
+                      );
+                      return (
+                        <button
+                          key={oIdx}
+                          type="button"
+                          className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''} ${isArabicQ ? 'sq-choice-btn--arabic' : ''}`}
+                          onClick={() => handleSelectOption(oIdx)}
+                          aria-pressed={isSelected}
+                          dir={isArabicQ ? 'rtl' : 'auto'}
+                        >
+                          <span
+                            className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
+                            style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                          >
+                            {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
+                          </span>
+                          <span className="sq-choice-text"><ExamMathText content={cleanOptionText(optionText, oIdx)} /></span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && !currentTable && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
+                  /* 2. Multi-Part Sub-Questions Stream if structured */
+                  <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {currentQuestion.sub_questions.map((sub, sIdx) => {
+                      const subKey = `${currentIndex}_${sIdx}`;
+                      const subVal = String(answers[subKey] || '');
+                      return (
+                        <div
+                          key={sIdx}
+                          className="sq-sub-card"
+                          style={{
+                            background: 'var(--color-surface-sunken)',
+                            padding: '16px',
+                            borderRadius: 'var(--radius-lg)',
+                            border: '1px solid var(--color-border)',
+                          }}
+                        >
+                          <div className="sq-sub-header" style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+                            <span className="sq-sub-id" style={{ fontWeight: 800, color: 'var(--color-primary-500)' }}>({sub.sub_id})</span>
+                            <div className="sq-sub-text" style={{ flex: 1 }}>
+                              {hasInlineGaps(sub.question_text || '') ? (
+                                <InlineGapText
+                                  content={sub.question_text || ''}
+                                  values={(() => {
+                                    const raw = answers[subKey];
+                                    if (!raw) return {};
+                                    if (typeof raw === 'object') return raw;
+                                    const str = String(raw).trim();
+                                    if (str.startsWith('{')) {
+                                      try { return JSON.parse(str); } catch { }
+                                    }
+                                    return { 'gap_1': str, '1': str };
+                                  })()}
+                                  onGapChange={(gapId, val) => {
+                                    if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
+                                    const raw = answers[subKey];
+                                    let currentMap: Record<string, string> = {};
+                                    if (typeof raw === 'string' && raw.startsWith('{')) {
+                                      try { currentMap = JSON.parse(raw); } catch { }
+                                    } else if (raw) {
+                                      currentMap['gap_1'] = String(raw);
+                                    }
+                                    currentMap[gapId] = val;
+                                    const nextSerialized = JSON.stringify(currentMap);
+                                    recordAnswerChange(currentIndex, raw, nextSerialized);
+                                    setAnswers((prev) => ({
+                                      ...prev,
+                                      [subKey]: nextSerialized,
+                                    }));
+                                  }}
+                                />
+                              ) : (
+                                <ExamMathText content={sub.question_text || ''} />
+                              )}
+                            </div>
+                            <span className="sq-sub-marks" style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                              [{sub.marks || 1} mark{sub.marks !== 1 ? 's' : ''}]
+                            </span>
+                          </div>
+
+                          {/* Sub-Question Audio Indicator */}
+                          {sub.audio_url && (
+                            <div className="sq-sub-audio-chip" style={{ margin: '6px 0 10px', fontSize: '0.8125rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span>🎧</span>
+                              <span>Part ({sub.sub_id}) Audio active in top listening bar</span>
+                            </div>
+                          )}
+
+                          {/* Sub-Question Resource Booklet Trigger */}
+                          {(() => {
+                            const subTrigger = getSubQuestionBookletTrigger(
+                              sub,
+                              currentQuestion,
+                              currentIndex,
+                              bookletResources
+                            );
+                            if (
+                              !subTrigger ||
+                              (currentQuestionBookletTrigger &&
+                                normalizeResourceKey(subTrigger.refId) ===
+                                normalizeResourceKey(currentQuestionBookletTrigger.refId))
+                            ) {
+                              return null;
+                            }
                             return (
-                              <td key={ci} style={{ textAlign: 'center' }}>
+                              <div style={{ margin: '6px 0 10px' }}>
                                 <button
                                   type="button"
-                                  className={`sq-table-cell-btn ${isSelected ? 'sq-table-cell-btn--active' : ''}`}
-                                  onClick={() => handleTableSelectCell(row.label, colName)}
-                                  disabled={isSubmitted}
-                                  title={`Click to choose "${colName}" for "${row.label}"`}
+                                  className="sq-btn"
+                                  style={{
+                                    background: 'rgba(14, 165, 233, 0.12)',
+                                    color: '#0284c7',
+                                    border: '1px solid rgba(14, 165, 233, 0.35)',
+                                    borderRadius: '8px',
+                                    fontSize: '0.8125rem',
+                                    fontWeight: 700,
+                                    padding: '6px 12px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    cursor: 'pointer',
+                                  }}
+                                  onClick={() => openResourceBooklet(subTrigger.refId)}
+                                  title="Open Resource Booklet for this sub-question"
                                 >
-                                  {isSelected ? `✓ ${colName}` : colName}
+                                  <span>📖</span>
+                                  <span>Open {subTrigger.label} in Resource Booklet</span>
                                 </button>
-                              </td>
+                              </div>
                             );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                          })()}
 
-                {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
-                  <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--color-surface)', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-                    <span style={{ fontWeight: 700, color: 'var(--color-primary-600)', marginRight: 6 }}>Your Table Selection:</span>
-                    <span>{String(answers[currentIndex])}</span>
+                          {/* Sub-Question Diagram / SVG (if specifically attached to this sub-part) */}
+                          {sub.svg_content ? (
+                            <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
+                              <div
+                                className="exam-svg-wrap"
+                                style={{ margin: '0 auto', maxWidth: '540px' }}
+                                dangerouslySetInnerHTML={{ __html: sub.svg_content }}
+                              />
+                              {securityEnabled && enableWatermark && (
+                                <CandidateWatermark
+                                  candidateName={candidateName}
+                                  candidateNumber={candidateNumber}
+                                  candidateClass={candidateClass}
+                                  quizCode={resolvedQuizCode}
+                                  sessionHash={sessionHash}
+                                  variant="diagram"
+                                />
+                              )}
+                            </div>
+                          ) : sub.diagram_url ? (
+                            <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
+                              <img
+                                src={sub.diagram_url}
+                                alt={`Diagram for ${sub.sub_id}`}
+                                className="sq-q-diagram-img"
+                                loading="lazy"
+                                decoding="async"
+                                draggable={false}
+                                onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
+                                onClick={() => setZoomedImage(sub.diagram_url || null)}
+                                title="Click to zoom diagram"
+                              />
+                              {securityEnabled && enableWatermark && (
+                                <CandidateWatermark
+                                  candidateName={candidateName}
+                                  candidateNumber={candidateNumber}
+                                  candidateClass={candidateClass}
+                                  quizCode={resolvedQuizCode}
+                                  sessionHash={sessionHash}
+                                  variant="diagram"
+                                />
+                              )}
+                            </div>
+                          ) : null}
+
+                          {/* Sub-Question Data Tables if attached directly to this sub-part */}
+                          {sub.data_tables && sub.data_tables.length > 0 && (hasBlankDataTableCells(sub.data_tables) || !hasMarkdownTable(sub.question_text || '')) && (
+                            <div style={{ margin: '8px 0 12px' }}>
+                              <ExamDataTable
+                                tables={sub.data_tables}
+                                isInteractive={!isSubmitted && hasBlankDataTableCells(sub.data_tables)}
+                                userAnswers={parseTableCellAnswers(answers[subKey])}
+                                onCellChange={(cellKey, val) => handleDataTableCellChange(subKey, cellKey, val)}
+                              />
+                            </div>
+                          )}
+
+                          {/* Status indicator if this sub-question owns the interactive parent table above */}
+                          {hasCurrentBlankDataTable &&
+                            currentQuestion &&
+                            sIdx === findTableCompletionSubIndex(currentQuestion) && (
+                              <div
+                                style={{
+                                  margin: '4px 0 10px',
+                                  padding: '8px 12px',
+                                  borderRadius: '8px',
+                                  background: Object.values(currentDataTableAnswers).some(Boolean)
+                                    ? 'rgba(16, 185, 129, 0.1)'
+                                    : 'rgba(59, 130, 246, 0.08)',
+                                  border: Object.values(currentDataTableAnswers).some(Boolean)
+                                    ? '1px solid rgba(16, 185, 129, 0.35)'
+                                    : '1px solid rgba(59, 130, 246, 0.3)',
+                                  fontSize: '0.8125rem',
+                                  fontWeight: 600,
+                                  color: Object.values(currentDataTableAnswers).some(Boolean) ? '#047857' : '#1d4ed8',
+                                }}
+                              >
+                                {Object.values(currentDataTableAnswers).some(Boolean)
+                                  ? `✓ Table cell response recorded (${Object.values(currentDataTableAnswers).filter(Boolean).join(', ')})`
+                                  : '↑ Type your answer directly into the empty cell in the interactive table above.'}
+                              </div>
+                            )}
+
+                          {!hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && !(hasCurrentBlankDataTable && currentQuestion && sIdx === findTableCompletionSubIndex(currentQuestion)) && (() => {
+                            const subDomainInfo = classifyQuestionDomain(currentQuestion, sub, examDomainContext);
+                            const isSubWritingTask = Boolean(
+                              /(?:write|minimum(?:\s+of)?)\s+(?:at\s+least\s+)?\d{2,4}\s+words\b/i.test(sub.question_text || '') ||
+                              (/^writing\b/i.test(currentQuestion?.topic || '') && subDomainInfo.isLanguage)
+                            );
+                            const autoShowSubTools = !isSubWritingTask && subDomainInfo.isStemOrMath;
+                            const showSubSymbolBar =
+                              manualMathHelperTargets[subKey] !== undefined
+                                ? manualMathHelperTargets[subKey]
+                                : autoShowSubTools;
+
+                            return (
+                              <div className="sq-sub-input-wrap">
+                                {showSubSymbolBar && renderQuickSymbolToolbar(subKey, subDomainInfo.domain, true)}
+                                <textarea
+                                  ref={(el) => {
+                                    structuredTextareaRefs.current[subKey] = el;
+                                  }}
+                                  className="sq-text-answer-area"
+                                  dir="auto"
+                                  placeholder={
+                                    subDomainInfo.isStemOrMath || showSubSymbolBar
+                                      ? `Type answer, equation, or steps for (${sub.sub_id})...`
+                                      : `Type answer for part (${sub.sub_id})...`
+                                  }
+                                  value={subVal}
+                                  onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
+                                  rows={3}
+                                  spellCheck={false}
+                                  autoCorrect="off"
+                                  autoCapitalize="none"
+                                  style={{
+                                    width: '100%',
+                                    minHeight: '80px',
+                                    padding: '10px 14px',
+                                    borderRadius: 'var(--radius-md)',
+                                    border: '1.5px solid var(--color-border)',
+                                    background: 'var(--color-surface)',
+                                    color: 'var(--color-text-primary)',
+                                    fontSize: '0.875rem',
+                                    outline: 'none',
+                                    boxSizing: 'border-box',
+                                    resize: 'vertical',
+                                  }}
+                                />
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginTop: 4, fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
+                                  <span>Auto-saved continuously</span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {!isSubWritingTask && renderMathHelperToggleButton(subKey, showSubSymbolBar)}
+                                    {subVal.trim() && (
+                                      <span style={{ fontWeight: 600 }}>
+                                        {getWordCount(subVal).words} word{getWordCount(subVal).words !== 1 ? 's' : ''} • {getWordCount(subVal).chars} chars
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {subVal.trim() && (
+                                  <div className="sq-answer-preview-card" style={{ marginTop: 6 }}>
+                                    <div className="sq-answer-preview-header">
+                                      <span>👁️</span>
+                                      <span>Part ({sub.sub_id}) Formatted Preview</span>
+                                    </div>
+                                    <ExamMathText content={subVal} />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
-              </div>
-            ) : (isCurrentInlineGap || hasCurrentBlankDataTable) ? null : (
-              /* 4. Structured Single Response Text Box */
-              (() => {
-                const rawAnsStr = String(answers[currentIndex] || '');
-                const wordCounts = getWordCount(rawAnsStr);
-                const metMinWords = minWordTarget !== null && wordCounts.words >= minWordTarget;
-                const singleKey = String(currentIndex);
-                const autoShowMathTools = !isWritingEssayTask && currentQuestionDomain.isStemOrMath;
-                const showSingleSymbolBar =
-                  manualMathHelperTargets[singleKey] !== undefined
-                    ? manualMathHelperTargets[singleKey]
-                    : autoShowMathTools;
-                const showMathMetaAndPreview = !isWritingEssayTask && (showSingleSymbolBar || currentQuestionDomain.isStemOrMath);
-
-                return (
-                  <div className="sq-structured-input-box">
-                    <div className="sq-input-label-row">
-                      <label className="sq-input-label">
-                        <span>✍️</span>
-                        <span>
-                          {isWritingEssayTask
-                            ? 'Your Academic Writing Response:'
-                            : currentQuestionDomain.isChemistry
-                            ? 'Your Response / Chemical Formula / Calculation:'
-                            : showMathMetaAndPreview
-                            ? 'Your Response / Math & Formula:'
-                            : 'Your Response / Written Answer:'}
+                ) : currentTable ? (
+                  /* 3. Interactive Matching / Classification Table Response */
+                  <div className="sq-interactive-table-card animate-fade-in">
+                    <div className="sq-table-hint-bar">
+                      <span className="sq-table-hint-tag">
+                        <span>📊</span>
+                        <span>Interactive Classification Table: Click your choice for each row</span>
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                          {Object.keys(currentTableSelections).length} of {currentTable.rows.length} rows answered
                         </span>
-                      </label>
-                      {(Boolean(answers[currentIndex]) || isWritingEssayTask) && (
-                        <span
-                          className={`sq-answer-counter-badge ${
-                            minWordTarget !== null
-                              ? metMinWords
-                                ? 'sq-answer-counter-badge--met'
-                                : 'sq-answer-counter-badge--below'
-                              : ''
-                          }`}
-                        >
-                          {minWordTarget !== null
-                            ? `${wordCounts.words} / ${minWordTarget}+ words • ${wordCounts.chars} chars`
-                            : `${wordCounts.words} words • ${wordCounts.chars} chars`}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Quick Symbol Insert Bar (STEM/Math auto-shown, or toggled manually) */}
-                    {showSingleSymbolBar && renderQuickSymbolToolbar(currentIndex, currentQuestionDomain.domain)}
-
-                    <textarea
-                      ref={(el) => {
-                        structuredTextareaRefs.current[singleKey] = el;
-                      }}
-                      className={`sq-text-answer-area ${isWritingEssayTask ? 'sq-text-answer-area--writing' : ''}`}
-                      dir="auto"
-                      placeholder={
-                        isWritingEssayTask
-                          ? `Write your structured response here${minWordTarget ? ` (at least ${minWordTarget} words)` : ''}...`
-                          : currentQuestionDomain.isChemistry
-                          ? 'Type your final answer, chemical equation, or calculation steps here...'
-                          : showMathMetaAndPreview
-                          ? 'Type your final answer, math expression, or working steps here...'
-                          : 'Type your answer, analysis, or explanation here...'
-                      }
-                      value={rawAnsStr}
-                      onChange={(e) => handleTextAnswerChange(e.target.value)}
-                      rows={isWritingEssayTask ? 14 : 5}
-                      spellCheck={false}
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                    />
-
-                    <div className="sq-answer-meta-bar">
-                      <span>Auto-saved continuously{isWritingEssayTask ? '' : ' • Press Tab to navigate'}</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        {!isWritingEssayTask && renderMathHelperToggleButton(currentIndex, showSingleSymbolBar)}
-                        <span>
-                          {isWritingEssayTask
-                            ? minWordTarget
-                              ? `Target length: ${minWordTarget}+ words`
-                              : 'Plain academic English'
-                            : showMathMetaAndPreview
-                            ? 'LaTeX math supported with $...$'
-                            : 'Plain academic English'}
-                        </span>
+                        {Object.keys(currentTableSelections).length > 0 && !isSubmitted && (
+                          <button
+                            type="button"
+                            onClick={handleClearTable}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: '#ef4444',
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              textDecoration: 'underline',
+                            }}
+                          >
+                            Reset
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                    {showMathMetaAndPreview && rawAnsStr.trim() && (
-                      <div className="sq-answer-preview-card">
-                        <div className="sq-answer-preview-header">
-                          <span>👁️</span>
-                          <span>Live Response & Formula Preview</span>
-                        </div>
-                        <ExamMathText content={rawAnsStr} />
+                    <div className="sq-interactive-table-wrap">
+                      <table className="sq-interactive-table">
+                        <thead>
+                          <tr>
+                            <th><ExamMathText content={currentTable.headerCells[0] || 'Item / Prompt'} /></th>
+                            {currentTable.headerCells.slice(1).map((h, hi) => (
+                              <th key={hi}><ExamMathText content={h} /></th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentTable.rows.map((row, ri) => (
+                            <tr key={ri}>
+                              <td>
+                                <span className="sq-table-row-label"><ExamMathText content={row.label} /></span>
+                              </td>
+                              {currentTable.headerCells.slice(1).map((colName, ci) => {
+                                const isSelected = currentTableSelections[row.label] === colName;
+                                return (
+                                  <td key={ci} style={{ textAlign: 'center' }}>
+                                    <button
+                                      type="button"
+                                      className={`sq-table-cell-btn ${isSelected ? 'sq-table-cell-btn--active' : ''}`}
+                                      onClick={() => handleTableSelectCell(row.label, colName)}
+                                      disabled={isSubmitted}
+                                      title={`Click to choose "${colName}" for "${row.label}"`}
+                                    >
+                                      {isSelected ? `✓ ${colName}` : colName}
+                                    </button>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
+                      <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--color-surface)', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+                        <span style={{ fontWeight: 700, color: 'var(--color-primary-600)', marginRight: 6 }}>Your Table Selection:</span>
+                        <span>{String(answers[currentIndex])}</span>
                       </div>
                     )}
                   </div>
-                );
-              })()
-            )}
+                ) : (isCurrentInlineGap || hasCurrentBlankDataTable) ? null : (
+                  /* 4. Structured Single Response Text Box */
+                  (() => {
+                    const rawAnsStr = String(answers[currentIndex] || '');
+                    const wordCounts = getWordCount(rawAnsStr);
+                    const metMinWords = minWordTarget !== null && wordCounts.words >= minWordTarget;
+                    const singleKey = String(currentIndex);
+                    const autoShowMathTools = !isWritingEssayTask && currentQuestionDomain.isStemOrMath;
+                    const showSingleSymbolBar =
+                      manualMathHelperTargets[singleKey] !== undefined
+                        ? manualMathHelperTargets[singleKey]
+                        : autoShowMathTools;
+                    const showMathMetaAndPreview = !isWritingEssayTask && (showSingleSymbolBar || currentQuestionDomain.isStemOrMath);
+
+                    return (
+                      <div className="sq-structured-input-box">
+                        <div className="sq-input-label-row">
+                          <label className="sq-input-label">
+                            <span>✍️</span>
+                            <span>
+                              {isWritingEssayTask
+                                ? 'Your Academic Writing Response:'
+                                : currentQuestionDomain.isChemistry
+                                  ? 'Your Response / Chemical Formula / Calculation:'
+                                  : showMathMetaAndPreview
+                                    ? 'Your Response / Math & Formula:'
+                                    : 'Your Response / Written Answer:'}
+                            </span>
+                          </label>
+                          {(Boolean(answers[currentIndex]) || isWritingEssayTask) && (
+                            <span
+                              className={`sq-answer-counter-badge ${minWordTarget !== null
+                                ? metMinWords
+                                  ? 'sq-answer-counter-badge--met'
+                                  : 'sq-answer-counter-badge--below'
+                                : ''
+                                }`}
+                            >
+                              {minWordTarget !== null
+                                ? `${wordCounts.words} / ${minWordTarget}+ words • ${wordCounts.chars} chars`
+                                : `${wordCounts.words} words • ${wordCounts.chars} chars`}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Quick Symbol Insert Bar (STEM/Math auto-shown, or toggled manually) */}
+                        {showSingleSymbolBar && renderQuickSymbolToolbar(currentIndex, currentQuestionDomain.domain)}
+
+                        <textarea
+                          ref={(el) => {
+                            structuredTextareaRefs.current[singleKey] = el;
+                          }}
+                          className={`sq-text-answer-area ${isWritingEssayTask ? 'sq-text-answer-area--writing' : ''}`}
+                          dir="auto"
+                          placeholder={
+                            isWritingEssayTask
+                              ? `Write your structured response here${minWordTarget ? ` (at least ${minWordTarget} words)` : ''}...`
+                              : currentQuestionDomain.isChemistry
+                                ? 'Type your final answer, chemical equation, or calculation steps here...'
+                                : showMathMetaAndPreview
+                                  ? 'Type your final answer, math expression, or working steps here...'
+                                  : 'Type your answer, analysis, or explanation here...'
+                          }
+                          value={rawAnsStr}
+                          onChange={(e) => handleTextAnswerChange(e.target.value)}
+                          rows={isWritingEssayTask ? 14 : 5}
+                          spellCheck={false}
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                        />
+
+                        <div className="sq-answer-meta-bar">
+                          <span>Auto-saved continuously{isWritingEssayTask ? '' : ' • Press Tab to navigate'}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                            {!isWritingEssayTask && renderMathHelperToggleButton(currentIndex, showSingleSymbolBar)}
+                            <span>
+                              {isWritingEssayTask
+                                ? minWordTarget
+                                  ? `Target length: ${minWordTarget}+ words`
+                                  : 'Plain academic English'
+                                : showMathMetaAndPreview
+                                  ? 'LaTeX math supported with $...$'
+                                  : 'Plain academic English'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {showMathMetaAndPreview && rawAnsStr.trim() && (
+                          <div className="sq-answer-preview-card">
+                            <div className="sq-answer-preview-header">
+                              <span>👁️</span>
+                              <span>Live Response & Formula Preview</span>
+                            </div>
+                            <ExamMathText content={rawAnsStr} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                )}
               </div>
             </div>
 
@@ -7571,17 +7614,8 @@ export function StudentQuizRunner({
 
           {/* ─── Question Context & Quick Response Card (Under Question Navigator) ─── */}
           {(() => {
-            const isMcq = Boolean(
-              currentQuestion &&
-              currentQuestion.options &&
-              currentQuestion.options.length > 0 &&
-              (currentQuestion.question_style === 'Multiple Choice' ||
-                currentQuestion.question_style === 'Multiple Select' ||
-                currentQuestion.question_style !== 'Structured')
-            );
-            const isTable = Boolean(currentTable && currentTable.rows && currentTable.rows.length > 0);
-
-            if (!currentQuestion || (!isMcq && !isTable)) return null;
+            const hasSidebarTable = Boolean(currentTable && currentTable.rows && currentTable.rows.length > 0);
+            if (!currentQuestion || (!isCurrentMcq && !hasSidebarTable)) return null;
 
             return (
               <div className="sq-sidebar-context-card animate-fade-in">
@@ -7591,7 +7625,7 @@ export function StudentQuizRunner({
                     <strong className="sq-sidebar-context-title">
                       Question {currentIndex + 1}
                     </strong>
-                    <span style={{ fontSize: '0.6875rem', opacity: 0.85, color: 'var(--color-primary-400)', fontWeight: 700 }}>
+                    <span className="sq-sidebar-context-marks">
                       [{currentQuestion.marks || 1}m]
                     </span>
                   </div>
@@ -7600,7 +7634,7 @@ export function StudentQuizRunner({
                       type="button"
                       className="sq-sidebar-context-btn"
                       onClick={handleScrollToQuestionStem}
-                      title="Jump down to question on page"
+                      title="Scroll to active question prompt & choices"
                     >
                       ⬇️ Focus
                     </button>
@@ -7608,61 +7642,41 @@ export function StudentQuizRunner({
                 </div>
 
                 <div className="sq-sidebar-context-body">
-                  {/* Question Stem / Prompt Text */}
-                  <div className="sq-sidebar-stem-snippet">
-                    <ExamMathText content={promptText} />
-                  </div>
+                  {promptText.trim() && (
+                    <div className="sq-sidebar-stem-snippet">
+                      <ExamMathText content={promptText} />
+                    </div>
+                  )}
 
-                  {/* 1. Multiple Choices / Multiple Select Buttons */}
-                  {isMcq && currentQuestion.options && (
-                    <div className="sq-sidebar-choices-snippet" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
-                      <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: isMultiSelect ? '#38bdf8' : 'var(--color-primary-500)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        {isMultiSelect ? '☑ Multiple Select Choices:' : 'Choices:'}
+                  {/* 1. Quick MCQ / Multiple Select Choices */}
+                  {isCurrentMcq && currentQuestion.options && (
+                    <div className="sq-sidebar-choices-snippet">
+                      <div className="sq-sidebar-section-label">
+                        {isMultiSelect ? '☑ Multiple Select Choices:' : 'Quick Choices:'}
                       </div>
                       {currentQuestion.options.map((opt, oIdx) => {
-                        const letter = String.fromCharCode(65 + oIdx);
-                        const selectedLetters: string[] = String(answers[currentIndex] || '').toUpperCase().match(/[A-Z]/g) || [];
-                        const isSelected = isMultiSelect
-                          ? selectedLetters.includes(letter)
-                          : Number(answers[currentIndex]) === oIdx;
+                        const { displayLetter, isSelected, isArabicQ } = getMcqChoiceDisplayState(
+                          currentQuestion,
+                          answers[currentIndex],
+                          oIdx,
+                          isMultiSelect
+                        );
                         return (
                           <button
                             key={oIdx}
                             type="button"
+                            className={`sq-sidebar-choice-btn ${isSelected ? 'is-selected' : ''} ${isArabicQ ? 'is-arabic' : ''}`}
                             onClick={() => handleSelectOption(oIdx)}
                             disabled={isSubmitted}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px',
-                              padding: '7px 10px',
-                              borderRadius: '8px',
-                              background: isSelected ? 'rgba(59, 130, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
-                              border: `1.5px solid ${isSelected ? '#3b82f6' : 'var(--color-border)'}`,
-                              color: isSelected ? '#38bdf8' : 'var(--color-text-primary)',
-                              cursor: isSubmitted ? 'default' : 'pointer',
-                              textAlign: 'left',
-                              fontSize: '0.8125rem',
-                              transition: 'all 0.15s ease',
-                            }}
+                            aria-pressed={isSelected}
+                            dir={isArabicQ ? 'rtl' : 'auto'}
                           >
                             <span
-                              style={{
-                                fontWeight: 800,
-                                minWidth: '20px',
-                                height: '20px',
-                                borderRadius: '4px',
-                                background: isSelected ? '#2563eb' : 'rgba(255, 255, 255, 0.08)',
-                                color: isSelected ? '#ffffff' : 'var(--color-text-secondary)',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '0.75rem',
-                              }}
+                              className={`sq-sidebar-choice-letter ${isMultiSelect ? 'is-multiselect' : ''}`}
                             >
-                              {isMultiSelect ? (isSelected ? '✓' : letter) : letter}
+                              {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
                             </span>
-                            <span style={{ flex: 1, lineHeight: '1.4' }}>
+                            <span className="sq-sidebar-choice-text">
                               <ExamMathText content={cleanOptionText(opt, oIdx)} />
                             </span>
                           </button>
@@ -7672,30 +7686,21 @@ export function StudentQuizRunner({
                   )}
 
                   {/* 2. Interactive Matching / Classification Table */}
-                  {isTable && currentTable && (
+                  {hasSidebarTable && currentTable && (
                     <div className="sq-sidebar-table-snippet">
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
-                        <div style={{ fontSize: '0.6875rem', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      <div className="sq-sidebar-table-head">
+                        <div className="sq-sidebar-section-label">
                           📊 Classification Table:
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--color-text-secondary)' }}>
+                        <div className="sq-sidebar-table-meta">
+                          <span className="sq-sidebar-table-count">
                             {Object.keys(currentTableSelections).length}/{currentTable.rows.length}
                           </span>
                           {Object.keys(currentTableSelections).length > 0 && !isSubmitted && (
                             <button
                               type="button"
+                              className="sq-sidebar-reset-btn"
                               onClick={handleClearTable}
-                              style={{
-                                background: 'none',
-                                border: 'none',
-                                color: '#ef4444',
-                                fontSize: '0.6875rem',
-                                fontWeight: 700,
-                                cursor: 'pointer',
-                                textDecoration: 'underline',
-                                padding: 0,
-                              }}
                             >
                               Reset
                             </button>
@@ -7711,7 +7716,7 @@ export function StudentQuizRunner({
                             className={`sq-sidebar-table-row ${selectedCol ? 'is-answered' : ''}`}
                           >
                             <div className="sq-sidebar-table-row-label">
-                              <span style={{ color: '#38bdf8', fontWeight: 800, marginRight: '4px' }}>{ri + 1}.</span>
+                              <span className="sq-sidebar-table-row-num">{ri + 1}.</span>
                               <ExamMathText content={row.label} />
                             </div>
                             <div className="sq-sidebar-table-options">
@@ -7723,10 +7728,11 @@ export function StudentQuizRunner({
                                     type="button"
                                     onClick={() => handleTableSelectCell(row.label, colName)}
                                     disabled={isSubmitted}
+                                    aria-pressed={isSelected}
                                     className={`sq-sidebar-table-col-btn ${isSelected ? 'is-active' : ''}`}
                                     title={`Select "${colName}" for statement ${ri + 1}`}
                                   >
-                                    {isSelected && <span style={{ fontWeight: 800 }}>✓</span>}
+                                    {isSelected && <span className="sq-sidebar-check-mark">✓</span>}
                                     <span>{colName}</span>
                                   </button>
                                 );

@@ -11,6 +11,7 @@ import { parseMcqOption } from '../utils/mcqUtils';
 import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
+import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import {
   stripDuplicateOptionsFromStem,
@@ -102,11 +103,15 @@ function formatPlainTextForPrint(raw: string): string {
   const chemFormatted = autoFormatChemistryAndMath(raw);
   const escaped = escapeHtml(chemFormatted);
   return escaped
+    // Underline markup: [u]text[/u] -> <u>text</u>
+    .replace(/\[u\]([\s\S]*?)\[\/u\]/gi, '<u>$1</u>')
+    // Markdown bold+italic: ***text*** -> <strong><em>text</em></strong>
+    .replace(/\*\*\*([^\s*](?:[^*]*?[^\s*])?)\*\*\*/g, '<strong><em>$1</em></strong>')
     // Markdown bold: **text** or __text__ -> <strong>text</strong>
     .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+?)__/g, '<strong>$1</strong>')
-    // Markdown italic: *text* -> <em>text</em>
-    .replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, '$1<em>$2</em>')
+    // Markdown italic: *text* -> <em>text</em> (ignores spaced multiplication like 3 * 4)
+    .replace(/(^|[^*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?!\*)/g, '$1<em>$2</em>')
     // Replace arrows & special math symbols
     .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──&gt; ')
     .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──&gt; ')
@@ -204,8 +209,9 @@ function formatPlainTextForPrint(raw: string): string {
  */
 export function formatLatexForHtml(text: string): string {
   if (!text) return '';
+  const cleanSource = stripPassageControlTags(text);
   // 0. Unwrap any temperature formulas enclosed in math delimiters ($78°C$ -> 78°C)
-  const unwrapTemp = text
+  const unwrapTemp = cleanSource
     .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?|\\(?:degreeC|celsius))\s*(?:\\text\{\s*C\s*\}|\\mathrm\{\s*C\s*\}|C)?\s*\$/gi, '$1°C')
     .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*(?:\\text\{\s*F\s*\}|\\mathrm\{\s*F\s*\}|F)?\s*\$/gi, '$1°F')
     .replace(/\$\s*(-?\d+(?:[.,]\d+)?)\s*(?:°|\^\{?\\(?:circ|degree)\}?)\s*\$/gi, '$1°')
@@ -778,12 +784,23 @@ export function openStudentPaperPrintWindow(
 
     ${
       headerConfig.instructions
-        ? `<div class="inst-box">
+        ? (() => {
+            const instBlocks = parseInstructionLines(headerConfig.instructions);
+            const singlePlainLine = instBlocks.length === 1 && instBlocks[0].type === 'paragraph';
+            const instRowsHtml = instBlocks
+              .map((b) =>
+                b.type === 'bullet' || singlePlainLine
+                  ? `<div style="padding-left: 14px; text-indent: -10px; margin-bottom: 2px;">• ${formatLatexForHtml(b.text)}</div>`
+                  : `<div style="margin-bottom: 3px;">${formatLatexForHtml(b.text)}</div>`
+              )
+              .join('');
+            return `<div class="inst-box">
             <div style="font-weight: bold; margin-bottom: 4px;">INSTRUCTIONS TO CANDIDATES:</div>
-            <div>• ${formatLatexForHtml(headerConfig.instructions)}</div>
-            ${headerConfig.additionalMaterials ? `<div>• Additional Materials: ${formatLatexForHtml(headerConfig.additionalMaterials)}</div>` : ''}
-            <div>• The number of marks is given in brackets [ ] at the end of each question or part question.</div>
-          </div>`
+            ${instRowsHtml}
+            ${headerConfig.additionalMaterials ? `<div style="padding-left: 14px; text-indent: -10px; margin-bottom: 2px;">• Additional Materials: ${formatLatexForHtml(headerConfig.additionalMaterials)}</div>` : ''}
+            <div style="padding-left: 14px; text-indent: -10px;">• The number of marks is given in brackets [ ] at the end of each question or part question.</div>
+          </div>`;
+          })()
         : ''
     }
     `

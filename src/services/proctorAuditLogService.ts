@@ -30,7 +30,7 @@ export interface ProctorAuditEvent {
 }
 
 const STORAGE_KEY = 'testmaker_proctor_audit_log';
-const MAX_LOCAL_EVENTS = 500;
+const MAX_LOCAL_EVENTS = 2000;
 const MAX_DETAIL_UTF8_BYTES = 960;
 
 type AuditAuthErrorListener = (detail: string) => void;
@@ -141,7 +141,7 @@ export function recordProctorAuditEvent(event: ProctorAuditEvent): void {
 }
 
 /** Rebuilds the audit log for the given quiz codes, newest first, de-duplicated by id. */
-export async function loadProctorAuditEvents(quizCodes: string[], limit = 250): Promise<ProctorAuditEvent[]> {
+export async function loadProctorAuditEvents(quizCodes: string[], limit = 1000): Promise<ProctorAuditEvent[]> {
   const codes = quizCodes.map((code) => code.trim().toUpperCase()).filter(Boolean);
   const local = readLocal().filter((event) => !codes.length || codes.includes(event.quizCode.toUpperCase()));
 

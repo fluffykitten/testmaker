@@ -1,6 +1,7 @@
 import React, { useId, useMemo } from 'react';
 import { ExamMathText } from './ExamMathText';
 import { hasInlineGaps, parseGapSegments, type GapSegment } from '../lib/inlineGapParser';
+import { stripPassageControlTags } from '../lib/readingPassageUtils';
 import './InlineGapText.css';
 
 export { hasInlineGaps, parseGapSegments, type GapSegment };
@@ -32,7 +33,8 @@ export function InlineGapText({
 }: InlineGapTextProps) {
   const compId = useId().replace(/[:]/g, '');
 
-  const segments = useMemo(() => parseGapSegments(content), [content]);
+  const cleanContent = useMemo(() => stripPassageControlTags(content, true), [content]);
+  const segments = useMemo(() => parseGapSegments(cleanContent), [cleanContent]);
 
   // Handle Tab/Enter forward jumping
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, currentGapIndex: number) => {
@@ -51,7 +53,26 @@ export function InlineGapText({
     <div className={`sq-inline-gap-container ${className}`}>
       {segments.map((seg, idx) => {
         if (seg.type === 'text') {
-          return <ExamMathText key={idx} content={seg.content || ''} />;
+          const normalized = (seg.content || '').replace(/\\n/g, '\n').replace(/\r\n/g, '\n');
+          if (!normalized) return null;
+          const leadMatch = normalized.match(/^(\n+)/);
+          const trailMatch = normalized.match(/(\n+)$/);
+          const leadCount = leadMatch ? leadMatch[1].length : 0;
+          const trailCount =
+            leadCount === normalized.length ? 0 : trailMatch ? trailMatch[1].length : 0;
+          const body = normalized.slice(leadCount, normalized.length - trailCount);
+
+          return (
+            <React.Fragment key={idx}>
+              {Array.from({ length: leadCount }).map((_, bIdx) => (
+                <br key={`lb-${idx}-${bIdx}`} />
+              ))}
+              {body.trim() ? <ExamMathText content={body} /> : body ? <span>{body}</span> : null}
+              {Array.from({ length: trailCount }).map((_, tIdx) => (
+                <br key={`tb-${idx}-${tIdx}`} />
+              ))}
+            </React.Fragment>
+          );
         }
 
         const currentGapIndex = gapIndexCounter++;

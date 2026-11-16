@@ -1,6 +1,7 @@
 import React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import { stripPassageControlTags } from '../lib/readingPassageUtils';
 import './ExamMathText.css';
 
 interface ExamMathTextProps {
@@ -355,9 +356,61 @@ function renderTextWithSubSuper(text: string): React.ReactNode {
   });
 }
 
+const INLINE_RICH_TOKEN_REGEX =
+  /(\[u\][\s\S]*?\[\/u\]|\*\*\*[^\s*][\s\S]*?\*\*\*|\*\*[^\n*][\s\S]*?\*\*|\*(?!\s)(?:[^*\n]*?\S)?\*)/i;
+
+function renderInlineRichText(text: string): React.ReactNode {
+  if (!text) return null;
+  if (!text.includes('*') && !/\[u\]/i.test(text)) {
+    return renderTextWithSubSuper(text);
+  }
+
+  const nodes: React.ReactNode[] = [];
+  let remaining = text;
+  let keyIdx = 0;
+
+  while (remaining.length > 0) {
+    const match = INLINE_RICH_TOKEN_REGEX.exec(remaining);
+    if (!match || match.index === undefined) {
+      nodes.push(<React.Fragment key={keyIdx++}>{renderTextWithSubSuper(remaining)}</React.Fragment>);
+      break;
+    }
+
+    if (match.index > 0) {
+      nodes.push(
+        <React.Fragment key={keyIdx++}>
+          {renderTextWithSubSuper(remaining.slice(0, match.index))}
+        </React.Fragment>
+      );
+    }
+
+    const token = match[0];
+    if (/^\[u\]/i.test(token) && /\[\/u\]$/i.test(token)) {
+      nodes.push(<u key={keyIdx++}>{renderInlineRichText(token.slice(3, -4))}</u>);
+    } else if (token.startsWith('***') && token.endsWith('***') && token.length > 6) {
+      nodes.push(
+        <strong key={keyIdx++}>
+          <em>{renderInlineRichText(token.slice(3, -3))}</em>
+        </strong>
+      );
+    } else if (token.startsWith('**') && token.endsWith('**') && token.length > 4) {
+      nodes.push(<strong key={keyIdx++}>{renderInlineRichText(token.slice(2, -2))}</strong>);
+    } else if (token.startsWith('*') && token.endsWith('*') && token.length > 2) {
+      nodes.push(<em key={keyIdx++}>{renderInlineRichText(token.slice(1, -1))}</em>);
+    } else {
+      nodes.push(<React.Fragment key={keyIdx++}>{renderTextWithSubSuper(token)}</React.Fragment>);
+    }
+
+    remaining = remaining.slice(match.index + token.length);
+  }
+
+  return <>{nodes}</>;
+}
+
 function renderMathSnippet(snippet: any): React.ReactNode {
   if (!snippet) return null;
   let str = typeof snippet === 'string' ? snippet : String(snippet);
+  str = stripPassageControlTags(str, true);
 
   // Normalize LaTeX delimiters first
   str = str
@@ -429,23 +482,9 @@ function renderMathSnippet(snippet: any): React.ReactNode {
       }
     }
 
-    // Parse Markdown Bold (**text**) in text snippets
+    // Parse inline Markdown Bold/Italic & [u]Underline[/u] in text snippets
     const restoredToken = restoreCurrencySymbols(token);
-    if (restoredToken.includes('**')) {
-      const boldParts = restoredToken.split(/(\*\*.*?\*\*)/g);
-      return (
-        <React.Fragment key={idx}>
-          {boldParts.map((bp, bpi) => {
-            if (bp.startsWith('**') && bp.endsWith('**') && bp.length >= 4) {
-              return <strong key={bpi}>{renderTextWithSubSuper(bp.slice(2, -2))}</strong>;
-            }
-            return renderTextWithSubSuper(bp);
-          })}
-        </React.Fragment>
-      );
-    }
-
-    return <React.Fragment key={idx}>{renderTextWithSubSuper(restoredToken)}</React.Fragment>;
+    return <React.Fragment key={idx}>{renderInlineRichText(restoredToken)}</React.Fragment>;
   });
 }
 
@@ -512,8 +551,8 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
 
   if (!strContent.trim()) return null;
 
-  // Normalize string: convert literal '\n' string to actual newline
-  const normalized = strContent.replace(/\\n/g, '\n');
+  // Normalize string: convert literal '\n' string to actual newline and strip passage directives
+  const normalized = stripPassageControlTags(strContent.replace(/\\n/g, '\n'), true);
 
   // Split by markdown table patterns
   const lines = normalized.split('\n');

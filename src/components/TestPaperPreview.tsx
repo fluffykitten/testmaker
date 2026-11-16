@@ -2,6 +2,7 @@ import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { ExamMathText } from './ExamMathText';
 import { parseMcqOption } from '../utils/mcqUtils';
+import { parseInstructionLines } from '../lib/readingPassageUtils';
 import {
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
@@ -94,7 +95,11 @@ export function TestPaperPreview({
           <div className="exam-instructions-box">
             <p className="exam-inst-title">INSTRUCTIONS</p>
             <ul className="exam-inst-list">
-              <li>{headerConfig.instructions}</li>
+              {parseInstructionLines(headerConfig.instructions || '').map((item, idx) => (
+                <li key={idx}>
+                  <ExamMathText content={item.text} />
+                </li>
+              ))}
               {headerConfig.additionalMaterials && (
                 <li>Additional materials: {headerConfig.additionalMaterials}</li>
               )}

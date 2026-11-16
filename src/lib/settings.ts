@@ -4,6 +4,11 @@ import {
   DEFAULT_SECURITY_TIERS,
   normalizeSecurityTiers,
 } from './securityTiers';
+import {
+  type TopicMasteryTier,
+  DEFAULT_TOPIC_MASTERY_TIERS,
+  normalizeTopicMasteryTiers,
+} from './topicMastery';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type AccentColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'sky';
@@ -36,6 +41,7 @@ export interface AppSettings {
   hideEmergencyExamButton?: boolean;      // Hide Emergency Save & Exit button during student exams (default: false)
   allowTeacherAccountClaiming?: boolean;  // Allow creating/claiming teacher accounts from login screen (default: false)
   securityTiers?: SecurityViolationTier[]; // Dynamic list of strike escalation penalty tiers
+  topicMasteryTiers?: TopicMasteryTier[];  // Dynamic list of topic mastery performance bands
   geminiExtractionModel?: string;         // AI Model for Paper Extraction: 'gemini-3.5-flash-lite' | 'gemini-3.8-flash' | custom model
   geminiApiKeyTier?: GeminiApiKeyTier;    // Active Cloudflare-configured API Key Tier: 'auto' | 'paid' | 'free'
 }
@@ -90,6 +96,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hideEmergencyExamButton: false,
   allowTeacherAccountClaiming: false,
   securityTiers: DEFAULT_SECURITY_TIERS,
+  topicMasteryTiers: DEFAULT_TOPIC_MASTERY_TIERS,
   geminiExtractionModel: 'gemini-3.5-flash-lite',
   geminiApiKeyTier: 'auto',
 };
@@ -164,6 +171,7 @@ export function getSavedSettings(): AppSettings {
         ...parsed,
         googleDriveClientId: localId,
         securityTiers: parsed.securityTiers ? normalizeSecurityTiers(parsed.securityTiers) : DEFAULT_SECURITY_TIERS,
+        topicMasteryTiers: parsed.topicMasteryTiers ? normalizeTopicMasteryTiers(parsed.topicMasteryTiers) : DEFAULT_TOPIC_MASTERY_TIERS,
       };
     }
   } catch (e) {
@@ -965,6 +973,96 @@ export async function loadAndSyncSecurityTiers(): Promise<SecurityViolationTier[
     }
   } catch (err) {
     console.warn('Could not fetch security escalation tiers from cloud:', err);
+  }
+
+  return localVal;
+}
+
+const CLOUD_TOPIC_MASTERY_KEY = 'topic_mastery_tiers';
+
+/**
+ * Retrieves the currently configured topic mastery performance tiers.
+ * Safe in non-browser environments (returns defaults when localStorage is unavailable).
+ */
+export function getTopicMasteryTiers(): TopicMasteryTier[] {
+  if (typeof localStorage === 'undefined') {
+    return DEFAULT_TOPIC_MASTERY_TIERS.map((t) => ({ ...t }));
+  }
+  const current = getSavedSettings();
+  return normalizeTopicMasteryTiers(current.topicMasteryTiers);
+}
+
+/**
+ * Saves topic mastery tiers to local settings and syncs to Supabase app_config store.
+ */
+export function saveTopicMasteryTiers(tiers: TopicMasteryTier[]): void {
+  const normalized = normalizeTopicMasteryTiers(tiers);
+  const current = getSavedSettings();
+  saveSettings({
+    ...current,
+    topicMasteryTiers: normalized,
+  });
+  syncTopicMasteryTiersToCloud(normalized).catch(() => {});
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('topic_mastery_tiers_updated', {
+        detail: { topicMasteryTiers: normalized },
+      })
+    );
+  }
+}
+
+/**
+ * Syncs topic mastery tiers to Supabase app_config store.
+ */
+export async function syncTopicMasteryTiersToCloud(tiers: TopicMasteryTier[]): Promise<boolean> {
+  try {
+    const { error } = await (supabase.from('app_config' as any) as any).upsert({
+      key: CLOUD_TOPIC_MASTERY_KEY,
+      value: JSON.stringify(tiers),
+    });
+    if (error) {
+      console.warn('Topic mastery tiers cloud sync notice:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('Cloud sync error for topic mastery tiers:', err);
+    return false;
+  }
+}
+
+/**
+ * Loads topic mastery tiers from local storage, fetches cloud app_config updates if present,
+ * and updates local cache.
+ */
+export async function loadAndSyncTopicMasteryTiers(): Promise<TopicMasteryTier[]> {
+  const current = getSavedSettings();
+  const localVal = normalizeTopicMasteryTiers(current.topicMasteryTiers);
+
+  try {
+    const { data, error } = (await (supabase.from('app_config' as any) as any)
+      .select('value')
+      .eq('key', CLOUD_TOPIC_MASTERY_KEY)
+      .maybeSingle()) as { data: { value: string } | null; error: any };
+
+    if (!error && data?.value !== undefined && data?.value !== null) {
+      const cloudVal = normalizeTopicMasteryTiers(JSON.parse(data.value));
+      if (JSON.stringify(localVal) !== JSON.stringify(cloudVal)) {
+        const updated = { ...current, topicMasteryTiers: cloudVal };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('topic_mastery_tiers_updated', {
+              detail: { topicMasteryTiers: cloudVal },
+            })
+          );
+        }
+      }
+      return cloudVal;
+    }
+  } catch (err) {
+    console.warn('Could not fetch topic mastery tiers from cloud:', err);
   }
 
   return localVal;

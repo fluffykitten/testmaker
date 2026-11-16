@@ -35,6 +35,16 @@ import { ExamAudioPlayer } from './ExamAudioPlayer';
 import { ExamVisualRender } from './ExamVisualRender';
 import { InlineGapText, hasInlineGaps } from './InlineGapText';
 import {
+  PASSAGE_OPEN_TAG,
+  PASSAGE_CLOSE_TAG,
+  hasExplicitPassageMarkers,
+  hasNoPassageDirective,
+  toggleNoPassageDirective,
+  clearPassageMarkers,
+  wrapSelectionWithToken,
+  splitPassageAndPrompt,
+} from '../lib/readingPassageUtils';
+import {
   generateExamDiagram,
   suggestDiagramPrompt,
   resolveStylePreset,
@@ -206,9 +216,40 @@ export function QuestionEditorModal({
   const [isLoadingAudioLibrary, setIsLoadingAudioLibrary] = useState<boolean>(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const subTextareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({});
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioFileInputRef = useRef<HTMLInputElement>(null);
   const backdropDismiss = useBackdropDismiss(onClose);
+
+  type EditorTarget = { kind: 'main' } | { kind: 'sub'; subIndex: number };
+  interface EditorContextMenuState {
+    x: number;
+    y: number;
+    target: EditorTarget;
+    selStart: number;
+    selEnd: number;
+    hasSelection: boolean;
+  }
+  const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
+
+  // Dismiss editor right-click context menu on outside click or Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleOutside = (ev: MouseEvent) => {
+      if (contextMenuRef.current && contextMenuRef.current.contains(ev.target as Node)) return;
+      setContextMenu(null);
+    };
+    const handleKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [contextMenu]);
 
   // Load available TTS voices on mount
   useEffect(() => {
@@ -478,6 +519,89 @@ export function QuestionEditorModal({
       elem.focus();
       elem.setSelectionRange(start + token.length, start + token.length);
     }, 50);
+  };
+
+  // Apply rich formatting, math/gap wrap, or passage markers on active textarea selection
+  const applySelectionFormat = (
+    target: EditorTarget,
+    openTag: string,
+    closeTag: string,
+    placeholder = 'text',
+    explicitRange?: { start: number; end: number }
+  ) => {
+    const elem = target.kind === 'main' ? textareaRef.current : subTextareaRefs.current[target.subIndex] || null;
+    const currentVal = target.kind === 'main' ? questionText : (subQuestions[target.subIndex]?.question_text || '');
+    const selStart = explicitRange ? explicitRange.start : (elem ? elem.selectionStart : currentVal.length);
+    const selEnd = explicitRange ? explicitRange.end : (elem ? elem.selectionEnd : currentVal.length);
+
+    let workingText = currentVal;
+    let workingStart = selStart;
+    let workingEnd = selEnd;
+
+    // If explicitly wrapping a reading passage on a stem marked [no_passage], clear [no_passage] cleanly first
+    if (openTag === PASSAGE_OPEN_TAG && hasNoPassageDirective(workingText)) {
+      const stripped = workingText.replace(/\[no_passage\][ \t]*\n?/gi, '');
+      const removedLen = workingText.length - stripped.length;
+      workingText = stripped;
+      workingStart = Math.max(0, workingStart - removedLen);
+      workingEnd = Math.max(workingStart, workingEnd - removedLen);
+    }
+
+    const res = wrapSelectionWithToken(workingText, workingStart, workingEnd, openTag, closeTag, placeholder);
+    if (target.kind === 'main') {
+      setQuestionText(res.nextText);
+    } else {
+      handleUpdateSubQuestion(target.subIndex, { question_text: res.nextText });
+    }
+
+    setContextMenu(null);
+    setTimeout(() => {
+      if (elem) {
+        elem.focus();
+        elem.setSelectionRange(res.nextSelStart, res.nextSelEnd);
+      }
+    }, 20);
+  };
+
+  const handleTextareaContextMenu = (
+    e: React.MouseEvent<HTMLTextAreaElement>,
+    target: EditorTarget
+  ) => {
+    e.preventDefault();
+    const elem = e.currentTarget;
+    const menuWidth = 264;
+    const menuHeight = target.kind === 'main' ? 420 : 290;
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuWidth - 12));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuHeight - 12));
+    setContextMenu({
+      x,
+      y,
+      target,
+      selStart: elem.selectionStart,
+      selEnd: elem.selectionEnd,
+      hasSelection: elem.selectionEnd > elem.selectionStart,
+    });
+  };
+
+  const handleTextareaKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    target: EditorTarget
+  ) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const key = e.key.toLowerCase();
+    if (key === 'b') {
+      e.preventDefault();
+      applySelectionFormat(target, '**', '**', 'bold text');
+    } else if (key === 'i') {
+      e.preventDefault();
+      applySelectionFormat(target, '*', '*', 'italic text');
+    } else if (key === 'u') {
+      e.preventDefault();
+      applySelectionFormat(target, '[u]', '[/u]', 'underlined text');
+    } else if (key === 'm') {
+      e.preventDefault();
+      applySelectionFormat(target, '$', '$', 'x');
+    }
   };
 
   // Sub-question management
@@ -1123,10 +1247,57 @@ export function QuestionEditorModal({
           {/* TAB 1: Stem & Math */}
           {activeTab === 'stem' && (
             <div className="q-editor-tab-content animate-fade-in">
-              {/* LaTeX Math & Chem Toolbar */}
+              {/* LaTeX Math, Formatting & Passage Toolbar */}
               <div className="q-math-toolbar">
-                <span className="q-toolbar-label">Quick Insert:</span>
+                <span className="q-toolbar-label">Format &amp; Insert:</span>
                 <div className="q-toolbar-chips">
+                  <button
+                    type="button"
+                    className="q-toolbar-btn"
+                    onClick={() => applySelectionFormat({ kind: 'main' }, '**', '**', 'bold text')}
+                    title="Bold selection (Ctrl+B): **text**"
+                  >
+                    <strong>B</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className="q-toolbar-btn"
+                    onClick={() => applySelectionFormat({ kind: 'main' }, '*', '*', 'italic text')}
+                    title="Italic selection (Ctrl+I): *text*"
+                  >
+                    <em>I</em>
+                  </button>
+                  <button
+                    type="button"
+                    className="q-toolbar-btn"
+                    onClick={() => applySelectionFormat({ kind: 'main' }, '[u]', '[/u]', 'underlined text')}
+                    title="Underline selection (Ctrl+U): [u]text[/u]"
+                  >
+                    <u>U</u>
+                  </button>
+                  <button
+                    type="button"
+                    className={`q-toolbar-btn ${hasExplicitPassageMarkers(questionText) ? 'q-toolbar-btn--active' : ''}`}
+                    onClick={() =>
+                      applySelectionFormat(
+                        { kind: 'main' },
+                        PASSAGE_OPEN_TAG,
+                        PASSAGE_CLOSE_TAG,
+                        'Reading passage text here...'
+                      )
+                    }
+                    title="Mark selected text as explicit Reading Passage start & end ([passage]...[/passage])"
+                  >
+                    📖 Mark Passage
+                  </button>
+                  <button
+                    type="button"
+                    className={`q-toolbar-btn ${hasNoPassageDirective(questionText) ? 'q-toolbar-btn--warn' : ''}`}
+                    onClick={() => setQuestionText((prev) => toggleNoPassageDirective(prev))}
+                    title="Toggle [no_passage] to keep stem together and block auto-passage split/inheritance"
+                  >
+                    {hasNoPassageDirective(questionText) ? '🚫 No Passage: ON' : '🚫 No Passage'}
+                  </button>
                   {MATH_TOOLBAR_ITEMS.map((item, idx) => (
                     <button
                       key={idx}
@@ -1145,7 +1316,7 @@ export function QuestionEditorModal({
               <div className="q-editor-split">
                 <div className="q-editor-split-col">
                   <label className="q-editor-label" htmlFor="q-stem-input">
-                    Question Stem Text (Supports LaTeX between <code>$...$</code> and Markdown tables):
+                    Question Stem Text (Right-click selected text to Bold/Italic/Mark Passage · Ctrl+B/I/U):
                   </label>
                   <textarea
                     id="q-stem-input"
@@ -1153,6 +1324,8 @@ export function QuestionEditorModal({
                     className="q-editor-textarea"
                     value={questionText}
                     onChange={(e) => setQuestionText(e.target.value)}
+                    onContextMenu={(e) => handleTextareaContextMenu(e, { kind: 'main' })}
+                    onKeyDown={(e) => handleTextareaKeyDown(e, { kind: 'main' })}
                     placeholder="Enter question text... (e.g. Calculate the mass of $CaCO_3$ required...)"
                     rows={8}
                   />
@@ -1165,12 +1338,40 @@ export function QuestionEditorModal({
                       : 'Live Formatted Preview:'}
                   </span>
                   <div className="q-editor-preview-box">
+                    {hasExplicitPassageMarkers(questionText) && (
+                      <div className="q-editor-passage-pill q-editor-passage-pill--marked">
+                        📖 Explicit Reading Passage Marked (`[passage]...[/passage]`)
+                      </div>
+                    )}
+                    {hasNoPassageDirective(questionText) && (
+                      <div className="q-editor-passage-pill q-editor-passage-pill--disabled">
+                        🚫 Auto-Passage Split &amp; Inheritance Disabled (`[no_passage]`)
+                      </div>
+                    )}
                     {questionText.trim() ? (
                       questionStyle === 'Fill in the Blank' || hasInlineGaps(questionText) ? (
                         <InlineGapText content={questionText} isReadOnly={false} />
-                      ) : (
-                        <ExamMathText content={questionText} />
-                      )
+                      ) : (() => {
+                        const previewParts = splitPassageAndPrompt(questionText, undefined, {
+                          allowParagraphHeuristic: false,
+                        });
+                        if (previewParts.explicitMode === 'explicit_block' && previewParts.passageText) {
+                          return (
+                            <div className="q-editor-passage-preview-split">
+                              <div className="q-editor-passage-preview-card">
+                                <div className="q-editor-passage-preview-title">📖 Reading Passage</div>
+                                <ExamMathText content={previewParts.passageText} />
+                              </div>
+                              {previewParts.promptText && (
+                                <div className="q-editor-passage-preview-prompt">
+                                  <ExamMathText content={previewParts.promptText} />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+                        return <ExamMathText content={questionText} />;
+                      })()
                     ) : (
                       <span className="q-editor-preview-placeholder">Live KaTeX math preview will render here...</span>
                     )}
@@ -1704,9 +1905,14 @@ export function QuestionEditorModal({
                               <div className="q-editor-sub-input-col">
                                 <label className="q-editor-sub-label">Sub-part Question Text (LaTeX supported):</label>
                                 <textarea
+                                  ref={(el) => {
+                                    subTextareaRefs.current[si] = el;
+                                  }}
                                   className="q-editor-textarea q-editor-textarea--sm"
                                   value={sub.question_text}
                                   onChange={(e) => handleUpdateSubQuestion(si, { question_text: e.target.value })}
+                                  onContextMenu={(e) => handleTextareaContextMenu(e, { kind: 'sub', subIndex: si })}
+                                  onKeyDown={(e) => handleTextareaKeyDown(e, { kind: 'sub', subIndex: si })}
                                   placeholder="e.g. State the formula of hydrochloric acid..."
                                   rows={3}
                                 />
@@ -2929,6 +3135,168 @@ export function QuestionEditorModal({
           </div>
         </div>
       </div>
+
+      {/* ─── Right-Click Formatting & Passage Context Menu ─────────────────── */}
+      {contextMenu && (() => {
+        const range = { start: contextMenu.selStart, end: contextMenu.selEnd };
+        const isMain = contextMenu.target.kind === 'main';
+        const activeText = isMain
+          ? questionText
+          : (subQuestions[(contextMenu.target as { kind: 'sub'; subIndex: number }).subIndex]?.question_text || '');
+        const hasAnyPassageTag = hasExplicitPassageMarkers(activeText) || hasNoPassageDirective(activeText);
+
+        return (
+          <div
+            ref={contextMenuRef}
+            className="q-editor-context-menu"
+            role="menu"
+            aria-label="Text Formatting Menu"
+            style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="q-ctx-header">
+              {contextMenu.hasSelection ? 'Format Selection' : 'Insert Formatting'}
+            </div>
+
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '**', '**', 'bold text', range)}
+            >
+              <span><strong>B</strong> Bold</span>
+              <kbd>Ctrl+B</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '*', '*', 'italic text', range)}
+            >
+              <span><em>I</em> Italic</span>
+              <kbd>Ctrl+I</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '[u]', '[/u]', 'underlined text', range)}
+            >
+              <span><u>U</u> Underline</span>
+              <kbd>Ctrl+U</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '^{', '}', '2', range)}
+            >
+              <span>x² Superscript</span>
+              <kbd>^{'{ }'}</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '_{', '}', '2', range)}
+            >
+              <span>x₂ Subscript</span>
+              <kbd>_{'{ }'}</kbd>
+            </button>
+
+            <div className="q-ctx-divider" />
+
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '$', '$', 'x', range)}
+            >
+              <span>∑ Inline Math</span>
+              <kbd>Ctrl+M</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '\n$$\n', '\n$$\n', 'E = mc^2', range)}
+            >
+              <span>📐 Block Equation</span>
+              <kbd>$$</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, ' [1] ', '', '', range)}
+            >
+              <span>✍️ Blank Gap [1]</span>
+              <kbd>[1]</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="q-ctx-item"
+              onClick={() => applySelectionFormat(contextMenu.target, '[', '|distractor]', 'answer', range)}
+            >
+              <span>▾ Dropdown Cloze</span>
+              <kbd>[a|b]</kbd>
+            </button>
+
+            {isMain && (
+              <>
+                <div className="q-ctx-divider" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="q-ctx-item q-ctx-item--accent"
+                  onClick={() =>
+                    applySelectionFormat(
+                      contextMenu.target,
+                      PASSAGE_OPEN_TAG,
+                      PASSAGE_CLOSE_TAG,
+                      'Reading passage text here...',
+                      range
+                    )
+                  }
+                >
+                  <span>📖 Mark as Reading Passage</span>
+                  <kbd>[passage]</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="q-ctx-item q-ctx-item--warn"
+                  onClick={() => {
+                    setQuestionText((prev) => toggleNoPassageDirective(prev));
+                    setContextMenu(null);
+                  }}
+                >
+                  <span>
+                    {hasNoPassageDirective(activeText)
+                      ? '✅ Allow Auto Reading Passage'
+                      : '🚫 Mark as No Reading Passage'}
+                  </span>
+                  <kbd>[no_passage]</kbd>
+                </button>
+                {hasAnyPassageTag && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="q-ctx-item"
+                    onClick={() => {
+                      setQuestionText((prev) => clearPassageMarkers(prev));
+                      setContextMenu(null);
+                    }}
+                  >
+                    <span>🧹 Clear Passage Markers</span>
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ─── Diagram Fine-Tuner Modal ─────────────────────────────────────── */}
       {isCropModalOpen && (

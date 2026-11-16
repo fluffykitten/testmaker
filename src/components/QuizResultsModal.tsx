@@ -13,6 +13,7 @@ import {
   ingestEmergencySubmissionBatch,
   exportAllSubmissionsExcel,
   exportSingleSubmissionExcel,
+  exportBatchSingleSubmissionsExcelZip,
   formatProctorTimestamp,
   formatSubmissionDateTime,
   formatCandidateAnswer,
@@ -56,6 +57,7 @@ import {
   type GradeLetter,
 } from '../utils/gradeThresholdUtils';
 import { savePublishedQuiz } from '../services/quizManagerService';
+import { getTopicMasteryTiers, loadAndSyncTopicMasteryTiers } from '../lib/settings';
 import './QuizResultsModal.css';
 
 interface QuizResultsModalProps {
@@ -98,6 +100,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
   const [sortBy, setSortBy] = useState<'score-desc' | 'score-asc' | 'name-asc' | 'strikes-desc'>('score-desc');
   const [showMarkSchemeInReports, setShowMarkSchemeInReports] = useState<boolean>(true);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState<boolean>(false);
+  const [isBatchExcelExporting, setIsBatchExcelExporting] = useState<boolean>(false);
+  const [batchExcelProgress, setBatchExcelProgress] = useState<{ completed: number; total: number } | null>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1024,8 +1028,34 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     });
   };
 
-  const handleExportSingleExcel = (sub: StudentSubmission) => {
-    exportSingleSubmissionExcel(sub, { gradeThresholds: currentQuiz.gradeThresholds });
+  const handleExportSingleExcel = async (sub: StudentSubmission) => {
+    const tiers = await loadAndSyncTopicMasteryTiers().catch(() => getTopicMasteryTiers());
+    await exportSingleSubmissionExcel(sub, {
+      gradeThresholds: currentQuiz.gradeThresholds,
+      masteryTiers: tiers,
+    });
+  };
+
+  const handleExportBatchSingleExcel = async () => {
+    if (isBatchExcelExporting) return;
+    setIsBatchExcelExporting(true);
+    setBatchExcelProgress({ completed: 0, total: stats.count || submissions.length });
+    try {
+      const tiers = await loadAndSyncTopicMasteryTiers().catch(() => getTopicMasteryTiers());
+      await exportBatchSingleSubmissionsExcelZip(submissions, {
+        quizTitle: currentQuiz.title || currentQuiz.quizCode,
+        selectedClass,
+        gradeThresholds: currentQuiz.gradeThresholds,
+        masteryTiers: tiers,
+        onProgress: (completed, total) => setBatchExcelProgress({ completed, total }),
+      });
+      setIsExportMenuOpen(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to generate batch individual Excel archive.');
+    } finally {
+      setIsBatchExcelExporting(false);
+      setBatchExcelProgress(null);
+    }
   };
 
   const handleStartEditing = (qr: QuestionSubmissionResult) => {
@@ -1410,6 +1440,23 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                         <div className="qrm-popover-item-text">
                           <strong>Batch 1-Page Reports (PDF)</strong>
                           <span>Individual report cards for {stats.count} candidates</span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="qrm-popover-item"
+                        disabled={isBatchExcelExporting}
+                        onClick={handleExportBatchSingleExcel}
+                      >
+                        <span className="qrm-popover-icon excel">🗂️</span>
+                        <div className="qrm-popover-item-text">
+                          <strong>
+                            {isBatchExcelExporting && batchExcelProgress
+                              ? `Packaging Excel ZIP (${batchExcelProgress.completed}/${batchExcelProgress.total})…`
+                              : 'Batch Individual Reports (Excel .zip)'}
+                          </strong>
+                          <span>Individual .xlsx workbooks with Topic Mastery for {stats.count} candidates</span>
                         </div>
                       </button>
 

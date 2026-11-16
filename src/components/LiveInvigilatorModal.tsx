@@ -28,6 +28,22 @@ import {
   loadProctorAuditEvents,
   onProctorAuditAuthError,
 } from '../services/proctorAuditLogService';
+import {
+  OVERDUE_LOCK_THRESHOLD_MS,
+  reconcileStudentLockTimestamp,
+  getLockedDurationMs,
+  formatLockedDuration,
+  computeWaitCompensationMinutes,
+  findOverdueLockedStudents,
+  filterProctorLogs,
+  upsertProctorAlertToast,
+  getPriorityTriageRank,
+  type ProctorLogCategory,
+  type ProctorAlertSoundMode,
+  type ProctorAlertScopeMode,
+  type ProctorAlertToast,
+} from '../lib/proctorAlertEngine';
+import { exportProctorAuditLogExcelICM } from '../services/icmExcelExportService';
 import { supabase, hasActiveTeacherSession } from '../lib/supabase';
 import { getSchoolClasses } from '../lib/settings';
 import {
@@ -43,7 +59,51 @@ export interface LiveInvigilatorModalProps {
   onClose: () => void;
 }
 
-export type ProctorSortOption = 'class_seat' | 'status' | 'name' | 'progress' | 'time_left' | 'violations';
+export type ProctorSortOption =
+  | 'priority'
+  | 'class_seat'
+  | 'status'
+  | 'name'
+  | 'progress'
+  | 'time_left'
+  | 'violations';
+
+function playProctorChime(kind: 'violation' | 'locked' | 'locked_overdue'): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const AudioCtx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const notes =
+      kind === 'locked_overdue'
+        ? [880, 660, 880, 1046]
+        : kind === 'locked'
+          ? [784, 587]
+          : [659];
+
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = kind === 'locked_overdue' ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.13);
+      gain.gain.setValueAtTime(0.001, now + idx * 0.13);
+      gain.gain.exponentialRampToValueAtTime(0.11, now + idx * 0.13 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.13 + 0.11);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.13);
+      osc.stop(now + idx * 0.13 + 0.12);
+    });
+
+    setTimeout(() => {
+      void ctx.close().catch(() => { });
+    }, notes.length * 160 + 200);
+  } catch {
+    // Ignore Web Audio errors when autoplay is blocked before interaction
+  }
+}
 
 const normalizeName = (value?: string) => (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 
@@ -98,7 +158,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       if (list && list.length > 0) {
         setSchoolRoster(list);
       }
-    }).catch(() => {});
+    }).catch(() => { });
   }, []);
   const [sortBy, setSortBy] = useState<ProctorSortOption>('class_seat');
   const [searchQuery, setSearchQuery] = useState('');
@@ -112,6 +172,24 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [announcementText, setAnnouncementText] = useState('');
   const [announcementSuccess, setAnnouncementSuccess] = useState(false);
   const [showLogDrawer, setShowLogDrawer] = useState(false);
+  const [logScopeMode, setLogScopeMode] = useState<'current_scope' | 'whole_school'>('current_scope');
+  const [logCategory, setLogCategory] = useState<ProctorLogCategory>('all');
+  const [logSearch, setLogSearch] = useState('');
+  const [selectedStudentLogKey, setSelectedStudentLogKey] = useState<string | null>(null);
+  const [directNoticeTargetKey, setDirectNoticeTargetKey] = useState<string | null>(null);
+  const [directNoticeText, setDirectNoticeText] = useState('');
+  const [directNoticeSent, setDirectNoticeSent] = useState(false);
+  const [alertToasts, setAlertToasts] = useState<ProctorAlertToast[]>([]);
+  const [alertSoundMode, setAlertSoundMode] = useState<ProctorAlertSoundMode>('all');
+  const [alertScopeMode, setAlertScopeMode] = useState<ProctorAlertScopeMode>('selected_scope');
+  const [unreadViolationsByClass, setUnreadViolationsByClass] = useState<Record<string, number>>({});
+  const [focusedStudentKey, setFocusedStudentKey] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const cardRefs = useRef<Record<string, HTMLElement | null>>({});
+  const alertedOverdueEpisodeRef = useRef<Record<string, number>>({});
+  const alertScopeRef = useRef({ alertScopeMode, alertSoundMode, sidebarMode, selectedKey, secondaryFilter });
+  alertScopeRef.current = { alertScopeMode, alertSoundMode, sidebarMode, selectedKey, secondaryFilter };
   const [cloudAuthWarning, setCloudAuthWarning] = useState<string | null>(null);
 
   // Verify live teacher cloud session on mount and subscribe to RLS auth failures
@@ -268,7 +346,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       if (Object.keys(localLoaded).length > 0) {
         setStudents((prev) => ({ ...localLoaded, ...prev }));
       }
-    } catch {}
+    } catch { }
 
     // B. Cloud submissions sync
     loadAndSyncAllSubmissions()
@@ -321,7 +399,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           });
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [monitoredCodesKey, monitoredQuizzes]);
 
   // ─── 1B. Micro-Batch Heartbeats Flush (300ms window for high-volume 200+ concurrency) ─
@@ -348,11 +426,18 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           const pardoned = Boolean(pardonedAtRef.current[compKey]);
           if (pardoned) delete pardonedAtRef.current[compKey];
 
+          const nowBeatMs = incoming.lastHeartbeat || Date.now();
+          const reconciledLockedSince = reconcileStudentLockTimestamp(existing, incoming, nowBeatMs);
+          if (incoming.status !== 'locked' && existing?.status === 'locked') {
+            delete alertedOverdueEpisodeRef.current[compKey];
+          }
+
           next[compKey] = {
             ...existing,
             ...incoming,
             ...bounds,
-            lastHeartbeat: incoming.lastHeartbeat || Date.now(),
+            lastHeartbeat: nowBeatMs,
+            lockedSince: reconciledLockedSince,
             violationsCount: highWaterViolations(existing?.violationsCount, bounds.violationsCount, pardoned),
           };
           changed = true;
@@ -432,8 +517,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
               recovered.push({
                 id: `recov_${compKey}_${idx}_${v.timestamp || Date.now()}`,
                 timestamp: v.timestamp || new Date().toISOString(),
+                studentId: canonicalId,
                 studentName: student.studentName,
                 candidateNumber: student.candidateNumber,
+                candidateClass: student.candidateClass,
                 quizCode: qCode,
                 quizTitle: student.quizTitle || quizByCode[qCode]?.title,
                 type: (v.type as any) || 'blur',
@@ -450,7 +537,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           const merged = [...recovered, ...prev].sort(
             (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
           );
-          return merged.slice(0, 250);
+          return merged.slice(0, 1000);
         });
       }
     };
@@ -475,23 +562,105 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
       const enriched: ProctorLogEvent = {
         ...event,
+        studentId: canonicalId,
         quizCode: qCode,
         quizTitle: event.quizTitle || quizByCode[qCode]?.title,
       };
-      setLogEvents((prev) => [enriched, ...prev.slice(0, 249)]);
+      setLogEvents((prev) => [enriched, ...prev.slice(0, 999)]);
+
+      // Live violation / lock notification & unread badge updates
+      const isAlertableViolation =
+        enriched.type === 'blur' ||
+        enriched.type === 'tab_switch' ||
+        enriched.type === 'fullscreen_exit' ||
+        enriched.type === 'multi_monitor' ||
+        enriched.type === 'shortcut' ||
+        enriched.type === 'exceeded_limit' ||
+        enriched.type === 'locked' ||
+        (enriched.type as string) === 'blocked_shortcut';
+
+      if (isAlertableViolation) {
+        const clsKey = (enriched.candidateClass || '').trim() || 'Unassigned';
+        setUnreadViolationsByClass((prev) => ({
+          ...prev,
+          [clsKey]: (prev[clsKey] || 0) + 1,
+        }));
+
+        // Stamp lockedSince immediately if a 'locked' event arrives before the next periodic heartbeat
+        if (enriched.type === 'locked') {
+          setStudents((prev) => {
+            const cur = prev[compKey];
+            if (!cur || (cur.status === 'locked' && cur.lockedSince)) return prev;
+            return {
+              ...prev,
+              [compKey]: {
+                ...cur,
+                status: 'locked',
+                lockedSince: cur.lockedSince || Date.now(),
+                lockReason: enriched.detail || cur.lockReason,
+              },
+            };
+          });
+        }
+
+        const scopeCfg = alertScopeRef.current;
+        const inSelectedScope = (() => {
+          if (scopeCfg.alertScopeMode === 'whole_school' || scopeCfg.selectedKey === '__ALL__') {
+            return true;
+          }
+          if (scopeCfg.sidebarMode === 'class') {
+            if (clsKey !== scopeCfg.selectedKey) return false;
+            if (scopeCfg.secondaryFilter !== 'all' && qCode !== scopeCfg.secondaryFilter.toUpperCase()) {
+              return false;
+            }
+            return true;
+          }
+          if (qCode !== scopeCfg.selectedKey.toUpperCase()) return false;
+          if (scopeCfg.secondaryFilter !== 'all' && clsKey !== scopeCfg.secondaryFilter) return false;
+          return true;
+        })();
+
+        if (inSelectedScope) {
+          const isLockToast = enriched.type === 'locked' || enriched.severity === 'critical';
+          const toastKind: ProctorAlertToast['kind'] = enriched.type === 'locked' ? 'locked' : 'violation';
+          const toastId = `toast_${compKey}_${toastKind}_${Date.now()}`;
+
+          setAlertToasts((prev) =>
+            upsertProctorAlertToast(prev, {
+              id: toastId,
+              compositeKey: compKey,
+              quizCode: qCode,
+              studentId: canonicalId,
+              studentName: enriched.studentName,
+              candidateNumber: enriched.candidateNumber,
+              candidateClass: enriched.candidateClass,
+              kind: toastKind,
+              severity: isLockToast ? 'critical' : 'warning',
+              title:
+                enriched.type === 'locked'
+                  ? 'Candidate Lock Screen Triggered'
+                  : enriched.severity === 'critical'
+                    ? 'Critical Security Violation'
+                    : 'Candidate Security Notice',
+              detail: enriched.detail,
+              createdAt: Date.now(),
+            })
+          );
+
+          if (
+            scopeCfg.alertSoundMode === 'all' ||
+            (scopeCfg.alertSoundMode === 'critical_only' && isLockToast)
+          ) {
+            playProctorChime(enriched.type === 'locked' ? 'locked' : 'violation');
+          }
+        }
+      }
 
       // Persist discrete student events so a reload does not erase them (P1-C).
       recordProctorAuditEvent({
         id: enriched.id,
         quizCode: qCode,
-        studentId:
-          enriched.studentId ||
-          getCanonicalProctorStudentId({
-            quizCode: qCode,
-            studentName: enriched.studentName,
-            candidateNumber: enriched.candidateNumber,
-            studentClass: enriched.candidateClass,
-          }),
+        studentId: canonicalId,
         studentName: enriched.studentName,
         candidateNumber: enriched.candidateNumber,
         candidateClass: enriched.candidateClass,
@@ -514,7 +683,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     // Rebuild the violation/intervention trail after a reload or on a second invigilator's
     // machine (P1-C). Events already on screen are skipped by id.
-    void loadProctorAuditEvents(codes).then((events) => {
+    void loadProctorAuditEvents(codes, 1000).then((events) => {
       if (!events.length) return;
       setLogEvents((prev) => {
         const seen = new Set(prev.map((entry) => entry.id));
@@ -523,8 +692,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           .map((entry) => ({
             id: entry.id,
             timestamp: entry.createdAt,
+            studentId: entry.studentId,
             studentName: entry.studentName,
             candidateNumber: entry.candidateNumber,
+            candidateClass: entry.candidateClass,
             quizCode: entry.quizCode,
             type: entry.eventType as ProctorLogEvent['type'],
             detail: entry.detail,
@@ -533,7 +704,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         if (!restored.length) return prev;
         return [...restored, ...prev]
           .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-          .slice(0, 250);
+          .slice(0, 1000);
       });
     });
 
@@ -562,6 +733,46 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     return () => clearInterval(interval);
   }, []);
+
+  // ─── 2A. Live Lock-Screen Wait Ticker & >1 Minute Escalation Sweep ─────────
+  const hasAnyLockedCandidate = useMemo(
+    () => Object.values(students).some((s) => s.status === 'locked'),
+    [students]
+  );
+
+  useEffect(() => {
+    if (!hasAnyLockedCandidate) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [hasAnyLockedCandidate]);
+
+  // Clear unread violation counter when opening a class or toggling the log drawer
+  useEffect(() => {
+    if (sidebarMode === 'class' && selectedKey !== '__ALL__') {
+      setUnreadViolationsByClass((prev) => {
+        if (!prev[selectedKey]) return prev;
+        const next = { ...prev };
+        delete next[selectedKey];
+        return next;
+      });
+    } else if (showLogDrawer) {
+      setUnreadViolationsByClass({});
+    }
+  }, [sidebarMode, selectedKey, showLogDrawer]);
+
+  // Auto-dismiss non-critical warning toasts after 8 seconds
+  useEffect(() => {
+    const warnings = alertToasts.filter((t) => t.severity === 'warning');
+    if (warnings.length === 0) return;
+    const timer = setInterval(() => {
+      const cutoff = Date.now() - 8000;
+      setAlertToasts((prev) => prev.filter((t) => t.severity === 'critical' || t.createdAt > cutoff));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [alertToasts]);
 
   // ─── 2B. Centralized School Roster Directory by Class ───────────────────────
   const rosterByClass = useMemo(() => {
@@ -752,10 +963,25 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const missingStudents = useMemo(() => {
     let expectedRoster: RosterStudent[] = [];
 
+    const activeOrTargetClasses = new Set<string>(
+      activeMonitoredStudents
+        .map((s) => getStudentClass(s))
+        .filter((c) => c !== 'Unassigned')
+    );
+    monitoredQuizzes.forEach((q) => {
+      if (q.targetClass) {
+        q.targetClass
+          .split(',')
+          .map((c) => c.trim())
+          .filter(Boolean)
+          .forEach((c) => activeOrTargetClasses.add(c));
+      }
+    });
+
     if (sidebarMode === 'class') {
       if (selectedKey === '__ALL__') {
         sidebarClasses.forEach((cls) => {
-          if (rosterByClass[cls]) {
+          if (activeOrTargetClasses.has(cls) && rosterByClass[cls]) {
             expectedRoster.push(...rosterByClass[cls]);
           }
         });
@@ -767,7 +993,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         expectedRoster = rosterByClass[secondaryFilter] || [];
       } else {
         sidebarClasses.forEach((cls) => {
-          if (rosterByClass[cls]) {
+          if (activeOrTargetClasses.has(cls) && rosterByClass[cls]) {
             expectedRoster.push(...rosterByClass[cls]);
           }
         });
@@ -807,7 +1033,17 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
       return a.name.localeCompare(b.name);
     });
-  }, [sidebarMode, selectedKey, secondaryFilter, sidebarClasses, rosterByClass, scopeStudents, deferredSearchQuery]);
+  }, [
+    sidebarMode,
+    selectedKey,
+    secondaryFilter,
+    sidebarClasses,
+    rosterByClass,
+    scopeStudents,
+    activeMonitoredStudents,
+    monitoredQuizzes,
+    deferredSearchQuery,
+  ]);
 
   // ─── 5. Filtered & Sorted Student View ──────────────────────────────────────
   const filteredStudents = useMemo(() => {
@@ -838,6 +1074,15 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     });
 
     return [...list].sort((a, b) => {
+      if (sortBy === 'priority') {
+        const rA = getPriorityTriageRank(a, nowMs, isStudentExceeded(a));
+        const rB = getPriorityTriageRank(b, nowMs, isStudentExceeded(b));
+        if (rA !== rB) return rA - rB;
+        const lockA = getLockedDurationMs(a, nowMs);
+        const lockB = getLockedDurationMs(b, nowMs);
+        if (lockA !== lockB) return lockB - lockA;
+        return a.studentName.localeCompare(b.studentName);
+      }
       if (sortBy === 'class_seat') {
         const classComp = (a.candidateClass || '').localeCompare(b.candidateClass || '');
         if (classComp !== 0) return classComp;
@@ -878,7 +1123,160 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
       return 0;
     });
-  }, [scopeStudents, activeFilter, deferredSearchQuery, sortBy, isStudentExceeded]);
+  }, [scopeStudents, activeFilter, deferredSearchQuery, sortBy, isStudentExceeded, nowMs]);
+
+  // Trigger > 1 minute overdue lock escalation alerts & chime
+  useEffect(() => {
+    if (!hasAnyLockedCandidate) return;
+    const overdueList = findOverdueLockedStudents(
+      activeMonitoredStudents,
+      alertedOverdueEpisodeRef.current,
+      nowMs,
+      OVERDUE_LOCK_THRESHOLD_MS
+    );
+    if (overdueList.length === 0) return;
+
+    const scopeCfg = alertScopeRef.current;
+    let shouldPlayUrgentChime = false;
+
+    overdueList.forEach((s) => {
+      const qCode = (s.quizCode || '').trim().toUpperCase();
+      const compKey = `${qCode}::${s.studentId}`;
+      alertedOverdueEpisodeRef.current[compKey] = s.lockedSince!;
+
+      const clsKey = getStudentClass(s);
+      const inScope =
+        scopeCfg.alertScopeMode === 'whole_school' ||
+        scopeCfg.selectedKey === '__ALL__' ||
+        (scopeCfg.sidebarMode === 'class'
+          ? clsKey === scopeCfg.selectedKey &&
+          (scopeCfg.secondaryFilter === 'all' || qCode === scopeCfg.secondaryFilter.toUpperCase())
+          : qCode === scopeCfg.selectedKey.toUpperCase() &&
+          (scopeCfg.secondaryFilter === 'all' || clsKey === scopeCfg.secondaryFilter));
+
+      const waitStr = formatLockedDuration(getLockedDurationMs(s, nowMs));
+      const detailMsg = `Candidate stayed on violation lock screen for ${waitStr} (> 1 min). Verification / unlock needed.`;
+
+      if (inScope) {
+        shouldPlayUrgentChime = true;
+        setAlertToasts((prev) =>
+          upsertProctorAlertToast(prev, {
+            id: `toast_overdue_${compKey}_${s.lockedSince}`,
+            compositeKey: compKey,
+            quizCode: qCode,
+            studentId: s.studentId,
+            studentName: s.studentName,
+            candidateNumber: s.candidateNumber,
+            candidateClass: s.candidateClass,
+            kind: 'locked_overdue',
+            severity: 'critical',
+            title: `🚨 Stuck on Violation Screen (${waitStr})`,
+            detail: s.lockReason || detailMsg,
+            createdAt: nowMs,
+            lockedDurationMs: getLockedDurationMs(s, nowMs),
+          })
+        );
+      }
+
+      const evtId = `evt-overdue-${compKey}-${s.lockedSince}`;
+      const evtIso = new Date(nowMs).toISOString();
+      setLogEvents((prev) => {
+        if (prev.some((e) => e.id === evtId)) return prev;
+        return [
+          {
+            id: evtId,
+            timestamp: evtIso,
+            studentId: s.studentId,
+            studentName: s.studentName,
+            candidateNumber: s.candidateNumber,
+            candidateClass: s.candidateClass,
+            quizCode: qCode,
+            quizTitle: s.quizTitle || quizByCode[qCode]?.title,
+            type: 'locked_overdue' as const,
+            detail: detailMsg,
+            severity: 'critical' as const,
+          },
+          ...prev.slice(0, 999),
+        ];
+      });
+
+      recordProctorAuditEvent({
+        id: evtId,
+        quizCode: qCode,
+        studentId: s.studentId,
+        studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
+        eventType: 'locked_overdue',
+        severity: 'critical',
+        detail: detailMsg,
+        actor: 'invigilator',
+        createdAt: evtIso,
+      });
+    });
+
+    if (shouldPlayUrgentChime && scopeCfg.alertSoundMode !== 'muted') {
+      playProctorChime('locked_overdue');
+    }
+  }, [hasAnyLockedCandidate, activeMonitoredStudents, nowMs, quizByCode]);
+
+  // Scoped locked candidates waiting >= 1 minute (sticky triage banner)
+  const overdueLockedInScope = useMemo(() => {
+    return scopeStudents
+      .filter((s) => s.status === 'locked' && getLockedDurationMs(s, nowMs) >= OVERDUE_LOCK_THRESHOLD_MS)
+      .sort((a, b) => (a.lockedSince || nowMs) - (b.lockedSince || nowMs));
+  }, [scopeStudents, nowMs]);
+
+  // Filtered Activity Logs for Class / Exam / School Log Drawer
+  const drawerLogEvents = useMemo(() => {
+    const scopeClass =
+      logScopeMode === 'current_scope'
+        ? sidebarMode === 'class' && selectedKey !== '__ALL__'
+          ? selectedKey
+          : sidebarMode === 'exam' && secondaryFilter !== 'all'
+            ? secondaryFilter
+            : undefined
+        : undefined;
+    const scopeQuiz =
+      logScopeMode === 'current_scope'
+        ? sidebarMode === 'exam' && selectedKey !== '__ALL__'
+          ? selectedKey
+          : sidebarMode === 'class' && secondaryFilter !== 'all'
+            ? secondaryFilter
+            : scope === 'focus' && singleFocusQuiz
+              ? singleFocusQuiz.quizCode
+              : undefined
+        : undefined;
+
+    return filterProctorLogs(logEvents, {
+      quizCode: scopeQuiz,
+      className: scopeClass,
+      category: logCategory,
+      search: logSearch,
+    });
+  }, [
+    logEvents,
+    logScopeMode,
+    sidebarMode,
+    selectedKey,
+    secondaryFilter,
+    scope,
+    singleFocusQuiz,
+    logCategory,
+    logSearch,
+  ]);
+
+  // Individual Candidate Timeline Events
+  const selectedStudentLogTarget = selectedStudentLogKey ? students[selectedStudentLogKey] : undefined;
+  const selectedStudentLogs = useMemo(() => {
+    if (!selectedStudentLogTarget) return [];
+    return filterProctorLogs(logEvents, {
+      quizCode: selectedStudentLogTarget.quizCode,
+      studentId: selectedStudentLogTarget.studentId,
+      studentName: selectedStudentLogTarget.studentName,
+      candidateNumber: selectedStudentLogTarget.candidateNumber,
+    });
+  }, [selectedStudentLogTarget, logEvents]);
 
   // ─── 6. Command Handlers (Individual & Scoped Bulk) ─────────────────────────
   const handleRemoteUnlock = useCallback((compositeKey: string) => {
@@ -887,10 +1285,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
     delete pendingHeartbeatsRef.current[compositeKey];
     delete boundHeartbeatKeysRef.current[compositeKey];
+    delete alertedOverdueEpisodeRef.current[compositeKey];
     if (s.draftKey) {
       delete boundHeartbeatKeysRef.current[s.draftKey];
     }
     sendProctorCommand(s.quizCode, s.studentId, 'unlock');
+    setAlertToasts((prev) =>
+      prev.filter((t) => !(t.compositeKey === compositeKey && (t.kind === 'locked' || t.kind === 'locked_overdue')))
+    );
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
       return {
@@ -899,14 +1301,18 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           ...prev[compositeKey],
           status: 'active',
           lockReason: undefined,
+          lockedSince: undefined,
         },
       };
     });
     setLogEvents((prev) => [
       {
-        id: `evt-${Date.now()}`,
+        id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         timestamp: new Date().toISOString(),
+        studentId: s.studentId,
         studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
         quizCode: s.quizCode,
         type: 'unlocked',
         detail: `Remotely unlocked by invigilator`,
@@ -926,6 +1332,68 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       detail: 'Remotely unlocked by invigilator',
       actor: 'invigilator',
       createdAt: new Date().toISOString(),
+    });
+  }, [students]);
+
+  const handleUnlockAndCompensate = useCallback((compositeKey: string, minutes: number) => {
+    const s = students[compositeKey];
+    if (!s || !s.quizCode) return;
+    const safeMinutes = Math.max(1, Math.min(15, Math.round(minutes)));
+
+    delete pendingHeartbeatsRef.current[compositeKey];
+    delete boundHeartbeatKeysRef.current[compositeKey];
+    delete alertedOverdueEpisodeRef.current[compositeKey];
+    if (s.draftKey) {
+      delete boundHeartbeatKeysRef.current[s.draftKey];
+    }
+
+    sendProctorCommand(s.quizCode, s.studentId, 'unlock');
+    sendProctorCommand(s.quizCode, s.studentId, 'add_time', { minutes: safeMinutes });
+
+    setAlertToasts((prev) => prev.filter((t) => t.compositeKey !== compositeKey));
+    setStudents((prev) => {
+      if (!prev[compositeKey]) return prev;
+      return {
+        ...prev,
+        [compositeKey]: {
+          ...prev[compositeKey],
+          status: 'active',
+          lockReason: undefined,
+          lockedSince: undefined,
+          timeLeftSeconds: prev[compositeKey].timeLeftSeconds + safeMinutes * 60,
+        },
+      };
+    });
+
+    const nowIso = new Date().toISOString();
+    const detailText = `Unlocked & compensated +${safeMinutes}m lock wait time by invigilator`;
+    setLogEvents((prev) => [
+      {
+        id: `evt-unlock-comp-${Date.now()}`,
+        timestamp: nowIso,
+        studentId: s.studentId,
+        studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
+        quizCode: s.quizCode,
+        type: 'unlocked',
+        detail: detailText,
+        severity: 'info',
+      },
+      ...prev,
+    ]);
+    recordProctorAuditEvent({
+      id: `audit-unlock-comp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'unlocked',
+      severity: 'info',
+      detail: detailText,
+      actor: 'invigilator',
+      createdAt: nowIso,
     });
   }, [students]);
 
@@ -949,7 +1417,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       {
         id: `evt-${Date.now()}`,
         timestamp: new Date().toISOString(),
+        studentId: s.studentId,
         studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
         quizCode: s.quizCode,
         type: 'time_extended',
         detail: `Added +${minutes} minutes to exam clock`,
@@ -985,7 +1456,9 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     }
 
     delete pendingHeartbeatsRef.current[compositeKey];
+    delete alertedOverdueEpisodeRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'force_submit');
+    setAlertToasts((prev) => prev.filter((t) => t.compositeKey !== compositeKey));
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
       return {
@@ -993,6 +1466,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         [compositeKey]: {
           ...prev[compositeKey],
           status: 'submitted',
+          lockedSince: undefined,
         },
       };
     });
@@ -1000,7 +1474,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       {
         id: `evt-${Date.now()}`,
         timestamp: new Date().toISOString(),
+        studentId: s.studentId,
         studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
         quizCode: s.quizCode,
         type: 'submitted',
         detail: `Exam submission forced by invigilator`,
@@ -1028,9 +1505,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     if (!s || !s.quizCode || s.autoSubmittedBySecurity) return;
 
     delete pendingHeartbeatsRef.current[compositeKey];
+    delete alertedOverdueEpisodeRef.current[compositeKey];
     sendProctorCommand(s.quizCode, s.studentId, 'pardon');
     // Lets the strike high-water mark fall once for this candidate.
     pardonedAtRef.current[compositeKey] = Date.now();
+    setAlertToasts((prev) => prev.filter((t) => t.compositeKey !== compositeKey));
     setStudents((prev) => {
       if (!prev[compositeKey]) return prev;
       return {
@@ -1043,6 +1522,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           currentTierAction: undefined,
           exceededMaxViolations: false,
           lockReason: undefined,
+          lockedSince: undefined,
           lastViolation: undefined,
         },
       };
@@ -1051,7 +1531,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       {
         id: `evt-${Date.now()}`,
         timestamp: new Date().toISOString(),
+        studentId: s.studentId,
         studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
         quizCode: s.quizCode,
         type: 'pardon',
         detail: `Security strikes reset to 0 by invigilator (prior time penalties retained)`,
@@ -1074,6 +1557,67 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     });
   }, [students]);
 
+  const handleLocateStudent = useCallback((compositeKey: string) => {
+    setActiveFilter('all');
+    setSearchQuery('');
+    setFocusedStudentKey(compositeKey);
+    setTimeout(() => {
+      const el = cardRefs.current[compositeKey];
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 80);
+    setTimeout(() => {
+      setFocusedStudentKey((cur) => (cur === compositeKey ? null : cur));
+    }, 3500);
+  }, []);
+
+  const handleSendDirectNotice = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (!directNoticeTargetKey || !directNoticeText.trim()) return;
+    const s = students[directNoticeTargetKey];
+    if (!s || !s.quizCode) return;
+
+    const msg = directNoticeText.trim();
+    sendProctorCommand(s.quizCode, s.studentId, 'announcement', { message: msg });
+    const nowIso = new Date().toISOString();
+    setLogEvents((prev) => [
+      {
+        id: `evt-direct-${Date.now()}`,
+        timestamp: nowIso,
+        studentId: s.studentId,
+        studentName: s.studentName,
+        candidateNumber: s.candidateNumber,
+        candidateClass: s.candidateClass,
+        quizCode: s.quizCode,
+        type: 'announcement',
+        detail: `Direct notice sent to candidate: "${msg}"`,
+        severity: 'info',
+      },
+      ...prev,
+    ]);
+    recordProctorAuditEvent({
+      id: `audit-direct-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      quizCode: s.quizCode,
+      studentId: s.studentId,
+      studentName: s.studentName,
+      candidateNumber: s.candidateNumber,
+      candidateClass: s.candidateClass,
+      eventType: 'announcement',
+      severity: 'info',
+      detail: `Direct notice sent to candidate: "${msg}"`,
+      actor: 'invigilator',
+      createdAt: nowIso,
+    });
+
+    setDirectNoticeSent(true);
+    setTimeout(() => {
+      setDirectNoticeSent(false);
+      setDirectNoticeTargetKey(null);
+      setDirectNoticeText('');
+    }, 1000);
+  }, [directNoticeTargetKey, directNoticeText, students]);
+
   // Scoped Bulk: Unlock
   const handleScopedUnlock = useCallback(() => {
     const lockedTargets = scopeStudents.filter((s) => s.status === 'locked' && s.quizCode);
@@ -1093,8 +1637,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       sidebarMode === 'class' && selectedKey !== '__ALL__'
         ? selectedKey
         : sidebarMode === 'exam' && secondaryFilter !== 'all'
-        ? secondaryFilter
-        : undefined;
+          ? secondaryFilter
+          : undefined;
 
     const targetQuizzes = Array.from(
       new Set(lockedTargets.map((t) => t.quizCode!).filter(Boolean))
@@ -1111,17 +1655,21 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     );
     lockedKeys.forEach((k) => {
       delete boundHeartbeatKeysRef.current[k];
+      delete alertedOverdueEpisodeRef.current[k];
     });
     lockedTargets.forEach((t) => {
       if (t.draftKey) {
         delete boundHeartbeatKeysRef.current[t.draftKey];
       }
     });
+    setAlertToasts((prev) =>
+      prev.filter((t) => !(lockedKeys.has(t.compositeKey) && (t.kind === 'locked' || t.kind === 'locked_overdue')))
+    );
     setStudents((prev) => {
       const next = { ...prev };
       Object.keys(next).forEach((k) => {
         if (lockedKeys.has(k)) {
-          next[k] = { ...next[k], status: 'active', lockReason: undefined };
+          next[k] = { ...next[k], status: 'active', lockReason: undefined, lockedSince: undefined };
         }
       });
       return next;
@@ -1134,6 +1682,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         id: `evt-${Date.now()}`,
         timestamp: createdAt,
         studentName: scopeLabel,
+        candidateClass: targetClass,
+        quizCode: codesToSend.length === 1 ? codesToSend[0] : undefined,
         type: 'unlocked',
         detail,
         severity: 'info',
@@ -1176,8 +1726,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         sidebarMode === 'class' && selectedKey !== '__ALL__'
           ? selectedKey
           : sidebarMode === 'exam' && secondaryFilter !== 'all'
-          ? secondaryFilter
-          : undefined;
+            ? secondaryFilter
+            : undefined;
 
       const targetQuizzes = Array.from(
         new Set(activeTargets.map((t) => t.quizCode!).filter(Boolean))
@@ -1258,8 +1808,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       sidebarMode === 'class' && selectedKey !== '__ALL__'
         ? selectedKey
         : sidebarMode === 'exam' && secondaryFilter !== 'all'
-        ? secondaryFilter
-        : undefined;
+          ? secondaryFilter
+          : undefined;
 
     const targetQuizzes = Array.from(
       new Set(activeTargets.map((t) => t.quizCode!).filter(Boolean))
@@ -1451,6 +2001,141 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     return <span className="lip-status-badge lip-status-badge--offline">⚫ OFFLINE</span>;
   };
 
+  const renderSecurityBadge = (s: ProctorStudentState, isExceeded: boolean, maxV: number) => {
+    if (s.autoSubmittedBySecurity) {
+      return (
+        <span
+          className="lip-badge-exceeded-limit"
+          style={{ background: '#b91c1c', borderColor: '#ef4444' }}
+          title="Candidate exceeded maximum security strike allowance and was auto-submitted"
+        >
+          🛑 AUTO-SUBMIT ({s.strikeCount ?? s.violationsCount})
+        </span>
+      );
+    }
+    if (isExceeded) {
+      return (
+        <span
+          className="lip-badge-exceeded-limit"
+          title="Candidate exceeded allowed security notices"
+        >
+          🚨 LIMIT ({s.strikeCount ?? s.violationsCount}/{maxV || 'Max'})
+        </span>
+      );
+    }
+    if (s.currentTierAction === 'time_penalty' && (s.totalPenaltySeconds || 0) > 0) {
+      return (
+        <span
+          className="lip-badge-exceeded-limit"
+          style={{ background: '#c2410c', borderColor: '#f97316' }}
+          title={`Active Penalty Tier: ${s.currentTierName}`}
+        >
+          ⏱️ {s.currentTierName} (-{Math.round((s.totalPenaltySeconds || 0) / 60)}m)
+        </span>
+      );
+    }
+    if (s.currentTierName && (s.strikeCount ?? 0) > 0) {
+      return (
+        <span
+          className="lip-badge-exceeded-limit"
+          style={{ background: '#d97706', borderColor: '#f59e0b' }}
+          title={`Security Tier: ${s.currentTierName}`}
+        >
+          ⚠️ Strike {s.strikeCount}
+        </span>
+      );
+    }
+    return null;
+  };
+
+  const renderCandidateActions = (
+    s: ProctorStudentState,
+    compositeKey: string,
+    isLocked: boolean,
+    isOverdueLock: boolean,
+    compMinutes: number,
+    compact = false
+  ) => {
+    const isLiveSession = s.status !== 'submitted' && !s.autoSubmittedBySecurity;
+    return (
+      <div className={compact ? 'lip-row-actions' : 'lip-card-actions'}>
+        {isLiveSession && (
+          <>
+            {isLocked ? (
+              <>
+                <button
+                  type="button"
+                  className="lip-card-btn lip-card-btn--unlock"
+                  onClick={() => handleRemoteUnlock(compositeKey)}
+                  title="Remotely clear lock screen and resume candidate examination"
+                >
+                  🔓 Unlock
+                </button>
+                {isOverdueLock && (
+                  <button
+                    type="button"
+                    className="lip-card-btn lip-card-btn--compensate"
+                    onClick={() => handleUnlockAndCompensate(compositeKey, compMinutes)}
+                    title={`Unlock and add +${compMinutes}m wait compensation`}
+                  >
+                    +{compMinutes}m
+                  </button>
+                )}
+              </>
+            ) : (
+              <button
+                type="button"
+                className="lip-card-btn lip-card-btn--time"
+                onClick={() => handleAddTime(compositeKey, 5)}
+                title="Add +5 minutes accommodation to candidate"
+              >
+                ⏱️ +5m
+              </button>
+            )}
+            {(s.strikeCount ?? s.violationsCount) > 0 && (
+              <button
+                type="button"
+                className="lip-card-btn lip-card-btn--pardon"
+                onClick={() => handlePardon(compositeKey)}
+                title="Pardon strikes and reset violation counters"
+              >
+                🛡️ Pardon
+              </button>
+            )}
+            <button
+              type="button"
+              className="lip-card-btn lip-card-btn--notice"
+              onClick={() => {
+                setDirectNoticeTargetKey(compositeKey);
+                setDirectNoticeText('');
+                setDirectNoticeSent(false);
+              }}
+              title="Send direct warning/notice to this student only"
+            >
+              💬 Notice
+            </button>
+            <button
+              type="button"
+              className="lip-card-btn lip-card-btn--force"
+              onClick={() => handleForceSubmit(compositeKey)}
+              title="Force submission of exam attempt"
+            >
+              🛑 Submit
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          className="lip-card-btn lip-card-btn--log"
+          onClick={() => setSelectedStudentLogKey(compositeKey)}
+          title="View individual candidate security & action log"
+        >
+          📜 Log
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div className="lip-modal-overlay animate-fade-in" role="dialog" aria-modal="true">
       <div className="lip-modal-container">
@@ -1514,6 +2199,34 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           </div>
 
           <div className="lip-header-actions">
+            <div className="lip-alert-controls" title="Live Violation Notification Scope & Sound">
+              <button
+                type="button"
+                className={`lip-alert-chip ${alertScopeMode === 'selected_scope' ? 'lip-alert-chip--active' : ''}`}
+                onClick={() =>
+                  setAlertScopeMode((m) => (m === 'selected_scope' ? 'whole_school' : 'selected_scope'))
+                }
+                title="Toggle whether violation pop-up alerts follow your selected Class/Exam filter or cover the whole school"
+              >
+                {alertScopeMode === 'selected_scope' ? '🎯 Alerts: Selected Scope' : '🌐 Alerts: Whole School'}
+              </button>
+              <button
+                type="button"
+                className={`lip-alert-chip ${alertSoundMode === 'muted' ? 'lip-alert-chip--muted' : 'lip-alert-chip--sound'}`}
+                onClick={() =>
+                  setAlertSoundMode((m) =>
+                    m === 'all' ? 'critical_only' : m === 'critical_only' ? 'muted' : 'all'
+                  )
+                }
+                title="Cycle alert chime mode: All Violations → Critical & >1m Stuck Only → Muted"
+              >
+                {alertSoundMode === 'all'
+                  ? '🔔 Sound: All'
+                  : alertSoundMode === 'critical_only'
+                    ? '🚨 Sound: Critical'
+                    : '🔕 Muted'}
+              </button>
+            </div>
             <button
               type="button"
               className="lip-btn-log-toggle"
@@ -1534,9 +2247,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
               type="button"
               className={`lip-btn-log-toggle ${showLogDrawer ? 'lip-btn-log-toggle--active' : ''}`}
               onClick={() => setShowLogDrawer(!showLogDrawer)}
-              title="Toggle Live Activity Log Stream"
+              title="Toggle Class & School Activity Log Drawer"
             >
-              📜 Audit Feed ({logEvents.length})
+              📜 Audit Logs ({logEvents.length})
+              {Object.values(unreadViolationsByClass).reduce((a, b) => a + b, 0) > 0 && !showLogDrawer && (
+                <span className="lip-log-unread-dot">
+                  +{Object.values(unreadViolationsByClass).reduce((a, b) => a + b, 0)}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -1550,66 +2268,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         </header>
 
         {cloudAuthWarning && (
-          <div
-            role="alert"
-            style={{
-              background: 'rgba(245, 158, 11, 0.16)',
-              borderBottom: '1px solid rgba(245, 158, 11, 0.45)',
-              color: '#fde68a',
-              padding: '8px 18px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px',
-            }}
-          >
+          <div role="alert" className="lip-auth-warning-bar">
             <span>⚠️ {cloudAuthWarning}</span>
           </div>
         )}
-
-        {/* Global / Scoped Stats Metrics Bar */}
-        <div className="lip-stats-bar">
-          <div className="lip-stat-card">
-            <span className="lip-stat-label">Total in Scope</span>
-            <span className="lip-stat-val">{scopedStats.total}</span>
-          </div>
-          <div className="lip-stat-card lip-stat-card--active">
-            <span className="lip-stat-label">🟢 Focused</span>
-            <span className="lip-stat-val">{scopedStats.active}</span>
-          </div>
-          <div
-            className={`lip-stat-card lip-stat-card--locked ${
-              scopedStats.locked > 0 ? 'lip-stat-card--alert' : ''
-            }`}
-          >
-            <span className="lip-stat-label">🚨 Locked by PIN</span>
-            <span className="lip-stat-val">{scopedStats.locked}</span>
-          </div>
-          <div className="lip-stat-card lip-stat-card--warning">
-            <span className="lip-stat-label">⚠️ Warnings</span>
-            <span className="lip-stat-val">{scopedStats.warnings}</span>
-          </div>
-          {scopedStats.exceeded > 0 && (
-            <div className="lip-stat-card lip-stat-card--locked" style={{ borderColor: '#ef4444' }}>
-              <span className="lip-stat-label">🚨 Limit Exceeded</span>
-              <span className="lip-stat-val" style={{ color: '#ef4444' }}>
-                {scopedStats.exceeded}
-              </span>
-            </div>
-          )}
-          {scopedStats.multiMonitor > 0 && (
-            <div className="lip-stat-card lip-stat-card--multimonitor">
-              <span className="lip-stat-label">🟣 Multi-Screen</span>
-              <span className="lip-stat-val">{scopedStats.multiMonitor}</span>
-            </div>
-          )}
-          <div className="lip-stat-card lip-stat-card--submitted">
-            <span className="lip-stat-label">⚪ Submitted</span>
-            <span className="lip-stat-val">{scopedStats.submitted}</span>
-          </div>
-        </div>
 
         {/* ─── Split Screen Shell: Left Sidebar & Right Stage ──────────────── */}
         <div className="lip-shell">
@@ -1618,18 +2280,16 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             <div className="lip-sidebar-switch">
               <button
                 type="button"
-                className={`lip-sidebar-switch-btn ${
-                  sidebarMode === 'class' ? 'lip-sidebar-switch-btn--active' : ''
-                }`}
+                className={`lip-sidebar-switch-btn ${sidebarMode === 'class' ? 'lip-sidebar-switch-btn--active' : ''
+                  }`}
                 onClick={() => setSidebarMode('class')}
               >
                 🏫 Classes
               </button>
               <button
                 type="button"
-                className={`lip-sidebar-switch-btn ${
-                  sidebarMode === 'exam' ? 'lip-sidebar-switch-btn--active' : ''
-                }`}
+                className={`lip-sidebar-switch-btn ${sidebarMode === 'exam' ? 'lip-sidebar-switch-btn--active' : ''
+                  }`}
                 onClick={() => setSidebarMode('exam')}
               >
                 📝 Exams ({monitoredQuizzes.length})
@@ -1639,9 +2299,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             {/* Pinned 'All Candidates' Row */}
             <button
               type="button"
-              className={`lip-sidebar-item lip-sidebar-item--all ${
-                selectedKey === '__ALL__' ? 'lip-sidebar-item--active' : ''
-              }`}
+              className={`lip-sidebar-item lip-sidebar-item--all ${selectedKey === '__ALL__' ? 'lip-sidebar-item--active' : ''
+                }`}
               onClick={() => setSelectedKey('__ALL__')}
             >
               <div className="lip-sidebar-item-info">
@@ -1683,6 +2342,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                         </span>
                       </div>
                       <div className="lip-sidebar-item-badges">
+                        {(unreadViolationsByClass[cls] || 0) > 0 && (
+                          <span
+                            className="lip-sidebar-alert lip-sidebar-alert--unread"
+                            title={`${unreadViolationsByClass[cls]} new violation alert(s)`}
+                          >
+                            +{unreadViolationsByClass[cls]}
+                          </span>
+                        )}
                         {m.exceeded > 0 && (
                           <span className="lip-sidebar-alert lip-sidebar-alert--critical" title="Exceeded limit">
                             🚨 {m.exceeded}
@@ -1785,6 +2452,61 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
               </div>
             </div>
 
+            {/* Sticky Escalation Triage Banner for Candidates on Lock Screen > 1 Minute */}
+            {overdueLockedInScope.length > 0 && (
+              <div className="lip-overdue-triage-banner" role="alert">
+                <div className="lip-overdue-triage-head">
+                  <span>
+                    🚨 <strong>{overdueLockedInScope.length} Candidate{overdueLockedInScope.length !== 1 ? 's' : ''} Stuck on Violation Screen (&ge; 1 min):</strong>{' '}
+                    Exam timer continues while waiting for invigilator unlock.
+                  </span>
+                </div>
+                <div className="lip-overdue-triage-chips">
+                  {overdueLockedInScope.slice(0, 6).map((s) => {
+                    const qCode = (s.quizCode || '').trim().toUpperCase();
+                    const compKey = `${qCode}::${s.studentId}`;
+                    const waitMs = getLockedDurationMs(s, nowMs);
+                    const waitStr = formatLockedDuration(waitMs);
+                    const compMins = computeWaitCompensationMinutes(waitMs);
+                    return (
+                      <div key={compKey} className="lip-overdue-chip">
+                        <span className="lip-overdue-chip-name">
+                          {s.studentName}
+                          {s.candidateClass ? ` (${s.candidateClass})` : ''} · ⏳ {waitStr}
+                        </span>
+                        <div className="lip-overdue-chip-btns">
+                          <button
+                            type="button"
+                            className="lip-chip-btn lip-chip-btn--unlock"
+                            onClick={() => handleRemoteUnlock(compKey)}
+                            title="Unlock immediately"
+                          >
+                            🔓 Unlock
+                          </button>
+                          <button
+                            type="button"
+                            className="lip-chip-btn lip-chip-btn--comp"
+                            onClick={() => handleUnlockAndCompensate(compKey, compMins)}
+                            title={`Unlock and add +${compMins}m wait compensation`}
+                          >
+                            +{compMins}m &amp; Unlock
+                          </button>
+                          <button
+                            type="button"
+                            className="lip-chip-btn"
+                            onClick={() => handleLocateStudent(compKey)}
+                            title="Locate student card"
+                          >
+                            🔍
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Toolbar: Status Tabs, Secondary Filter, Sorter, Search, and Scoped Bulk Buttons */}
             <div className="lip-toolbar">
               <div className="lip-filter-tabs">
@@ -1798,9 +2520,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 {scopedStats.exceeded > 0 && (
                   <button
                     type="button"
-                    className={`lip-tab lip-tab-btn--exceeded ${
-                      activeFilter === 'exceeded' ? 'lip-tab--active' : ''
-                    }`}
+                    className={`lip-tab lip-tab-btn--exceeded ${activeFilter === 'exceeded' ? 'lip-tab--active' : ''
+                      }`}
                     onClick={() => setActiveFilter('exceeded')}
                   >
                     🚨 Exceeded ({scopedStats.exceeded})
@@ -1896,6 +2617,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                     aria-label="Sort candidates"
                     title="Sort Candidate Cards"
                   >
+                    <option value="priority">🚨 Priority Triage (Overdue &amp; Locked First)</option>
                     <option value="class_seat">Class &amp; Seat No.</option>
                     <option value="status">Status (Alerts First)</option>
                     <option value="name">Candidate Name (A-Z)</option>
@@ -1916,6 +2638,26 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 />
               </div>
 
+              {/* View Mode Switcher (Compact Table vs Cards) */}
+              <div className="lip-view-toggle" role="group" aria-label="View Mode">
+                <button
+                  type="button"
+                  className={`lip-view-btn ${viewMode === 'table' ? 'lip-view-btn--active' : ''}`}
+                  onClick={() => setViewMode('table')}
+                  title="Compact table view for scanning whole-school exams quickly"
+                >
+                  ☰ Table
+                </button>
+                <button
+                  type="button"
+                  className={`lip-view-btn ${viewMode === 'cards' ? 'lip-view-btn--active' : ''}`}
+                  onClick={() => setViewMode('cards')}
+                  title="Detailed card grid view"
+                >
+                  ⊞ Cards
+                </button>
+              </div>
+
               {/* Scoped Bulk Action Controls */}
               <div className="lip-cohort-actions">
                 <button
@@ -1924,7 +2666,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                   onClick={() => setShowAnnouncementModal(true)}
                   title={`Broadcast an urgent banner notice to ${scopeLabel}`}
                 >
-                  📢 Notice to {scopeLabel}
+                  📢 Notice
                 </button>
                 {scopedStats.locked > 0 && (
                   <button
@@ -1933,7 +2675,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                     onClick={handleScopedUnlock}
                     title={`Remotely unlock all ${scopedStats.locked} locked candidate(s) in ${scopeLabel}`}
                   >
-                    🔓 Unlock {scopeLabel} ({scopedStats.locked})
+                    🔓 Unlock All ({scopedStats.locked})
                   </button>
                 )}
                 <button
@@ -1942,7 +2684,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                   onClick={() => handleScopedAddTime(5)}
                   title={`Grant +5 minutes extra time to active candidates in ${scopeLabel}`}
                 >
-                  ⏱️ +5m {scopeLabel}
+                  ⏱️ +5m Scope
                 </button>
               </div>
             </div>
@@ -1950,9 +2692,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             {/* Candidate Cards Grid & Activity Log Drawer */}
             <div className="lip-body">
               <div
-                className={`lip-grid-container ${
-                  showLogDrawer ? 'lip-grid-container--with-drawer' : ''
-                }`}
+                className={`lip-grid-container ${showLogDrawer ? 'lip-grid-container--with-drawer' : ''
+                  }`}
               >
                 {activeFilter === 'missing' ? (
                   missingStudents.length === 0 ? (
@@ -2040,6 +2781,137 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                       </>
                     )}
                   </div>
+                ) : viewMode === 'table' ? (
+                  <div className="lip-table-wrap">
+                    <table className="lip-table">
+                      <thead>
+                        <tr>
+                          <th>Candidate</th>
+                          <th>Class{isMultiExam ? ' / Exam' : ''}</th>
+                          <th>Status</th>
+                          <th>Progress</th>
+                          <th>Time Left</th>
+                          <th>Strikes</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredStudents.map((s) => {
+                          const qCode = (s.quizCode || '').trim().toUpperCase();
+                          const compositeKey = `${qCode}::${s.studentId}`;
+                          const progressPct =
+                            s.totalQuestions > 0
+                              ? Math.round((s.answeredCount / s.totalQuestions) * 100)
+                              : 0;
+                          const isLocked = s.status === 'locked';
+                          const isExceeded = isStudentExceeded(s);
+                          const maxV = getMaxViolations(s);
+                          const lockDurationMs = isLocked ? getLockedDurationMs(s, nowMs) : 0;
+                          const isOverdueLock = isLocked && lockDurationMs >= OVERDUE_LOCK_THRESHOLD_MS;
+                          const compMinutes = computeWaitCompensationMinutes(lockDurationMs);
+                          const strikes = s.strikeCount ?? s.violationsCount;
+                          const hasValidSeat = Boolean(s.candidateNumber && s.candidateNumber.trim() !== '-');
+
+                          return (
+                            <tr
+                              key={compositeKey}
+                              ref={(el) => {
+                                cardRefs.current[compositeKey] = el;
+                              }}
+                              className={`lip-table-row ${
+                                isOverdueLock
+                                  ? 'lip-table-row--overdue'
+                                  : isLocked
+                                    ? 'lip-table-row--locked'
+                                    : isExceeded
+                                      ? 'lip-table-row--exceeded'
+                                      : s.status === 'warning'
+                                        ? 'lip-table-row--warning'
+                                        : ''
+                              } ${focusedStudentKey === compositeKey ? 'lip-table-row--focused' : ''}`}
+                            >
+                              <td>
+                                <div className="lip-table-candidate">
+                                  <span className="lip-table-name" title={s.studentName}>
+                                    {s.studentName}
+                                  </span>
+                                  {hasValidSeat && (
+                                    <span className="lip-tag lip-tag-seat">Seat {s.candidateNumber}</span>
+                                  )}
+                                  {isLocked && s.lockReason && (
+                                    <span className="lip-table-lock-reason" title={s.lockReason}>
+                                      {isOverdueLock ? '🚨' : '🔒'} {s.lockReason}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="lip-table-cohort">
+                                  <span className="lip-tag lip-tag-class">
+                                    {s.candidateClass || 'Unassigned'}
+                                  </span>
+                                  {isMultiExam && s.quizCode && (
+                                    <span className="lip-tag lip-tag-exam">{s.quizCode}</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="lip-table-status">
+                                  {getStatusBadge(s.status, s.multiMonitorDetected)}
+                                  {isLocked && s.lockedSince && (
+                                    <span
+                                      className={`lip-lock-timer-pill ${
+                                        isOverdueLock ? 'lip-lock-timer-pill--overdue' : ''
+                                      }`}
+                                    >
+                                      ⏳ {formatLockedDuration(lockDurationMs)}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="lip-table-progress">
+                                  <div className="lip-progress-track lip-progress-track--compact">
+                                    <div
+                                      className="lip-progress-fill"
+                                      style={{
+                                        width: `${progressPct}%`,
+                                        backgroundColor:
+                                          progressPct === 100
+                                            ? 'var(--color-success, #16a34a)'
+                                            : 'var(--color-primary, #2563eb)',
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="lip-table-progress-txt">
+                                    {s.answeredCount}/{s.totalQuestions}
+                                  </span>
+                                </div>
+                              </td>
+                              <td>
+                                <span className="lip-clock-val">{formatClock(s.timeLeftSeconds)}</span>
+                              </td>
+                              <td>
+                                <div className="lip-table-strikes">
+                                  <span
+                                    className={`lip-telemetry-val ${strikes > 0 ? 'lip-telemetry-val--violation' : ''}`}
+                                    title={s.lastViolation || undefined}
+                                  >
+                                    {strikes}
+                                    {maxV > 0 ? `/${maxV}` : ''}
+                                  </span>
+                                  {renderSecurityBadge(s, isExceeded, maxV)}
+                                </div>
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                {renderCandidateActions(s, compositeKey, isLocked, isOverdueLock, compMinutes, true)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : (
                   <div className="lip-students-grid">
                     {filteredStudents.map((s) => {
@@ -2052,26 +2924,32 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                       const isLocked = s.status === 'locked';
                       const isExceeded = isStudentExceeded(s);
                       const maxV = getMaxViolations(s);
+                      const lockDurationMs = isLocked ? getLockedDurationMs(s, nowMs) : 0;
+                      const isOverdueLock = isLocked && lockDurationMs >= OVERDUE_LOCK_THRESHOLD_MS;
+                      const compMinutes = computeWaitCompensationMinutes(lockDurationMs);
+                      const hasValidSeat = Boolean(s.candidateNumber && s.candidateNumber.trim() !== '-');
 
                       return (
                         <div
                           key={compositeKey}
-                          className={`lip-student-card ${
-                            isExceeded ? 'lip-student-card--exceeded' : ''
-                          } ${isLocked ? 'lip-student-card--locked' : ''} ${
-                            s.status === 'warning' ? 'lip-student-card--warning' : ''
-                          }`}
+                          ref={(el) => {
+                            cardRefs.current[compositeKey] = el;
+                          }}
+                          className={`lip-student-card ${isExceeded ? 'lip-student-card--exceeded' : ''
+                            } ${isLocked ? 'lip-student-card--locked' : ''} ${isOverdueLock ? 'lip-student-card--overdue' : ''
+                            } ${s.status === 'warning' ? 'lip-student-card--warning' : ''} ${focusedStudentKey === compositeKey ? 'lip-student-card--focused' : ''
+                            }`}
                         >
-                          {/* Card Header */}
+                          {/* Compact Card Header */}
                           <div className="lip-card-header">
                             <div className="lip-student-info">
-                              <h4 className="lip-student-name" title={s.studentName}>
+                              <h4 className="lip-student-name lip-student-name--compact" title={s.studentName}>
                                 {s.studentName}
                               </h4>
                               <div className="lip-student-sub">
-                                {s.candidateNumber && (
+                                {hasValidSeat && (
                                   <span className="lip-tag lip-tag-seat">
-                                    Seat: {s.candidateNumber}
+                                    Seat {s.candidateNumber}
                                   </span>
                                 )}
                                 {s.candidateClass && (
@@ -2090,58 +2968,43 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                               </div>
                             </div>
                             <div className="lip-card-badge-wrap">
-                              {s.autoSubmittedBySecurity ? (
-                                <span
-                                  className="lip-badge-exceeded-limit"
-                                  style={{ background: '#b91c1c', borderColor: '#ef4444' }}
-                                  title="Candidate exceeded maximum security strike allowance and was auto-submitted"
-                                >
-                                  🛑 AUTO-SUBMITTED (Strike {s.strikeCount ?? s.violationsCount})
-                                </span>
-                              ) : isExceeded ? (
-                                <span
-                                  className="lip-badge-exceeded-limit"
-                                  title="Candidate exceeded allowed security notices"
-                                >
-                                  🚨 LIMIT EXCEEDED ({s.strikeCount ?? s.violationsCount}/{maxV || 'Max'})
-                                </span>
-                              ) : s.currentTierAction === 'time_penalty' && (s.totalPenaltySeconds || 0) > 0 ? (
-                                <span
-                                  className="lip-badge-exceeded-limit"
-                                  style={{ background: '#c2410c', borderColor: '#f97316' }}
-                                  title={`Active Penalty Tier: ${s.currentTierName}`}
-                                >
-                                  ⏱️ {s.currentTierName} (-{Math.round((s.totalPenaltySeconds || 0) / 60)}m)
-                                </span>
-                              ) : s.currentTierName && (s.strikeCount ?? 0) > 0 ? (
-                                <span
-                                  className="lip-badge-exceeded-limit"
-                                  style={{ background: '#d97706', borderColor: '#f59e0b' }}
-                                  title={`Security Tier: ${s.currentTierName}`}
-                                >
-                                  ⚠️ {s.currentTierName} (Strike {s.strikeCount})
-                                </span>
-                              ) : null}
                               {getStatusBadge(s.status, s.multiMonitorDetected)}
+                              {renderSecurityBadge(s, isExceeded, maxV)}
                             </div>
                           </div>
 
                           {/* Lock Reason Banner */}
                           {isLocked && (
-                            <div className="lip-card-lock-banner">
-                              <span className="lip-lock-icon">🔒</span>
+                            <div
+                              className={`lip-card-lock-banner ${isOverdueLock ? 'lip-card-lock-banner--overdue' : ''
+                                }`}
+                            >
+                              <span className="lip-lock-icon">{isOverdueLock ? '🚨' : '🔒'}</span>
                               <span className="lip-lock-text">
                                 {s.lockReason || 'Locked due to browser blur or security notice'}
                               </span>
+                              {s.lockedSince && (
+                                <span
+                                  className={`lip-lock-timer-pill ${isOverdueLock ? 'lip-lock-timer-pill--overdue' : ''
+                                    }`}
+                                >
+                                  ⏳ {formatLockedDuration(lockDurationMs)}
+                                </span>
+                              )}
                             </div>
                           )}
 
-                          {/* Progress Bar & Clock */}
+                          {/* Compact Progress & Strikes Row */}
                           <div className="lip-card-progress-section">
                             <div className="lip-progress-labels">
                               <span>
-                                Progress: <strong>{s.answeredCount}</strong> / {s.totalQuestions}{' '}
-                                ({progressPct}%)
+                                <strong>{s.answeredCount}</strong>/{s.totalQuestions} ({progressPct}%)
+                              </span>
+                              <span
+                                className={`lip-telemetry-val ${(s.strikeCount ?? s.violationsCount) > 0 ? 'lip-telemetry-val--violation' : ''}`}
+                              >
+                                {s.strikeCount ?? s.violationsCount} strike{(s.strikeCount ?? s.violationsCount) !== 1 ? 's' : ''}
+                                {(s.totalPenaltySeconds || 0) > 0 && ` (-${Math.round((s.totalPenaltySeconds || 0) / 60)}m)`}
                               </span>
                               <span className="lip-clock-val">
                                 ⏱️ {formatClock(s.timeLeftSeconds)}
@@ -2161,94 +3024,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                             </div>
                           </div>
 
-                          {/* Violations & Strikes Telemetry */}
-                          <div className="lip-card-telemetry">
-                            <div className="lip-telemetry-row">
-                              <span className="lip-telemetry-label">Violations:</span>
-                              <span
-                                className={`lip-telemetry-val ${
-                                  (s.strikeCount ?? s.violationsCount) > 0 ? 'lip-telemetry-val--violation' : ''
-                                }`}
-                                title={
-                                  s.recentViolations && s.recentViolations.length > 0
-                                    ? s.recentViolations
-                                        .map(
-                                          (v, i) =>
-                                            `${i + 1}. [${new Date(v.timestamp).toLocaleTimeString(
-                                              [],
-                                              {
-                                                hour: '2-digit',
-                                                minute: '2-digit',
-                                                second: '2-digit',
-                                              }
-                                            )}] ${v.detail}`
-                                        )
-                                        .join('\n')
-                                    : s.lastViolation || undefined
-                                }
-                              >
-                                {s.strikeCount ?? s.violationsCount} strike{(s.strikeCount ?? s.violationsCount) !== 1 ? 's' : ''}
-                                {(s.totalPenaltySeconds || 0) > 0 && ` (-${Math.round((s.totalPenaltySeconds || 0) / 60)}m)`}
-                              </span>
-                            </div>
-                            {s.multiMonitorDetected && (
-                              <div className="lip-telemetry-row lip-telemetry-row--multi">
-                                <span>🖥️ Multi-display detected</span>
-                              </div>
-                            )}
-                            {s.deviceOS && (
-                              <div className="lip-telemetry-row lip-telemetry-row--device">
-                                <span>📱 {s.deviceOS}</span>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Student Action Buttons */}
-                          <div className="lip-card-actions">
-                            {!s.autoSubmittedBySecurity && (
-                              <>
-                                {isLocked ? (
-                                  <button
-                                    type="button"
-                                    className="lip-card-btn lip-card-btn--unlock"
-                                    onClick={() => handleRemoteUnlock(compositeKey)}
-                                    title="Remotely clear lock screen and resume candidate examination"
-                                  >
-                                    🔓 Remote Unlock
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="lip-card-btn lip-card-btn--time"
-                                    onClick={() => handleAddTime(compositeKey, 5)}
-                                    title="Add +5 minutes accommodation to candidate"
-                                  >
-                                    ⏱️ +5m
-                                  </button>
-                                )}
-                                {(s.strikeCount ?? s.violationsCount) > 0 && (
-                                  <button
-                                    type="button"
-                                    className="lip-card-btn lip-card-btn--pardon"
-                                    onClick={() => handlePardon(compositeKey)}
-                                    title="Pardon strikes and reset violation counters"
-                                  >
-                                    🛡️ Pardon
-                                  </button>
-                                )}
-                              </>
-                            )}
-                            {s.status !== 'submitted' && (
-                              <button
-                                type="button"
-                                className="lip-card-btn lip-card-btn--force"
-                                onClick={() => handleForceSubmit(compositeKey)}
-                                title="Force submission of exam attempt"
-                              >
-                                🛑 Submit
-                              </button>
-                            )}
-                          </div>
+                          {/* Contextual Student Actions */}
+                          {renderCandidateActions(s, compositeKey, isLocked, isOverdueLock, compMinutes, false)}
                         </div>
                       );
                     })}
@@ -2256,38 +3033,122 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 )}
               </div>
 
-              {/* Right Side Live Activity Log Stream */}
+              {/* Right Side Class & School Activity Log Drawer */}
               {showLogDrawer && (
                 <div className="lip-log-drawer animate-slide-in-right">
                   <div className="lip-log-drawer-header">
-                    <h3>📜 Live Activity Stream</h3>
-                    <button
-                      type="button"
-                      className="lip-log-close"
-                      onClick={() => setShowLogDrawer(false)}
-                    >
-                      ✕
-                    </button>
+                    <div>
+                      <h3>📜 Audit Logs ({drawerLogEvents.length})</h3>
+                      <span className="lip-log-drawer-sub">
+                        {logScopeMode === 'current_scope' ? `Scope: ${scopeLabel}` : 'Scope: Whole School'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button
+                        type="button"
+                        className="lip-log-export-btn"
+                        disabled={drawerLogEvents.length === 0}
+                        onClick={() => {
+                          void exportProctorAuditLogExcelICM(drawerLogEvents, {
+                            reportTitle: `Proctoring Log — ${logScopeMode === 'current_scope' ? scopeLabel : 'Whole School'}`,
+                            quizCode: singleFocusQuiz?.quizCode || 'ALL',
+                            targetClass: logScopeMode === 'current_scope' ? scopeLabel : 'Whole School',
+                            filenameSlug: logScopeMode === 'current_scope' ? scopeLabel : 'whole_school',
+                          });
+                        }}
+                        title="Export filtered proctoring log to ICM Excel (.xlsx)"
+                      >
+                        📥 .xlsx
+                      </button>
+                      <button
+                        type="button"
+                        className="lip-log-close"
+                        onClick={() => setShowLogDrawer(false)}
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Drawer Scope, Category & Search Controls */}
+                  <div className="lip-log-controls">
+                    <div className="lip-log-scope-row">
+                      <button
+                        type="button"
+                        className={`lip-log-pill ${logScopeMode === 'current_scope' ? 'lip-log-pill--active' : ''}`}
+                        onClick={() => setLogScopeMode('current_scope')}
+                      >
+                        🏫 Current Filter
+                      </button>
+                      <button
+                        type="button"
+                        className={`lip-log-pill ${logScopeMode === 'whole_school' ? 'lip-log-pill--active' : ''}`}
+                        onClick={() => setLogScopeMode('whole_school')}
+                      >
+                        🌐 Whole School
+                      </button>
+                    </div>
+                    <div className="lip-log-cat-row">
+                      {([
+                        { id: 'all', label: 'All' },
+                        { id: 'violations', label: '⚠️ Violations' },
+                        { id: 'locks', label: '🔒 Locks' },
+                        { id: 'interventions', label: '🛡️ Actions' },
+                      ] as const).map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          className={`lip-log-pill ${logCategory === cat.id ? 'lip-log-pill--active' : ''}`}
+                          onClick={() => setLogCategory(cat.id)}
+                        >
+                          {cat.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      className="lip-log-search"
+                      placeholder="Filter logs by student, seat, or event..."
+                      value={logSearch}
+                      onChange={(e) => setLogSearch(e.target.value)}
+                    />
+                  </div>
+
                   <div className="lip-log-events-list">
-                    {logEvents.length === 0 ? (
-                      <div className="lip-log-empty">No activity events logged yet.</div>
+                    {drawerLogEvents.length === 0 ? (
+                      <div className="lip-log-empty">No activity events match the selected filter.</div>
                     ) : (
-                      logEvents.map((evt) => {
+                      drawerLogEvents.map((evt) => {
                         const timeStr = new Date(evt.timestamp).toLocaleTimeString([], {
                           hour: '2-digit',
                           minute: '2-digit',
                           second: '2-digit',
                         });
+                        const evtCompKey =
+                          evt.quizCode && evt.studentId
+                            ? `${evt.quizCode.toUpperCase()}::${evt.studentId}`
+                            : null;
                         return (
                           <div
                             key={evt.id}
-                            className={`lip-log-item lip-log-item--${evt.severity}`}
+                            className={`lip-log-item lip-log-item--${evt.severity} ${evtCompKey && students[evtCompKey] ? 'lip-log-item--clickable' : ''
+                              }`}
+                            onClick={() => {
+                              if (evtCompKey && students[evtCompKey]) {
+                                setSelectedStudentLogKey(evtCompKey);
+                              }
+                            }}
+                            title={
+                              evtCompKey && students[evtCompKey]
+                                ? 'Click to open full individual student log'
+                                : undefined
+                            }
                           >
                             <div className="lip-log-top">
                               <span className="lip-log-name">
                                 {isMultiExam && evt.quizCode ? `[${evt.quizCode}] ` : ''}
                                 {evt.studentName}
+                                {evt.candidateClass ? ` (${evt.candidateClass})` : ''}
                               </span>
                               <span className="lip-log-time">{timeStr}</span>
                             </div>
@@ -2302,6 +3163,267 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
             </div>
           </main>
         </div>
+
+        {/* Floating Live Violation & Overdue Lock Notification Stack */}
+        {alertToasts.length > 0 && (
+          <div className="lip-toast-stack" role="region" aria-label="Live Proctoring Notifications">
+            {alertToasts.map((toast) => {
+              const targetState = students[toast.compositeKey];
+              const isStillLocked = targetState?.status === 'locked';
+              const compMins = toast.lockedDurationMs
+                ? computeWaitCompensationMinutes(toast.lockedDurationMs)
+                : 1;
+              return (
+                <div
+                  key={toast.id}
+                  className={`lip-toast lip-toast--${toast.severity} ${toast.kind === 'locked_overdue' ? 'lip-toast--overdue' : ''
+                    }`}
+                >
+                  <div className="lip-toast-head">
+                    <span className="lip-toast-title">
+                      {toast.title}
+                      {toast.repeatCount > 1 && (
+                        <span className="lip-toast-repeat">×{toast.repeatCount}</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className="lip-toast-close"
+                      onClick={() => setAlertToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+                      aria-label="Dismiss notification"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="lip-toast-student">
+                    <strong>{toast.studentName}</strong>
+                    {toast.candidateClass ? ` · ${toast.candidateClass}` : ''}
+                    {toast.candidateNumber ? ` · Seat ${toast.candidateNumber}` : ''}
+                    {toast.quizCode ? ` · ${toast.quizCode}` : ''}
+                  </div>
+                  <div className="lip-toast-detail">{toast.detail}</div>
+                  <div className="lip-toast-actions">
+                    {isStillLocked && (
+                      <button
+                        type="button"
+                        className="lip-toast-btn lip-toast-btn--unlock"
+                        onClick={() => handleRemoteUnlock(toast.compositeKey)}
+                      >
+                        🔓 Unlock
+                      </button>
+                    )}
+                    {isStillLocked && toast.kind === 'locked_overdue' && (
+                      <button
+                        type="button"
+                        className="lip-toast-btn lip-toast-btn--comp"
+                        onClick={() => handleUnlockAndCompensate(toast.compositeKey, compMins)}
+                      >
+                        +{compMins}m &amp; Unlock
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="lip-toast-btn"
+                      onClick={() => handleLocateStudent(toast.compositeKey)}
+                    >
+                      🔍 Locate
+                    </button>
+                    <button
+                      type="button"
+                      className="lip-toast-btn"
+                      onClick={() => setSelectedStudentLogKey(toast.compositeKey)}
+                    >
+                      📜 History
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Individual Candidate Audit Log Modal */}
+        {selectedStudentLogKey && selectedStudentLogTarget && (
+          <div
+            className="lip-announcement-dialog animate-fade-in"
+            role="dialog"
+            onClick={() => setSelectedStudentLogKey(null)}
+          >
+            <div
+              className="lip-announcement-card lip-student-log-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="lip-student-log-head">
+                <div>
+                  <h3 style={{ margin: 0 }}>
+                    📜 Candidate Audit Log: {selectedStudentLogTarget.studentName}
+                  </h3>
+                  <div className="lip-student-log-meta">
+                    <span>Class: <strong>{selectedStudentLogTarget.candidateClass || 'Unassigned'}</strong></span>
+                    <span>•</span>
+                    <span>Seat: <strong>{selectedStudentLogTarget.candidateNumber || '-'}</strong></span>
+                    <span>•</span>
+                    <span>Exam: <strong>{selectedStudentLogTarget.quizCode}</strong></span>
+                    <span>•</span>
+                    <span>Strikes: <strong>{selectedStudentLogTarget.strikeCount ?? selectedStudentLogTarget.violationsCount}</strong></span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="lip-log-export-btn"
+                    onClick={() => {
+                      void exportProctorAuditLogExcelICM(selectedStudentLogs, {
+                        reportTitle: `Candidate Log — ${selectedStudentLogTarget.studentName}`,
+                        quizCode: selectedStudentLogTarget.quizCode,
+                        targetClass: selectedStudentLogTarget.candidateClass || 'Candidate',
+                        filenameSlug: `${selectedStudentLogTarget.studentName}_${selectedStudentLogTarget.quizCode || ''}`,
+                      });
+                    }}
+                  >
+                    📥 Export Student Log (.xlsx)
+                  </button>
+                  <button
+                    type="button"
+                    className="lip-log-close"
+                    onClick={() => setSelectedStudentLogKey(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {selectedStudentLogTarget.status === 'locked' && (
+                <div className="lip-card-lock-banner" style={{ marginBottom: '12px' }}>
+                  <span>🔒</span>
+                  <span style={{ flex: 1 }}>
+                    Currently Locked ({formatLockedDuration(getLockedDurationMs(selectedStudentLogTarget, nowMs))}) —{' '}
+                    {selectedStudentLogTarget.lockReason || 'Security trigger'}
+                  </span>
+                  <button
+                    type="button"
+                    className="lip-chip-btn lip-chip-btn--unlock"
+                    onClick={() => handleRemoteUnlock(selectedStudentLogKey)}
+                  >
+                    🔓 Unlock Now
+                  </button>
+                </div>
+              )}
+
+              <div className="lip-student-log-timeline">
+                {selectedStudentLogs.length === 0 ? (
+                  <div className="lip-log-empty">No discrete proctoring events recorded for this candidate yet.</div>
+                ) : (
+                  selectedStudentLogs.map((evt) => (
+                    <div key={evt.id} className={`lip-log-item lip-log-item--${evt.severity}`}>
+                      <div className="lip-log-top">
+                        <span className="lip-log-name">
+                          {String(evt.type || 'event').replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                        <span className="lip-log-time">
+                          {new Date(evt.timestamp).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <div className="lip-log-detail">{evt.detail}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="lip-announcement-actions" style={{ justifyContent: 'space-between', marginTop: '12px' }}>
+                {selectedStudentLogTarget.status !== 'submitted' && !selectedStudentLogTarget.autoSubmittedBySecurity ? (
+                  <button
+                    type="button"
+                    className="lip-card-btn lip-card-btn--notice"
+                    onClick={() => {
+                      setDirectNoticeTargetKey(selectedStudentLogKey);
+                      setDirectNoticeText('');
+                      setDirectNoticeSent(false);
+                    }}
+                  >
+                    💬 Send Direct Notice
+                  </button>
+                ) : (
+                  <span />
+                )}
+                <button
+                  type="button"
+                  className="lip-btn-cancel"
+                  onClick={() => setSelectedStudentLogKey(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Direct Individual Candidate Notice ("Whisper") Modal */}
+        {directNoticeTargetKey && students[directNoticeTargetKey] && (
+          <div
+            className="lip-announcement-dialog animate-fade-in"
+            role="dialog"
+            onClick={() => setDirectNoticeTargetKey(null)}
+          >
+            <div className="lip-announcement-card" onClick={(e) => e.stopPropagation()}>
+              <h3>💬 Direct Notice: {students[directNoticeTargetKey].studentName}</h3>
+              <p>
+                Send a private banner message to{' '}
+                <strong>{students[directNoticeTargetKey].studentName}</strong>
+                {students[directNoticeTargetKey].candidateClass
+                  ? ` (${students[directNoticeTargetKey].candidateClass})`
+                  : ''}{' '}
+                without interrupting other candidates.
+              </p>
+              <div className="lip-quick-templates">
+                {[
+                  'Please keep your eyes on your own screen.',
+                  'Please re-enter fullscreen mode immediately.',
+                  'Please raise your hand to speak with the invigilator.',
+                ].map((tpl) => (
+                  <button
+                    key={tpl}
+                    type="button"
+                    className="lip-template-pill"
+                    onClick={() => setDirectNoticeText(tpl)}
+                  >
+                    {tpl}
+                  </button>
+                ))}
+              </div>
+              <form onSubmit={handleSendDirectNotice}>
+                <textarea
+                  className="lip-announcement-textarea"
+                  placeholder="Type a direct reminder for this candidate..."
+                  rows={3}
+                  value={directNoticeText}
+                  onChange={(e) => setDirectNoticeText(e.target.value)}
+                  autoFocus
+                />
+                <div className="lip-announcement-actions">
+                  <button
+                    type="button"
+                    className="lip-btn-cancel"
+                    onClick={() => setDirectNoticeTargetKey(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="lip-btn-send-announce"
+                    disabled={!directNoticeText.trim()}
+                  >
+                    {directNoticeSent ? '✓ Notice Delivered!' : '💬 Send Direct Notice'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Broadcast Announcement Modal */}
         {showAnnouncementModal && (

@@ -53,6 +53,7 @@ export interface ProctorStudentState {
   violationsCount: number;
   lastViolation?: string;
   lockReason?: string;
+  lockedSince?: number;
   multiMonitorDetected: boolean;
   deviceOS?: string;
   lastHeartbeat: number;       // Sender's clock (diagnostic only)
@@ -105,6 +106,7 @@ export interface ProctorLogEvent {
     | 'multi_monitor'
     | 'shortcut'
     | 'locked'
+    | 'locked_overdue'
     | 'unlocked'
     | 'time_extended'
     | 'submitted'

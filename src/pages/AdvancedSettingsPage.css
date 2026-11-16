@@ -975,6 +975,30 @@
   font-weight: 700;
 }
 
+.adv-tier-pill--mastery-emerald {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.adv-tier-pill--mastery-blue {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+
+.adv-tier-pill--mastery-amber {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.adv-tier-pill--mastery-crimson {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
 .adv-tier-validation-alert {
   background: #fef2f2;
   border: 1.5px solid #fecaca;
@@ -1033,6 +1057,22 @@
 .adv-tier-card--final {
   border-left: 5px solid #dc2626;
   background: rgba(239, 68, 68, 0.02);
+}
+
+.adv-tier-card--mastery-emerald {
+  border-left: 5px solid #16a34a;
+}
+
+.adv-tier-card--mastery-blue {
+  border-left: 5px solid #2563eb;
+}
+
+.adv-tier-card--mastery-amber {
+  border-left: 5px solid #d97706;
+}
+
+.adv-tier-card--mastery-crimson {
+  border-left: 5px solid #dc2626;
 }
 
 .adv-tier-card-top {
