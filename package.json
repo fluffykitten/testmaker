@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.5.3",
+  "version": "2.5.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -28,6 +28,9 @@
     "test:fillable-tables": "node --import ./scripts/register-ts.mjs scripts/test-fillable-data-tables.mjs",
     "test:passage-editor": "node --import ./scripts/register-ts.mjs scripts/test-reading-passage-and-editor-format.mjs",
     "test:topic-mastery": "node --import ./scripts/register-ts.mjs scripts/test-topic-mastery-excel.mjs",
+    "test:desk-cards": "node --import ./scripts/register-ts.mjs scripts/test-candidate-desk-cards.mjs",
+    "test:student-pin": "node --import ./scripts/register-ts.mjs scripts/test-personal-exam-pin.mjs",
+    "test:teacher-accounts": "node --import ./scripts/register-ts.mjs scripts/test-admin-teacher-accounts.mjs",
     "test:proctor-alerts": "node --import ./scripts/register-ts.mjs scripts/test-proctor-alert-engine.mjs",
     "test:submission-tombstones": "node scripts/test-submission-deletion-tombstones.mjs",
     "test:resource-booklet": "node --import ./scripts/register-ts.mjs scripts/test-resource-booklet.mjs",

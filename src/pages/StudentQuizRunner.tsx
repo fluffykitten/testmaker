@@ -138,6 +138,7 @@ import {
   clearExamDraft,
   checkStudentAttemptSubmitted,
   getActiveStudentHeartbeatProof,
+  buildStudentDraftIdentifier,
   type ExamDraftPayload,
 } from '../services/examDraftService';
 import {
@@ -2661,7 +2662,12 @@ export function StudentQuizRunner({
           try {
             localStorage.removeItem(sessionKey);
             sessionStorage.removeItem(sessionKey);
-            clearExamDraft(finalQuizCode, finalQuizId, studentPinInput || candidateName).catch(() => { });
+            clearExamDraft(
+              finalQuizCode,
+              finalQuizId,
+              buildStudentDraftIdentifier(candidateName, studentPinInput),
+              studentPinInput || undefined
+            ).catch(() => { });
           } catch { }
         } else {
           setSyncStatus('offline_failed');
@@ -2919,7 +2925,12 @@ export function StudentQuizRunner({
         try {
           localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
-          clearExamDraft(finalQuizCode, finalQuizId, studentPinInput || candidateName).catch(() => { });
+          clearExamDraft(
+            finalQuizCode,
+            finalQuizId,
+            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            studentPinInput || undefined
+          ).catch(() => { });
         } catch { }
       } else {
         setSyncStatus('offline_failed');
@@ -2982,7 +2993,12 @@ export function StudentQuizRunner({
         try {
           localStorage.removeItem(sessionKey);
           sessionStorage.removeItem(sessionKey);
-          clearExamDraft(completedSubmission.quizCode, completedSubmission.quizId, studentPinInput || candidateName).catch(() => { });
+          clearExamDraft(
+            completedSubmission.quizCode,
+            completedSubmission.quizId,
+            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            studentPinInput || undefined
+          ).catch(() => { });
         } catch { }
       } else {
         setSyncErrorMessage(syncResult.error || 'Retry attempt failed. Please check internet connection.');
@@ -3237,7 +3253,12 @@ export function StudentQuizRunner({
           try {
             localStorage.removeItem(sessionKey);
             sessionStorage.removeItem(sessionKey);
-            clearExamDraft(completedSubmission.quizCode, completedSubmission.quizId, studentPinInput || candidateName).catch(() => { });
+            clearExamDraft(
+            completedSubmission.quizCode,
+            completedSubmission.quizId,
+            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            studentPinInput || undefined
+          ).catch(() => { });
           } catch { }
           setTeacherActionSuccess(`✅ Delivery confirmed by examiner database at ${new Date().toLocaleTimeString()}!`);
         } else {
@@ -3442,7 +3463,7 @@ export function StudentQuizRunner({
       latestCloudDraftRef.current = null;
       return;
     }
-    const identifier = studentPinInput || candidateName;
+    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput);
     if (!identifier || !resolvedQuizCode) {
       latestCloudDraftRef.current = null;
       return;
@@ -3542,7 +3563,7 @@ export function StudentQuizRunner({
   // Stable 25-second periodic cloud heartbeat (intentionally excludes volatile `timeLeft` so it never resets every second)
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading) return;
-    const identifier = studentPinInput || candidateName;
+    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput);
     if (!identifier || !resolvedQuizCode) return;
 
     const interval = setInterval(() => {
@@ -3645,9 +3666,14 @@ export function StudentQuizRunner({
 
     const timer = setTimeout(async () => {
       const finalId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
-      let draft = await fetchExamDraft(resolvedQuizCode, finalId, studentPinInput || candidateName);
+      const draftIdent = buildStudentDraftIdentifier(candidateName, studentPinInput);
+      const fetchOpts = {
+        studentPin: studentPinInput || undefined,
+        expectedStudentName: candidateName,
+      };
+      let draft = await fetchExamDraft(resolvedQuizCode, finalId, draftIdent, fetchOpts);
       if (!draft && resolvedTestId && resolvedTestId !== finalId) {
-        draft = await fetchExamDraft(resolvedQuizCode, resolvedTestId, studentPinInput || candidateName);
+        draft = await fetchExamDraft(resolvedQuizCode, resolvedTestId, draftIdent, fetchOpts);
       }
       if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
         setDetectedDraft(draft);
@@ -3680,6 +3706,9 @@ export function StudentQuizRunner({
           setIsCheckingAttempt(false);
           setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
           return;
+        }
+        if (result.student?.candidateNumber && !candidateNumber && !detectedDraft?.candidateNumber) {
+          setCandidateNumber(result.student.candidateNumber);
         }
       } catch (err: any) {
         setIsCheckingAttempt(false);
@@ -3880,9 +3909,17 @@ export function StudentQuizRunner({
       textChangeDebounceRef.current = {};
       isSubmittingRef.current = false;
 
-      const previousIdentifier = previousSession.studentPin || previousSession.candidateName;
+      const previousIdentifier = buildStudentDraftIdentifier(
+        previousSession.candidateName,
+        previousSession.studentPin
+      );
       if (previousIdentifier) {
-        clearExamDraft(resolvedQuizCode, effectiveDraftQuizId, previousIdentifier).catch(() => { });
+        clearExamDraft(
+          resolvedQuizCode,
+          effectiveDraftQuizId,
+          previousIdentifier,
+          previousSession.studentPin || undefined
+        ).catch(() => { });
       }
       try {
         localStorage.removeItem(sessionKey);

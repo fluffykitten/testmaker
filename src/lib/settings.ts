@@ -24,6 +24,7 @@ export interface AppSettings {
   defaultAiGuidanceEnabled: boolean;
   defaultEnableWatermark?: boolean;      // Per-candidate ghost watermark (default: disabled)
   defaultEnableMultiMonitor?: boolean;    // Multi-monitor detection shield (default: disabled)
+  defaultRequireStudentPin?: boolean;     // Require 4-digit personal candidate PIN from school roster (default: disabled)
   autoLockMinutes?: number;              // Inactivity auto-lock in minutes (default: 15, 0 = disabled)
   classes: string[]; // Configured list of school classes / cohorts for formal exams
   subjects?: string[]; // Configured list of school subjects / departments
@@ -82,6 +83,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultAiGuidanceEnabled: true,
   defaultEnableWatermark: false,
   defaultEnableMultiMonitor: false,
+  defaultRequireStudentPin: false,
   autoLockMinutes: 15,
   classes: DEFAULT_CLASSES,
   subjects: DEFAULT_SUBJECTS,

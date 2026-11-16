@@ -34,6 +34,15 @@ export interface ExamDraftPayload {
   status: 'in_progress' | 'submitted';
 }
 
+export function buildStudentDraftIdentifier(studentName?: string, studentPin?: string): string {
+  const cleanName = normalizeIdentityPart(studentName)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const cleanPin = String(studentPin || '').trim();
+  if (cleanName && cleanPin) return `${cleanName}__${cleanPin}`;
+  return cleanPin || cleanName || String(studentName || '').trim();
+}
+
 export function getDraftKey(quizCode: string, studentIdentifier: string): string {
   const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
   const cleanId = (studentIdentifier || 'anonymous')
@@ -55,11 +64,11 @@ export function resolveDraftOwnerToken(
 ): string {
   const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
   const explicitPin = (studentPin || '').trim();
-  if (explicitPin) {
-    return `pin:${cleanCode}:${explicitPin}`;
-  }
   const ident = (studentIdentifier || '').trim();
-  if (/^\d{3,8}$/.test(ident)) {
+  if (explicitPin) {
+    return `pin:${cleanCode}:${ident || explicitPin}`;
+  }
+  if (/^\d{3,8}$/.test(ident) || /__\d{3,8}$/.test(ident)) {
     return `pin:${cleanCode}:${ident}`;
   }
 
@@ -89,7 +98,7 @@ export function getDraftLockCredentials(
   studentPin?: string
 ): { draftKey: string; ownerToken: string } {
   const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
-  const identifier = (studentPin || '').trim() || (studentName || '').trim();
+  const identifier = buildStudentDraftIdentifier(studentName, studentPin);
   const draftKey = getDraftKey(cleanCode, identifier);
   const ownerToken = resolveDraftOwnerToken(cleanCode, draftKey, studentPin, identifier);
   return { draftKey, ownerToken };
@@ -142,7 +151,7 @@ export async function saveExamDraft(
 ): Promise<boolean> {
   if (!draft.quizCode || !draft.studentName) return false;
 
-  const identifier = draft.studentPin || draft.studentName;
+  const identifier = buildStudentDraftIdentifier(draft.studentName, draft.studentPin);
   const draftKey = getDraftKey(draft.quizCode, identifier);
   const ownerToken = resolveDraftOwnerToken(draft.quizCode, draftKey, draft.studentPin, identifier);
   const payloadWithTimestamp: ExamDraftPayload = {
@@ -225,12 +234,20 @@ export async function saveExamDraft(
 function parseAndCacheCloudDraft(
   rawValue: string,
   quizId: string,
-  draftKey: string
+  draftKey: string,
+  expectedStudentName?: string
 ): ExamDraftPayload | null {
   const parsed: ExamDraftPayload = JSON.parse(rawValue);
   if (parsed && parsed.status === 'in_progress') {
     if (parsed.quizId !== quizId) {
       console.warn(`Draft bleed prevented via cloud: old draft belongs to ${parsed.quizId}, current exam is ${quizId}`);
+      return null;
+    }
+    if (
+      expectedStudentName &&
+      normalizeIdentityPart(parsed.studentName) !== normalizeIdentityPart(expectedStudentName)
+    ) {
+      console.warn('Draft identity mismatch prevented via cloud.');
       return null;
     }
     const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
@@ -250,11 +267,15 @@ function parseAndCacheCloudDraft(
 export async function fetchExamDraft(
   quizCode: string,
   quizId: string,
-  studentIdentifier: string
+  studentIdentifier: string,
+  options?: { studentPin?: string; expectedStudentName?: string }
 ): Promise<ExamDraftPayload | null> {
   if (!quizCode || !quizId || !studentIdentifier) return null;
 
   const draftKey = getDraftKey(quizCode, studentIdentifier);
+  const expectedNameNorm = options?.expectedStudentName
+    ? normalizeIdentityPart(options.expectedStudentName)
+    : '';
 
   // 1. Try local storage first
   try {
@@ -263,11 +284,11 @@ export async function fetchExamDraft(
       const parsed: ExamDraftPayload = JSON.parse(local);
       if (parsed && parsed.status === 'in_progress') {
         if (parsed.quizId !== quizId) {
-          // The local copy was written before the published id resolved (or belongs
-          // to an older sitting). Do not trust it, but keep looking in the cloud.
           console.warn(
             `Local draft quiz id mismatch (${parsed.quizId} != ${quizId}); checking cloud copy instead.`
           );
+        } else if (expectedNameNorm && normalizeIdentityPart(parsed.studentName) !== expectedNameNorm) {
+          console.warn('Local draft student identity mismatch ignored.');
         } else {
           // Verify not stale (> 24 hours)
           const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
@@ -283,7 +304,7 @@ export async function fetchExamDraft(
 
   // 2. Fetch from Supabase cloud via SECURITY DEFINER RPC first (fallback to 1-arg or app_config pre-migration)
   try {
-    const ownerToken = resolveDraftOwnerToken(quizCode, draftKey, undefined, studentIdentifier);
+    const ownerToken = resolveDraftOwnerToken(quizCode, draftKey, options?.studentPin, studentIdentifier);
     let rpcRes = (await (supabase as any).rpc('get_student_exam_draft', {
       p_key: draftKey,
       p_owner_token: ownerToken,
@@ -297,7 +318,7 @@ export async function fetchExamDraft(
 
     if (!rpcRes.error) {
       if (rpcRes.data) {
-        return parseAndCacheCloudDraft(rpcRes.data, quizId, draftKey);
+        return parseAndCacheCloudDraft(rpcRes.data, quizId, draftKey, options?.expectedStudentName);
       }
       return null;
     }
@@ -308,7 +329,7 @@ export async function fetchExamDraft(
       .maybeSingle()) as { data: { value: string } | null; error: any };
 
     if (!error && data?.value) {
-      return parseAndCacheCloudDraft(data.value, quizId, draftKey);
+      return parseAndCacheCloudDraft(data.value, quizId, draftKey, options?.expectedStudentName);
     }
   } catch (err) {
     console.warn('Could not fetch cloud draft:', err);
@@ -323,12 +344,13 @@ export async function fetchExamDraft(
 export async function clearExamDraft(
   quizCode: string,
   quizId: string,
-  studentIdentifier: string
+  studentIdentifier: string,
+  studentPin?: string
 ): Promise<void> {
   if (!quizCode || !quizId || !studentIdentifier) return;
 
   const draftKey = getDraftKey(quizCode, studentIdentifier);
-  const ownerToken = resolveDraftOwnerToken(quizCode, draftKey, undefined, studentIdentifier);
+  const ownerToken = resolveDraftOwnerToken(quizCode, draftKey, studentPin, studentIdentifier);
 
   try {
     localStorage.removeItem(`${LOCAL_DRAFT_PREFIX}${draftKey}`);

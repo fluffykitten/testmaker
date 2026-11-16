@@ -10,6 +10,7 @@ import {
   exportKahootQuizizzCsv,
 } from '../services/lmsExportService';
 import { GoogleFormsExportModal } from './GoogleFormsExportModal';
+import { CandidateCardPrintModal } from './CandidateCardPrintModal';
 import './StudentShareModal.css';
 
 interface StudentShareModalProps {
@@ -34,6 +35,7 @@ export function StudentShareModal({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [showGoogleFormsModal, setShowGoogleFormsModal] = useState(false);
+  const [showPrintCardsModal, setShowPrintCardsModal] = useState(false);
   const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!isOpen) return null;
@@ -114,7 +116,15 @@ export function StudentShareModal({
                 </button>
               </div>
 
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="sq-btn sq-btn-secondary"
+                  onClick={() => setShowPrintCardsModal(true)}
+                  title="Print 2x3 A4 Candidate Desk Cards (Profile + PIN + Schedule) for candidates"
+                >
+                  🪪 Print Desk Cards
+                </button>
                 <button
                   type="button"
                   className="sq-btn sq-btn-primary"
@@ -233,6 +243,13 @@ export function StudentShareModal({
           questions={questions}
         />
       )}
+
+      {/* Printable 2x3 A4 Candidate Desk Cards Modal */}
+      <CandidateCardPrintModal
+        isOpen={showPrintCardsModal}
+        onClose={() => setShowPrintCardsModal(false)}
+        initialExamTitle={headerConfig.title || 'Examination Assessment'}
+      />
     </div>,
     document.body
   );

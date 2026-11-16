@@ -733,6 +733,7 @@ export function createDraftFromTest(
     hideEmergencyExamButton: existing?.hideEmergencyExamButton ?? (getSavedSettings().hideEmergencyExamButton ?? false),
     requireTeacherUnlock: existing?.requireTeacherUnlock ?? true,
     teacherPin: pin,
+    requireStudentPin: existing?.requireStudentPin ?? (getSavedSettings().defaultRequireStudentPin ?? false),
     maxViolations: existing?.maxViolations || 3,
     showInstantSolutions: existing?.showInstantSolutions ?? false,
     isActive: existing?.isActive ?? true,

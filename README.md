@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.4`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.2-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.4-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `024`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `026`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -116,6 +116,8 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`022_exam_anti_tamper_and_rate_guards.sql`](supabase/migrations/022_exam_anti_tamper_and_rate_guards.sql) | `exam_draft_locks`, Exam Mode server score zeroing, single-attempt enforcement, download gating, set-based paper assembly, and audit triggers |
 | [`023_proctor_security_and_pin_parity.sql`](supabase/migrations/023_proctor_security_and_pin_parity.sql) | Unlock PIN lookup parity and `proctor_channel_keys` ECDSA P-256 key registry |
 | [`024_phase3_deep_rls_ratelimit_and_game_security.sql`](supabase/migrations/024_phase3_deep_rls_ratelimit_and_game_security.sql) | `teacherPinHash` removal, `game_profiles` RLS & reward caps, `security_rate_limits` lockouts, roster PIN & draft-lock submission enforcement, and `get_student_game_paper` / `check_game_question_answer` |
+| [`025_personal_exam_pin_hardening.sql`](supabase/migrations/025_personal_exam_pin_hardening.sql) | `normalize_roster_class_label` spacing parity (`X IPA3` ↔ `X IPA 3`), strict enrolled-PIN rejection inside `verify_roster_pin_if_enrolled`, and composite `name__pin` draft lock resolution in `submit_student_exam_attempt` |
+| [`026_admin_teacher_account_management.sql`](supabase/migrations/026_admin_teacher_account_management.sql) | Centralized Admin Educator Account RPCs (`admin_list/create/update/reset_password/delete`), `must_change_password` temporary password flow, session revocation on suspension, and self-service `change_own_teacher_password` |
 
 ---
 
@@ -128,6 +130,10 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Phase 2.5 Anti-Tamper** | `npm run test:phase25-security` | Draft locks, score zeroing, single-attempt enforcement, crash recovery |
 | **Phase 3A Client Security** | `npm run test:phase3a-security` | XSS & KaTeX `trust: false`, CSV neutralization, `.exam` crypto/re-grading, prompt-injection isolation |
 | **Phase 3B Deep Security** | `npm run test:phase3b-security` | Migration `024` contracts, `game_profiles` RLS/caps, rate limits, signed game frames, heartbeat proofs |
+| **Candidate Cards & Workbook Import** | `npm run test:desk-cards` | ICM multi-sheet workbook parsing, PIN-preserving diff import, schedule targeting, 2×3 A4 duplex mirroring |
+| **Personal Exam PIN Hardening** | `npm run test:student-pin` | Quiz PIN toggle inheritance, school-wide unique PINs, composite draft isolation, class normalization & `025` guards |
+| **Admin Educator Accounts** | `npm run test:teacher-accounts` | Migration `026` admin RPCs, bootstrap authorization, temporary password lifecycle, pre-026 fallback |
+| **Topic Mastery & Reports** | `npm run test:topic-mastery` | Configurable mastery bands and student Excel diagnostic export generation |
 | **Emergency Fallback** | `npm run test:emergency` & `npm run test:emergency:sim` | `AES-256-GCM` `.exam` encryption, outbox retries, conflict resolution |
 | **Proctoring Hardening** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-hardening-023.mjs` | ECDSA P-256 command auth, UTF-8 byte clamping, `023` audit guards |
 | **Proctoring State Machine** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-p1-p2-p3.mjs` | Heartbeat throttling, command replay protection, strike/pardon guards |
@@ -137,6 +143,23 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.4] — Printable A4 Candidate Cards, Personal Exam PIN Hardening & Admin Educator Provisioning (`025`–`026`)
+- **Printable 2×3 A4 Duplex Candidate Cards & ICM Workbook Importer**:
+  - Added [`candidateCardPrintService.ts`](src/services/candidateCardPrintService.ts), [`CandidateCardPrintModal.tsx`](src/components/CandidateCardPrintModal.tsx), and [`examSchedule.ts`](src/lib/examSchedule.ts) / [`examScheduleService.ts`](src/services/examScheduleService.ts) to import multi-sheet ICM class/room/schedule Excel workbooks, preserve existing 4-digit PINs while normalizing class labels (`X IPA3` -> `X IPA 3`, adding `X IPS 2`) and pruning inactive entries, and render ink-saving A4 front + long/short-edge mirrored reverse timetable **Candidate Cards** with ICM & Cambridge logos and `Room N - Akhwat/Ikhwan` seating.
+- **Personal Exam PIN Hardening (`025`)**:
+  - Exposed the **Require Personal Candidate PIN** per-exam toggle in [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx) and school-wide default in [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx) / [`settings.ts`](src/lib/settings.ts).
+  - Enforced global uniqueness across school 4-digit PINs in [`studentRosterService.ts`](src/services/studentRosterService.ts), isolated drafts with composite `name__pin` owner keys in [`examDraftService.ts`](src/services/examDraftService.ts) and [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), improved mid-string masked PIN editing in [`examSecurityUtils.ts`](src/utils/examSecurityUtils.ts), normalized class spacing across [`verify-student-pin`](supabase/functions/verify-student-pin/index.ts), and hardened strict server-side PIN enforcement in [`025_personal_exam_pin_hardening.sql`](supabase/migrations/025_personal_exam_pin_hardening.sql).
+- **Centralized Admin Educator Accounts & Password Lifecycle (`026`)**:
+  - Added the **Educator Accounts** tab in [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx) for provisioning Teacher/Admin accounts with temporary passwords, one-step **`Register / Edit`** upgrades for legacy passwordless profiles, inline credential copy banners, password resets, and account suspension/deletion.
+  - Added forced first-login password setup (`must_change_password`) in [`PinGate.tsx`](src/components/PinGate.tsx) and self-service **Change Login Password** in [`TeacherProfileSettingsModal.tsx`](src/components/TeacherProfileSettingsModal.tsx), backed by [`026_admin_teacher_account_management.sql`](supabase/migrations/026_admin_teacher_account_management.sql) and Migration-021 direct-table fallbacks in [`teacherProfileService.ts`](src/services/teacherProfileService.ts).
+- **Verification**:
+  - Added `npm run test:desk-cards` (17/17), `npm run test:student-pin` (12/12), and `npm run test:teacher-accounts` (16/16), alongside existing security suites and `npm run build`.
+
+### [v.2.5.3] — Topic Mastery Reports, Batch Excel ZIP Exports & School-Wide Live Proctor Redesign
+- **Topic Mastery & Diagnostic Excel Reporting**: Added [`topicMastery.ts`](src/lib/topicMastery.ts), admin mastery-band configuration in [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx), and batch ZIP report generation in [`icmExcelExportService.ts`](src/services/icmExcelExportService.ts) (`npm run test:topic-mastery`).
+- **Dual-Logo Exam Masthead & Passage Editor Formatting**: Upgraded [`TestHeaderEditor.tsx`](src/components/TestHeaderEditor.tsx), [`docxExportService.ts`](src/services/docxExportService.ts), [`pdfExportService.ts`](src/services/pdfExportService.ts), [`readingPassageUtils.ts`](src/lib/readingPassageUtils.ts), and [`QuestionEditorModal.tsx`](src/components/QuestionEditorModal.tsx).
+- **School-Wide Live Invigilator Redesign**: Overhauled [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx) and [`proctorAlertEngine.ts`](src/lib/proctorAlertEngine.ts) for responsive multi-class monitoring and actionable alert workflows (`npm run test:proctor-alerts`).
 
 ### [v.2.5.2] — Mini-IELTS / CEFR Framework, Mixed-Domain Math Helper & Inline Gap Flow Fix
 - **Mini-IELTS / CEFR Integrated Assessment Option (`Languages` Domain)**:

@@ -27,6 +27,7 @@ import { QuizResultsModal } from '../components/QuizResultsModal';
 import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
+import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
 import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
 import { getSavedSettings } from '../lib/settings';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
@@ -135,6 +136,7 @@ export function QuizManagerPage({
   const [selectedQuizForResults, setSelectedQuizForResults] = useState<PublishedQuiz | null>(null);
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
   const [isSchoolProctorOpen, setIsSchoolProctorOpen] = useState(false);
+  const [isPrintDeskCardsOpen, setIsPrintDeskCardsOpen] = useState(false);
   const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
@@ -230,6 +232,7 @@ export function QuizManagerPage({
         !selectedQuizForResults &&
         !selectedQuizForProctor &&
         !isSchoolProctorOpen &&
+        !isPrintDeskCardsOpen &&
         !deleteModalState.isOpen &&
         !offlineGradingData &&
         !isSelectOfflineTestOpen
@@ -239,7 +242,7 @@ export function QuizManagerPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
+  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, isPrintDeskCardsOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
 
   const activeExamQuizzes = useMemo(() => {
     return quizzes.filter((q) => q.isActive && q.quizMode !== 'game');
@@ -561,6 +564,7 @@ export function QuizManagerPage({
       enableWatermark: currentSettings.defaultEnableWatermark ? (quiz.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (quiz.enableMultiMonitorDetection ?? false) : false,
       hideEmergencyExamButton: quiz.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
+      requireStudentPin: quiz.requireStudentPin ?? false,
       allowStudentScriptDownload: quiz.allowStudentScriptDownload ?? false,
     });
     setSelectedTestId(quiz.testId);
@@ -661,6 +665,7 @@ export function QuizManagerPage({
       enableWatermark: currentSettings.defaultEnableWatermark ? (activeQuizDraft.enableWatermark ?? false) : false,
       enableMultiMonitorDetection: currentSettings.defaultEnableMultiMonitor ? (activeQuizDraft.enableMultiMonitorDetection ?? false) : false,
       hideEmergencyExamButton: activeQuizDraft.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
+      requireStudentPin: Boolean(activeQuizDraft.requireStudentPin),
       showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
       allowStudentScriptDownload: Boolean(activeQuizDraft.allowStudentScriptDownload),
       updatedAt: new Date().toISOString(),
@@ -859,6 +864,16 @@ export function QuizManagerPage({
                 >
                   <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>📡</span>
                   <span>School Live Proctor ({activeExamQuizzes.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={() => setIsPrintDeskCardsOpen(true)}
+                  title="Print 2x3 A4 Candidate Desk Cards (Profile + PIN + Schedule)"
+                >
+                  <span>🪪</span>
+                  <span>Desk Cards</span>
                 </button>
 
                 <button
@@ -1345,6 +1360,11 @@ export function QuizManagerPage({
                                           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                                         </svg>
                                         <span>Lockdown</span>
+                                      </span>
+                                    )}
+                                    {quiz.requireStudentPin && (
+                                      <span className="qm-card-chip qm-card-chip--security" title="4-Digit Personal Candidate PIN Required">
+                                        <span>🪪 Student PIN</span>
                                       </span>
                                     )}
                                   </div>
@@ -2322,6 +2342,28 @@ export function QuizManagerPage({
                       </label>
                     </div>
 
+                    <div className="qm-studio-divider" />
+
+                    <div className="qm-studio-card-row">
+                      <div>
+                        <strong className="qm-studio-card-title">🪪 Require Personal Candidate PIN</strong>
+                        <p className="qm-studio-card-sub">Candidates must enter their 4-digit roster PIN before starting or resuming</p>
+                      </div>
+                      <label className="qm-switch" title="Toggle 4-digit Personal Candidate PIN verification">
+                        <input
+                          type="checkbox"
+                          checked={activeQuizDraft.requireStudentPin ?? false}
+                          onChange={(e) =>
+                            setActiveQuizDraft({
+                              ...activeQuizDraft,
+                              requireStudentPin: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="qm-slider" />
+                      </label>
+                    </div>
+
                     {activeQuizDraft.securityEnabled && (
                       <div className="qm-studio-security-sub">
                         <div className="qm-studio-card-row">
@@ -2753,6 +2795,12 @@ export function QuizManagerPage({
         isDeleting={isDeleting}
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteModalState({ isOpen: false, quizId: '', title: '' })}
+      />
+
+      {/* Candidate Desk Card Print Modal */}
+      <CandidateCardPrintModal
+        isOpen={isPrintDeskCardsOpen}
+        onClose={() => setIsPrintDeskCardsOpen(false)}
       />
     </div>
   );

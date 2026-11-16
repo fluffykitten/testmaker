@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTeacherProfile } from '../contexts/TeacherProfileContext';
+import { changeOwnTeacherPassword } from '../services/teacherProfileService';
 import { getSchoolClasses, DEFAULT_CLASSES } from '../lib/settings';
 import './TeacherProfileSettingsModal.css';
 
@@ -49,6 +50,12 @@ export function TeacherProfileSettingsModal({
   const [newPin, setNewPin] = useState('');
   const [removePin, setRemovePin] = useState(false);
 
+  // Self-service login password change state
+  const [passwordChangeMode, setPasswordChangeMode] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newLoginPassword, setNewLoginPassword] = useState('');
+  const [confirmLoginPassword, setConfirmLoginPassword] = useState('');
+
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -63,6 +70,10 @@ export function TeacherProfileSettingsModal({
       setPinChangeMode(false);
       setNewPin('');
       setRemovePin(false);
+      setPasswordChangeMode(Boolean(activeProfile.must_change_password));
+      setCurrentPassword('');
+      setNewLoginPassword('');
+      setConfirmLoginPassword('');
       setErrorMsg('');
       setSuccessMsg('');
     }
@@ -103,9 +114,37 @@ export function TeacherProfileSettingsModal({
       return;
     }
 
+    if (passwordChangeMode) {
+      if (activeProfile.has_password && !currentPassword) {
+        setErrorMsg('Please enter your current login password');
+        return;
+      }
+      if (newLoginPassword.trim().length < 6) {
+        setErrorMsg('New login password must be at least 6 characters');
+        return;
+      }
+      if (newLoginPassword !== confirmLoginPassword) {
+        setErrorMsg('New login password and confirmation do not match');
+        return;
+      }
+    }
+
     setIsSaving(true);
     setErrorMsg('');
     try {
+      if (passwordChangeMode) {
+        const pwRes = await changeOwnTeacherPassword(
+          currentPassword,
+          newLoginPassword,
+          activeProfile.id
+        );
+        if (pwRes.status !== 'ok') {
+          setErrorMsg(pwRes.error || 'Failed to update login password.');
+          setIsSaving(false);
+          return;
+        }
+      }
+
       let pinUpdate: string | null | undefined = undefined;
       if (pinChangeMode) {
         pinUpdate = removePin ? null : newPin.trim();
@@ -253,6 +292,97 @@ export function TeacherProfileSettingsModal({
                 <option value="basic">Basic (Standard arithmetic only)</option>
               </select>
             </div>
+          </div>
+
+          {/* Account Login & Password Section */}
+          <div className="teacher-settings-section">
+            <span className="teacher-settings-section-title">
+              Account Login &amp; Password ({activeProfile.role === 'admin' ? '🛡️ Admin' : '👩‍🏫 Teacher'})
+            </span>
+
+            {(activeProfile.username || activeProfile.email) && (
+              <div style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary, #64748b)', marginBottom: '8px' }}>
+                Signed in as:{' '}
+                <strong>
+                  {activeProfile.username ? `@${activeProfile.username}` : ''}
+                  {activeProfile.username && activeProfile.email ? ' • ' : ''}
+                  {activeProfile.email || ''}
+                </strong>
+              </div>
+            )}
+
+            {!passwordChangeMode ? (
+              <div className="teacher-pin-status-row">
+                <span className="teacher-pin-status">
+                  {activeProfile.has_password ? '🔑 Personal login password configured' : '🔓 No login password set'}
+                </span>
+                <button
+                  type="button"
+                  className="teacher-change-pin-btn"
+                  onClick={() => setPasswordChangeMode(true)}
+                >
+                  Change Login Password
+                </button>
+              </div>
+            ) : (
+              <div className="teacher-pin-edit-box" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {activeProfile.has_password && (
+                  <div className="teacher-field">
+                    <label htmlFor="settings-current-pw" className="teacher-label">Current Password</label>
+                    <input
+                      id="settings-current-pw"
+                      type="password"
+                      placeholder="Enter current password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      className="teacher-text-input"
+                      autoComplete="current-password"
+                    />
+                  </div>
+                )}
+                <div className="teacher-input-row">
+                  <div className="teacher-field">
+                    <label htmlFor="settings-new-pw" className="teacher-label">New Password (min 6 chars)</label>
+                    <input
+                      id="settings-new-pw"
+                      type="password"
+                      placeholder="New password"
+                      value={newLoginPassword}
+                      onChange={(e) => setNewLoginPassword(e.target.value)}
+                      className="teacher-text-input"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                  <div className="teacher-field">
+                    <label htmlFor="settings-confirm-pw" className="teacher-label">Confirm New Password</label>
+                    <input
+                      id="settings-confirm-pw"
+                      type="password"
+                      placeholder="Confirm password"
+                      value={confirmLoginPassword}
+                      onChange={(e) => setConfirmLoginPassword(e.target.value)}
+                      className="teacher-text-input"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
+                {!activeProfile.must_change_password && (
+                  <button
+                    type="button"
+                    className="teacher-secondary-btn"
+                    style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: '0.78rem' }}
+                    onClick={() => {
+                      setPasswordChangeMode(false);
+                      setCurrentPassword('');
+                      setNewLoginPassword('');
+                      setConfirmLoginPassword('');
+                    }}
+                  >
+                    Cancel Password Change
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Security PIN Section */}

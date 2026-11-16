@@ -6,6 +6,7 @@ import {
   loginTeacherAccount,
   registerOrClaimTeacherAccount,
   resetTeacherPasswordWithMasterPin,
+  changeOwnTeacherPassword,
   upsertAuthenticatedTeacherProfile,
 } from '../services/teacherProfileService';
 import { getSavedSettings, loadAndSyncTeacherAccountClaiming } from '../lib/settings';
@@ -17,7 +18,7 @@ const LEGACY_PIN_CACHE_KEY = 'testmaker_cached_access_pin';
 const ATTEMPTS_KEY = 'testmaker_pin_failed_attempts';
 const LOCKOUT_KEY = 'testmaker_pin_lockout_until';
 
-type AuthViewMode = 'signin' | 'register' | 'reset';
+type AuthViewMode = 'signin' | 'register' | 'reset' | 'force_change_password';
 
 const TITLE_OPTIONS = ['Dr.', 'Mr.', 'Ms.', 'Ibu', 'Bapak', 'Ustadz', 'Ustadzah'];
 
@@ -123,6 +124,15 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const [subject, setSubject] = useState('Chemistry');
   const [subjectCode, setSubjectCode] = useState('0620');
   const [classesInput, setClassesInput] = useState('10-A, 10-B');
+
+  // Forced first-login password change state
+  const [pendingForceChangeProfile, setPendingForceChangeProfile] = useState<{
+    profile: any;
+    token?: string;
+    currentPassword: string;
+  } | null>(null);
+  const [newPersonalPassword, setNewPersonalPassword] = useState('');
+  const [confirmPersonalPassword, setConfirmPersonalPassword] = useState('');
 
   const identifierInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -277,6 +287,24 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
 
       if (res.status === 'ok' && res.profile) {
         upsertAuthenticatedTeacherProfile(res.profile, res.token);
+        if (res.profile.must_change_password) {
+          try {
+            sessionStorage.removeItem(SESSION_KEY);
+          } catch {}
+          setPendingForceChangeProfile({
+            profile: res.profile,
+            token: res.token,
+            currentPassword: password,
+          });
+          setNewPersonalPassword('');
+          setConfirmPersonalPassword('');
+          setInfoBanner(
+            'Your administrator assigned a temporary password. Please set a new personal password to continue.'
+          );
+          setViewMode('force_change_password');
+          setError('');
+          return;
+        }
         completeUnlock(`${res.profile.title ? `${res.profile.title} ` : ''}${res.profile.name}`);
         return;
       }
@@ -386,6 +414,24 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
 
       if (res.status === 'ok' && res.profile) {
         upsertAuthenticatedTeacherProfile(res.profile, res.token);
+        if (res.profile.must_change_password) {
+          try {
+            sessionStorage.removeItem(SESSION_KEY);
+          } catch {}
+          setPendingForceChangeProfile({
+            profile: res.profile,
+            token: res.token,
+            currentPassword: password,
+          });
+          setNewPersonalPassword('');
+          setConfirmPersonalPassword('');
+          setInfoBanner(
+            'Your administrator assigned a temporary password. Please set a new personal password to continue.'
+          );
+          setViewMode('force_change_password');
+          setError('');
+          return;
+        }
         completeUnlock(`${res.profile.title ? `${res.profile.title} ` : ''}${res.profile.name}`);
         return;
       }
@@ -426,12 +472,71 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
       const res = await resetTeacherPasswordWithMasterPin(identifier.trim(), password, masterPin.trim());
       if (res.status === 'ok' && res.profile) {
         upsertAuthenticatedTeacherProfile(res.profile, res.token);
+        if (res.profile.must_change_password) {
+          try {
+            sessionStorage.removeItem(SESSION_KEY);
+          } catch {}
+          setPendingForceChangeProfile({
+            profile: res.profile,
+            token: res.token,
+            currentPassword: password,
+          });
+          setNewPersonalPassword('');
+          setConfirmPersonalPassword('');
+          setInfoBanner(
+            'Your administrator assigned a temporary password. Please set a new personal password to continue.'
+          );
+          setViewMode('force_change_password');
+          setError('');
+          return;
+        }
         completeUnlock(`${res.profile.title ? `${res.profile.title} ` : ''}${res.profile.name}`);
         return;
       }
 
       const isPinError = /master pin/i.test(res.error || '');
       triggerShakeError(res.error || 'Could not reset password.', isPinError);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleForcePasswordChangeSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (submitting || !pendingForceChangeProfile) return;
+
+    if (newPersonalPassword.trim().length < 6) {
+      triggerShakeError('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPersonalPassword !== confirmPersonalPassword) {
+      triggerShakeError('New password and confirmation do not match.');
+      return;
+    }
+    if (newPersonalPassword === pendingForceChangeProfile.currentPassword) {
+      triggerShakeError('Please choose a personal password different from your temporary password.');
+      return;
+    }
+
+    setSubmitting(true);
+    setError('');
+    try {
+      const res = await changeOwnTeacherPassword(
+        pendingForceChangeProfile.currentPassword,
+        newPersonalPassword,
+        pendingForceChangeProfile.profile.id
+      );
+      if (res.status === 'ok') {
+        const updatedProfile = res.profile || {
+          ...pendingForceChangeProfile.profile,
+          must_change_password: false,
+        };
+        upsertAuthenticatedTeacherProfile(updatedProfile, pendingForceChangeProfile.token);
+        setPendingForceChangeProfile(null);
+        completeUnlock(`${updatedProfile.title ? `${updatedProfile.title} ` : ''}${updatedProfile.name}`);
+        return;
+      }
+      triggerShakeError(res.error || 'Could not update your password.');
     } finally {
       setSubmitting(false);
     }
@@ -448,11 +553,13 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
   const subtitleText =
     viewMode === 'signin'
       ? 'Sign in with your educator email or username'
-      : viewMode === 'register'
-        ? claimProfileId
-          ? 'Claim your existing educator profile with School Master PIN'
-          : 'Create a new educator workspace (School Master PIN required)'
-        : 'Reset your educator password using the School Master PIN';
+      : viewMode === 'force_change_password'
+        ? 'Set your personal educator password to activate your account'
+        : viewMode === 'register'
+          ? claimProfileId
+            ? 'Claim your existing educator profile with School Master PIN'
+            : 'Create a new educator workspace (School Master PIN required)'
+          : 'Reset your educator password using the School Master PIN';
 
   return (
     <div className={`pin-gate-overlay ${success ? 'pin-gate--success' : ''}`}>
@@ -499,8 +606,8 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
               </div>
             )}
 
-            {/* Legacy Profile Claim Banner */}
-            {infoBanner && viewMode === 'register' && (
+            {/* Legacy Profile Claim / Temp Password Banner */}
+            {infoBanner && (viewMode === 'register' || viewMode === 'force_change_password') && (
               <div className="teacher-auth-claim-banner">{infoBanner}</div>
             )}
 
@@ -956,6 +1063,78 @@ export function PinGate({ children, onBackToPortal }: PinGateProps) {
                     ← Back to Sign In
                   </button>
                 </div>
+              </form>
+            )}
+
+            {viewMode === 'force_change_password' && (
+              <form className="teacher-auth-form" onSubmit={handleForcePasswordChangeSubmit}>
+                <div className="teacher-auth-field">
+                  <label htmlFor="teacher-force-new-password">New Personal Password (min 6 chars)</label>
+                  <div className="teacher-auth-password-wrap">
+                    <input
+                      id="teacher-force-new-password"
+                      ref={identifierInputRef}
+                      type={showPassword ? 'text' : 'password'}
+                      className="teacher-auth-input"
+                      placeholder="Enter new personal password"
+                      value={newPersonalPassword}
+                      disabled={submitting}
+                      onChange={(e) => {
+                        setNewPersonalPassword(e.target.value);
+                        setError('');
+                      }}
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      className="teacher-auth-eye-btn"
+                      onClick={() => setShowPassword(!showPassword)}
+                      tabIndex={-1}
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="teacher-auth-field">
+                  <label htmlFor="teacher-force-confirm-password">Confirm New Password</label>
+                  <input
+                    id="teacher-force-confirm-password"
+                    type={showPassword ? 'text' : 'password'}
+                    className="teacher-auth-input"
+                    placeholder="Re-enter new personal password"
+                    value={confirmPersonalPassword}
+                    disabled={submitting}
+                    onChange={(e) => {
+                      setConfirmPersonalPassword(e.target.value);
+                      setError('');
+                    }}
+                    autoComplete="new-password"
+                  />
+                </div>
+
+                <div className="pin-error-msg">
+                  {error && (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                        <path
+                          fillRule="evenodd"
+                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                      {error}
+                    </>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  className="pin-submit-btn"
+                  disabled={!newPersonalPassword || !confirmPersonalPassword || submitting}
+                >
+                  {submitting ? 'Updating Password…' : 'Save New Password & Enter Workspace'}
+                </button>
               </form>
             )}
 

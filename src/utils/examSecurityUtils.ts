@@ -335,7 +335,31 @@ export function applyMaskedPinInput(
   maxLen = 20
 ): string {
   if (!rawDomValue) return '';
-  const keptBullets = (rawDomValue.match(/•/g) || []).length;
-  const addedChars = rawDomValue.replace(/•/g, '');
-  return (currentSecret.slice(0, keptBullets) + addedChars).slice(0, maxLen);
+  if (!rawDomValue.includes('•')) {
+    return rawDomValue.slice(0, maxLen);
+  }
+
+  let leadingBullets = 0;
+  while (leadingBullets < rawDomValue.length && rawDomValue[leadingBullets] === '•') {
+    leadingBullets++;
+  }
+
+  let trailingBullets = 0;
+  while (
+    trailingBullets < rawDomValue.length - leadingBullets &&
+    rawDomValue[rawDomValue.length - 1 - trailingBullets] === '•'
+  ) {
+    trailingBullets++;
+  }
+
+  const inserted = rawDomValue
+    .slice(leadingBullets, rawDomValue.length - trailingBullets)
+    .replace(/•/g, '');
+  const head = currentSecret.slice(0, leadingBullets);
+  const tail =
+    trailingBullets > 0
+      ? currentSecret.slice(Math.max(leadingBullets, currentSecret.length - trailingBullets))
+      : '';
+
+  return (head + inserted + tail).slice(0, maxLen);
 }

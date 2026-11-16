@@ -52,6 +52,8 @@ import { testR2Connection } from '../services/storageService';
 import { testGeminiModelConnectivity, getConfiguredApiKeyStatus } from '../lib/gemini';
 import {
   type RosterStudent,
+  type ExcelRosterParseResult,
+  type RosterImportPlan,
   getSchoolRoster,
   saveSchoolRoster,
   loadAndSyncSchoolRoster,
@@ -62,14 +64,57 @@ import {
   generateRandom4DigitPin,
   parseExcelRosterFile,
   downloadSampleExcelTemplate,
+  normalizeRosterAndClasses,
+  planRosterExcelImport,
 } from '../services/studentRosterService';
+import {
+  type ExamScheduleEntry,
+  type ExamScheduleCategory,
+  ICM_SCHOOL_CLASSES_26_27,
+  ICM_SEMESTER1_2026_2027_SCHEDULE,
+  validateExamScheduleEntries,
+  formatRoomWithGender,
+} from '../lib/examSchedule';
+import {
+  getExamSchedule,
+  saveExamSchedule,
+  loadAndSyncExamSchedule,
+} from '../services/examScheduleService';
+import {
+  adminListTeacherAccounts,
+  adminCreateTeacherAccount,
+  adminUpdateTeacherAccount,
+  adminResetTeacherPassword,
+  adminDeleteTeacherAccount,
+  generateTemporaryTeacherPassword,
+  getActiveTeacherProfileId,
+} from '../services/teacherProfileService';
+import type { TeacherProfile } from '../types/database';
+import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
 import './AdvancedSettingsPage.css';
 
 const ADVANCED_MASTER_PIN = '140798';
 const ADVANCED_SESSION_KEY = 'testmaker_advanced_pin_verified';
 const PIN_LENGTH = 6;
 
+function formatEducatorDisplayName(title?: string | null, name?: string | null): string {
+  const cleanName = (name || '').trim();
+  const cleanTitle = (title || '').trim();
+  if (!cleanTitle) return cleanName;
+  if (!cleanName) return cleanTitle;
+  const lowerName = cleanName.toLowerCase();
+  const lowerTitle = cleanTitle.toLowerCase();
+  if (lowerName === lowerTitle || lowerName.startsWith(`${lowerTitle} `) || lowerName.startsWith(`${lowerTitle}.`)) {
+    return cleanName;
+  }
+  return `${cleanTitle} ${cleanName}`;
+}
+
 const CLASS_PRESETS: { label: string; classes: string[] }[] = [
+  {
+    label: 'ICM Senior High 26/27 (13 Classes)',
+    classes: ICM_SCHOOL_CLASSES_26_27,
+  },
   {
     label: 'Grade 10–12 (A/B/C)',
     classes: ['10-A', '10-B', '10-C', '11-A', '11-B', '11-C', '12-A', '12-B', '12-C'],
@@ -107,11 +152,12 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   // Application & Roster Settings State
   const [settings, setSettingsState] = useState<AppSettings>(() => getSavedSettings());
   const [roster, setRoster] = useState<RosterStudent[]>(() => getSchoolRoster());
-  const [activeSection, setActiveSection] = useState<'roster' | 'security' | 'mastery' | 'cloud'>('roster');
-  const [rosterSubTab, setRosterSubTab] = useState<'classes' | 'students' | 'subjects'>('classes');
+  const [activeSection, setActiveSection] = useState<'roster' | 'teachers' | 'security' | 'mastery' | 'cloud'>('roster');
+  const [rosterSubTab, setRosterSubTab] = useState<'classes' | 'students' | 'schedule' | 'subjects'>('classes');
   const [subjects, setSubjects] = useState<string[]>(() => getSchoolSubjects());
   const [newSubjectInput, setNewSubjectInput] = useState('');
   const [selectedRosterClass, setSelectedRosterClass] = useState<string>('ALL');
+  const [selectedRosterRoom, setSelectedRosterRoom] = useState<string>('ALL');
 
   // School Classes Inputs
   const [newClassInput, setNewClassInput] = useState('');
@@ -121,13 +167,35 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentClass, setNewStudentClass] = useState('');
   const [newStudentNumber, setNewStudentNumber] = useState('');
+  const [newStudentRoom, setNewStudentRoom] = useState('');
+  const [newStudentSeat, setNewStudentSeat] = useState('');
+  const [editingRoomSeatId, setEditingRoomSeatId] = useState<string | null>(null);
+  const [editRoomValue, setEditRoomValue] = useState('');
+  const [editSeatValue, setEditSeatValue] = useState('');
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [bulkImportText, setBulkImportText] = useState('');
   const [copiedPinStudentId, setCopiedPinStudentId] = useState<string | null>(null);
 
-  // Excel File Upload
+  // Excel File Upload & Smart Diff Review
   const excelFileInputRef = useRef<HTMLInputElement>(null);
   const [isParsingExcel, setIsParsingExcel] = useState(false);
+  const [pendingExcelReview, setPendingExcelReview] = useState<{
+    parseResult: ExcelRosterParseResult;
+    plan: RosterImportPlan;
+    pruneExtras: boolean;
+    importSchedule: boolean;
+  } | null>(null);
+
+  // Exam Schedule State & Desk Card Print Modal
+  const [examSchedule, setExamSchedule] = useState<ExamScheduleEntry[]>(() => getExamSchedule());
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [newSchedDate, setNewSchedDate] = useState('');
+  const [newSchedTime, setNewSchedTime] = useState('');
+  const [newSchedSubject, setNewSchedSubject] = useState('');
+  const [newSchedDuration, setNewSchedDuration] = useState("90'");
+  const [newSchedTarget, setNewSchedTarget] = useState('ALL');
+  const [newSchedCategory, setNewSchedCategory] = useState<ExamScheduleCategory>('written');
+  const [isPrintCardsModalOpen, setIsPrintCardsModalOpen] = useState(false);
 
   // Cloud & Backup State
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
@@ -172,6 +240,52 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     [topicMasteryTiers]
   );
 
+  // Educator Accounts Management State
+  const [teacherAccounts, setTeacherAccounts] = useState<TeacherProfile[]>([]);
+  const [isLoadingTeachers, setIsLoadingTeachers] = useState(false);
+  const [newTeacherTitle, setNewTeacherTitle] = useState('Mr.');
+  const [newTeacherName, setNewTeacherName] = useState('');
+  const [newTeacherUsername, setNewTeacherUsername] = useState('');
+  const [newTeacherEmail, setNewTeacherEmail] = useState('');
+  const [newTeacherRole, setNewTeacherRole] = useState<'teacher' | 'admin'>('teacher');
+  const [newTeacherSubject, setNewTeacherSubject] = useState('Chemistry');
+  const [newTeacherSubjectCode, setNewTeacherSubjectCode] = useState('0620');
+  const [newTeacherClasses, setNewTeacherClasses] = useState<string[]>(() =>
+    (getSavedSettings().classes || DEFAULT_CLASSES).slice(0, 2)
+  );
+  const [newTeacherPassword, setNewTeacherPassword] = useState(() => generateTemporaryTeacherPassword());
+  const [newTeacherMustChangePw, setNewTeacherMustChangePw] = useState(true);
+  const [isCreatingTeacher, setIsCreatingTeacher] = useState(false);
+  const [teacherFormError, setTeacherFormError] = useState<string | null>(null);
+  const [issuedCredentialsBanner, setIssuedCredentialsBanner] = useState<{
+    name: string;
+    identifier: string;
+    password: string;
+    role: string;
+    mustChange: boolean;
+  } | null>(null);
+
+  const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null);
+  const [editTeacherTitle, setEditTeacherTitle] = useState('Mr.');
+  const [editTeacherName, setEditTeacherName] = useState('');
+  const [editTeacherUsername, setEditTeacherUsername] = useState('');
+  const [editTeacherEmail, setEditTeacherEmail] = useState('');
+  const [editTeacherRole, setEditTeacherRole] = useState<'teacher' | 'admin'>('teacher');
+  const [editTeacherSubject, setEditTeacherSubject] = useState('Chemistry');
+  const [editTeacherSubjectCode, setEditTeacherSubjectCode] = useState('');
+  const [editTeacherClasses, setEditTeacherClasses] = useState<string[]>([]);
+  const [editTeacherPassword, setEditTeacherPassword] = useState('');
+  const [editTeacherMustChangePw, setEditTeacherMustChangePw] = useState(true);
+  const [editTeacherError, setEditTeacherError] = useState<string | null>(null);
+  const [isSavingTeacherEdit, setIsSavingTeacherEdit] = useState(false);
+
+  const [resetPwTeacherId, setResetPwTeacherId] = useState<string | null>(null);
+  const [resetPwValue, setResetPwValue] = useState('');
+  const [resetPwMustChange, setResetPwMustChange] = useState(true);
+  const [resetPwError, setResetPwError] = useState<string | null>(null);
+  const [isResettingTeacherPw, setIsResettingTeacherPw] = useState(false);
+  const [teacherDirectoryError, setTeacherDirectoryError] = useState<string | null>(null);
+
   // Focus first pin digit on load if locked
   useEffect(() => {
     if (!isUnlocked) {
@@ -187,6 +301,9 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       });
       loadAndSyncSchoolRoster().then((students) => {
         setRoster(students);
+      });
+      loadAndSyncExamSchedule().then((entries) => {
+        setExamSchedule(entries);
       });
       loadAndSyncSchoolSubjects().then((subjs) => {
         setSubjects(subjs);
@@ -229,6 +346,13 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
           setSettingsState((prev) => ({ ...prev, geminiApiKeyTier: cloudTier }));
         }
       });
+      setIsLoadingTeachers(true);
+      adminListTeacherAccounts()
+        .then((res) => {
+          setTeacherAccounts(res.profiles || []);
+          setTeacherDirectoryError(res.status === 'error' ? res.error || null : null);
+        })
+        .finally(() => setIsLoadingTeachers(false));
     }
   }, [isUnlocked]);
 
@@ -608,6 +732,27 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     showNotice('✓ Applied class preset');
   };
 
+  const normalizationPreview = useMemo(
+    () => normalizeRosterAndClasses(roster, settings.classes || DEFAULT_CLASSES),
+    [roster, settings.classes]
+  );
+
+  const handleNormalizeClassesNow = async () => {
+    const { roster: nextRoster, classes: nextClasses, renamedClasses } = normalizationPreview;
+    if (renamedClasses.length === 0) {
+      showNotice('✓ All class names are already cleanly formatted');
+      return;
+    }
+    updateSetting('classes', nextClasses);
+    saveSchoolClasses(nextClasses);
+    setRoster(nextRoster);
+    await saveSchoolRoster(nextRoster);
+    showNotice(
+      `✓ Normalized ${renamedClasses.map((r) => `${r.from} → ${r.to}`).join(', ')} and synced to cloud`,
+      5000
+    );
+  };
+
   // ─── Student Directory Handlers ─────────────────────────────────────────────
   const handleAddStudent = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -615,21 +760,45 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     if (!name) return;
 
     const assignedClass = newStudentClass || (settings.classes && settings.classes[0]) || '10-A';
+    const rawRoom = newStudentRoom.trim();
     const newStudent: RosterStudent = {
       id: crypto.randomUUID(),
       name,
       class: assignedClass,
       candidateNumber: newStudentNumber.trim() || undefined,
+      room: rawRoom ? formatRoomWithGender(rawRoom) : undefined,
+      seatNumber: newStudentSeat.trim() || undefined,
       pin: generateRandom4DigitPin(),
       createdAt: new Date().toISOString(),
     };
 
-    const updated = [...roster, newStudent];
+    const updated = assignMissingPins([...roster, newStudent]);
     setRoster(updated);
     saveSchoolRoster(updated);
+    const addedWithPin = updated[updated.length - 1];
     setNewStudentName('');
     setNewStudentNumber('');
-    showNotice(`✓ Added candidate "${name}" (4-Digit PIN: ${newStudent.pin})`);
+    setNewStudentRoom('');
+    setNewStudentSeat('');
+    showNotice(`✓ Added candidate "${name}" (4-Digit PIN: ${addedWithPin.pin})`);
+  };
+
+  const handleStartEditRoomSeat = (student: RosterStudent) => {
+    setEditingRoomSeatId(student.id);
+    setEditRoomValue(student.room || '');
+    setEditSeatValue(student.seatNumber || '');
+  };
+
+  const handleSaveInlineRoomSeat = (studentId: string) => {
+    const cleanRoom = editRoomValue.trim() ? formatRoomWithGender(editRoomValue) : undefined;
+    const cleanSeat = editSeatValue.trim() || undefined;
+    const updated = roster.map((s) =>
+      s.id === studentId ? { ...s, room: cleanRoom, seatNumber: cleanSeat } : s
+    );
+    setRoster(updated);
+    saveSchoolRoster(updated);
+    setEditingRoomSeatId(null);
+    showNotice('✓ Updated candidate room & seat');
   };
 
   const handleDeleteStudent = (id: string) => {
@@ -681,7 +850,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     setTimeout(() => setCopiedPinStudentId(null), 2000);
   };
 
-  // ─── Excel File Import Handler ──────────────────────────────────────────────
+  // ─── Excel File Import Handler & Smart Review ───────────────────────────────
   const handleExcelFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -694,34 +863,13 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
         return;
       }
 
-      // 1. Merge detected classes with current active classes
-      const currentClasses = settings.classes || DEFAULT_CLASSES;
-      const combinedClassesSet = new Set<string>(currentClasses);
-      for (const cls of parsed.detectedClasses) {
-        if (cls && cls.trim()) {
-          combinedClassesSet.add(cls.trim());
-        }
-      }
-      const updatedClasses = Array.from(combinedClassesSet);
-      updateSetting('classes', updatedClasses);
-      saveSchoolClasses(updatedClasses);
-
-      // 2. Merge parsed students with existing roster without duplicate name+class
-      const existingKeySet = new Set<string>(
-        roster.map((s) => `${s.class.toLowerCase()}_${s.name.toLowerCase()}`)
-      );
-      const newUniqueStudents = parsed.students.filter(
-        (s) => !existingKeySet.has(`${s.class.toLowerCase()}_${s.name.toLowerCase()}`)
-      );
-
-      const mergedRoster = assignMissingPins([...roster, ...newUniqueStudents]);
-      setRoster(mergedRoster);
-      saveSchoolRoster(mergedRoster);
-
-      showNotice(
-        `✓ Imported ${parsed.students.length} students across ${parsed.detectedClasses.length} classes (${parsed.detectedClasses.join(', ')})!`,
-        5000
-      );
+      const plan = planRosterExcelImport(roster, settings.classes || DEFAULT_CLASSES, parsed);
+      setPendingExcelReview({
+        parseResult: parsed,
+        plan,
+        pruneExtras: plan.extraStudentsToPrune.length > 0,
+        importSchedule: Boolean(parsed.detectedSchedule && parsed.detectedSchedule.length > 0),
+      });
     } catch (err: any) {
       console.error('Excel import error:', err);
       alert(`Failed to import Excel file: ${err?.message || 'Invalid format'}`);
@@ -733,10 +881,109 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     }
   };
 
+  const handleApplyPendingExcelImport = async () => {
+    if (!pendingExcelReview) return;
+    const { parseResult, plan, pruneExtras, importSchedule } = pendingExcelReview;
+
+    const finalClasses = plan.normalizedClasses;
+    const finalRoster = pruneExtras ? plan.syncedRosterPruned : plan.mergedRosterKeepExtras;
+
+    updateSetting('classes', finalClasses);
+    saveSchoolClasses(finalClasses);
+    setRoster(finalRoster);
+    const cloudSaved = await saveSchoolRoster(finalRoster);
+
+    if (importSchedule && parseResult.detectedSchedule && parseResult.detectedSchedule.length > 0) {
+      setExamSchedule(parseResult.detectedSchedule);
+      await saveExamSchedule(parseResult.detectedSchedule);
+    }
+
+    setPendingExcelReview(null);
+    setRosterSubTab('students');
+    showNotice(
+      `✓ Synced ${finalRoster.length} candidates (${plan.preservedPinCount} PINs kept, ${plan.addedStudents.length} new${pruneExtras && plan.extraStudentsToPrune.length > 0 ? `, ${plan.extraStudentsToPrune.length} pruned` : ''})${cloudSaved ? ' to cloud' : ' (cached locally)'}!`,
+      6000
+    );
+  };
+
   const handleDownloadTemplate = () => {
     downloadSampleExcelTemplate();
     showNotice('✓ Downloaded Students & Classes Excel template');
   };
+
+  // ─── Exam Schedule Handlers (Desk Card Reverse Side) ────────────────────────
+  const handleAddScheduleRow = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!newSchedDate.trim() || !newSchedTime.trim() || !newSchedSubject.trim()) return;
+    const nextRow: ExamScheduleEntry = {
+      id: `sched-${Date.now()}`,
+      date: newSchedDate.trim(),
+      time: newSchedTime.trim(),
+      subject: newSchedSubject.trim(),
+      duration: newSchedDuration.trim(),
+      targetClass: newSchedTarget.trim() || 'ALL',
+      category: newSchedCategory,
+    };
+    setExamSchedule((prev) => [...prev, nextRow]);
+    setNewSchedSubject('');
+  };
+
+  const handleUpdateScheduleRow = (idx: number, patch: Partial<ExamScheduleEntry>) => {
+    setExamSchedule((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
+  };
+
+  const handleDeleteScheduleRow = (idx: number) => {
+    setExamSchedule((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleLoadIcmSchedulePreset = () => {
+    setExamSchedule(ICM_SEMESTER1_2026_2027_SCHEDULE.map((item) => ({ ...item })));
+    showNotice('✓ Loaded ICM 1st Semester A.Y. 2026/2027 timetable (remember to Save & Sync)');
+  };
+
+  const handleSaveExamSchedule = async () => {
+    const val = validateExamScheduleEntries(examSchedule);
+    if (!val.ok) {
+      showNotice(`⚠️ ${val.errors[0]}`);
+      return;
+    }
+    setIsSavingSchedule(true);
+    try {
+      const ok = await saveExamSchedule(examSchedule);
+      showNotice(
+        ok
+          ? `✓ Saved & synced ${examSchedule.length} exam schedule sessions to cloud`
+          : `✓ Saved ${examSchedule.length} exam schedule sessions locally`
+      );
+    } finally {
+      setIsSavingSchedule(false);
+    }
+  };
+
+  const availableRosterRooms = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of roster) {
+      if (s.room?.trim()) set.add(s.room.trim());
+    }
+    return Array.from(set).sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+    );
+  }, [roster]);
+
+  const filteredRosterStudents = useMemo(() => {
+    return roster.filter((s) => {
+      if (selectedRosterClass !== 'ALL' && s.class !== selectedRosterClass) return false;
+      if (selectedRosterRoom !== 'ALL') {
+        if (selectedRosterRoom === '__UNASSIGNED__') return !s.room?.trim();
+        if ((s.room || '').trim() !== selectedRosterRoom) return false;
+      }
+      return true;
+    });
+  }, [roster, selectedRosterClass, selectedRosterRoom]);
 
   // ─── Google Drive Client ID Sync ────────────────────────────────────────────
   const handleSaveGoogleClientId = async () => {
@@ -772,6 +1019,275 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
       }
     } finally {
       setIsTestingR2(false);
+    }
+  };
+
+  // ─── Educator Accounts Management Handlers ────────────────────────────────────
+  const refreshTeacherAccountsList = async () => {
+    setIsLoadingTeachers(true);
+    setTeacherDirectoryError(null);
+    try {
+      const res = await adminListTeacherAccounts();
+      setTeacherAccounts(res.profiles || []);
+      if (res.status === 'error' && res.error) {
+        setTeacherDirectoryError(res.error);
+      }
+    } finally {
+      setIsLoadingTeachers(false);
+    }
+  };
+
+  const toggleNewTeacherClass = (cls: string) => {
+    setNewTeacherClasses((prev) =>
+      prev.includes(cls) ? (prev.length > 1 ? prev.filter((c) => c !== cls) : [cls]) : [...prev, cls]
+    );
+  };
+
+  const toggleEditTeacherClass = (cls: string) => {
+    setEditTeacherClasses((prev) =>
+      prev.includes(cls) ? (prev.length > 1 ? prev.filter((c) => c !== cls) : [cls]) : [...prev, cls]
+    );
+  };
+
+  const handleCreateTeacherSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTeacherFormError(null);
+    if (!newTeacherName.trim()) {
+      setTeacherFormError('Please enter the educator display name.');
+      return;
+    }
+    if (!newTeacherUsername.trim() && !newTeacherEmail.trim()) {
+      setTeacherFormError('Please provide either a username or school email address.');
+      return;
+    }
+    if (newTeacherPassword.trim().length < 6) {
+      setTeacherFormError('Initial password must be at least 6 characters.');
+      return;
+    }
+
+    setIsCreatingTeacher(true);
+    try {
+      const res = await adminCreateTeacherAccount({
+        name: newTeacherName.trim(),
+        title: newTeacherTitle.trim() || 'Mr.',
+        email: newTeacherEmail.trim(),
+        username: newTeacherUsername.trim(),
+        password: newTeacherPassword,
+        role: newTeacherRole,
+        subject: newTeacherSubject.trim() || 'Chemistry',
+        subjectCode: newTeacherSubjectCode.trim(),
+        defaultClasses:
+          newTeacherClasses.length > 0
+            ? newTeacherClasses
+            : (settings.classes || DEFAULT_CLASSES).slice(0, 2),
+        mustChangePassword: newTeacherMustChangePw,
+      });
+
+      if (res.status !== 'ok' || !res.profile) {
+        setTeacherFormError(res.error || 'Could not create educator account.');
+        return;
+      }
+
+      const created = res.profile;
+      setTeacherAccounts((prev) => [...prev.filter((p) => p.id !== created.id), created]);
+      setIssuedCredentialsBanner({
+        name: formatEducatorDisplayName(created.title, created.name),
+        identifier: created.username || created.email || created.name,
+        password: newTeacherPassword,
+        role: created.role === 'admin' ? 'Admin' : 'Teacher',
+        mustChange: Boolean(created.must_change_password),
+      });
+      setNewTeacherName('');
+      setNewTeacherUsername('');
+      setNewTeacherEmail('');
+      setNewTeacherPassword(generateTemporaryTeacherPassword());
+      showNotice(`✓ Created educator account for ${created.name}`);
+    } finally {
+      setIsCreatingTeacher(false);
+    }
+  };
+
+  const handleStartEditTeacher = (profile: TeacherProfile) => {
+    const inferredTitle =
+      profile.title ||
+      ['Dr.', 'Mr.', 'Ms.', 'Mrs.', 'Ibu', 'Bapak', 'Pak', 'Ustadz', 'Ustadzah'].find((opt) =>
+        (profile.name || '').trim().toLowerCase().startsWith(opt.toLowerCase())
+      ) ||
+      'Mr.';
+    setEditingTeacherId(profile.id);
+    setEditTeacherTitle(inferredTitle);
+    setEditTeacherName(profile.name || '');
+    setEditTeacherUsername(profile.username || '');
+    setEditTeacherEmail(profile.email || '');
+    setEditTeacherRole(profile.role === 'admin' ? 'admin' : 'teacher');
+    setEditTeacherSubject(profile.subject || 'Chemistry');
+    setEditTeacherSubjectCode(profile.subject_code || '');
+    setEditTeacherClasses(
+      Array.isArray(profile.default_classes) && profile.default_classes.length > 0
+        ? profile.default_classes
+        : (settings.classes || DEFAULT_CLASSES).slice(0, 2)
+    );
+    setEditTeacherPassword('');
+    setEditTeacherMustChangePw(true);
+    setEditTeacherError(null);
+  };
+
+  const handleSaveEditTeacher = async (teacherId: string) => {
+    setEditTeacherError(null);
+    if (!editTeacherName.trim()) {
+      const msg = 'Educator name cannot be empty.';
+      setEditTeacherError(msg);
+      showNotice(`⚠️ ${msg}`);
+      return;
+    }
+    if (editTeacherPassword.trim() && editTeacherPassword.trim().length < 6) {
+      const msg = 'Optional login password must be at least 6 characters.';
+      setEditTeacherError(msg);
+      showNotice(`⚠️ ${msg}`);
+      return;
+    }
+
+    setIsSavingTeacherEdit(true);
+    try {
+      const res = await adminUpdateTeacherAccount({
+        teacherId,
+        name: editTeacherName.trim(),
+        title: editTeacherTitle.trim(),
+        email: editTeacherEmail.trim(),
+        username: editTeacherUsername.trim(),
+        role: editTeacherRole,
+        subject: editTeacherSubject.trim(),
+        subjectCode: editTeacherSubjectCode.trim(),
+        defaultClasses: editTeacherClasses,
+      });
+
+      if (res.status !== 'ok' || !res.profile) {
+        const msg = res.error || 'Failed to update educator account.';
+        setEditTeacherError(msg);
+        showNotice(`⚠️ ${msg}`);
+        return;
+      }
+
+      let finalProfile = res.profile;
+
+      if (editTeacherPassword.trim()) {
+        const pwRes = await adminResetTeacherPassword({
+          teacherId,
+          newPassword: editTeacherPassword,
+          mustChangePassword: editTeacherMustChangePw,
+        });
+        if (pwRes.status !== 'ok' || !pwRes.profile) {
+          setTeacherAccounts((prev) => prev.map((p) => (p.id === teacherId ? finalProfile : p)));
+          const msg = pwRes.error || 'Account details saved, but setting the password failed.';
+          setEditTeacherError(msg);
+          showNotice(`⚠️ ${msg}`);
+          return;
+        }
+        finalProfile = pwRes.profile;
+        setIssuedCredentialsBanner({
+          name: formatEducatorDisplayName(finalProfile.title, finalProfile.name),
+          identifier: finalProfile.username || finalProfile.email || finalProfile.name,
+          password: editTeacherPassword,
+          role: finalProfile.role === 'admin' ? 'Admin' : 'Teacher',
+          mustChange: Boolean(finalProfile.must_change_password),
+        });
+      }
+
+      setTeacherAccounts((prev) => prev.map((p) => (p.id === teacherId ? finalProfile : p)));
+      setEditingTeacherId(null);
+      setEditTeacherPassword('');
+      setEditTeacherError(null);
+      showNotice(`✓ Updated account for ${finalProfile.name}`);
+    } finally {
+      setIsSavingTeacherEdit(false);
+    }
+  };
+
+  const handleToggleTeacherActiveStatus = async (profile: TeacherProfile) => {
+    setTeacherDirectoryError(null);
+    const nextActive = profile.is_active === false;
+    const res = await adminUpdateTeacherAccount({
+      teacherId: profile.id,
+      isActive: nextActive,
+    });
+    if (res.status === 'ok' && res.profile) {
+      setTeacherAccounts((prev) => prev.map((p) => (p.id === profile.id ? res.profile! : p)));
+      showNotice(
+        nextActive
+          ? `✓ Reactivated educator account for ${profile.name}`
+          : `✓ Suspended ${profile.name} and revoked active sessions`
+      );
+    } else {
+      const msg = res.error || 'Could not update account status.';
+      setTeacherDirectoryError(msg);
+      showNotice(`⚠️ ${msg}`);
+    }
+  };
+
+  const handleOpenResetTeacherPw = (profile: TeacherProfile) => {
+    setResetPwTeacherId(profile.id);
+    setResetPwValue(generateTemporaryTeacherPassword());
+    setResetPwMustChange(true);
+    setResetPwError(null);
+  };
+
+  const handleConfirmResetTeacherPw = async (profile: TeacherProfile) => {
+    setResetPwError(null);
+    if (resetPwValue.trim().length < 6) {
+      const msg = 'New password must be at least 6 characters.';
+      setResetPwError(msg);
+      showNotice(`⚠️ ${msg}`);
+      return;
+    }
+    setIsResettingTeacherPw(true);
+    try {
+      const res = await adminResetTeacherPassword({
+        teacherId: profile.id,
+        newPassword: resetPwValue,
+        mustChangePassword: resetPwMustChange,
+      });
+      if (res.status === 'ok' && res.profile) {
+        setTeacherAccounts((prev) => prev.map((p) => (p.id === profile.id ? res.profile! : p)));
+        setIssuedCredentialsBanner({
+          name: formatEducatorDisplayName(profile.title, profile.name),
+          identifier: profile.username || profile.email || profile.name,
+          password: resetPwValue,
+          role: profile.role === 'admin' ? 'Admin' : 'Teacher',
+          mustChange: resetPwMustChange,
+        });
+        setResetPwTeacherId(null);
+        setResetPwError(null);
+        showNotice(`✓ Password reset for ${profile.name}`);
+      } else {
+        const msg = res.error || 'Password reset failed.';
+        setResetPwError(msg);
+        showNotice(`⚠️ ${msg}`);
+      }
+    } finally {
+      setIsResettingTeacherPw(false);
+    }
+  };
+
+  const handleDeleteTeacher = async (profile: TeacherProfile) => {
+    setTeacherDirectoryError(null);
+    const currentActiveId = getActiveTeacherProfileId();
+    if (currentActiveId && currentActiveId === profile.id) {
+      const msg = 'Switch to another profile before deleting your currently active profile.';
+      setTeacherDirectoryError(msg);
+      showNotice(`⚠️ ${msg}`);
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(`Delete educator account "${profile.name}"?`)) {
+      return;
+    }
+    const res = await adminDeleteTeacherAccount(profile.id);
+    if (res.status === 'ok') {
+      setTeacherAccounts((prev) => prev.filter((p) => p.id !== profile.id));
+      showNotice(`✓ Deleted educator account "${profile.name}"`);
+    } else {
+      const msg = res.error || 'Could not delete educator account.';
+      setTeacherDirectoryError(msg);
+      showNotice(`⚠️ ${msg}`);
     }
   };
 
@@ -902,6 +1418,15 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
 
           <button
             type="button"
+            className={`adv-tab-btn ${activeSection === 'teachers' ? 'adv-tab-btn--active' : ''}`}
+            onClick={() => setActiveSection('teachers')}
+          >
+            👩‍🏫 Educator Accounts
+            <span className="adv-tab-counter">{teacherAccounts.length} educators · Central Login &amp; Roles</span>
+          </button>
+
+          <button
+            type="button"
             className={`adv-tab-btn ${activeSection === 'security' ? 'adv-tab-btn--active' : ''}`}
             onClick={() => setActiveSection('security')}
           >
@@ -957,6 +1482,13 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                 </button>
                 <button
                   type="button"
+                  className={`adv-subtab-btn ${rosterSubTab === 'schedule' ? 'adv-subtab-btn--active' : ''}`}
+                  onClick={() => setRosterSubTab('schedule')}
+                >
+                  📅 Exam Schedule ({examSchedule.length})
+                </button>
+                <button
+                  type="button"
                   className={`adv-subtab-btn ${rosterSubTab === 'subjects' ? 'adv-subtab-btn--active' : ''}`}
                   onClick={() => setRosterSubTab('subjects')}
                 >
@@ -972,7 +1504,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                 <div>
                   <strong className="adv-excel-title">Import Classes & Students from Excel</strong>
                   <span className="adv-excel-subtitle">
-                    Upload an Excel (.xlsx, .xls, .csv) spreadsheet. All unique classes and candidate rosters are gathered in one click!
+                    Supports standard Excel tables (Name, Class, Cand #, Room, Seat #, PIN) AND multi-sheet ICM Exam Workbooks. Existing student PINs are preserved automatically!
                   </span>
                 </div>
               </div>
@@ -996,8 +1528,164 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
               </div>
             </div>
 
+            {/* Interactive Excel Import Review Panel (PIN Preservation & Prune Preview) */}
+            {pendingExcelReview && (
+              <div
+                style={{
+                  marginBottom: '1.5rem',
+                  padding: '16px 18px',
+                  borderRadius: '14px',
+                  border: '1.5px solid #6366f1',
+                  background: 'rgba(99, 102, 241, 0.08)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
+                  <div>
+                    <strong style={{ fontSize: '0.98rem', color: 'var(--color-text-primary, #f8fafc)' }}>
+                      📋 Review Excel Import &amp; Sync Summary
+                    </strong>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary, #94a3b8)', marginTop: '2px' }}>
+                      {pendingExcelReview.parseResult.sourceSummary}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="adv-btn-secondary adv-btn-sm"
+                    onClick={() => setPendingExcelReview(null)}
+                  >
+                    ✕ Dismiss
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '0.8rem' }}>
+                  <span className="adv-tab-counter" style={{ padding: '4px 10px', borderRadius: '999px', background: 'rgba(16,185,129,0.14)', color: '#10b981', fontWeight: 700 }}>
+                    🔒 {pendingExcelReview.plan.preservedPinCount} Existing PINs Preserved
+                  </span>
+                  <span className="adv-tab-counter" style={{ padding: '4px 10px', borderRadius: '999px', background: 'rgba(59,130,246,0.14)', color: '#60a5fa', fontWeight: 700 }}>
+                    ➕ {pendingExcelReview.plan.addedStudents.length} New Candidates
+                  </span>
+                  <span className="adv-tab-counter" style={{ padding: '4px 10px', borderRadius: '999px', background: 'rgba(139,92,246,0.14)', color: '#a78bfa', fontWeight: 700 }}>
+                    🪑 {pendingExcelReview.plan.updatedRoomSeatCount} Room/Seat Updates
+                  </span>
+                  {pendingExcelReview.plan.renamedClasses.length > 0 && (
+                    <span className="adv-tab-counter" style={{ padding: '4px 10px', borderRadius: '999px', background: 'rgba(245,158,11,0.14)', color: '#f59e0b', fontWeight: 700 }}>
+                      🏷️ Normalize: {pendingExcelReview.plan.renamedClasses.map((r) => `${r.from} → ${r.to}`).join(', ')}
+                    </span>
+                  )}
+                  {pendingExcelReview.plan.addedClasses.length > 0 && (
+                    <span className="adv-tab-counter" style={{ padding: '4px 10px', borderRadius: '999px', background: 'rgba(16,185,129,0.14)', color: '#34d399', fontWeight: 700 }}>
+                      + Added Classes: {pendingExcelReview.plan.addedClasses.join(', ')}
+                    </span>
+                  )}
+                </div>
+
+                {pendingExcelReview.parseResult.autoPlacements && pendingExcelReview.parseResult.autoPlacements.length > 0 && (
+                  <div style={{ fontSize: '0.78rem', padding: '8px 12px', borderRadius: '8px', background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
+                    <strong>📌 Auto-Placed Unassigned Candidates:</strong>{' '}
+                    {pendingExcelReview.parseResult.autoPlacements
+                      .map((ap) => `${ap.name} (${ap.class}) → ${ap.room} #${ap.seatNumber}`)
+                      .join(' · ')}
+                  </div>
+                )}
+
+                {pendingExcelReview.plan.extraStudentsToPrune.length > 0 && (
+                  <div style={{ fontSize: '0.78rem', padding: '10px 12px', borderRadius: '8px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, cursor: 'pointer', marginBottom: '4px' }}>
+                      <input
+                        type="checkbox"
+                        checked={pendingExcelReview.pruneExtras}
+                        onChange={(e) =>
+                          setPendingExcelReview((prev) => (prev ? { ...prev, pruneExtras: e.target.checked } : prev))
+                        }
+                      />
+                      <span>
+                        Prune {pendingExcelReview.plan.extraStudentsToPrune.length} extra candidate
+                        {pendingExcelReview.plan.extraStudentsToPrune.length === 1 ? '' : 's'} not in this Excel sheet
+                      </span>
+                    </label>
+                    <div style={{ opacity: 0.85, paddingLeft: '22px' }}>
+                      {pendingExcelReview.plan.extraStudentsToPrune
+                        .slice(0, 8)
+                        .map((s) => `${s.name} (${s.class})`)
+                        .join(', ')}
+                      {pendingExcelReview.plan.extraStudentsToPrune.length > 8
+                        ? `, +${pendingExcelReview.plan.extraStudentsToPrune.length - 8} more`
+                        : ''}
+                    </div>
+                  </div>
+                )}
+
+                {pendingExcelReview.parseResult.detectedSchedule && pendingExcelReview.parseResult.detectedSchedule.length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={pendingExcelReview.importSchedule}
+                      onChange={(e) =>
+                        setPendingExcelReview((prev) => (prev ? { ...prev, importSchedule: e.target.checked } : prev))
+                      }
+                    />
+                    <span>
+                      Also import {pendingExcelReview.parseResult.detectedSchedule.length} Exam Schedule sessions from Time Table sheet (Practical dates restricted to Grade 10 IPA)
+                    </span>
+                  </label>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={() => setPendingExcelReview(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="adv-btn-primary"
+                    onClick={handleApplyPendingExcelImport}
+                  >
+                    ✓ Apply Import &amp; Sync to Cloud
+                  </button>
+                </div>
+              </div>
+            )}
+
             {rosterSubTab === 'classes' ? (
               <div className="adv-classes-pane">
+                {normalizationPreview.renamedClasses.length > 0 && (
+                  <div
+                    style={{
+                      marginBottom: '14px',
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      background: 'rgba(245, 158, 11, 0.12)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      flexWrap: 'wrap',
+                      fontSize: '0.82rem',
+                    }}
+                  >
+                    <span>
+                      ⚠️ Unnormalized class spacing detected:{' '}
+                      <strong>
+                        {normalizationPreview.renamedClasses.map((r) => `${r.from} → ${r.to}`).join(', ')}
+                      </strong>
+                    </span>
+                    <button
+                      type="button"
+                      className="adv-btn-primary adv-btn-sm"
+                      onClick={handleNormalizeClassesNow}
+                    >
+                      🔧 Fix Spacing &amp; Merge Roster
+                    </button>
+                  </div>
+                )}
+
                 <h3 className="adv-subheading">Active School Classes</h3>
                 <div className="adv-class-chip-wrap">
                   {(settings.classes || DEFAULT_CLASSES).map((cls) => (
@@ -1021,7 +1709,7 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   <input
                     type="text"
                     className="adv-input"
-                    placeholder="Enter new class (e.g. 10-D, IB HL, Year 11-1)..."
+                    placeholder="Enter new class (e.g. X IPS 2, 10-D, IB HL)..."
                     value={newClassInput}
                     onChange={(e) => setNewClassInput(e.target.value)}
                   />
@@ -1060,18 +1748,38 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
               <div className="adv-students-pane">
                 {/* Students Toolbar */}
                 <div className="adv-students-toolbar">
-                  <select
-                    className="adv-input adv-select-filter"
-                    value={selectedRosterClass}
-                    onChange={(e) => setSelectedRosterClass(e.target.value)}
-                  >
-                    <option value="ALL">All Classes ({roster.length} Candidates)</option>
-                    {(settings.classes || DEFAULT_CLASSES).map((cls) => (
-                      <option key={cls} value={cls}>
-                        {cls} ({roster.filter((s) => s.class === cls).length} students)
-                      </option>
-                    ))}
-                  </select>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <select
+                      className="adv-input adv-select-filter"
+                      value={selectedRosterClass}
+                      onChange={(e) => setSelectedRosterClass(e.target.value)}
+                    >
+                      <option value="ALL">All Classes ({roster.length} Candidates)</option>
+                      {(settings.classes || DEFAULT_CLASSES).map((cls) => (
+                        <option key={cls} value={cls}>
+                          {cls} ({roster.filter((s) => s.class === cls).length} students)
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="adv-input adv-select-filter"
+                      value={selectedRosterRoom}
+                      onChange={(e) => setSelectedRosterRoom(e.target.value)}
+                    >
+                      <option value="ALL">All Rooms ({availableRosterRooms.length})</option>
+                      {availableRosterRooms.map((rm) => (
+                        <option key={rm} value={rm}>
+                          {rm} ({roster.filter((s) => (s.room || '').trim() === rm).length})
+                        </option>
+                      ))}
+                      {roster.some((s) => !s.room?.trim()) && (
+                        <option value="__UNASSIGNED__">
+                          Unassigned Room ({roster.filter((s) => !s.room?.trim()).length})
+                        </option>
+                      )}
+                    </select>
+                  </div>
 
                   <div className="adv-toolbar-actions">
                     <button
@@ -1093,9 +1801,18 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                       type="button"
                       className="adv-btn-secondary"
                       onClick={handleExportRosterExcel}
-                      title="Export candidate list with 4-digit PIN slips to Excel"
+                      title="Export candidate list with Room, Seat # & 4-digit PIN slips to Excel"
                     >
                       📊 Export to Excel
+                    </button>
+                    <button
+                      type="button"
+                      className="adv-btn-primary"
+                      disabled={roster.length === 0}
+                      onClick={() => setIsPrintCardsModalOpen(true)}
+                      title="Print 2x3 A4 Candidate Desk Cards with ICM & Cambridge logos and duplex schedule"
+                    >
+                      🪪 Print Desk Cards
                     </button>
                   </div>
                 </div>
@@ -1108,13 +1825,13 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     placeholder="Candidate full name..."
                     value={newStudentName}
                     onChange={(e) => setNewStudentName(e.target.value)}
-                    style={{ flex: '2 1 200px' }}
+                    style={{ flex: '2 1 180px' }}
                   />
                   <select
                     className="adv-input"
                     value={newStudentClass || (settings.classes && settings.classes[0]) || '10-A'}
                     onChange={(e) => setNewStudentClass(e.target.value)}
-                    style={{ flex: '1 1 120px' }}
+                    style={{ flex: '1 1 110px' }}
                   >
                     {(settings.classes || DEFAULT_CLASSES).map((cls) => (
                       <option key={cls} value={cls}>{cls}</option>
@@ -1123,10 +1840,26 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   <input
                     type="text"
                     className="adv-input"
-                    placeholder="Candidate # (opt)"
+                    placeholder="Cand # / NIS (opt)"
                     value={newStudentNumber}
                     onChange={(e) => setNewStudentNumber(e.target.value)}
                     style={{ flex: '1 1 100px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Room (e.g. Room 1 - Akhwat)"
+                    value={newStudentRoom}
+                    onChange={(e) => setNewStudentRoom(e.target.value)}
+                    style={{ flex: '1 1 140px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Seat # (opt)"
+                    value={newStudentSeat}
+                    onChange={(e) => setNewStudentSeat(e.target.value)}
+                    style={{ flex: '0 1 85px' }}
                   />
                   <button
                     type="submit"
@@ -1139,29 +1872,91 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
 
                 {/* Student Table */}
                 <div className="adv-table-container">
-                  {roster.filter((s) => selectedRosterClass === 'ALL' || s.class === selectedRosterClass).length === 0 ? (
+                  {filteredRosterStudents.length === 0 ? (
                     <div className="adv-table-empty">
-                      No students found in {selectedRosterClass === 'ALL' ? 'the directory' : selectedRosterClass}. Upload an Excel file above or add a candidate.
+                      No students found matching {selectedRosterClass === 'ALL' ? 'the directory' : selectedRosterClass}
+                      {selectedRosterRoom !== 'ALL' ? ` in ${selectedRosterRoom === '__UNASSIGNED__' ? 'Unassigned Room' : selectedRosterRoom}` : ''}. Upload an Excel file above or add a candidate.
                     </div>
                   ) : (
                     <table className="adv-table">
                       <thead>
                         <tr>
                           <th>Candidate Full Name</th>
-                          <th style={{ width: '110px' }}>Class</th>
-                          <th style={{ width: '110px' }}>Cand #</th>
-                          <th style={{ width: '140px' }}>4-Digit PIN</th>
+                          <th style={{ width: '105px' }}>Class</th>
+                          <th style={{ width: '105px' }}>Cand #</th>
+                          <th style={{ width: '215px' }}>Room &amp; Seat #</th>
+                          <th style={{ width: '125px' }}>4-Digit PIN</th>
                           <th style={{ width: '40px' }}></th>
                         </tr>
                       </thead>
                       <tbody>
-                        {roster
-                          .filter((s) => selectedRosterClass === 'ALL' || s.class === selectedRosterClass)
-                          .map((student) => (
+                        {filteredRosterStudents.map((student) => {
+                          const isEditing = editingRoomSeatId === student.id;
+                          return (
                             <tr key={student.id}>
                               <td className="adv-table-name">{student.name}</td>
                               <td className="adv-table-sub">{student.class}</td>
                               <td className="adv-table-sub">{student.candidateNumber || '-'}</td>
+                              <td>
+                                {isEditing ? (
+                                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                    <input
+                                      type="text"
+                                      className="adv-input"
+                                      placeholder="Room..."
+                                      value={editRoomValue}
+                                      onChange={(e) => setEditRoomValue(e.target.value)}
+                                      style={{ padding: '4px 6px', fontSize: '0.75rem', width: '120px' }}
+                                    />
+                                    <input
+                                      type="text"
+                                      className="adv-input"
+                                      placeholder="#"
+                                      value={editSeatValue}
+                                      onChange={(e) => setEditSeatValue(e.target.value)}
+                                      style={{ padding: '4px 6px', fontSize: '0.75rem', width: '44px' }}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="adv-btn-primary adv-btn-sm"
+                                      onClick={() => handleSaveInlineRoomSeat(student.id)}
+                                      title="Save Room & Seat"
+                                    >
+                                      ✓
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="adv-btn-secondary adv-btn-sm"
+                                      onClick={() => setEditingRoomSeatId(null)}
+                                      title="Cancel edit"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span className="adv-table-sub" style={{ fontSize: '0.78rem' }}>
+                                      {student.room ? student.room : '—'}
+                                      {student.seatNumber ? ` · #${student.seatNumber}` : ''}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditRoomSeat(student)}
+                                      title="Edit room & seat number"
+                                      style={{
+                                        background: 'transparent',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        opacity: 0.65,
+                                        fontSize: '0.75rem',
+                                        padding: '2px',
+                                      }}
+                                    >
+                                      ✏️
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
                               <td>
                                 <span
                                   onClick={() => handleCopyPin(student.id, student.pin)}
@@ -1185,7 +1980,8 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -1205,12 +2001,12 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                       </button>
                     </div>
                     <p className="adv-bulk-help">
-                      Paste one student per line. Format: <code>Candidate Name, Class, Candidate # (optional)</code>
+                      Paste one student per line. Format: <code>Name, Class, Candidate #, PIN (opt), Room (opt), Seat # (opt)</code>
                     </p>
                     <textarea
                       rows={5}
                       className="adv-input adv-bulk-textarea"
-                      placeholder="Alex Johnson, 10-A, 001&#10;Samantha Lee, 10-A, 002&#10;David Miller, 10-B, 003"
+                      placeholder="Alya Murti, X IPS 2, 262710004, , Room 1 - Akhwat, 4&#10;Amando Saktika, X IPA 1, 262710066, , Room 6 - Ikhwan, 1"
                       value={bulkImportText}
                       onChange={(e) => setBulkImportText(e.target.value)}
                     />
@@ -1233,6 +2029,204 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                     </div>
                   </div>
                 )}
+              </div>
+            ) : rosterSubTab === 'schedule' ? (
+              <div className="adv-students-pane" style={{ paddingTop: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div>
+                    <h3 className="adv-subheading" style={{ margin: 0 }}>
+                      📅 Exam Schedule (Duplex Desk Card Back Side)
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '0.8125rem', color: 'var(--color-text-secondary, #64748b)' }}>
+                      Rows are automatically filtered per candidate class/grade on the reverse side of printed desk cards (supports <code>ALL</code>, <code>IPA</code>, <code>IPS</code>, <code>X</code>, <code>X IPA</code>, or exact class names).
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="adv-btn-secondary"
+                      onClick={handleLoadIcmSchedulePreset}
+                      title="Load verified ICM Semester 1 A.Y. 2026/2027 Practical (Grade 10 IPA) & Written timetable"
+                    >
+                      📅 Load ICM 1st Sem 26/27
+                    </button>
+                    <button
+                      type="button"
+                      className="adv-btn-secondary"
+                      disabled={roster.length === 0}
+                      onClick={() => setIsPrintCardsModalOpen(true)}
+                    >
+                      🪪 Print Desk Cards
+                    </button>
+                    <button
+                      type="button"
+                      className="adv-btn-primary"
+                      onClick={handleSaveExamSchedule}
+                      disabled={isSavingSchedule}
+                    >
+                      {isSavingSchedule ? 'Saving…' : '💾 Save & Sync Schedule'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Add Exam Schedule Row Form */}
+                <form onSubmit={handleAddScheduleRow} className="adv-add-student-form" style={{ marginBottom: '14px' }}>
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Day & Date (e.g. Mon, 30 Nov 2026)"
+                    value={newSchedDate}
+                    onChange={(e) => setNewSchedDate(e.target.value)}
+                    style={{ flex: '1.3 1 150px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Time (e.g. 07.30 - 09.30)"
+                    value={newSchedTime}
+                    onChange={(e) => setNewSchedTime(e.target.value)}
+                    style={{ flex: '1 1 130px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Subject / Paper..."
+                    value={newSchedSubject}
+                    onChange={(e) => setNewSchedSubject(e.target.value)}
+                    style={{ flex: '1.4 1 150px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Dur (e.g. 120')"
+                    value={newSchedDuration}
+                    onChange={(e) => setNewSchedDuration(e.target.value)}
+                    style={{ flex: '0.5 1 75px' }}
+                  />
+                  <input
+                    type="text"
+                    className="adv-input"
+                    placeholder="Target (ALL, IPA, IPS, X IPA...)"
+                    value={newSchedTarget}
+                    onChange={(e) => setNewSchedTarget(e.target.value)}
+                    style={{ flex: '0.8 1 115px' }}
+                  />
+                  <select
+                    className="adv-input"
+                    value={newSchedCategory}
+                    onChange={(e) => setNewSchedCategory(e.target.value as ExamScheduleCategory)}
+                    style={{ flex: '0.7 1 105px' }}
+                  >
+                    <option value="written">Written</option>
+                    <option value="practical">Practical</option>
+                  </select>
+                  <button
+                    type="submit"
+                    className="adv-btn-primary"
+                    disabled={!newSchedDate.trim() || !newSchedTime.trim() || !newSchedSubject.trim()}
+                  >
+                    + Add Session
+                  </button>
+                </form>
+
+                {/* Editable Schedule Table */}
+                <div className="adv-table-container">
+                  {examSchedule.length === 0 ? (
+                    <div className="adv-table-empty">
+                      No exam schedule sessions configured. Click <strong>📅 Load ICM 1st Sem 26/27</strong> or add a session above.
+                    </div>
+                  ) : (
+                    <table className="adv-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: '165px' }}>Day / Date</th>
+                          <th style={{ width: '150px' }}>Time</th>
+                          <th>Subject / Paper</th>
+                          <th style={{ width: '75px' }}>Dur.</th>
+                          <th style={{ width: '115px' }}>Target Class</th>
+                          <th style={{ width: '105px' }}>Type</th>
+                          <th style={{ width: '40px' }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {examSchedule.map((row, idx) => (
+                          <tr key={row.id || idx}>
+                            <td>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.78rem', width: '100%' }}
+                                value={row.date}
+                                onChange={(e) => handleUpdateScheduleRow(idx, { date: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.78rem', width: '100%' }}
+                                value={row.time}
+                                onChange={(e) => handleUpdateScheduleRow(idx, { time: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.78rem', width: '100%' }}
+                                value={row.subject}
+                                onChange={(e) => handleUpdateScheduleRow(idx, { subject: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.78rem', width: '100%' }}
+                                value={row.duration || ''}
+                                onChange={(e) => handleUpdateScheduleRow(idx, { duration: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.78rem', width: '100%', fontWeight: 700 }}
+                                value={row.targetClass || 'ALL'}
+                                onChange={(e) => handleUpdateScheduleRow(idx, { targetClass: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <select
+                                className="adv-input"
+                                style={{ padding: '4px 6px', fontSize: '0.75rem', width: '100%' }}
+                                value={row.category || 'written'}
+                                onChange={(e) =>
+                                  handleUpdateScheduleRow(idx, {
+                                    category: e.target.value as ExamScheduleCategory,
+                                  })
+                                }
+                              >
+                                <option value="written">Written</option>
+                                <option value="practical">Practical</option>
+                              </select>
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="adv-table-del-btn"
+                                onClick={() => handleDeleteScheduleRow(idx)}
+                                title={`Delete ${row.subject}`}
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="adv-subjects-pane" style={{ padding: '20px 0 0' }}>
@@ -1543,6 +2537,23 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                   onClick={() => updateSetting('defaultEnableMultiMonitor', !settings.defaultEnableMultiMonitor)}
                 >
                   {settings.defaultEnableMultiMonitor ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+
+              {/* Require Personal Candidate PIN Default */}
+              <div className="adv-setting-card">
+                <div className="adv-setting-info">
+                  <strong className="adv-setting-title">🪪 Require Personal Candidate PIN (Default)</strong>
+                  <p className="adv-setting-desc">
+                    Enables the 4-digit school roster PIN gate by default whenever new formal examinations are published in Interactive Quizzes.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`adv-toggle-btn ${settings.defaultRequireStudentPin ? 'adv-toggle-btn--active' : ''}`}
+                  onClick={() => updateSetting('defaultRequireStudentPin', !settings.defaultRequireStudentPin)}
+                >
+                  {settings.defaultRequireStudentPin ? 'Enabled' : 'Disabled'}
                 </button>
               </div>
 
@@ -2163,11 +3174,598 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
             </div>
           </div>
         )}
+
+        {/* ─── SECTION 5: Educator Accounts & Access Management ───────────────── */}
+        {activeSection === 'teachers' && (
+          <div className="adv-section-card">
+            <div className="adv-section-header">
+              <div>
+                <h2 className="adv-section-title">👩‍🏫 Educator Accounts &amp; Central Provisioning</h2>
+                <p className="adv-section-subtitle">
+                  Create teacher or admin login accounts with temporary passwords, manage teaching cohorts and subjects, reset passwords, or suspend access without sharing the School Master PIN.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="adv-btn-secondary"
+                onClick={refreshTeacherAccountsList}
+                disabled={isLoadingTeachers}
+              >
+                {isLoadingTeachers ? '⏳ Syncing…' : '🔄 Refresh Accounts'}
+              </button>
+            </div>
+
+            {issuedCredentialsBanner && (
+              <div className="adv-teacher-credentials-banner">
+                <div>
+                  <strong className="adv-teacher-credentials-title">
+                    🔑 Credentials Ready for {issuedCredentialsBanner.name} ({issuedCredentialsBanner.role})
+                  </strong>
+                  <div className="adv-teacher-credentials-meta">
+                    Login Identifier: <code>{issuedCredentialsBanner.identifier}</code> · Password:{' '}
+                    <code>{issuedCredentialsBanner.password}</code>{' '}
+                    {issuedCredentialsBanner.mustChange ? '(Must change on first sign-in)' : ''}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="adv-btn-primary"
+                    onClick={() => {
+                      const text = `Educator Portal Login (${issuedCredentialsBanner.name})\nUsername/Email: ${issuedCredentialsBanner.identifier}\nTemporary Password: ${issuedCredentialsBanner.password}${issuedCredentialsBanner.mustChange ? '\n(You will be prompted to set a personal password on first sign-in.)' : ''}`;
+                      navigator.clipboard?.writeText(text);
+                      showNotice('✓ Copied login credentials to clipboard');
+                    }}
+                  >
+                    📋 Copy Credentials
+                  </button>
+                  <button
+                    type="button"
+                    className="adv-btn-secondary"
+                    onClick={() => setIssuedCredentialsBanner(null)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Create Educator Account Form */}
+            <form
+              onSubmit={handleCreateTeacherSubmit}
+              className="adv-tier-policy-card"
+              style={{ marginBottom: '1.5rem' }}
+            >
+              <div className="adv-tier-header">
+                <div>
+                  <h3 className="adv-tier-title">➕ Provision New Educator Account</h3>
+                  <p className="adv-tier-subtitle">
+                    Creates an active login account directly in Supabase without switching your current session.
+                  </p>
+                </div>
+              </div>
+
+              {teacherFormError && (
+                <div className="adv-teacher-form-error">
+                  ⚠️ {teacherFormError}
+                </div>
+              )}
+
+              <div className="adv-teacher-form-grid">
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-title" className="adv-teacher-label">Title</label>
+                  <select
+                    id="adv-new-teacher-title"
+                    className="adv-input"
+                    value={newTeacherTitle}
+                    onChange={(e) => setNewTeacherTitle(e.target.value)}
+                  >
+                    {['Dr.', 'Mr.', 'Ms.', 'Mrs.', 'Ibu', 'Bapak', 'Pak', 'Ustadz', 'Ustadzah'].map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-name" className="adv-teacher-label">Full Display Name *</label>
+                  <input
+                    id="adv-new-teacher-name"
+                    type="text"
+                    className="adv-input"
+                    placeholder="e.g. Siti Rahma"
+                    value={newTeacherName}
+                    onChange={(e) => setNewTeacherName(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-username" className="adv-teacher-label">Username *</label>
+                  <input
+                    id="adv-new-teacher-username"
+                    type="text"
+                    className="adv-input"
+                    placeholder="e.g. siti.bio"
+                    value={newTeacherUsername}
+                    onChange={(e) => setNewTeacherUsername(e.target.value)}
+                  />
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-email" className="adv-teacher-label">School Email</label>
+                  <input
+                    id="adv-new-teacher-email"
+                    type="email"
+                    className="adv-input"
+                    placeholder="siti@icm.sch.id"
+                    value={newTeacherEmail}
+                    onChange={(e) => setNewTeacherEmail(e.target.value)}
+                  />
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-role" className="adv-teacher-label">Role</label>
+                  <select
+                    id="adv-new-teacher-role"
+                    className="adv-input"
+                    value={newTeacherRole}
+                    onChange={(e) => setNewTeacherRole(e.target.value as 'teacher' | 'admin')}
+                  >
+                    <option value="teacher">👩‍🏫 Teacher</option>
+                    <option value="admin">🛡️ Administrator</option>
+                  </select>
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-subject" className="adv-teacher-label">Primary Subject</label>
+                  <select
+                    id="adv-new-teacher-subject"
+                    className="adv-input"
+                    value={newTeacherSubject}
+                    onChange={(e) => setNewTeacherSubject(e.target.value)}
+                  >
+                    {(subjects.length > 0 ? subjects : DEFAULT_SUBJECTS).map((subj) => (
+                      <option key={subj} value={subj}>
+                        {subj}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-code" className="adv-teacher-label">Syllabus Code</label>
+                  <input
+                    id="adv-new-teacher-code"
+                    type="text"
+                    className="adv-input"
+                    placeholder="e.g. 0610"
+                    value={newTeacherSubjectCode}
+                    onChange={(e) => setNewTeacherSubjectCode(e.target.value)}
+                  />
+                </div>
+
+                <div className="adv-teacher-field">
+                  <label htmlFor="adv-new-teacher-pw" className="adv-teacher-label">Initial / Temp Password *</label>
+                  <div className="adv-teacher-pw-group">
+                    <input
+                      id="adv-new-teacher-pw"
+                      type="text"
+                      className="adv-input adv-input-mono"
+                      value={newTeacherPassword}
+                      onChange={(e) => setNewTeacherPassword(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="adv-btn-secondary"
+                      title="Generate random temporary password"
+                      onClick={() => setNewTeacherPassword(generateTemporaryTeacherPassword())}
+                    >
+                      🎲
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Teaching Cohorts Multi-Select */}
+              <div style={{ marginBottom: '16px' }}>
+                <span className="adv-teacher-label" style={{ marginBottom: '8px' }}>
+                  Default Teaching Cohorts / Classes
+                </span>
+                <div className="adv-cohort-pills-wrap">
+                  {(settings.classes || DEFAULT_CLASSES).map((cls) => {
+                    const active = newTeacherClasses.includes(cls);
+                    return (
+                      <button
+                        key={cls}
+                        type="button"
+                        onClick={() => toggleNewTeacherClass(cls)}
+                        className={`adv-cohort-pill ${active ? 'adv-cohort-pill--active' : ''}`}
+                      >
+                        {active ? '✓ ' : '+ '}
+                        {cls}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="adv-teacher-form-footer">
+                <label className="adv-teacher-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={newTeacherMustChangePw}
+                    onChange={(e) => setNewTeacherMustChangePw(e.target.checked)}
+                  />
+                  <span>Require educator to change password on first sign-in</span>
+                </label>
+
+                <button type="submit" className="adv-btn-primary" disabled={isCreatingTeacher}>
+                  {isCreatingTeacher ? '⏳ Creating Account…' : '➕ Create Educator Account'}
+                </button>
+              </div>
+            </form>
+
+            {/* Educator Directory List */}
+            <div className="adv-tier-policy-card">
+              <div className="adv-tier-header">
+                <div>
+                  <h3 className="adv-tier-title">
+                    📋 Registered Educator Accounts ({teacherAccounts.length})
+                  </h3>
+                  <p className="adv-tier-subtitle">
+                    Manage credentials, roles, subject assignments, and session access across all educators. To upgrade a legacy profile without a password, click <strong>Register / Edit</strong> on that educator card.
+                  </p>
+                </div>
+              </div>
+
+              {teacherDirectoryError && (
+                <div className="adv-teacher-form-error">
+                  ⚠️ {teacherDirectoryError}
+                </div>
+              )}
+
+              <div className="adv-teacher-directory-list">
+                {teacherAccounts.map((t) => {
+                  const isEditing = editingTeacherId === t.id;
+                  const isResettingPw = resetPwTeacherId === t.id;
+                  const isSuspended = t.is_active === false;
+                  const subjectOptions = Array.from(
+                    new Set([
+                      ...(subjects.length > 0 ? subjects : DEFAULT_SUBJECTS),
+                      ...(editTeacherSubject ? [editTeacherSubject] : []),
+                    ])
+                  );
+
+                  return (
+                    <div
+                      key={t.id}
+                      className={`adv-teacher-row-card ${isSuspended ? 'adv-teacher-row-card--suspended' : ''}`}
+                    >
+                      <div className="adv-teacher-row-top">
+                        <div className="adv-teacher-row-identity">
+                          <div className="adv-teacher-row-title-line">
+                            <span className="adv-teacher-row-name">
+                              {formatEducatorDisplayName(t.title, t.name)}
+                            </span>
+                            <span
+                              className={`adv-teacher-badge ${
+                                t.role === 'admin' ? 'adv-teacher-badge--admin' : 'adv-teacher-badge--teacher'
+                              }`}
+                            >
+                              {t.role === 'admin' ? '🛡️ Admin' : '👩‍🏫 Teacher'}
+                            </span>
+                            <span
+                              className={`adv-teacher-badge ${
+                                isSuspended ? 'adv-teacher-badge--suspended' : 'adv-teacher-badge--active'
+                              }`}
+                            >
+                              {isSuspended ? '⛔ Suspended' : '● Active'}
+                            </span>
+                            <span
+                              className={`adv-teacher-badge ${
+                                t.must_change_password
+                                  ? 'adv-teacher-badge--pw-temp'
+                                  : t.has_password
+                                    ? 'adv-teacher-badge--pw-ok'
+                                    : 'adv-teacher-badge--pw-legacy'
+                              }`}
+                            >
+                              {t.must_change_password
+                                ? '⏳ Temp Password (Change on Sign-In)'
+                                : t.has_password
+                                  ? '🔑 Password Configured'
+                                  : '🔓 Legacy (No Password)'}
+                            </span>
+                          </div>
+
+                          <div className="adv-teacher-row-meta">
+                            {t.username ? `@${t.username}` : 'No username'} · {t.email || 'No email'} ·{' '}
+                            <strong>
+                              {t.subject}
+                              {t.subject_code ? ` (${t.subject_code})` : ''}
+                            </strong>{' '}
+                            · Cohorts: {(t.default_classes || []).join(', ') || 'None'}
+                          </div>
+                        </div>
+
+                        <div className="adv-teacher-actions">
+                          <button
+                            type="button"
+                            className="adv-btn-secondary"
+                            onClick={() => (isEditing ? setEditingTeacherId(null) : handleStartEditTeacher(t))}
+                          >
+                            {isEditing
+                              ? '✕ Cancel Edit'
+                              : !t.has_password
+                                ? '⚡ Register / Edit'
+                                : '✏️ Edit'}
+                          </button>
+                          <button
+                            type="button"
+                            className="adv-btn-secondary"
+                            onClick={() =>
+                              isResettingPw ? setResetPwTeacherId(null) : handleOpenResetTeacherPw(t)
+                            }
+                          >
+                            🔑 Reset Password
+                          </button>
+                          <button
+                            type="button"
+                            className="adv-btn-secondary"
+                            onClick={() => handleToggleTeacherActiveStatus(t)}
+                          >
+                            {isSuspended ? '✅ Activate' : '⏸️ Suspend'}
+                          </button>
+                          <button
+                            type="button"
+                            className="adv-btn-secondary adv-btn-danger-outline"
+                            onClick={() => handleDeleteTeacher(t)}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Inline Password Reset Panel */}
+                      {isResettingPw && (
+                        <div className="adv-teacher-subpanel">
+                          {resetPwError && (
+                            <div className="adv-teacher-form-error" style={{ marginBottom: 0 }}>
+                              ⚠️ {resetPwError}
+                            </div>
+                          )}
+                          <div className="adv-teacher-reset-row">
+                            <span className="adv-teacher-label">New / Temporary Password:</span>
+                            <input
+                              type="text"
+                              className="adv-input adv-input-mono"
+                              value={resetPwValue}
+                              onChange={(e) => setResetPwValue(e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="adv-btn-secondary"
+                              onClick={() => setResetPwValue(generateTemporaryTeacherPassword())}
+                            >
+                              🎲 Generate
+                            </button>
+                            <label className="adv-teacher-checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={resetPwMustChange}
+                                onChange={(e) => setResetPwMustChange(e.target.checked)}
+                              />
+                              <span>Require change on next sign-in</span>
+                            </label>
+                            <button
+                              type="button"
+                              className="adv-btn-primary"
+                              disabled={isResettingTeacherPw}
+                              onClick={() => handleConfirmResetTeacherPw(t)}
+                            >
+                              {isResettingTeacherPw ? 'Saving…' : '💾 Save New Password'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Inline Edit Panel */}
+                      {isEditing && (
+                        <div className="adv-teacher-subpanel">
+                          {editTeacherError && (
+                            <div className="adv-teacher-form-error" style={{ marginBottom: 0 }}>
+                              ⚠️ {editTeacherError}
+                            </div>
+                          )}
+                          <div className="adv-teacher-form-grid" style={{ marginBottom: 0 }}>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Title</label>
+                              <select
+                                className="adv-input"
+                                value={editTeacherTitle}
+                                onChange={(e) => setEditTeacherTitle(e.target.value)}
+                              >
+                                {Array.from(
+                                  new Set([
+                                    'Dr.',
+                                    'Mr.',
+                                    'Ms.',
+                                    'Mrs.',
+                                    'Ibu',
+                                    'Bapak',
+                                    'Pak',
+                                    'Ustadz',
+                                    'Ustadzah',
+                                    ...(editTeacherTitle ? [editTeacherTitle] : []),
+                                  ])
+                                ).map((opt) => (
+                                  <option key={opt} value={opt}>
+                                    {opt}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Name</label>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                value={editTeacherName}
+                                onChange={(e) => setEditTeacherName(e.target.value)}
+                              />
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Username</label>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                placeholder="e.g. hamida.soc"
+                                value={editTeacherUsername}
+                                onChange={(e) => setEditTeacherUsername(e.target.value)}
+                              />
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Email</label>
+                              <input
+                                type="email"
+                                className="adv-input"
+                                placeholder="name@icm.sch.id"
+                                value={editTeacherEmail}
+                                onChange={(e) => setEditTeacherEmail(e.target.value)}
+                              />
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Role</label>
+                              <select
+                                className="adv-input"
+                                value={editTeacherRole}
+                                onChange={(e) => setEditTeacherRole(e.target.value as 'teacher' | 'admin')}
+                              >
+                                <option value="teacher">👩‍🏫 Teacher</option>
+                                <option value="admin">🛡️ Admin</option>
+                              </select>
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Subject</label>
+                              <select
+                                className="adv-input"
+                                value={editTeacherSubject}
+                                onChange={(e) => setEditTeacherSubject(e.target.value)}
+                              >
+                                {subjectOptions.map((s) => (
+                                  <option key={s} value={s}>
+                                    {s}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">Syllabus Code</label>
+                              <input
+                                type="text"
+                                className="adv-input"
+                                value={editTeacherSubjectCode}
+                                onChange={(e) => setEditTeacherSubjectCode(e.target.value)}
+                              />
+                            </div>
+                            <div className="adv-teacher-field">
+                              <label className="adv-teacher-label">
+                                {t.has_password ? 'New Login Password (Optional)' : 'Set Login Password (Optional)'}
+                              </label>
+                              <div className="adv-teacher-pw-group">
+                                <input
+                                  type="text"
+                                  className="adv-input adv-input-mono"
+                                  placeholder="Leave blank to keep unchanged"
+                                  value={editTeacherPassword}
+                                  onChange={(e) => setEditTeacherPassword(e.target.value)}
+                                />
+                                <button
+                                  type="button"
+                                  className="adv-btn-secondary"
+                                  title="Generate temporary password"
+                                  onClick={() => setEditTeacherPassword(generateTemporaryTeacherPassword())}
+                                >
+                                  🎲
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {editTeacherPassword.trim().length > 0 && (
+                            <label className="adv-teacher-checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={editTeacherMustChangePw}
+                                onChange={(e) => setEditTeacherMustChangePw(e.target.checked)}
+                              />
+                              <span>Require educator to change password on first sign-in</span>
+                            </label>
+                          )}
+
+                          <div>
+                            <span className="adv-teacher-label" style={{ marginBottom: '8px' }}>
+                              Teaching Cohorts / Classes
+                            </span>
+                            <div className="adv-cohort-pills-wrap">
+                              {(settings.classes || DEFAULT_CLASSES).map((cls) => {
+                                const active = editTeacherClasses.includes(cls);
+                                return (
+                                  <button
+                                    key={cls}
+                                    type="button"
+                                    onClick={() => toggleEditTeacherClass(cls)}
+                                    className={`adv-cohort-pill ${active ? 'adv-cohort-pill--active' : ''}`}
+                                  >
+                                    {active ? '✓ ' : '+ '}
+                                    {cls}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div className="adv-teacher-subpanel-footer">
+                            <button
+                              type="button"
+                              className="adv-btn-secondary"
+                              onClick={() => setEditingTeacherId(null)}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="adv-btn-primary"
+                              disabled={isSavingTeacherEdit}
+                              onClick={() => handleSaveEditTeacher(t.id)}
+                            >
+                              {isSavingTeacherEdit ? 'Saving…' : '💾 Save Changes'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <BackupRestoreModal
         isOpen={isBackupModalOpen}
         onClose={() => setIsBackupModalOpen(false)}
+      />
+
+      <CandidateCardPrintModal
+        isOpen={isPrintCardsModalOpen}
+        onClose={() => setIsPrintCardsModalOpen(false)}
+        initialClassFilter={selectedRosterClass}
+        rosterOverride={roster}
+        scheduleOverride={examSchedule}
       />
     </div>
   );

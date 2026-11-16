@@ -2818,8 +2818,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                               ref={(el) => {
                                 cardRefs.current[compositeKey] = el;
                               }}
-                              className={`lip-table-row ${
-                                isOverdueLock
+                              className={`lip-table-row ${isOverdueLock
                                   ? 'lip-table-row--overdue'
                                   : isLocked
                                     ? 'lip-table-row--locked'
@@ -2828,7 +2827,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                                       : s.status === 'warning'
                                         ? 'lip-table-row--warning'
                                         : ''
-                              } ${focusedStudentKey === compositeKey ? 'lip-table-row--focused' : ''}`}
+                                } ${focusedStudentKey === compositeKey ? 'lip-table-row--focused' : ''}`}
                             >
                               <td>
                                 <div className="lip-table-candidate">
@@ -2860,9 +2859,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                                   {getStatusBadge(s.status, s.multiMonitorDetected)}
                                   {isLocked && s.lockedSince && (
                                     <span
-                                      className={`lip-lock-timer-pill ${
-                                        isOverdueLock ? 'lip-lock-timer-pill--overdue' : ''
-                                      }`}
+                                      className={`lip-lock-timer-pill ${isOverdueLock ? 'lip-lock-timer-pill--overdue' : ''
+                                        }`}
                                     >
                                       ⏳ {formatLockedDuration(lockDurationMs)}
                                     </span>

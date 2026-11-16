@@ -257,7 +257,9 @@ export interface TeacherProfile {
   email?: string | null;
   username?: string | null;
   role?: 'teacher' | 'admin';
+  is_active?: boolean;
   has_password?: boolean;
+  must_change_password?: boolean;
   last_login_at?: string | null;
   subject: string;                            // e.g. "Chemistry"
   subject_code: string;                       // e.g. "0620"

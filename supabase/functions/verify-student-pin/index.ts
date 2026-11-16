@@ -82,8 +82,19 @@ serve(async (req: Request) => {
     }
 
     // Action: Verify student PIN
+    const normalizeClass = (raw: string) => {
+      const collapsed = String(raw || "").trim().replace(/\s+/g, " ");
+      const m = collapsed.match(/^(X|XI|XII|10|11|12)\s*[- ]?\s*(IPA|IPS)\s*[- ]?\s*(\d+)$/i);
+      if (m) {
+        const g = m[1].toUpperCase();
+        const roman = g === "10" ? "X" : g === "11" ? "XI" : g === "12" ? "XII" : g;
+        return `${roman} ${m[2].toUpperCase()} ${parseInt(m[3], 10)}`.toLowerCase();
+      }
+      return collapsed.toLowerCase();
+    };
+
     const cleanName = String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
-    const cleanClass = String(studentClass || "").trim().replace(/\s+/g, " ").toLowerCase();
+    const cleanClass = normalizeClass(studentClass || "");
     const cleanPin = String(pin || "").trim();
 
     if (!cleanName) {
@@ -100,10 +111,10 @@ serve(async (req: Request) => {
       );
     }
 
-    // Match by exact name and matching class (if class provided)
+    // Match by exact name and normalized class (if class provided)
     const matched = rawRoster.find((s: any) => {
       const sName = String(s.name || "").trim().replace(/\s+/g, " ").toLowerCase();
-      const sClass = String(s.class || "").trim().replace(/\s+/g, " ").toLowerCase();
+      const sClass = normalizeClass(s.class || "");
       return sName === cleanName && (!cleanClass || sClass === cleanClass);
     });
 
