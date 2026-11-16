@@ -75,6 +75,7 @@ export interface ExtractionPipelineOptions {
   domain?: SubjectDomain;
   isIgcse?: boolean;
   isSaveMyExams?: boolean;
+  isIeltsCefr?: boolean;
   tags?: string;
   cambridgeHubUrl?: string;
   cambridgeMsHubUrl?: string;
@@ -799,6 +800,7 @@ export async function runExtractionPipeline(
               extractResourceCatalog: idx === 0,
               isIgcse: options.isIgcse !== false,
               isSaveMyExams,
+              isIeltsCefr: options.domain === 'languages' && Boolean(options.isIeltsCefr),
               saveMyExamsPackType: chunk.packType || smeMeta?.packType || 'theory',
               targetSection: chunk.targetSection,
               topicHint: chunk.topicHint || smeMeta?.topic,
@@ -825,16 +827,33 @@ export async function runExtractionPipeline(
 
       const normSubKey = (id: string) => (id || '').replace(/[().\s]/g, '').toLowerCase();
 
+      const inferIeltsSkillPrefix = (qNum: string, topic?: string | null): 'L' | 'R' | 'W' | '' => {
+        const m = qNum.match(/^([LRW])\s*\d/i);
+        if (m) return m[1].toUpperCase() as 'L' | 'R' | 'W';
+        const t = (topic || '').toLowerCase();
+        if (t.includes('listening')) return 'L';
+        if (t.includes('reading')) return 'R';
+        if (t.includes('writing')) return 'W';
+        return '';
+      };
+
+      const isIeltsFlow = options.domain === 'languages' && Boolean(options.isIeltsCefr);
+
       chunkResults.forEach((cr, cIdx) => {
         const chunkOffset = chunks[cIdx].startPage - 1;
         cr.questions.forEach((q) => {
           let qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
+          const skillPrefix = inferIeltsSkillPrefix(qNumClean, q.topic);
+          if (isIeltsFlow && skillPrefix && !/^[LRW]\s*\d/i.test(qNumClean)) {
+            qNumClean = `${skillPrefix}${qNumClean}`;
+          }
           if (isSaveMyExams) {
             const sec = chunks[cIdx].targetSection || q.estimated_difficulty || 'Easy';
             if (!/^(?:easy|medium|hard)\s*[-:]/i.test(qNumClean)) {
               qNumClean = `${sec} - ${qNumClean}`;
             }
           }
+          const mergeKey = (isIeltsFlow || skillPrefix) ? `${skillPrefix || 'Q'}::${qNumClean}` : qNumClean;
           const adjustedQ: ExtractedQuestion = {
             ...q,
             question_number: qNumClean,
@@ -845,13 +864,13 @@ export async function runExtractionPipeline(
             })),
           };
 
-          if (!questionMap.has(qNumClean)) {
-            questionMap.set(qNumClean, adjustedQ);
+          if (!questionMap.has(mergeKey)) {
+            questionMap.set(mergeKey, adjustedQ);
           } else {
             // Straddling Question Boundary Stitching:
             // If the same question was extracted across chunk boundaries,
             // deep-merge sub-questions (union of all parts a, b, c, d) and keep the opening scenario setup!
-            const existing = questionMap.get(qNumClean)!;
+            const existing = questionMap.get(mergeKey)!;
 
             // Deep-merge sub-questions by normalized sub_id key
             const mergedSubMap = new Map<string, SubQuestion>();
@@ -967,8 +986,9 @@ export async function runExtractionPipeline(
               !anyAdjustedSubHasDiagram &&
               (adjustedQ.page_number === existing.page_number || !existing.page_number);
 
-            questionMap.set(qNumClean, {
+            questionMap.set(mergeKey, {
               ...existing,
+              passage_ref: existing.passage_ref || adjustedQ.passage_ref || null,
               page_number: adoptAdjustedParentDiagram ? (adjustedQ.page_number || existing.page_number) : existing.page_number,
               question_text: chosenQuestionText,
               options:
@@ -996,15 +1016,29 @@ export async function runExtractionPipeline(
       // Sort naturally by question number (1, 2, 3 ... 40)
       allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
 
-      // Merge passages across chunks
+      // Merge passages across chunks, preferring the longest/most complete body per passage ID
+      // so an earlier chunk ending mid-passage (e.g. page 6 of pp. 1-6) never shadows the full passage in Chunk 1.
       const mergedPassages = chunkResults.flatMap((cr) => cr.passages || []);
-      const seenPassageIds = new Set<string>();
-      const uniquePassages = mergedPassages.filter((p) => {
+      const passageById = new Map<string, (typeof mergedPassages)[number]>();
+      for (const p of mergedPassages) {
         const idKey = (p.id || '').toLowerCase().trim();
-        if (!idKey || seenPassageIds.has(idKey)) return false;
-        seenPassageIds.add(idKey);
-        return true;
-      });
+        if (!idKey) continue;
+        const existing = passageById.get(idKey);
+        if (!existing) {
+          passageById.set(idKey, p);
+          continue;
+        }
+        const existingLen = (existing.body || '').trim().length;
+        const nextLen = (p.body || '').trim().length;
+        const mergedTargets = Array.from(
+          new Set([...(existing.target_questions || []), ...(p.target_questions || [])])
+        );
+        passageById.set(idKey, {
+          ...(nextLen > existingLen ? p : existing),
+          target_questions: mergedTargets,
+        });
+      }
+      const uniquePassages = Array.from(passageById.values());
 
       // Verify / repair passages from source PDF if in Language domain
       let verifiedPassages = uniquePassages;
@@ -1106,6 +1140,7 @@ export async function runExtractionPipeline(
           hasInsertBooklet: Boolean(insertFile),
           isIgcse: options.isIgcse !== false,
           isSaveMyExams,
+          isIeltsCefr: options.domain === 'languages' && Boolean(options.isIeltsCefr),
           saveMyExamsPackType: chunks[0]?.packType || smeMeta?.packType || 'theory',
           targetSection: chunks[0]?.targetSection,
           topicHint: chunks[0]?.topicHint || smeMeta?.topic,

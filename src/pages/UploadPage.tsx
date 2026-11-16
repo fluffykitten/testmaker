@@ -144,6 +144,7 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
         domain: SubjectDomain;
         isIgcse: boolean;
         isSaveMyExams?: boolean;
+        isIeltsCefr?: boolean;
         tags?: string;
         cambridgeHubUrl?: string;
         cambridgeMsHubUrl?: string;

@@ -5,6 +5,7 @@
 import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion, type QuestionStyle } from '../types/database';
 import type { PaperOutline } from './paperOutlineParse';
 import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
+import { getIeltsCefrExtractionPrompt } from './ieltsPrompt';
 import type { SubjectProfile } from './subjectClassifier';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
@@ -1311,7 +1312,8 @@ export function getExtractionPrompt(
   targetSection?: 'Easy' | 'Medium' | 'Hard',
   topicHint?: string,
   saveMyExamsPackType?: 'mcq' | 'theory',
-  subjectProfile?: SubjectProfile
+  subjectProfile?: SubjectProfile,
+  isIeltsCefr: boolean = false
 ): string {
   if (isSaveMyExams && domain === 'stem') {
     if (saveMyExamsPackType === 'theory') {
@@ -1320,6 +1322,9 @@ export function getExtractionPrompt(
     return getSaveMyExamsStemExtractionPrompt(includeGuidance, targetSection, topicHint);
   }
   if (domain === 'languages') {
+    if (isIeltsCefr) {
+      return getIeltsCefrExtractionPrompt(includeGuidance);
+    }
     return getLanguageExtractionPrompt(includeGuidance, isIgcse);
   }
   if (domain === 'humanities') {
@@ -2423,6 +2428,7 @@ export interface ExtractionOptions {
   extractResourceCatalog?: boolean;
   isIgcse?: boolean;
   isSaveMyExams?: boolean;
+  isIeltsCefr?: boolean;
   saveMyExamsPackType?: 'mcq' | 'theory';
   targetSection?: 'Easy' | 'Medium' | 'Hard';
   topicHint?: string;
@@ -2475,7 +2481,8 @@ export async function extractQuestionsFromPdf(
         options.targetSection,
         options.topicHint,
         options.saveMyExamsPackType,
-        options.subjectProfile
+        options.subjectProfile,
+        Boolean(options.isIeltsCefr)
       );
   if (practicalOutline) {
     onProgress?.(`Outline-constrained extraction (${practicalOutline.profile.key})…`);
@@ -2493,74 +2500,74 @@ export async function extractQuestionsFromPdf(
   );
 
   let lastError = '';
-  let response: Response | null = null;
   let usedModel = '';
+  let rawParsed: any = null;
 
   for (const model of candidateModels) {
     onProgress?.(`Contacting Gemini AI (${model})…`);
     try {
-      response = await callGeminiModel(model, pdfBase64, markSchemeBase64, insertBase64, promptText, activeKey);
+      const response = await callGeminiModel(model, pdfBase64, markSchemeBase64, insertBase64, promptText, activeKey);
 
-      if (response.ok) {
-        usedModel = model;
-        break;
-      }
+      if (!response.ok) {
+        const errorBody = await response.text();
+        lastError = `Model ${model} returned (${response.status}): ${errorBody}`;
 
-      const errorBody = await response.text();
-      lastError = `Model ${model} returned (${response.status}): ${errorBody}`;
+        // If it's a 404 (model not found / deprecated) or 400 (unsupported), try next candidate model
+        if (response.status === 404 || response.status === 400) {
+          console.warn(`Model ${model} unavailable, trying fallback…`, errorBody);
+          continue;
+        }
 
-      // If it's a 404 (model not found / deprecated) or 400 (unsupported), try next candidate model
-      if (response.status === 404 || response.status === 400) {
-        console.warn(`Model ${model} unavailable, trying fallback…`, errorBody);
+        // If overloaded (503 / 429), immediately notify and try next candidate model
+        if (response.status === 503 || response.status === 429) {
+          onProgress?.(`Model ${model} is busy (status ${response.status}), switching to next model…`);
+          continue;
+        }
+
         continue;
       }
 
-      // If overloaded (503 / 429), immediately notify and try next candidate model
-      if (response.status === 503 || response.status === 429) {
-        onProgress?.(`Model ${model} is busy (status ${response.status}), switching to next model…`);
+      onProgress?.(`Parsing AI response from ${model}…`);
+      const rawData = await response.json();
+      const extractedText = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!extractedText) {
+        lastError = `Model ${model} returned an empty response.`;
         continue;
       }
 
-      // If other error, still try the next model
-      continue;
+      let candidateParsed: any = parseRobustJson<any>(extractedText);
+
+      // If LLM wrapped root in an array: [{ paper_metadata, questions: [...] }]
+      if (Array.isArray(candidateParsed)) {
+        if (candidateParsed.length === 1 && candidateParsed[0]?.paper_metadata) {
+          candidateParsed = candidateParsed[0];
+        } else if (candidateParsed.some((p: any) => p?.paper_metadata || Array.isArray(p?.questions))) {
+          const mainMeta = candidateParsed.find((p: any) => p?.paper_metadata)?.paper_metadata || candidateParsed[0]?.paper_metadata;
+          const allQs = candidateParsed.flatMap((p: any) => (Array.isArray(p?.questions) ? p.questions : p?.question_number ? [p] : []));
+          candidateParsed = { paper_metadata: mainMeta, questions: allQs };
+        }
+      }
+
+      if (!candidateParsed || !candidateParsed.paper_metadata || !Array.isArray(candidateParsed.questions)) {
+        lastError = `Model ${model} response missing paper_metadata or questions array.`;
+        continue;
+      }
+
+      rawParsed = candidateParsed;
+      usedModel = model;
+      break;
     } catch (err: any) {
-      lastError = err?.message || 'Network error';
+      lastError = err?.message || 'Network or JSON parse error';
+      onProgress?.(`Model ${model} failed (${lastError.slice(0, 60)}), switching to next model…`);
+      continue;
     }
   }
 
-  if (!response || !response.ok) {
+  if (!rawParsed) {
     throw new Error(
       `All candidate Gemini models failed. Candidates tried: [${candidateModels.join(', ')}]. Last error: ${lastError}`
     );
-  }
-
-  onProgress?.(`Parsing AI response from ${usedModel}…`);
-
-  const rawData = await response.json();
-  const extractedText = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!extractedText) {
-    throw new Error('Gemini returned an empty response. The PDF may be unreadable or too large.');
-  }
-
-  let rawParsed: any = parseRobustJson<any>(extractedText);
-
-  // If LLM wrapped root in an array: [{ paper_metadata, questions: [...] }]
-  if (Array.isArray(rawParsed)) {
-    if (rawParsed.length === 1 && rawParsed[0]?.paper_metadata) {
-      rawParsed = rawParsed[0];
-    } else if (rawParsed.some((p: any) => p?.paper_metadata || Array.isArray(p?.questions))) {
-      const mainMeta = rawParsed.find((p: any) => p?.paper_metadata)?.paper_metadata || rawParsed[0]?.paper_metadata;
-      const allQs = rawParsed.flatMap((p: any) => (Array.isArray(p?.questions) ? p.questions : p?.question_number ? [p] : []));
-      rawParsed = { paper_metadata: mainMeta, questions: allQs };
-    }
-  }
-
-  if (!rawParsed || !rawParsed.paper_metadata || !Array.isArray(rawParsed.questions)) {
-    console.error('Failed parsed object:', rawParsed);
-    console.error('Raw extracted text (first 1000 chars):', extractedText?.slice(0, 1000));
-    console.error('Raw extracted text (last 500 chars):', extractedText?.slice(-500));
-    throw new Error('Response missing required paper_metadata or questions array.');
   }
 
   const parsed: ExtractionResult = rawParsed as ExtractionResult;

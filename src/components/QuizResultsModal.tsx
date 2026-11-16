@@ -47,6 +47,7 @@ import {
 import { ExamMathText } from './ExamMathText';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import { GradeThresholdEditor } from './GradeThresholdEditor';
+import { computeIeltsCefrProfile } from '../utils/ieltsScoringUtils';
 import {
   deriveGradeFromPercentage,
   sanitizeGradeThresholds,
@@ -2240,6 +2241,64 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                     )}
                   </div>
                 )}
+
+                {/* IELTS / CEFR Multi-Skill Band Summary */}
+                {(() => {
+                  const ieltsProfile = computeIeltsCefrProfile(selectedSubmission.questionResults);
+                  if (!ieltsProfile) return null;
+                  return (
+                    <div
+                      className="qrm-topics-card"
+                      style={{
+                        borderColor: ieltsProfile.cefr.color,
+                        borderLeft: `4px solid ${ieltsProfile.cefr.color}`,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+                        <h4 style={{ margin: 0 }}>IELTS &amp; CEFR Proficiency Summary</h4>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span
+                            style={{
+                              background: ieltsProfile.cefr.color,
+                              color: '#ffffff',
+                              fontWeight: 800,
+                              fontSize: '0.8125rem',
+                              padding: '3px 10px',
+                              borderRadius: '6px',
+                            }}
+                          >
+                            Band {ieltsProfile.overallBand.toFixed(1)} • CEFR {ieltsProfile.cefr.code}
+                          </span>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                            {ieltsProfile.cefr.label} ({ieltsProfile.cefr.indonesianLabel})
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
+                        {ieltsProfile.skills.map((sk) => (
+                          <div
+                            key={sk.skill}
+                            style={{
+                              padding: '10px 12px',
+                              borderRadius: '8px',
+                              background: 'var(--color-surface-sunken)',
+                              border: '1px solid var(--color-border)',
+                            }}
+                          >
+                            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)' }}>{sk.skill}</div>
+                            <div style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--color-text-primary)', marginTop: '2px' }}>
+                              Band {sk.band.toFixed(1)}
+                            </div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                              {sk.earnedMarks}/{sk.maxMarks} marks
+                              {sk.scaledOutOf40 !== undefined && sk.maxMarks !== 40 ? ` (${sk.scaledOutOf40}/40 eq.)` : ''}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Topic Breakdown Progress */}
                 {selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0 && (

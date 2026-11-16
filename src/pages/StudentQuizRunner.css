@@ -495,8 +495,105 @@
 }
 
 .sq-stimulus-card {
+  margin-bottom: 16px;
+  padding: 16px 20px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 12px;
+  border-left: 4px solid #3b82f6;
   text-align: justify;
   text-justify: inter-word;
+}
+
+.sq-stimulus-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sq-stimulus-title {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  color: #2563eb;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sq-stimulus-body {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--color-text-primary);
+}
+
+.sq-layout-toggle-btn {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 6px;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: var(--color-surface);
+  color: #2563eb;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sq-layout-toggle-btn:hover {
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.sq-runner-body--reading-split {
+  max-width: 1480px;
+}
+
+.sq-reading-split-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 1.05fr) minmax(340px, 0.95fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.sq-reading-split-grid .sq-stimulus-card {
+  margin-bottom: 0;
+  position: sticky;
+  top: 84px;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+}
+
+.sq-question-work-pane {
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .sq-reading-split-grid {
+    grid-template-columns: 1fr;
+  }
+  .sq-reading-split-grid .sq-stimulus-card {
+    position: static;
+    max-height: 420px;
+  }
+  .sq-layout-toggle-btn {
+    display: none;
+  }
+}
+
+.sq-text-answer-area--writing {
+  min-height: 300px;
+  line-height: 1.65;
+}
+
+.sq-answer-counter-badge--met {
+  background: rgba(22, 163, 74, 0.15) !important;
+  color: #15803d !important;
+  border-color: rgba(22, 163, 74, 0.4) !important;
+}
+
+.sq-answer-counter-badge--below {
+  background: rgba(217, 119, 6, 0.14) !important;
+  color: #b45309 !important;
+  border-color: rgba(217, 119, 6, 0.35) !important;
 }
 
 .sq-q-diagram-wrap {

@@ -59,6 +59,13 @@ import { PeriodicTableDrawer } from '../components/PeriodicTableDrawer';
 import { ScientificCalculatorModal } from '../components/ScientificCalculatorModal';
 import { ResourceBookletDrawer } from '../components/ResourceBookletDrawer';
 import {
+  applySymbolInsertion,
+  classifyExamFallbackDomain,
+  classifyQuestionDomain,
+  getQuickSymbolsForDomain,
+  type QuickSymbolItem,
+} from '../utils/questionDomainDetector';
+import {
   buildBookletResources,
   getQuestionBookletTrigger,
   getSubQuestionBookletTrigger,
@@ -155,10 +162,6 @@ interface ViolationRecord {
   detail: string;
   elapsedExamSeconds?: number;
 }
-
-const QUICK_CHEM_SYMBOLS = [
-  '→', '⇌', 'Δ', '°C', 'mol/dm³', 'g/cm³', 'kJ/mol', '(s)', '(l)', '(g)', '(aq)', '⁺', '⁻', '²', '³', '⁴'
-];
 
 interface ModelAnswerClause {
   label: string;
@@ -446,6 +449,8 @@ export function StudentQuizRunner({
   // Exam Progress State
   const [currentIndex, setCurrentIndex] = useState<number>(() => savedExam?.currentIndex || 0);
   const [answers, setAnswers] = useState<Record<string | number, string | number>>(() => savedExam?.answers || {});
+  const [manualMathHelperTargets, setManualMathHelperTargets] = useState<Record<string, boolean>>({});
+  const structuredTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [flaggedIndices, setFlaggedIndices] = useState<Set<number>>(() => new Set(savedExam?.flaggedIndices || []));
   const [audioProgress, setAudioProgress] = useState<Record<string, { currentTime: number; playedCount: number }>>(
     () => savedExam?.audioProgress || {}
@@ -3955,74 +3960,28 @@ export function StudentQuizRunner({
     }));
   };
 
-  // Subject Domain Detection & Tool Visibility
-  const isLanguageExam = useMemo(() => {
-    const subj = (headerConfig?.subject || '').toLowerCase();
-    const code = (headerConfig?.subjectCode || '').toLowerCase();
-    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
-    const titleLower = (title || '').toLowerCase();
+  // Subject Domain Detection & Tool Visibility (Per-Question with exam fallback for mixed tests)
+  const examDomainContext = useMemo(
+    () => ({
+      subject: headerConfig?.subject,
+      subjectCode: headerConfig?.subjectCode,
+      additionalMaterials: headerConfig?.additionalMaterials,
+      title,
+    }),
+    [headerConfig, title]
+  );
 
-    return (
-      subj.includes('english') ||
-      subj.includes('bahasa') ||
-      subj.includes('literature') ||
-      subj.includes('reading') ||
-      subj.includes('tka') ||
-      code.includes('eng') ||
-      sampleTopic.includes('reading') ||
-      sampleTopic.includes('english') ||
-      titleLower.includes('english') ||
-      titleLower.includes('bahasa')
-    );
-  }, [headerConfig, questions, title]);
+  const examFallbackDomain = useMemo(
+    () => classifyExamFallbackDomain(examDomainContext),
+    [examDomainContext]
+  );
 
-  const isChemistryExam = useMemo(() => {
-    if (isLanguageExam) return false;
-    const subj = (headerConfig?.subject || '').toLowerCase();
-    const code = (headerConfig?.subjectCode || '').toLowerCase();
-    const mats = (headerConfig?.additionalMaterials || '').toLowerCase();
-    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
-    const titleLower = (title || '').toLowerCase();
+  const currentQuestionDomain = useMemo(
+    () => classifyQuestionDomain(currentQuestion, undefined, examDomainContext),
+    [currentQuestion, examDomainContext]
+  );
 
-    return (
-      subj.includes('chem') ||
-      code === '0620' ||
-      code === '0971' ||
-      code === '5070' ||
-      mats.includes('periodic') ||
-      sampleTopic.includes('chem') ||
-      titleLower.includes('chemistry')
-    );
-  }, [isLanguageExam, headerConfig, questions, title]);
-
-  const isStemOrMathExam = useMemo(() => {
-    if (isLanguageExam) return false;
-    const subj = (headerConfig?.subject || '').toLowerCase();
-    const code = (headerConfig?.subjectCode || '').toLowerCase();
-    const mats = (headerConfig?.additionalMaterials || '').toLowerCase();
-    const sampleTopic = (questions[0]?.topic || '').toLowerCase();
-    const titleLower = (title || '').toLowerCase();
-
-    return (
-      subj.includes('math') ||
-      subj.includes('phys') ||
-      subj.includes('chem') ||
-      subj.includes('bio') ||
-      subj.includes('econ') ||
-      subj.includes('account') ||
-      subj.includes('sci') ||
-      code.includes('0620') ||
-      code.includes('0625') ||
-      code.includes('0580') ||
-      mats.includes('calc') ||
-      sampleTopic.includes('math') ||
-      sampleTopic.includes('phys') ||
-      sampleTopic.includes('chem') ||
-      titleLower.includes('math') ||
-      titleLower.includes('phys') ||
-      titleLower.includes('chem')
-    );
-  }, [isLanguageExam, headerConfig, questions, title]);
+  const isLanguageExam = currentQuestionDomain.isLanguage || (currentQuestionDomain.domain === 'general' && examFallbackDomain === 'language');
 
   const bookletResources = useMemo(
     () => buildBookletResources({ questions }),
@@ -4037,9 +3996,9 @@ export function StudentQuizRunner({
   );
 
   // Active Stimulus Passage detection for multi-question reading texts (e.g. Text 1 for Q1-Q4)
-  // Restricted to language exams so STEM/Chemistry questions never inherit reading passages across questions
+  // Restricted to language questions so STEM/Math questions never inherit reading passages in mixed exams
   const activeStimulusPassage = useMemo(() => {
-    if (!isLanguageExam) return null;
+    if (!isLanguageExam || currentQuestionDomain.isStemOrMath) return null;
     const currentQ = questions[currentIndex];
     if (!currentQ) return null;
     const currentText = currentQ.question_text || '';
@@ -4049,8 +4008,10 @@ export function StudentQuizRunner({
       return null;
     }
 
-    // Scan backwards to find the nearest previous question with a stimulus passage
+    // Scan backwards to find the nearest previous question with a stimulus passage, stopping at STEM boundaries
     for (let i = currentIndex - 1; i >= 0; i--) {
+      const prevDomain = classifyQuestionDomain(questions[i], undefined, examDomainContext);
+      if (prevDomain.isStemOrMath) break;
       const prevText = questions[i]?.question_text || '';
       const match = prevText.match(/(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)\s*\d+[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i);
       if (match && match[1]) {
@@ -4058,7 +4019,7 @@ export function StudentQuizRunner({
       }
     }
     return null;
-  }, [questions, currentIndex, isLanguageExam]);
+  }, [questions, currentIndex, isLanguageExam, currentQuestionDomain, examDomainContext]);
 
   const handleScrollToQuestionStem = () => {
     if (questionTargetRef.current) {
@@ -4294,6 +4255,21 @@ export function StudentQuizRunner({
   }, [currentQuestion, currentTable, isLanguageExam]);
 
   const activeReadingPassage = activeStimulusPassage || passageText;
+  const [readingLayoutMode, setReadingLayoutMode] = useState<'split' | 'stacked'>('split');
+
+  const isReadingSplitActive = Boolean(
+    activeReadingPassage && activeReadingPassage.length >= 600 && readingLayoutMode === 'split'
+  );
+
+  const minWordTarget = useMemo(() => {
+    const text = `${currentQuestion?.question_text || ''}\n${promptText || ''}`;
+    const match = text.match(/(?:write|minimum(?:\s+of)?)\s+(?:at\s+least\s+)?(\d{2,4})\s+words/i);
+    return match ? parseInt(match[1], 10) : null;
+  }, [currentQuestion, promptText]);
+
+  const isWritingEssayTask = Boolean(
+    minWordTarget !== null || (/^writing\b/i.test(currentQuestion?.topic || '') && isLanguageExam)
+  );
 
   const isCurrentMcq = Boolean(
     currentQuestion &&
@@ -4446,14 +4422,93 @@ export function StudentQuizRunner({
     }, 700);
   };
 
-  const handleInsertSymbol = (targetKey: string | number, symbol: string) => {
+  const handleInsertSymbol = (targetKey: string | number, item: QuickSymbolItem) => {
     if (isSubmitted || isGrading || isSubmittingRef.current || (isExamMode && timeLeft <= 0)) return;
-    setAnswers((prev) => {
-      const currentVal = String(prev[targetKey] || '');
-      const newVal = currentVal + symbol;
-      recordAnswerChange(currentIndex, currentVal, newVal);
-      return { ...prev, [targetKey]: newVal };
-    });
+    const keyStr = String(targetKey);
+    const elem = structuredTextareaRefs.current[keyStr];
+    const currentVal = elem ? elem.value : String(answers[targetKey] || '');
+    const { nextValue, nextCursorPos } = applySymbolInsertion(
+      currentVal,
+      elem?.selectionStart,
+      elem?.selectionEnd,
+      item
+    );
+
+    recordAnswerChange(currentIndex, currentVal, nextValue);
+    setAnswers((prev) => ({ ...prev, [targetKey]: nextValue }));
+
+    if (elem) {
+      requestAnimationFrame(() => {
+        elem.focus();
+        elem.setSelectionRange(nextCursorPos, nextCursorPos);
+      });
+    }
+  };
+
+  const toggleMathHelperBar = (targetKey: string | number, currentVisible: boolean) => {
+    const keyStr = String(targetKey);
+    setManualMathHelperTargets((prev) => ({ ...prev, [keyStr]: !currentVisible }));
+  };
+
+  const renderMathHelperToggleButton = (targetKey: string | number, currentVisible: boolean) => (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => toggleMathHelperBar(targetKey, currentVisible)}
+      style={{
+        background: currentVisible ? 'rgba(99, 102, 241, 0.14)' : 'transparent',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '1px 7px',
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        cursor: 'pointer',
+        color: currentVisible ? 'var(--color-primary-500)' : 'var(--color-text-secondary)',
+      }}
+      title={currentVisible ? 'Hide math & formula buttons' : 'Show math, subscript & fraction helpers'}
+    >
+      {currentVisible ? 'Hide Σ Math' : 'Σ Math'}
+    </button>
+  );
+
+  const renderQuickSymbolToolbar = (
+    targetKey: string | number,
+    domain: 'math' | 'chemistry' | 'science' | 'language' | 'general',
+    compact = false
+  ) => {
+    const effectiveDomain = domain === 'chemistry' || domain === 'science' ? domain : 'math';
+    const symbols = getQuickSymbolsForDomain(effectiveDomain);
+    return (
+      <div
+        className="sq-symbol-toolbar"
+        style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: compact ? 8 : 10 }}
+      >
+        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>
+          Insert:
+        </span>
+        {symbols.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            className="sq-sym-pill"
+            style={{
+              background: 'var(--color-surface-elevated)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-sm)',
+              padding: compact ? '2px 6px' : '2px 8px',
+              fontSize: compact ? '0.75rem' : '0.8125rem',
+              cursor: 'pointer',
+              color: 'var(--color-text-primary)',
+            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => handleInsertSymbol(targetKey, item)}
+            title={item.title}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    );
   };
 
   const handleToggleFlag = () => {
@@ -6776,7 +6831,7 @@ export function StudentQuizRunner({
       )}
 
       {/* Main Runner Body */}
-      <main className="sq-runner-body">
+      <main className={`sq-runner-body ${isReadingSplitActive ? 'sq-runner-body--reading-split' : ''}`}>
         {/* Left / Center: Question View */}
         <section className="sq-question-panel">
           <div className="sq-question-card animate-scale-up" ref={questionCardRef} key={currentIndex}>
@@ -6797,29 +6852,30 @@ export function StudentQuizRunner({
               <span className="sq-q-marks-pill">[{currentQuestion?.marks || 1} mark{currentQuestion?.marks !== 1 ? 's' : ''}]</span>
             </div>
 
-            {/* Active Stimulus / Reading Passage for Multi-Question Sections (e.g. Text 1 for Q1-Q4) */}
-            {activeReadingPassage && (
-              <div
-                className="sq-stimulus-card animate-fade-in"
-                style={{
-                  marginBottom: '16px',
-                  padding: '16px 20px',
-                  background: 'rgba(59, 130, 246, 0.06)',
-                  border: '1px solid rgba(59, 130, 246, 0.25)',
-                  borderRadius: '12px',
-                  borderLeft: '4px solid #3b82f6',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    📖 Reference Reading Passage
-                  </span>
+            <div className={isReadingSplitActive ? 'sq-reading-split-grid' : 'sq-reading-stacked-flow'}>
+              {/* Active Stimulus / Reading Passage for Multi-Question Sections */}
+              {activeReadingPassage && (
+                <div className="sq-stimulus-card animate-fade-in">
+                  <div className="sq-stimulus-header">
+                    <span className="sq-stimulus-title">📖 Reference Reading Passage</span>
+                    {activeReadingPassage.length >= 600 && (
+                      <button
+                        type="button"
+                        className="sq-layout-toggle-btn"
+                        onClick={() => setReadingLayoutMode((m) => (m === 'split' ? 'stacked' : 'split'))}
+                        title="Toggle side-by-side or stacked reading passage layout"
+                      >
+                        {readingLayoutMode === 'split' ? '▤ Stacked View' : '▥ Split View'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="sq-stimulus-body">
+                    <ExamMathText content={activeReadingPassage} />
+                  </div>
                 </div>
-                <div style={{ fontSize: '0.9375rem', lineHeight: '1.65', color: 'var(--color-text-primary)' }}>
-                  <ExamMathText content={activeReadingPassage} />
-                </div>
-              </div>
-            )}
+              )}
+
+              <div className={isReadingSplitActive ? 'sq-question-work-pane' : undefined}>
 
             {/* Question Stem & Interactive Target Area */}
             <div ref={questionTargetRef} className="sq-question-interactive-target">
@@ -7186,78 +7242,75 @@ export function StudentQuizRunner({
                           </div>
                         )}
 
-                      {/* Quick Symbol Insert Bar for sub-question (STEM only) */}
-                      {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && !hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && (
-                        <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 8 }}>
-                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
-                          {QUICK_CHEM_SYMBOLS.map((sym) => (
-                            <button
-                              key={sym}
-                              type="button"
-                              className="sq-sym-pill"
-                              style={{
-                                background: 'var(--color-surface-elevated)',
-                                border: '1px solid var(--color-border)',
-                                borderRadius: 'var(--radius-sm)',
-                                padding: '2px 6px',
-                                fontSize: '0.75rem',
-                                cursor: 'pointer',
-                                color: 'var(--color-text-primary)',
-                              }}
-                              onClick={() => handleInsertSymbol(subKey, sym)}
-                              title={`Insert ${sym}`}
-                            >
-                              {sym}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                      {!hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && !(hasCurrentBlankDataTable && currentQuestion && sIdx === findTableCompletionSubIndex(currentQuestion)) && (() => {
+                        const subDomainInfo = classifyQuestionDomain(currentQuestion, sub, examDomainContext);
+                        const isSubWritingTask = Boolean(
+                          /(?:write|minimum(?:\s+of)?)\s+(?:at\s+least\s+)?\d{2,4}\s+words\b/i.test(sub.question_text || '') ||
+                          (/^writing\b/i.test(currentQuestion?.topic || '') && subDomainInfo.isLanguage)
+                        );
+                        const autoShowSubTools = !isSubWritingTask && subDomainInfo.isStemOrMath;
+                        const showSubSymbolBar =
+                          manualMathHelperTargets[subKey] !== undefined
+                            ? manualMathHelperTargets[subKey]
+                            : autoShowSubTools;
 
-                      {!hasInlineGaps(sub.question_text || '') && !hasBlankDataTableCells(sub.data_tables) && !(hasCurrentBlankDataTable && currentQuestion && sIdx === findTableCompletionSubIndex(currentQuestion)) && (
-                        <div className="sq-sub-input-wrap">
-                          <textarea
-                            className="sq-text-answer-area"
-                            dir="auto"
-                            placeholder={isLanguageExam ? `Type answer for part (${sub.sub_id})...` : `Type answer, equation, or steps for (${sub.sub_id})...`}
-                            value={subVal}
-                            onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
-                            rows={3}
-                            spellCheck={false}
-                            autoCorrect="off"
-                            autoCapitalize="none"
-                            style={{
-                              width: '100%',
-                              minHeight: '80px',
-                              padding: '10px 14px',
-                              borderRadius: 'var(--radius-md)',
-                              border: '1.5px solid var(--color-border)',
-                              background: 'var(--color-surface)',
-                              color: 'var(--color-text-primary)',
-                              fontSize: '0.875rem',
-                              outline: 'none',
-                              boxSizing: 'border-box',
-                              resize: 'vertical',
-                            }}
-                          />
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
-                            <span>Auto-saved continuously</span>
+                        return (
+                          <div className="sq-sub-input-wrap">
+                            {showSubSymbolBar && renderQuickSymbolToolbar(subKey, subDomainInfo.domain, true)}
+                            <textarea
+                              ref={(el) => {
+                                structuredTextareaRefs.current[subKey] = el;
+                              }}
+                              className="sq-text-answer-area"
+                              dir="auto"
+                              placeholder={
+                                subDomainInfo.isStemOrMath || showSubSymbolBar
+                                  ? `Type answer, equation, or steps for (${sub.sub_id})...`
+                                  : `Type answer for part (${sub.sub_id})...`
+                              }
+                              value={subVal}
+                              onChange={(e) => handleSubAnswerChange(subKey, e.target.value)}
+                              rows={3}
+                              spellCheck={false}
+                              autoCorrect="off"
+                              autoCapitalize="none"
+                              style={{
+                                width: '100%',
+                                minHeight: '80px',
+                                padding: '10px 14px',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1.5px solid var(--color-border)',
+                                background: 'var(--color-surface)',
+                                color: 'var(--color-text-primary)',
+                                fontSize: '0.875rem',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                                resize: 'vertical',
+                              }}
+                            />
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginTop: 4, fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
+                              <span>Auto-saved continuously</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {!isSubWritingTask && renderMathHelperToggleButton(subKey, showSubSymbolBar)}
+                                {subVal.trim() && (
+                                  <span style={{ fontWeight: 600 }}>
+                                    {getWordCount(subVal).words} word{getWordCount(subVal).words !== 1 ? 's' : ''} • {getWordCount(subVal).chars} chars
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                             {subVal.trim() && (
-                              <span style={{ fontWeight: 600 }}>
-                                {getWordCount(subVal).words} word{getWordCount(subVal).words !== 1 ? 's' : ''} • {getWordCount(subVal).chars} chars
-                              </span>
+                              <div className="sq-answer-preview-card" style={{ marginTop: 6 }}>
+                                <div className="sq-answer-preview-header">
+                                  <span>👁️</span>
+                                  <span>Part ({sub.sub_id}) Formatted Preview</span>
+                                </div>
+                                <ExamMathText content={subVal} />
+                              </div>
                             )}
                           </div>
-                          {subVal.trim() && (
-                            <div className="sq-answer-preview-card" style={{ marginTop: 6 }}>
-                              <div className="sq-answer-preview-header">
-                                <span>👁️</span>
-                                <span>Part ({sub.sub_id}) Formatted Preview</span>
-                              </div>
-                              <ExamMathText content={subVal} />
-                            </div>
-                          )}
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -7341,78 +7394,107 @@ export function StudentQuizRunner({
               </div>
             ) : (isCurrentInlineGap || hasCurrentBlankDataTable) ? null : (
               /* 4. Structured Single Response Text Box */
-              <div className="sq-structured-input-box">
-                <div className="sq-input-label-row">
-                  <label className="sq-input-label">
-                    <span>✍️</span>
-                    <span>{isLanguageExam ? 'Your Response / Written Answer:' : 'Your Response / Chemical Formula / Calculation:'}</span>
-                  </label>
-                  {answers[currentIndex] && (
-                    <span className="sq-answer-counter-badge">
-                      {getWordCount(String(answers[currentIndex])).words} words • {getWordCount(String(answers[currentIndex])).chars} chars
-                    </span>
-                  )}
-                </div>
+              (() => {
+                const rawAnsStr = String(answers[currentIndex] || '');
+                const wordCounts = getWordCount(rawAnsStr);
+                const metMinWords = minWordTarget !== null && wordCounts.words >= minWordTarget;
+                const singleKey = String(currentIndex);
+                const autoShowMathTools = !isWritingEssayTask && currentQuestionDomain.isStemOrMath;
+                const showSingleSymbolBar =
+                  manualMathHelperTargets[singleKey] !== undefined
+                    ? manualMathHelperTargets[singleKey]
+                    : autoShowMathTools;
+                const showMathMetaAndPreview = !isWritingEssayTask && (showSingleSymbolBar || currentQuestionDomain.isStemOrMath);
 
-                {/* Quick Symbol Insert Bar (STEM only) */}
-                {!isLanguageExam && (isChemistryExam || isStemOrMathExam) && (
-                  <div className="sq-symbol-toolbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginBottom: 10 }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-secondary)', marginRight: 4 }}>Insert:</span>
-                    {QUICK_CHEM_SYMBOLS.map((sym) => (
-                      <button
-                        key={sym}
-                        type="button"
-                        className="sq-sym-pill"
-                        style={{
-                          background: 'var(--color-surface-elevated)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '2px 8px',
-                          fontSize: '0.8125rem',
-                          cursor: 'pointer',
-                          color: 'var(--color-text-primary)',
-                        }}
-                        onClick={() => handleInsertSymbol(currentIndex, sym)}
-                        title={`Insert ${sym}`}
-                      >
-                        {sym}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <textarea
-                  className="sq-text-answer-area"
-                  dir="auto"
-                  placeholder={
-                    isLanguageExam
-                      ? 'Type your answer, analysis, or explanation here...'
-                      : 'Type your final answer, chemical equation, or calculation steps here...'
-                  }
-                  value={String(answers[currentIndex] || '')}
-                  onChange={(e) => handleTextAnswerChange(e.target.value)}
-                  rows={5}
-                  spellCheck={false}
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                />
-
-                <div className="sq-answer-meta-bar">
-                  <span>Auto-saved continuously • Press Tab to navigate</span>
-                  <span>LaTeX math supported with $...$</span>
-                </div>
-
-                {answers[currentIndex] && typeof answers[currentIndex] === 'string' && String(answers[currentIndex]).trim() && (
-                  <div className="sq-answer-preview-card">
-                    <div className="sq-answer-preview-header">
-                      <span>👁️</span>
-                      <span>Live Response & Formula Preview</span>
+                return (
+                  <div className="sq-structured-input-box">
+                    <div className="sq-input-label-row">
+                      <label className="sq-input-label">
+                        <span>✍️</span>
+                        <span>
+                          {isWritingEssayTask
+                            ? 'Your Academic Writing Response:'
+                            : currentQuestionDomain.isChemistry
+                            ? 'Your Response / Chemical Formula / Calculation:'
+                            : showMathMetaAndPreview
+                            ? 'Your Response / Math & Formula:'
+                            : 'Your Response / Written Answer:'}
+                        </span>
+                      </label>
+                      {(Boolean(answers[currentIndex]) || isWritingEssayTask) && (
+                        <span
+                          className={`sq-answer-counter-badge ${
+                            minWordTarget !== null
+                              ? metMinWords
+                                ? 'sq-answer-counter-badge--met'
+                                : 'sq-answer-counter-badge--below'
+                              : ''
+                          }`}
+                        >
+                          {minWordTarget !== null
+                            ? `${wordCounts.words} / ${minWordTarget}+ words • ${wordCounts.chars} chars`
+                            : `${wordCounts.words} words • ${wordCounts.chars} chars`}
+                        </span>
+                      )}
                     </div>
-                    <ExamMathText content={String(answers[currentIndex])} />
+
+                    {/* Quick Symbol Insert Bar (STEM/Math auto-shown, or toggled manually) */}
+                    {showSingleSymbolBar && renderQuickSymbolToolbar(currentIndex, currentQuestionDomain.domain)}
+
+                    <textarea
+                      ref={(el) => {
+                        structuredTextareaRefs.current[singleKey] = el;
+                      }}
+                      className={`sq-text-answer-area ${isWritingEssayTask ? 'sq-text-answer-area--writing' : ''}`}
+                      dir="auto"
+                      placeholder={
+                        isWritingEssayTask
+                          ? `Write your structured response here${minWordTarget ? ` (at least ${minWordTarget} words)` : ''}...`
+                          : currentQuestionDomain.isChemistry
+                          ? 'Type your final answer, chemical equation, or calculation steps here...'
+                          : showMathMetaAndPreview
+                          ? 'Type your final answer, math expression, or working steps here...'
+                          : 'Type your answer, analysis, or explanation here...'
+                      }
+                      value={rawAnsStr}
+                      onChange={(e) => handleTextAnswerChange(e.target.value)}
+                      rows={isWritingEssayTask ? 14 : 5}
+                      spellCheck={false}
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                    />
+
+                    <div className="sq-answer-meta-bar">
+                      <span>Auto-saved continuously{isWritingEssayTask ? '' : ' • Press Tab to navigate'}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        {!isWritingEssayTask && renderMathHelperToggleButton(currentIndex, showSingleSymbolBar)}
+                        <span>
+                          {isWritingEssayTask
+                            ? minWordTarget
+                              ? `Target length: ${minWordTarget}+ words`
+                              : 'Plain academic English'
+                            : showMathMetaAndPreview
+                            ? 'LaTeX math supported with $...$'
+                            : 'Plain academic English'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {showMathMetaAndPreview && rawAnsStr.trim() && (
+                      <div className="sq-answer-preview-card">
+                        <div className="sq-answer-preview-header">
+                          <span>👁️</span>
+                          <span>Live Response & Formula Preview</span>
+                        </div>
+                        <ExamMathText content={rawAnsStr} />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()
             )}
+              </div>
+            </div>
 
             {/* Bottom Actions Row */}
             <div className="sq-q-nav-actions" style={{ marginTop: 24 }}>

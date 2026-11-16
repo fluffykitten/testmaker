@@ -198,6 +198,7 @@ async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number
   const pdfJsDoc = await loadingTask.promise;
   try {
     let effectiveEnd = pdfJsDoc.numPages;
+    let trimmedScoringRubrics = false;
 
     for (let p = pdfJsDoc.numPages; p >= 2; p--) {
       const page = await pdfJsDoc.getPage(p);
@@ -215,8 +216,28 @@ async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number
         (/\bTests\s+for\s+anions\b/i.test(text) && /\bTests\s+for\s+aqueous\s+cations\b/i.test(text)) ||
         (/\bTests\s+for\s+gases\b/i.test(text) && /\bFlame\s+tests\s+for\s+metal\s+ions\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text));
       const isAdditionalBlank = /\bAdditional\s+Page\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text);
+      const hasQuestionHeader = /\bQuestions?\s+\d+/i.test(text) || /\[\s*\d+\s*\]/.test(text);
+      const isIeltsRubricAppendix =
+        !hasQuestionHeader &&
+        (/\b(?:Listening|Reading)\s+Scoring\s+Rubrics\b/i.test(text) ||
+          /\b(?:Writing|Speaking)\s+Rubrics\b/i.test(text) ||
+          /\bCEFR\s+Description\b/i.test(text) ||
+          /\bTingkat\s+CEFR\b/i.test(text) ||
+          /^\s*Scoring\s+system\s*$/i.test(text) ||
+          /\b(?:C2\s*[–-]\s*Proficiency|C1\s*[–-]\s*Advanced|B2\s*[–-]\s*Upper\s+Intermediate|B1\s*[–-]\s*Intermediate|A2\s*[–-]\s*Elementary|A1\s*[–-]\s*Beginner)\b/i.test(
+            text
+          ));
+      const isTrailingSpeakingPage =
+        trimmedScoringRubrics &&
+        !hasQuestionHeader &&
+        /^\s*SPEAKING\b/i.test(text) &&
+        /End\s+of\s+the\s+test/i.test(text) &&
+        !/\b(?:WRITING|READING|LISTENING)\b/i.test(text);
 
-      if (isBlankPage || isPeriodicTable || isQualAnalysisNotes || isAdditionalBlank) {
+      if (isIeltsRubricAppendix) {
+        trimmedScoringRubrics = true;
+        effectiveEnd = p - 1;
+      } else if (isBlankPage || isPeriodicTable || isQualAnalysisNotes || isAdditionalBlank || isTrailingSpeakingPage) {
         effectiveEnd = p - 1;
       } else {
         // Reached the last actual question page

@@ -18,6 +18,7 @@ import {
   type PublishedQuiz,
 } from '../services/quizManagerService';
 import { deriveGradeFromPercentage } from '../utils/gradeThresholdUtils';
+import { computeIeltsCefrProfile } from '../utils/ieltsScoringUtils';
 import './StudentResultModal.css';
 
 interface StudentResultModalProps {
@@ -342,6 +343,47 @@ export function StudentResultModal({
                   )}
                 </div>
               </div>
+
+              {/* IELTS & CEFR Band Summary (Multi-Skill English Tests) */}
+              {(() => {
+                const ieltsProfile = computeIeltsCefrProfile(selectedSubmission.questionResults);
+                if (!ieltsProfile) return null;
+                return (
+                  <div style={{ marginBottom: '26px' }}>
+                    <h3 className="srm-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <span>🎓 IELTS Band &amp; CEFR Level</span>
+                      <span
+                        style={{
+                          background: ieltsProfile.cefr.color,
+                          color: '#ffffff',
+                          fontWeight: 800,
+                          fontSize: '0.8125rem',
+                          padding: '3px 10px',
+                          borderRadius: '6px',
+                        }}
+                      >
+                        Overall Band {ieltsProfile.overallBand.toFixed(1)} • CEFR {ieltsProfile.cefr.code} ({ieltsProfile.cefr.label})
+                      </span>
+                    </h3>
+                    <div className="srm-competency-grid">
+                      {ieltsProfile.skills.map((sk) => (
+                        <div key={sk.skill} className="srm-competency-card">
+                          <div className="srm-competency-header">
+                            <span className="srm-competency-name">{sk.skill}</span>
+                            <span className="srm-competency-pct srm-competency-pct--high">
+                              Band {sk.band.toFixed(1)}
+                            </span>
+                          </div>
+                          <p className="srm-competency-sub" style={{ marginTop: '6px' }}>
+                            {sk.earnedMarks} of {sk.maxMarks} Marks
+                            {sk.scaledOutOf40 !== undefined && sk.maxMarks !== 40 ? ` • ${sk.scaledOutOf40}/40 IELTS scale` : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Competency Framework (Topic Mastery) */}
               {selectedSubmission.topicBreakdown && Object.keys(selectedSubmission.topicBreakdown).length > 0 && (

@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.1-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.2-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -137,6 +137,20 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.2] — Mini-IELTS / CEFR Framework, Mixed-Domain Math Helper & Inline Gap Flow Fix
+- **Mini-IELTS / CEFR Integrated Assessment Option (`Languages` Domain)**:
+  - Added the `isIeltsCefr` extraction toggle across [`subjectClassifier.ts`](src/lib/subjectClassifier.ts), [`PdfUpload.tsx`](src/components/PdfUpload.tsx), [`UploadPage.tsx`](src/pages/UploadPage.tsx), [`gemini.ts`](src/lib/gemini.ts), [`pdfChunker.ts`](src/lib/pdfChunker.ts), [`pdfProcessor.ts`](src/lib/pdfProcessor.ts), and [`passageExtractor.ts`](src/lib/passageExtractor.ts), backed by dedicated skill extraction rules in [`src/lib/ieltsPrompt.ts`](src/lib/ieltsPrompt.ts) (`L1`/`R1`/`W1` skill namespacing and passage propagation).
+  - Enhanced [`BatchAudioModal.tsx`](src/components/BatchAudioModal.tsx) with auto-grouping for Listening questions, and upgraded [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) & [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css) with Reading split-view passage layout and Writing word-target tracking.
+  - Added `/` alternative grading support in [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts), 0.5-band / CEFR mapping in [`src/utils/ieltsScoringUtils.ts`](src/utils/ieltsScoringUtils.ts), CEFR rubric prompting in [`aiGradingService.ts`](src/services/aiGradingService.ts), and skill band breakdowns in [`QuizResultsModal.tsx`](src/components/QuizResultsModal.tsx) and [`StudentResultModal.tsx`](src/components/StudentResultModal.tsx).
+- **Per-Question Math/Science Detection & Cursor-Aware Textbox Helpers (`Admission Tests`)**:
+  - Added [`src/utils/questionDomainDetector.ts`](src/utils/questionDomainDetector.ts) (`classifyQuestionDomain`, `classifyExamFallbackDomain`, `applySymbolInsertion`) so mixed-subject exams (e.g. English + Math Admission Tests) detect domains per question/sub-part rather than locking exam-wide, and prevented English reading passages from bleeding across STEM/Math questions.
+  - Added `MATH_QUICK_SYMBOLS` (subscripts `xₙ` -> `_{}`, exponents `xⁿ` -> `^{}`, fractions `\frac{}{}`, roots `\sqrt{}`, and math variables/operators `π`, `θ`, `Δ`, `±`, `×`, `÷`, `≤`, `≥`, `≠`, `≈`, `°`, `∞`), extended `CHEM_QUICK_SYMBOLS` with `xₙ`/`xⁿ`, and wired cursor-aware insertion, selection wrapping, and a compact `Σ Math` toggle pill into [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx).
+- **Inline Gap Rendering Fix & Architecture Notes**:
+  - Fixed `.sq-inline-gap-container .exam-text-block { display: inline; }` in [`InlineGapText.css`](src/components/InlineGapText.css) so Fill-in-the-Blank `[1]` boxes render inline instead of forcing unwanted line breaks around inputs.
+  - Documented reading passage extraction, stitching, and runtime split boundaries in [`Plan/reading_passage_detection_boundaries.md`](Plan/reading_passage_detection_boundaries.md), alongside [`Plan/english_cefr_mini_ielts_framework_plan.md`](Plan/english_cefr_mini_ielts_framework_plan.md) and [`Plan/mixed_domain_structured_math_helper_plan.md`](Plan/mixed_domain_structured_math_helper_plan.md).
+- **Verification**:
+  - Added [`scripts/test-question-domain-detector.mjs`](scripts/test-question-domain-detector.mjs) (`npm run test:domain-helper`) and [`scripts/test-ielts-cefr-framework.mjs`](scripts/test-ielts-cefr-framework.mjs), and verified alongside `npm run test:inline-gaps` and `npm run build`.
 
 ### [v.2.5.1] — Deep Client, Database & Live Game Security Hardening (`024`)
 - **Phase 3A — Client XSS, Export, Emergency Re-Grading & Prompt-Injection Hardening**:

@@ -195,7 +195,7 @@ export function BatchAudioModal({
         startQ: 1,
         endQ: Math.min(totalQ, quarter),
         audioUrl: '',
-        metadata: { title: 'Section 1: Social Needs Dialogue', play_limit: 2 },
+        metadata: { title: 'Section 1: Social Needs Dialogue', play_limit: 1 },
       },
       {
         id: `sec-${Date.now()}-2`,
@@ -203,7 +203,7 @@ export function BatchAudioModal({
         startQ: Math.min(totalQ, quarter + 1),
         endQ: Math.min(totalQ, quarter * 2),
         audioUrl: '',
-        metadata: { title: 'Section 2: General Context Monologue', play_limit: 2 },
+        metadata: { title: 'Section 2: General Context Monologue', play_limit: 1 },
       },
       {
         id: `sec-${Date.now()}-3`,
@@ -211,7 +211,7 @@ export function BatchAudioModal({
         startQ: Math.min(totalQ, quarter * 2 + 1),
         endQ: Math.min(totalQ, quarter * 3),
         audioUrl: '',
-        metadata: { title: 'Section 3: Educational Discussion', play_limit: 2 },
+        metadata: { title: 'Section 3: Educational Discussion', play_limit: 1 },
       },
       {
         id: `sec-${Date.now()}-4`,
@@ -219,7 +219,7 @@ export function BatchAudioModal({
         startQ: Math.min(totalQ, quarter * 3 + 1),
         endQ: totalQ,
         audioUrl: '',
-        metadata: { title: 'Section 4: Academic Lecture', play_limit: 2 },
+        metadata: { title: 'Section 4: Academic Lecture', play_limit: 1 },
       },
     ].filter((s) => s.startQ <= totalQ);
 

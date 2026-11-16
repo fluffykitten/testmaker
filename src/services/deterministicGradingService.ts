@@ -1284,6 +1284,12 @@ export function gradeDeterministicAnswer(
       let earnedMarks = 0;
       if (isExactMatch) {
         earnedMarks = maxMarks;
+      } else if (
+        multiTargetLetters.length === maxMarks &&
+        studentLetters.length <= multiTargetLetters.length &&
+        correctSelected.length > 0
+      ) {
+        earnedMarks = correctSelected.length;
       } else {
         earnedMarks = 0;
       }
@@ -1296,7 +1302,10 @@ export function gradeDeterministicAnswer(
         if (correctSelected.length > 0) breakdownParts.push(`✓ Correct: ${correctSelected.join(', ')}`);
         if (incorrectSelected.length > 0) breakdownParts.push(`✗ Incorrect: ${incorrectSelected.join(', ')}`);
         if (missedTargets.length > 0) breakdownParts.push(`Missed: ${missedTargets.join(', ')}`);
-        feedback = `✗ Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}). All selections must be correct to earn marks (0/${maxMarks}).`;
+        feedback =
+          earnedMarks > 0
+            ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): Selected ${studentLetters.join(', ') || rawAnswerStr}, target is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}).`
+            : `✗ Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}). All selections must be correct to earn marks (0/${maxMarks}).`;
       }
 
       return {
@@ -1389,9 +1398,39 @@ export function gradeDeterministicAnswer(
   const parsedGapSegments = parseGapSegments(qText).filter((s) => s.type === 'gap');
   const isGapFillStyle = question.question_style === 'Fill in the Blank' || hasInlineGaps(qText);
 
+  // Detect IELTS word/number limit rules (e.g. "ONE WORD ONLY", "ONE WORD AND/OR A NUMBER", "NO MORE THAN TWO WORDS")
+  const parseIeltsWordLimit = (stemText: string): { maxWords: number; allowNumbers: boolean } | null => {
+    const clean = stemText.replace(/\*\*/g, '');
+    if (/\bONE\s+WORD\s+AND\/OR\s+(?:A\s+)?NUMBER\b/i.test(clean)) {
+      return { maxWords: 1, allowNumbers: true };
+    }
+    if (/\bONE\s+WORD\s+ONLY\b/i.test(clean)) {
+      return { maxWords: 1, allowNumbers: false };
+    }
+    const noMore = clean.match(/\bNO\s+MORE\s+THAN\s+(ONE|TWO|THREE|\d+)\s+WORDS?(\s+AND\/OR\s+(?:A\s+)?NUMBERS?)?/i);
+    if (noMore) {
+      const wordMap: Record<string, number> = { one: 1, two: 2, three: 3 };
+      const limit = wordMap[noMore[1].toLowerCase()] || parseInt(noMore[1], 10) || 1;
+      return { maxWords: limit, allowNumbers: Boolean(noMore[2]) };
+    }
+    return null;
+  };
+
+  const checkIeltsWordLimit = (ans: string, limit: { maxWords: number; allowNumbers: boolean }): boolean => {
+    const tokens = ans.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return false;
+    const isNumToken = (t: string) => /^[£$€]?\d+(?:[.,:]\d+)?%?$/.test(t);
+    const numCount = tokens.filter(isNumToken).length;
+    const wordCount = tokens.length - numCount;
+    if (!limit.allowNumbers && numCount > 0) return false;
+    if (limit.allowNumbers && numCount > 1) return false;
+    return wordCount <= limit.maxWords;
+  };
+
   if (isGapFillStyle) {
     const gapExpectedMap = extractGapExpectedMap(question, subIndex);
     const gapKeys = Object.keys(gapExpectedMap);
+    const ieltsLimit = parseIeltsWordLimit(qText);
 
     if (gapKeys.length > 0) {
       const studentGapAnswers = parseStudentGapAnswers(rawAnswerStr);
@@ -1405,12 +1444,15 @@ export function gradeDeterministicAnswer(
         const studentAns = (studentGapAnswers[gNum] || studentGapAnswers[`gap_${gNum}`] || '').trim();
         const segForGap = parsedGapSegments.find((s) => String(s.gapNum) === String(gNum));
         const isClosedChoiceGap = Boolean(segForGap?.choices && segForGap.choices.length >= 2);
+        const withinLimit = !ieltsLimit || !studentAns || checkIeltsWordLimit(studentAns, ieltsLimit);
 
-        const isMatch = expectedList.some((exp) => {
+        const isMatch = withinLimit && expectedList.some((exp) => {
           if (!studentAns) return false;
-          if (studentAns.toLowerCase() === exp.toLowerCase()) return true;
-          // Closed-set dropdown choices must not allow fuzzy Levenshtein/substring overlap (e.g. increase vs increased)
-          if (isClosedChoiceGap) {
+          const normS = studentAns.toLowerCase().replace(/^['"]|['"]$/g, '').trim();
+          const normE = exp.toLowerCase().replace(/^['"]|['"]$/g, '').trim();
+          if (normS === normE) return true;
+          // Closed-set dropdown choices and strict IELTS word-limit gaps forbid fuzzy typo/substring matching
+          if (isClosedChoiceGap || ieltsLimit) {
             const numRes = isNumericEquivalent(studentAns, exp);
             return numRes.isMatch;
           }
@@ -1424,6 +1466,8 @@ export function gradeDeterministicAnswer(
           correctGaps++;
           feedbackParts.push(`✓ [${gNum}] ${studentAns}`);
           matchedCriteria.push(`[${gNum}] ${studentAns}`);
+        } else if (studentAns && !withinLimit) {
+          feedbackParts.push(`✗ [${gNum}] "${studentAns}" exceeds word/number limit (Expected: ${expectedList.join(' / ')})`);
         } else {
           feedbackParts.push(`✗ [${gNum}] ${studentAns ? `"${studentAns}"` : '(blank)'} (Expected: ${expectedList.join(' / ')})`);
         }

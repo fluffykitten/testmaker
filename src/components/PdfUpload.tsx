@@ -15,6 +15,7 @@ interface PdfUploadProps {
       domain: SubjectDomain;
       isIgcse: boolean;
       isSaveMyExams?: boolean;
+      isIeltsCefr?: boolean;
       tags?: string;
       cambridgeHubUrl?: string;
       cambridgeMsHubUrl?: string;
@@ -33,6 +34,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
   const [domain, setDomain] = useState<SubjectDomain>('stem');
   const [isIgcse, setIsIgcse] = useState<boolean>(true);
   const [isSaveMyExams, setIsSaveMyExams] = useState<boolean>(false);
+  const [isIeltsCefr, setIsIeltsCefr] = useState<boolean>(false);
   const [tags, setTags] = useState<string>('');
   const [cambridgeHubUrl, setCambridgeHubUrl] = useState<string>('');
   const [cambridgeMsHubUrl, setCambridgeMsHubUrl] = useState<string>('');
@@ -80,7 +82,12 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
         fileName: file.name,
       });
       setDetected(match);
-      if (match) setDomain((current) => (current === match.profile.domain ? current : match.profile.domain));
+      if (match) {
+        setDomain((current) => (current === match.profile.domain ? current : match.profile.domain));
+        setIsIeltsCefr(Boolean(match.profile.isIeltsCefr));
+      } else {
+        setIsIeltsCefr(false);
+      }
     } catch (err) {
       console.warn('[PdfUpload] subject detection failed:', err);
       setDetected(null);
@@ -149,6 +156,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       domain,
       isIgcse,
       isSaveMyExams: domain === 'stem' ? isSaveMyExams : false,
+      isIeltsCefr: domain === 'languages' ? isIeltsCefr : false,
       tags: tags.trim() || undefined,
       cambridgeHubUrl: cambridgeHubUrl.trim() || undefined,
       cambridgeMsHubUrl: cambridgeMsHubUrl.trim() || undefined,
@@ -536,6 +544,28 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                         id="save-my-exams-toggle"
                         checked={isSaveMyExams}
                         onChange={(e) => setIsSaveMyExams(e.target.checked)}
+                        className="upload-switch-input"
+                      />
+                      <span className="upload-slider" />
+                    </div>
+                  </label>
+                )}
+
+                {/* IELTS / CEFR Multi-Skill Toggle (Languages domain) */}
+                {domain === 'languages' && (
+                  <label className="upload-toggle-card" htmlFor="ielts-cefr-toggle">
+                    <div className="upload-toggle-text">
+                      <span className="upload-toggle-name">IELTS / CEFR Multi-Skill</span>
+                      <span className="upload-toggle-hint">
+                        Separate Listening, Reading &amp; Writing sections, T/F/NG choices &amp; band rubrics
+                      </span>
+                    </div>
+                    <div className="upload-switch">
+                      <input
+                        type="checkbox"
+                        id="ielts-cefr-toggle"
+                        checked={isIeltsCefr}
+                        onChange={(e) => setIsIeltsCefr(e.target.checked)}
                         className="upload-switch-input"
                       />
                       <span className="upload-slider" />

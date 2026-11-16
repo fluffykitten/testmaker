@@ -131,6 +131,21 @@ export function buildExaminerPrompt(
   const nonce = generatePromptBoundaryNonce();
   const safeStudentAnswer = sanitizeBoundaryText(formattedStudentAnswer, 'student_answer_');
 
+  const wordCount = formattedStudentAnswer
+    ? formattedStudentAnswer.trim().split(/\s+/).filter(Boolean).length
+    : 0;
+  const minWordMatch = questionText.match(/(?:write|minimum(?:\s+of)?)\s+(?:at\s+least\s+)?(\d{2,4})\s+words/i);
+  const minWordTarget = minWordMatch ? parseInt(minWordMatch[1], 10) : null;
+  const hasIeltsWritingRubric = markingPoints.some((p) =>
+    /task\s+achievement|coherence\s+and\s+cohesion|lexical\s+resource|grammatical\s+range/i.test(p)
+  );
+  const writingTelemetryBlock =
+    minWordTarget !== null || hasIeltsWritingRubric
+      ? `\nESSAY WORD COUNT TELEMETRY: Candidate wrote ${wordCount} words${
+          minWordTarget ? ` (minimum required: ${minWordTarget} words${wordCount < minWordTarget ? ' — UNDER LENGTH, deduct appropriately in Task Achievement' : ' — requirement met'})` : ''
+        }.\n`
+      : '';
+
   return `You are an expert Cambridge & IELTS Senior Examiner.
 Your task is to accurately assess a student's answer against the official mark scheme criteria.
 
@@ -142,7 +157,7 @@ SECURITY & INTEGRITY RULES (MANDATORY):
 QUESTION CONTEXT:
 "${questionText}"
 
-MAXIMUM MARKS AVAILABLE: ${maxMarks}
+MAXIMUM MARKS AVAILABLE: ${maxMarks}${writingTelemetryBlock}
 
 OFFICIAL MARK SCHEME CRITERIA:
 ${markingPoints.map((p, idx) => `Point ${idx + 1}: ${p}`).join('\n') || 'Evaluate based on standard academic accuracy for the question.'}

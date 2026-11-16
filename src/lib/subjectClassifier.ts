@@ -23,6 +23,8 @@ export interface SubjectProfile {
   hasInPaperStimulus: boolean;
   /** Candidate answers a subset, so printed question marks exceed the paper total. */
   isOptionalChoicePaper: boolean;
+  /** Multi-skill IELTS / CEFR English proficiency exam (Listening, Reading, Writing). */
+  isIeltsCefr?: boolean;
   /** Printed paper total. Only set where verified against a real paper. */
   standardTotalMarks?: number;
 }
@@ -83,6 +85,12 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   '0620': { syllabusCode: '0620', subjectName: 'Chemistry', domain: 'stem', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false },
   '0625': { syllabusCode: '0625', subjectName: 'Physics', domain: 'stem', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false },
   '0610': { syllabusCode: '0610', subjectName: 'Biology', domain: 'stem', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false },
+  '0500': { syllabusCode: '0500', subjectName: 'First Language English', domain: 'languages', hasInsertByDefault: true, hasInPaperStimulus: false, isOptionalChoicePaper: false },
+  '0510': { syllabusCode: '0510', subjectName: 'English as a Second Language', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
+  '0511': { syllabusCode: '0511', subjectName: 'English as a Second Language', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
+  '1123': { syllabusCode: '1123', subjectName: 'English Language', domain: 'languages', hasInsertByDefault: true, hasInPaperStimulus: false, isOptionalChoicePaper: false },
+  '9093': { syllabusCode: '9093', subjectName: 'English Language (AS/A Level)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
+  'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
 };
 
 /** Neutral profile for a humanities paper whose syllabus could not be identified. */
@@ -128,6 +136,20 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'code',
       evidence: syllabusCode,
+    };
+  }
+
+  // Detect CEFR / IELTS multi-skill English tests from cover/instructions before generic name matching
+  const hasIeltsCefrCover =
+    /\b(?:CEFR\s+Test|IELTS\s+(?:Academic|General|Practice|Mock|Test)?|Listening\s+Scoring\s+Rubrics)\b/i.test(haystack) ||
+    (/\bEnglish\s+[Ss]ubject\b/i.test(haystack) && /\b(?:Listening|Reading\s+passage|Writing\s+part)\b/i.test(haystack));
+  if (hasIeltsCefrCover) {
+    return {
+      profile: SYLLABUS_REGISTRY['IELTS'],
+      syllabusCode: 'IELTS',
+      paperCode,
+      method: 'title',
+      evidence: 'IELTS / CEFR English',
     };
   }
 

@@ -8,6 +8,11 @@
   word-break: break-word;
 }
 
+/* ExamMathText wraps each text chunk in .exam-text-block (a div), which otherwise forces block line breaks before/after every gap box */
+.sq-inline-gap-container .exam-text-block {
+  display: inline;
+}
+
 /* Interactive Input Pill Container */
 .sq-gap-input-wrap {
   display: inline-flex;

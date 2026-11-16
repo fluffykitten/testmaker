@@ -246,7 +246,11 @@ export function stitchPassagesToQuestions(
 
   return questions.map((q) => {
     const text = q.question_text || '';
-    const qNum = String(q.question_number || '').replace(/\D/g, '');
+    const qNumRaw = String(q.question_number || '').trim();
+    const qNum = qNumRaw.replace(/\D/g, '');
+    const isNonReadingSkill =
+      /^[LW]\s*\d/i.test(qNumRaw) ||
+      /^(?:listening|writing)\b/i.test(q.topic || '');
 
     // 1. Check if question links to a passage via passage_ref
     let targetPassage: ExtractedPassage | undefined;
@@ -257,12 +261,16 @@ export function stitchPassagesToQuestions(
     }
 
     // 2. Fallback: Check if target_questions of any passage includes this question
-    if (!targetPassage && qNum) {
+    if (!targetPassage && !isNonReadingSkill && qNum) {
       for (const p of passages || []) {
         if (Array.isArray(p.target_questions)) {
-          const matches = p.target_questions.some(
-            (tq) => String(tq).replace(/\D/g, '') === qNum
-          );
+          const matches = p.target_questions.some((tq) => {
+            const tqRaw = String(tq).trim();
+            if (/^R\s*\d/i.test(qNumRaw) && /^[LRW]\s*\d/i.test(tqRaw)) {
+              return tqRaw.toUpperCase() === qNumRaw.toUpperCase();
+            }
+            return tqRaw.replace(/\D/g, '') === qNum;
+          });
           if (matches) {
             targetPassage = p;
             break;
