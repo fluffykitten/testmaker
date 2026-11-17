@@ -105,7 +105,8 @@ export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): stri
   const targetOptions = sq?.options || q.options;
   const isMcq =
     (targetOptions && targetOptions.length >= 2) ||
-    q.question_style === 'Multiple Choice';
+    q.question_style === 'Multiple Choice' ||
+    q.question_style === 'Multiple Select';
 
   const candidates: string[] = [];
   if (sq && sq.mark_scheme) {
@@ -184,15 +185,20 @@ export function getOfflineGradingColumns(questions: Question[]): OfflineGradingC
         const cleanSubId = rawSubId.replace(/[()]/g, '').replace(/^\d+/, '').trim() || String.fromCharCode(97 + sIdx);
         const colKey = `${qNum}(${cleanSubId})`;
         const marks = sq.marks || 1;
-        const isMcq = !!(sq.options && sq.options.length >= 2);
-        const style = isMcq ? 'Multiple Choice' : 'Structured';
-        const refAnswer = deriveColumnReferenceAnswer(q, sq);
         const acceptable = extractAcceptableAnswers(q, sIdx);
+        const isMultiSelect =
+          q.question_style === 'Multiple Select' ||
+          extractMultiSelectTargetLetters(acceptable).length >= 2;
+        const isMcq = isMultiSelect || !!(sq.options && sq.options.length >= 2);
+        const style = isMultiSelect
+          ? 'Multiple Select'
+          : (isMcq ? 'Multiple Choice' : 'Structured');
+        const refAnswer = deriveColumnReferenceAnswer(q, sq);
 
         columns.push({
           id: `${q.id}_sub_${sIdx}`,
           columnKey: colKey,
-          headerLabel: `${colKey} [${marks}m] (${isMcq ? 'MCQ' : 'Part'})`,
+          headerLabel: `${colKey} [${marks}m] (${isMultiSelect ? 'Multi-Select' : (isMcq ? 'MCQ' : 'Part')})`,
           questionIndex: qIdx,
           subIndex: sIdx,
           question: q,
@@ -208,15 +214,23 @@ export function getOfflineGradingColumns(questions: Question[]): OfflineGradingC
     } else {
       // Standalone question
       const marks = q.marks || 1;
-      const isMcq = !!(q.options && q.options.length >= 2) || q.question_style === 'Multiple Choice';
-      const style = q.question_style || (isMcq ? 'Multiple Choice' : 'Structured');
-      const refAnswer = deriveColumnReferenceAnswer(q);
       const acceptable = extractAcceptableAnswers(q);
+      const isMultiSelect =
+        q.question_style === 'Multiple Select' ||
+        extractMultiSelectTargetLetters(acceptable).length >= 2;
+      const isMcq =
+        isMultiSelect ||
+        !!(q.options && q.options.length >= 2) ||
+        q.question_style === 'Multiple Choice';
+      const style = isMultiSelect
+        ? 'Multiple Select'
+        : (q.question_style || (isMcq ? 'Multiple Choice' : 'Structured'));
+      const refAnswer = deriveColumnReferenceAnswer(q);
 
       columns.push({
         id: q.id,
         columnKey: qNum,
-        headerLabel: `${qNum} [${marks}m] (${isMcq ? 'MCQ' : style})`,
+        headerLabel: `${qNum} [${marks}m] (${isMultiSelect ? 'Multi-Select' : (isMcq ? 'MCQ' : style)})`,
         questionIndex: qIdx,
         question: q,
         maxMarks: marks,
@@ -584,18 +598,24 @@ export async function gradeOfflineSubmissions(
       const isPureNumber = ansStr !== '' && !isNaN(Number(ansStr)) && Number(ansStr) >= 0;
       const isNumberWithinMarks = isPureNumber && Number(ansStr) <= col.maxMarks;
 
+      const isMultiSelectQuestion =
+        col.questionStyle === 'Multiple Select' ||
+        extractMultiSelectTargetLetters([col.referenceAnswer, ...col.acceptableAnswers]).length >= 2;
+
       // If user typed a single number within marks range and NOT an MCQ choice
       const isExplicitMarkInput =
         isNumberWithinMarks &&
         col.questionStyle !== 'Multiple Choice' &&
+        !isMultiSelectQuestion &&
         ansStr !== col.referenceAnswer &&
         !col.acceptableAnswers.includes(ansStr);
 
       const isMcqQuestion =
-        col.questionStyle === 'Multiple Choice' ||
-        (col.question.options && col.question.options.length >= 2) ||
-        (col.subQuestion?.options && col.subQuestion.options.length >= 2) ||
-        /^[A-Da-d]$/.test(col.referenceAnswer.trim());
+        !isMultiSelectQuestion &&
+        (col.questionStyle === 'Multiple Choice' ||
+          (col.question.options && col.question.options.length >= 2) ||
+          (col.subQuestion?.options && col.subQuestion.options.length >= 2) ||
+          /^[A-Da-d]$/.test(col.referenceAnswer.trim()));
 
       if (isExplicitMarkInput) {
         earnedMarks = Number(ansStr);
@@ -641,7 +661,7 @@ export async function gradeOfflineSubmissions(
           earnedMarks = detResult.earnedMarks;
           isCorrect = detResult.isCorrect;
           feedback = detResult.feedback;
-          gradingMethod = 'deterministic';
+          gradingMethod = detResult.matchType === 'mcq' ? 'mcq' : 'deterministic';
         } else if (options?.useAiForDescriptive) {
           // ── Scenario D: Optional Gemini AI Grading for Multi-Mark Explanations ──
           try {

@@ -94,7 +94,7 @@ function testPassageStitchingIsolation() {
 }
 
 function testIeltsDeterministicGrading() {
-  // 1. Choose TWO letters (2 marks -> 1 mark per correct letter when <= 2 letters picked)
+  // 1. Choose TWO letters — strict all-or-nothing scoring
   const twoLetterQ = {
     id: 'q-l15-16',
     question_number: 'L15-16',
@@ -106,7 +106,8 @@ function testIeltsDeterministicGrading() {
     mark_scheme: { acceptable_answers: ['A, E'], marking_points: ['A, E [2]'] },
   };
   assert.equal(gradeDeterministicAnswer('A, E', twoLetterQ).earnedMarks, 2);
-  assert.equal(gradeDeterministicAnswer('A, C', twoLetterQ).earnedMarks, 1);
+  assert.equal(gradeDeterministicAnswer('A, C', twoLetterQ).earnedMarks, 0, 'Wrong selection must earn 0 under strict all-or-nothing');
+  assert.equal(gradeDeterministicAnswer('A', twoLetterQ).earnedMarks, 0, 'Partial subset must earn 0 under strict all-or-nothing');
   assert.equal(gradeDeterministicAnswer('A, B, C, D, E', twoLetterQ).earnedMarks, 0, 'Over-selection (>2 letters) must earn 0');
 
   // 2. Reading ONE WORD ONLY & non-1-based gaps [18]..[22]
@@ -157,7 +158,7 @@ function testIeltsDeterministicGrading() {
     '3 words exceeds ONE WORD AND/OR A NUMBER'
   );
 
-  console.log('PASS 3: Deterministic grading (Choose TWO partial credit, ONE WORD ONLY, non-1-based gaps)');
+  console.log('PASS 3: Deterministic grading (Choose TWO strict all-or-nothing, ONE WORD ONLY, non-1-based gaps)');
 }
 
 function testIeltsCefrScoringAndAiPrompt() {

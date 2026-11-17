@@ -2,7 +2,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
-import { resolveStudentQuiz, verifyTeacherUnlockPin } from '../services/quizCodeService';
+import { resolveStudentQuiz, verifyTeacherUnlockPin, clearQuizMemoryCache, type StudentQuizData } from '../services/quizCodeService';
+import {
+  formatScheduleCountdown,
+  formatScheduleWindowLabel,
+  getLocalTimezoneLabel,
+  parseScheduleTimestamp,
+  type EffectiveQuizStatus,
+} from '../lib/examSessionSchedule';
 import {
   saveQuizSubmission,
   saveQuizSubmissionWithVerification,
@@ -399,6 +406,10 @@ export function StudentQuizRunner({
   const [loading, setLoading] = useState(!initialQuestions);
   const [error, setError] = useState<string | null>(null);
   const [isQuizPaused, setIsQuizPaused] = useState<boolean>(false);
+  const [scheduleBlockStatus, setScheduleBlockStatus] = useState<EffectiveQuizStatus | null>(null);
+  const [scheduledWindow, setScheduledWindow] = useState<{ startAt?: string | null; endAt?: string | null }>({});
+  const [serverClockOffsetMs, setServerClockOffsetMs] = useState<number>(0);
+  const [waitingTickNowMs, setWaitingTickNowMs] = useState<number>(() => Date.now());
   const [title, setTitle] = useState(initialHeaderConfig?.title || 'Interactive Examination');
   const [headerConfig, setHeaderConfig] = useState<ExamHeaderConfig | undefined>(initialHeaderConfig);
   const [gradeThresholds, setGradeThresholds] = useState<GradeThresholds | undefined>((initialHeaderConfig as any)?.gradeThresholds);
@@ -849,55 +860,64 @@ export function StudentQuizRunner({
       return;
     }
 
+    const hydrateQuizMeta = (data: StudentQuizData, resetTime: boolean) => {
+      if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
+      if (data.testId) setResolvedTestId(data.testId);
+      if (data.publishedId) setResolvedPublishedId(data.publishedId);
+      if ((data as any).gradeThresholds) setGradeThresholds((data as any).gradeThresholds);
+      setTitle(data.title);
+      const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
+      setHeaderConfig(
+        data.headerConfig
+          ? { ...data.headerConfig, durationMinutes: resolvedDuration }
+          : {
+            title: data.title || 'Examination',
+            schoolName: '',
+            subject: 'Assessment',
+            subjectCode: '',
+            durationMinutes: resolvedDuration,
+            instructions: '',
+          }
+      );
+      if (resetTime && !savedExam?.hasStarted) {
+        setTimeLeft(resolvedDuration * 60);
+      }
+    };
+
     async function load() {
       setLoading(true);
       try {
         const data = await resolveStudentQuiz(testIdOrCode!);
-        if (!data || data.questions.length === 0) {
+        if (!data) {
           setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
-        } else if (data.isActive === false) {
+          return;
+        }
+
+        if (data.serverNow) {
+          const serverMs = Date.parse(data.serverNow);
+          if (Number.isFinite(serverMs)) {
+            setServerClockOffsetMs(serverMs - Date.now());
+          }
+        }
+        setScheduledWindow({
+          startAt: data.scheduledStartAt ?? null,
+          endAt: data.scheduledEndAt ?? null,
+        });
+
+        const resolvedStatus: EffectiveQuizStatus =
+          data.scheduleStatus || (data.isActive === false ? 'paused' : 'active');
+
+        if (resolvedStatus !== 'active') {
           setIsQuizPaused(true);
-          if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
-          if (data.testId) setResolvedTestId(data.testId);
-          if (data.publishedId) setResolvedPublishedId(data.publishedId);
-          if ((data as any).gradeThresholds) setGradeThresholds((data as any).gradeThresholds);
-          setTitle(data.title);
-          const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
-          setHeaderConfig(
-            data.headerConfig
-              ? { ...data.headerConfig, durationMinutes: resolvedDuration }
-              : {
-                title: data.title || 'Examination',
-                schoolName: '',
-                subject: 'Assessment',
-                subjectCode: '',
-                durationMinutes: resolvedDuration,
-                instructions: '',
-              }
-          );
+          setScheduleBlockStatus(resolvedStatus);
+          hydrateQuizMeta(data, false);
+        } else if (data.questions.length === 0) {
+          setError(`No questions found for quiz "${testIdOrCode}". Please check your quiz code with your teacher.`);
         } else {
           setIsQuizPaused(false);
-          if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
-          if (data.testId) setResolvedTestId(data.testId);
-          if (data.publishedId) setResolvedPublishedId(data.publishedId);
-          setTitle(data.title);
-          const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
-          setHeaderConfig(
-            data.headerConfig
-              ? { ...data.headerConfig, durationMinutes: resolvedDuration }
-              : {
-                title: data.title || 'Examination',
-                schoolName: '',
-                subject: 'Assessment',
-                subjectCode: '',
-                durationMinutes: resolvedDuration,
-                instructions: '',
-              }
-          );
+          setScheduleBlockStatus(null);
+          hydrateQuizMeta(data, true);
           setQuestions(data.questions);
-          if (!savedExam?.hasStarted) {
-            setTimeLeft(resolvedDuration * 60);
-          }
           if (data.isExamMode !== undefined) {
             setIsExamMode(data.isExamMode);
           }
@@ -970,6 +990,16 @@ export function StudentQuizRunner({
 
     load();
   }, [testIdOrCode, initialQuestions, initialHeaderConfig]);
+
+  // ─── 1-Second Waiting Room Countdown Tick (only while waiting for scheduledStartAt) ──
+  useEffect(() => {
+    if (!isQuizPaused || scheduleBlockStatus !== 'scheduled' || hasStarted || isSubmitted) {
+      return;
+    }
+    setWaitingTickNowMs(Date.now());
+    const interval = setInterval(() => setWaitingTickNowMs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [isQuizPaused, scheduleBlockStatus, hasStarted, isSubmitted]);
 
   // ─── Sync Admin Emergency Save Button Visibility from Cloud & Custom Events ──
   useEffect(() => {
@@ -4629,57 +4659,158 @@ export function StudentQuizRunner({
     );
   }
 
+  const handleRefreshScheduledOrPausedStatus = async () => {
+    if (!testIdOrCode) return;
+    setLoading(true);
+    try {
+      clearQuizMemoryCache(testIdOrCode);
+      if (resolvedQuizCode) clearQuizMemoryCache(resolvedQuizCode);
+      const refreshed = await resolveStudentQuiz(testIdOrCode);
+      if (!refreshed) {
+        setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
+        return;
+      }
+
+      if (refreshed.serverNow) {
+        const serverMs = Date.parse(refreshed.serverNow);
+        if (Number.isFinite(serverMs)) {
+          setServerClockOffsetMs(serverMs - Date.now());
+        }
+      }
+      setScheduledWindow({
+        startAt: refreshed.scheduledStartAt ?? null,
+        endAt: refreshed.scheduledEndAt ?? null,
+      });
+
+      const refreshedStatus: EffectiveQuizStatus =
+        refreshed.scheduleStatus || (refreshed.isActive === false ? 'paused' : 'active');
+
+      if (refreshedStatus !== 'active') {
+        setIsQuizPaused(true);
+        setScheduleBlockStatus(refreshedStatus);
+        setTitle(refreshed.title || title);
+        return;
+      }
+
+      if (refreshed.questions.length === 0) {
+        setError(`No questions found for quiz "${testIdOrCode}". Please check your quiz code with your teacher.`);
+        return;
+      }
+
+      setIsQuizPaused(false);
+      setScheduleBlockStatus(null);
+      setQuestions(refreshed.questions);
+      const resolvedDuration = refreshed.durationMinutes || refreshed.headerConfig?.durationMinutes || 45;
+      setHeaderConfig(
+        refreshed.headerConfig
+          ? { ...refreshed.headerConfig, durationMinutes: resolvedDuration }
+          : {
+            title: refreshed.title || title || 'Examination',
+            schoolName: '',
+            subject: 'Assessment',
+            subjectCode: '',
+            durationMinutes: resolvedDuration,
+            instructions: '',
+          }
+      );
+      setTimeLeft(resolvedDuration * 60);
+      if (refreshed.isExamMode !== undefined) setIsExamMode(refreshed.isExamMode);
+      if (refreshed.showInstantSolutions !== undefined) setShowInstantSolutions(Boolean(refreshed.showInstantSolutions));
+      if (refreshed.allowStudentScriptDownload !== undefined) setAllowStudentScriptDownload(Boolean(refreshed.allowStudentScriptDownload));
+      if (refreshed.securityEnabled !== undefined) setSecurityEnabled(refreshed.securityEnabled);
+      if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
+      if (refreshed.enableMultiMonitorDetection !== undefined) setEnableMultiMonitorDetection(refreshed.enableMultiMonitorDetection);
+      if (refreshed.requireTeacherUnlock !== undefined) setRequireTeacherUnlock(refreshed.requireTeacherUnlock);
+      if (refreshed.requireStudentPin !== undefined) setRequireStudentPin(refreshed.requireStudentPin);
+      if (refreshed.limitOneAttempt !== undefined) setLimitOneAttempt(refreshed.limitOneAttempt);
+      if (refreshed.teacherPinHash) setTeacherPinHash(refreshed.teacherPinHash);
+    } catch (e) {
+      console.warn('Refresh status check error:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (isQuizPaused && !hasStarted && !isSubmitted) {
+    const startMs = parseScheduleTimestamp(scheduledWindow.startAt);
+    const effectiveNowMs = waitingTickNowMs + serverClockOffsetMs;
+    const remainingMs = startMs !== null ? Math.max(0, startMs - effectiveNowMs) : null;
+    const isScheduledView = scheduleBlockStatus === 'scheduled';
+    const isClosedView = scheduleBlockStatus === 'closed';
+    const scheduleSummary = formatScheduleWindowLabel(scheduledWindow.startAt, scheduledWindow.endAt);
+    const isCountdownDone = isScheduledView && remainingMs !== null && remainingMs <= 0;
+
     return (
       <div className="student-quiz-error-screen animate-fade-in">
-        <div className="error-icon" style={{ fontSize: '3rem' }}>⏸️</div>
-        <h2>Assessment Temporarily Paused</h2>
-        <p style={{ maxWidth: '440px', margin: '8px auto 16px', lineHeight: 1.5 }}>
-          The instructor has paused access to <strong>{title || resolvedQuizCode}</strong>. Submissions are currently closed. Please wait for your invigilator or teacher to activate the exam session.
+        <div className="error-icon" style={{ fontSize: '3rem' }}>
+          {isScheduledView ? '🕒' : isClosedView ? '🔒' : '⏸️'}
+        </div>
+        <h2>
+          {isScheduledView
+            ? 'Assessment Scheduled'
+            : isClosedView
+              ? 'Exam Entry Window Closed'
+              : 'Assessment Temporarily Paused'}
+        </h2>
+        <p style={{ maxWidth: '460px', margin: '8px auto 12px', lineHeight: 1.55 }}>
+          {isScheduledView ? (
+            <>
+              <strong>{title || resolvedQuizCode}</strong> has not opened yet. Click{' '}
+              <strong>{isCountdownDone ? 'Enter Exam' : 'Check Status'}</strong> once the countdown completes.
+            </>
+          ) : isClosedView ? (
+            <>
+              The entry window for <strong>{title || resolvedQuizCode}</strong> has closed. New candidates can no longer start this session.
+            </>
+          ) : (
+            <>
+              The instructor has paused access to <strong>{title || resolvedQuizCode}</strong>. Submissions are currently closed. Please wait for your invigilator or teacher to activate the exam session.
+            </>
+          )}
         </p>
+
+        {scheduleSummary && (isScheduledView || isClosedView) && (
+          <div
+            style={{
+              display: 'inline-flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '12px 20px',
+              borderRadius: '12px',
+              border: '1px solid var(--color-border, #e2e8f0)',
+              background: 'var(--color-surface-elevated, #f8fafc)',
+              marginBottom: '18px',
+              minWidth: '250px',
+            }}
+          >
+            {isScheduledView && remainingMs !== null && (
+              <div
+                style={{
+                  fontSize: '1.65rem',
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  letterSpacing: '0.04em',
+                  color: isCountdownDone ? '#059669' : '#4f46e5',
+                }}
+              >
+                {isCountdownDone ? 'Ready to Enter' : `Starts in ${formatScheduleCountdown(remainingMs)}`}
+              </div>
+            )}
+            <div style={{ fontSize: '0.84rem', fontWeight: 600, color: 'var(--color-text-secondary, #475569)' }}>
+              🗓️ {scheduleSummary} ({getLocalTimezoneLabel()})
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
           <button
             type="button"
             className="sq-btn sq-btn-primary"
-            onClick={async () => {
-              setLoading(true);
-              try {
-                const refreshed = await resolveStudentQuiz(testIdOrCode!);
-                if (refreshed && refreshed.isActive !== false) {
-                  setIsQuizPaused(false);
-                  setQuestions(refreshed.questions);
-                  const resolvedDuration = refreshed.durationMinutes || refreshed.headerConfig?.durationMinutes || 45;
-                  setHeaderConfig(
-                    refreshed.headerConfig
-                      ? { ...refreshed.headerConfig, durationMinutes: resolvedDuration }
-                      : {
-                        title: refreshed.title || title || 'Examination',
-                        schoolName: '',
-                        subject: 'Assessment',
-                        subjectCode: '',
-                        durationMinutes: resolvedDuration,
-                        instructions: '',
-                      }
-                  );
-                  setTimeLeft(resolvedDuration * 60);
-                  if (refreshed.isExamMode !== undefined) setIsExamMode(refreshed.isExamMode);
-                  if (refreshed.showInstantSolutions !== undefined) setShowInstantSolutions(Boolean(refreshed.showInstantSolutions));
-                  if (refreshed.allowStudentScriptDownload !== undefined) setAllowStudentScriptDownload(Boolean(refreshed.allowStudentScriptDownload));
-                  if (refreshed.securityEnabled !== undefined) setSecurityEnabled(refreshed.securityEnabled);
-                  if (refreshed.enableWatermark !== undefined) setEnableWatermark(refreshed.enableWatermark);
-                  if (refreshed.enableMultiMonitorDetection !== undefined) setEnableMultiMonitorDetection(refreshed.enableMultiMonitorDetection);
-                  if (refreshed.requireTeacherUnlock !== undefined) setRequireTeacherUnlock(refreshed.requireTeacherUnlock);
-                  if (refreshed.teacherPinHash) setTeacherPinHash(refreshed.teacherPinHash);
-                }
-              } catch (e) {
-                console.warn('Refresh status check error:', e);
-              } finally {
-                setLoading(false);
-              }
-            }}
-            style={{ minWidth: '150px' }}
+            onClick={handleRefreshScheduledOrPausedStatus}
+            style={{ minWidth: '165px' }}
           >
-            ↻ Check Status
+            {isCountdownDone ? '▶ Enter Exam' : '↻ Check Status'}
           </button>
           {onExit && (
             <button

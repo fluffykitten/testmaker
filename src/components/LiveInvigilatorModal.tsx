@@ -19,7 +19,9 @@ import { fetchCustomTestWithQuestions } from '../services/testBuilderService';
 import type { Question } from '../types/database';
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
 import {
+  clampProgressPercent,
   clampTelemetry,
+  computeSubmissionProgress,
   highWaterViolations,
   verifyAndBindStudentHeartbeatProof,
 } from '../lib/proctorGuards';
@@ -323,15 +325,16 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 studentClass: sub.studentClass,
               });
             const compositeKey = `${qCode}::${canonicalId}`;
+            const subProgress = computeSubmissionProgress(sub, quiz.questionCount);
             localLoaded[compositeKey] = {
               studentId: canonicalId,
               studentName: sub.studentName,
               candidateNumber: sub.candidateNumber,
               candidateClass: sub.studentClass,
               status: 'submitted',
-              answeredCount: sub.questionResults?.length || quiz.questionCount,
-              totalQuestions: quiz.questionCount,
-              currentIndex: quiz.questionCount,
+              answeredCount: subProgress.answeredCount,
+              totalQuestions: subProgress.totalQuestions,
+              currentIndex: subProgress.totalQuestions,
               timeLeftSeconds: 0,
               violationsCount: sub.violationsCount || 0,
               multiMonitorDetected: false,
@@ -368,15 +371,16 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 studentClass: sub.studentClass,
               });
             const compositeKey = `${qCode}::${canonicalId}`;
+            const subProgress = computeSubmissionProgress(sub, quiz.questionCount);
             cloudLoaded[compositeKey] = {
               studentId: canonicalId,
               studentName: sub.studentName,
               candidateNumber: sub.candidateNumber,
               candidateClass: sub.studentClass,
               status: 'submitted',
-              answeredCount: sub.questionResults?.length || quiz.questionCount,
-              totalQuestions: quiz.questionCount,
-              currentIndex: quiz.questionCount,
+              answeredCount: subProgress.answeredCount,
+              totalQuestions: subProgress.totalQuestions,
+              currentIndex: subProgress.totalQuestions,
               timeLeftSeconds: 0,
               violationsCount: sub.violationsCount || 0,
               multiMonitorDetected: false,
@@ -1932,15 +1936,27 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
               const compKey = `${qCode}::${canonicalId}`;
               const existing = next[compKey];
 
+              const hasQuestionResults =
+                Array.isArray(sub.questionResults) && sub.questionResults.length > 0;
+              const subProgress = computeSubmissionProgress(
+                sub,
+                quizMeta?.questionCount || existing?.totalQuestions || 1
+              );
               next[compKey] = {
                 studentId: canonicalId,
                 studentName: sub.studentName,
                 candidateNumber: sub.candidateNumber || existing?.candidateNumber || '',
                 candidateClass: sub.studentClass || existing?.candidateClass || '',
                 status: 'submitted',
-                answeredCount: sub.questionResults?.length || quizMeta?.questionCount || existing?.answeredCount || 0,
-                totalQuestions: quizMeta?.questionCount || sub.questionResults?.length || existing?.totalQuestions || 0,
-                currentIndex: quizMeta?.questionCount || existing?.currentIndex || 1,
+                answeredCount: hasQuestionResults
+                  ? subProgress.answeredCount
+                  : existing?.answeredCount || 0,
+                totalQuestions: hasQuestionResults
+                  ? subProgress.totalQuestions
+                  : quizMeta?.questionCount || existing?.totalQuestions || 1,
+                currentIndex: hasQuestionResults
+                  ? subProgress.totalQuestions
+                  : quizMeta?.questionCount || existing?.currentIndex || 1,
                 timeLeftSeconds: 0,
                 violationsCount: sub.violationsCount || existing?.violationsCount || 0,
                 multiMonitorDetected: false,
@@ -2799,10 +2815,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                         {filteredStudents.map((s) => {
                           const qCode = (s.quizCode || '').trim().toUpperCase();
                           const compositeKey = `${qCode}::${s.studentId}`;
-                          const progressPct =
-                            s.totalQuestions > 0
-                              ? Math.round((s.answeredCount / s.totalQuestions) * 100)
-                              : 0;
+                          const progressPct = clampProgressPercent(
+                            s.answeredCount,
+                            s.totalQuestions
+                          );
                           const isLocked = s.status === 'locked';
                           const isExceeded = isStudentExceeded(s);
                           const maxV = getMaxViolations(s);
@@ -2883,6 +2899,9 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                                   </div>
                                   <span className="lip-table-progress-txt">
                                     {s.answeredCount}/{s.totalQuestions}
+                                    {s.status !== 'submitted' && s.currentIndex > 0
+                                      ? ` · Q${s.currentIndex}`
+                                      : ''}
                                   </span>
                                 </div>
                               </td>
@@ -2915,10 +2934,10 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                     {filteredStudents.map((s) => {
                       const qCode = (s.quizCode || '').trim().toUpperCase();
                       const compositeKey = `${qCode}::${s.studentId}`;
-                      const progressPct =
-                        s.totalQuestions > 0
-                          ? Math.round((s.answeredCount / s.totalQuestions) * 100)
-                          : 0;
+                      const progressPct = clampProgressPercent(
+                        s.answeredCount,
+                        s.totalQuestions
+                      );
                       const isLocked = s.status === 'locked';
                       const isExceeded = isStudentExceeded(s);
                       const maxV = getMaxViolations(s);
@@ -2997,6 +3016,9 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                             <div className="lip-progress-labels">
                               <span>
                                 <strong>{s.answeredCount}</strong>/{s.totalQuestions} ({progressPct}%)
+                                {s.status !== 'submitted' && s.currentIndex > 0
+                                  ? ` · Q${s.currentIndex}`
+                                  : ''}
                               </span>
                               <span
                                 className={`lip-telemetry-val ${(s.strikeCount ?? s.violationsCount) > 0 ? 'lip-telemetry-val--violation' : ''}`}

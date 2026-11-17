@@ -30,6 +30,17 @@ import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
 import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
 import { getSavedSettings } from '../lib/settings';
+import {
+  resolveEffectiveQuizStatus,
+  validateExamScheduleWindow,
+  isoToLocalDateTimeInput,
+  localDateTimeInputToIso,
+  buildWindowFromSchoolScheduleEntry,
+  formatScheduleWindowLabel,
+  getLocalTimezoneLabel,
+} from '../lib/examSessionSchedule';
+import type { ExamScheduleEntry } from '../lib/examSchedule';
+import { getExamSchedule, loadAndSyncExamSchedule } from '../services/examScheduleService';
 import { SubjectIcon, getSubjectMetadata } from '../utils/subjectMeta';
 import { useTeacherProfile } from '../hooks/useTeacherProfile';
 import './QuizManagerPage.css';
@@ -43,7 +54,7 @@ interface QuizManagerPageProps {
 }
 
 type SortOption = 'latest' | 'submissions' | 'title';
-type FilterStatus = 'all' | 'active' | 'paused' | 'exam' | 'game';
+type FilterStatus = 'all' | 'active' | 'scheduled' | 'paused' | 'exam' | 'game';
 
 export function QuizManagerPage({
   onLaunchTestRun,
@@ -138,6 +149,15 @@ export function QuizManagerPage({
   const [isSchoolProctorOpen, setIsSchoolProctorOpen] = useState(false);
   const [isPrintDeskCardsOpen, setIsPrintDeskCardsOpen] = useState(false);
   const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [schoolScheduleEntries, setSchoolScheduleEntries] = useState<ExamScheduleEntry[]>(() => {
+    try {
+      return getExamSchedule();
+    } catch {
+      return [];
+    }
+  });
+  const [selectedSchedulePresetId, setSelectedSchedulePresetId] = useState<string>('');
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
@@ -245,8 +265,21 @@ export function QuizManagerPage({
   }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, isPrintDeskCardsOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
 
   const activeExamQuizzes = useMemo(() => {
-    return quizzes.filter((q) => q.isActive && q.quizMode !== 'game');
-  }, [quizzes]);
+    return quizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'active' && q.quizMode !== 'game');
+  }, [quizzes, nowMs]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    loadAndSyncExamSchedule()
+      .then((entries) => {
+        if (entries && entries.length > 0) setSchoolScheduleEntries(entries);
+      })
+      .catch(() => {});
+  }, []);
 
   // ─── 2. Data Aggregation for Level 1: Subject Hub ──────────────────────────
   const subjectSummaries = useMemo(() => {
@@ -274,7 +307,7 @@ export function QuizManagerPage({
       };
 
       existing.quizCount += 1;
-      if (q.isActive) existing.activeCount += 1;
+      if (resolveEffectiveQuizStatus(q, nowMs) === 'active') existing.activeCount += 1;
       else existing.pausedCount += 1;
 
       const subs = getSubmissionsForQuiz(q.id, q.quizCode, q.testId).length;
@@ -287,7 +320,7 @@ export function QuizManagerPage({
     });
 
     return Array.from(map.values()).sort((a, b) => b.quizCount - a.quizCount);
-  }, [quizzes, submissionsVersion]);
+  }, [quizzes, submissionsVersion, nowMs]);
 
   // ─── 3. Filtered Quizzes for Level 2 Drill-Down ─────────────────────────────
   const subjectFilteredQuizzes = useMemo(() => {
@@ -314,8 +347,12 @@ export function QuizManagerPage({
 
       if (!matchesSearch) return false;
 
-      if (statusFilter === 'active') return quiz.isActive;
-      if (statusFilter === 'paused') return !quiz.isActive;
+      if (statusFilter === 'active') return resolveEffectiveQuizStatus(quiz, nowMs) === 'active';
+      if (statusFilter === 'scheduled') return resolveEffectiveQuizStatus(quiz, nowMs) === 'scheduled';
+      if (statusFilter === 'paused') {
+        const eff = resolveEffectiveQuizStatus(quiz, nowMs);
+        return eff === 'paused' || eff === 'closed';
+      }
       if (statusFilter === 'exam') return quiz.quizMode !== 'game';
       if (statusFilter === 'game') return quiz.quizMode === 'game';
       return true;
@@ -336,7 +373,7 @@ export function QuizManagerPage({
           return 0;
       }
     });
-  }, [subjectFilteredQuizzes, searchQuery, statusFilter, sortBy, submissionsVersion]);
+  }, [subjectFilteredQuizzes, searchQuery, statusFilter, sortBy, submissionsVersion, nowMs]);
 
   const groupedSections = useMemo(() => {
     if (!isGroupedBySubject) {
@@ -566,7 +603,10 @@ export function QuizManagerPage({
       hideEmergencyExamButton: quiz.hideEmergencyExamButton ?? currentSettings.hideEmergencyExamButton ?? false,
       requireStudentPin: quiz.requireStudentPin ?? false,
       allowStudentScriptDownload: quiz.allowStudentScriptDownload ?? false,
+      scheduledStartAt: quiz.scheduledStartAt ?? null,
+      scheduledEndAt: quiz.scheduledEndAt ?? null,
     });
+    setSelectedSchedulePresetId('');
     setSelectedTestId(quiz.testId);
     setIsConfigModalOpen(true);
     setOpenMobileMenuId(null);
@@ -641,6 +681,18 @@ export function QuizManagerPage({
     const currentSettings = getSavedSettings();
 
     const isExam = activeQuizDraft.isExamMode ?? true;
+    const isGame = (activeQuizDraft.quizMode || 'exam') === 'game';
+    const nextStartAt = isGame ? null : (activeQuizDraft.scheduledStartAt ?? null);
+    const nextEndAt = isGame ? null : (activeQuizDraft.scheduledEndAt ?? null);
+
+    if (!isGame) {
+      const schedCheck = validateExamScheduleWindow(nextStartAt, nextEndAt);
+      if (!schedCheck.valid) {
+        alert(schedCheck.error || 'Please fix the Session Schedule times before saving.');
+        return;
+      }
+    }
+
     const resolvedDuration = activeQuizDraft.durationMinutes || 45;
     const updatedHeader = activeQuizDraft.headerConfig
       ? { ...activeQuizDraft.headerConfig, durationMinutes: resolvedDuration, subject: cleanSubject, teacherPin: effectiveTeacherPin }
@@ -668,6 +720,8 @@ export function QuizManagerPage({
       requireStudentPin: Boolean(activeQuizDraft.requireStudentPin),
       showInstantSolutions: isExam ? false : (activeQuizDraft.showInstantSolutions ?? false),
       allowStudentScriptDownload: Boolean(activeQuizDraft.allowStudentScriptDownload),
+      scheduledStartAt: nextStartAt,
+      scheduledEndAt: nextEndAt,
       updatedAt: new Date().toISOString(),
     };
 
@@ -702,6 +756,19 @@ export function QuizManagerPage({
   const handleToggleActive = async (id: string) => {
     await toggleQuizActiveStatus(id);
     setQuizzes(getPublishedQuizzes());
+  };
+
+  const handleOpenQuizNow = async (quiz: PublishedQuiz) => {
+    const updated: PublishedQuiz = {
+      ...quiz,
+      isActive: true,
+      scheduledStartAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+    const saved = await savePublishedQuiz(updated);
+    setQuizzes(saved);
+    setSaveSuccessMsg(`🟢 "${quiz.title}" opened immediately for candidates.`);
+    setTimeout(() => setSaveSuccessMsg(null), 3500);
   };
 
   const handleCopyCode = (quizCode: string, id: string) => {
@@ -1205,14 +1272,24 @@ export function QuizManagerPage({
                     className={`qm-status-pill ${statusFilter === 'active' ? 'qm-status-pill--active' : ''}`}
                     onClick={() => setStatusFilter('active')}
                   >
-                    Active ({subjectFilteredQuizzes.filter((q) => q.isActive).length})
+                    Active ({subjectFilteredQuizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'active').length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`qm-status-pill ${statusFilter === 'scheduled' ? 'qm-status-pill--active' : ''}`}
+                    onClick={() => setStatusFilter('scheduled')}
+                  >
+                    Scheduled ({subjectFilteredQuizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'scheduled').length})
                   </button>
                   <button
                     type="button"
                     className={`qm-status-pill ${statusFilter === 'paused' ? 'qm-status-pill--active' : ''}`}
                     onClick={() => setStatusFilter('paused')}
                   >
-                    Paused ({subjectFilteredQuizzes.filter((q) => !q.isActive).length})
+                    Paused / Closed ({subjectFilteredQuizzes.filter((q) => {
+                      const eff = resolveEffectiveQuizStatus(q, nowMs);
+                      return eff === 'paused' || eff === 'closed';
+                    }).length})
                   </button>
                   <button
                     type="button"
@@ -1285,6 +1362,19 @@ export function QuizManagerPage({
                             const subName = quiz.subject?.trim() || 'General';
                             const subMeta = getSubjectMetadata(subName);
                             const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
+                            const effectiveStatus = resolveEffectiveQuizStatus(quiz, nowMs);
+                            const scheduleLabel =
+                              !isGame && (quiz.scheduledStartAt || quiz.scheduledEndAt)
+                                ? formatScheduleWindowLabel(quiz.scheduledStartAt, quiz.scheduledEndAt)
+                                : '';
+                            const statusDisplay =
+                              effectiveStatus === 'active'
+                                ? 'Active'
+                                : effectiveStatus === 'scheduled'
+                                  ? 'Scheduled'
+                                  : effectiveStatus === 'closed'
+                                    ? 'Closed'
+                                    : 'Paused';
 
                             return (
                               <div
@@ -1319,15 +1409,19 @@ export function QuizManagerPage({
 
                                   <button
                                     type="button"
-                                    className={`qm-row-status-btn ${quiz.isActive ? 'qm-row-status--active' : 'qm-row-status--paused'}`}
+                                    className={`qm-row-status-btn qm-row-status--${effectiveStatus}`}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleToggleActive(quiz.id);
                                     }}
-                                    title="Toggle active status"
+                                    title={
+                                      quiz.isActive
+                                        ? 'Click to manually pause student access'
+                                        : 'Click to re-enable / arm exam access'
+                                    }
                                   >
                                     <span className="qm-row-status-dot" />
-                                    <span>{quiz.isActive ? 'Active' : 'Paused'}</span>
+                                    <span>{statusDisplay}</span>
                                   </button>
                                 </div>
 
@@ -1369,6 +1463,35 @@ export function QuizManagerPage({
                                     )}
                                   </div>
                                 </div>
+
+                                {scheduleLabel && (
+                                  <div
+                                    className={`qm-card-schedule-strip ${
+                                      effectiveStatus === 'closed'
+                                        ? 'qm-card-schedule-strip--closed'
+                                        : effectiveStatus === 'paused'
+                                          ? 'qm-card-schedule-strip--paused'
+                                          : ''
+                                    }`}
+                                    title={`Entry Window: ${scheduleLabel}`}
+                                  >
+                                    <span className="qm-card-schedule-text">🗓️ {scheduleLabel}</span>
+                                    {effectiveStatus === 'scheduled' && (
+                                      <button
+                                        type="button"
+                                        className="qm-open-now-btn"
+                                        style={{ flexShrink: 0 }}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenQuizNow(quiz);
+                                        }}
+                                        title="Clear scheduled start delay and open exam immediately"
+                                      >
+                                        ▶ Open Now
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
 
                                 {/* Student Access Code Box */}
                                 <div
@@ -1540,6 +1663,19 @@ export function QuizManagerPage({
                           const subName = quiz.subject?.trim() || 'General';
                           const subMeta = getSubjectMetadata(subName);
                           const submissionCount = getSubmissionsForQuiz(quiz.id, quiz.quizCode, quiz.testId).length;
+                          const effectiveStatus = resolveEffectiveQuizStatus(quiz, nowMs);
+                          const scheduleLabel =
+                            !isGame && (quiz.scheduledStartAt || quiz.scheduledEndAt)
+                              ? formatScheduleWindowLabel(quiz.scheduledStartAt, quiz.scheduledEndAt)
+                              : '';
+                          const statusDisplay =
+                            effectiveStatus === 'active'
+                              ? 'Active'
+                              : effectiveStatus === 'scheduled'
+                                ? 'Scheduled'
+                                : effectiveStatus === 'closed'
+                                  ? 'Closed'
+                                  : 'Paused';
 
                           return (
                             <div
@@ -1550,7 +1686,8 @@ export function QuizManagerPage({
                                   (e.target as HTMLElement).closest('.qm-row-actions') ||
                                   (e.target as HTMLElement).closest('.qm-mobile-action-btn') ||
                                   (e.target as HTMLElement).closest('.qm-row-code-pill') ||
-                                  (e.target as HTMLElement).closest('.qm-row-status-btn')
+                                  (e.target as HTMLElement).closest('.qm-row-status-btn') ||
+                                  (e.target as HTMLElement).closest('.qm-open-now-btn')
                                 ) {
                                   return;
                                 }
@@ -1598,6 +1735,12 @@ export function QuizManagerPage({
                                     </span>
                                     <span className="qm-meta-dot">•</span>
                                     <span>{hydrateQuizFromSavedTest(quiz).questionCount || 0} Questions</span>
+                                    {scheduleLabel && (
+                                      <>
+                                        <span className="qm-meta-dot">•</span>
+                                        <span style={{ color: '#4f46e5', fontWeight: 600 }}>🗓️ {scheduleLabel}</span>
+                                      </>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -1635,18 +1778,35 @@ export function QuizManagerPage({
                                   <span className="qm-stat-unit">Turned In</span>
                                 </div>
 
-                                {/* Active / Paused Status Toggle */}
+                                {/* Active / Scheduled / Closed / Paused Status Toggle */}
+                                {effectiveStatus === 'scheduled' && (
+                                  <button
+                                    type="button"
+                                    className="qm-open-now-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenQuizNow(quiz);
+                                    }}
+                                    title="Clear scheduled start delay and open exam immediately"
+                                  >
+                                    ▶ Open Now
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  className={`qm-row-status-btn ${quiz.isActive ? 'qm-row-status--active' : 'qm-row-status--paused'}`}
+                                  className={`qm-row-status-btn qm-row-status--${effectiveStatus}`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleToggleActive(quiz.id);
                                   }}
-                                  title="Toggle active status"
+                                  title={
+                                    quiz.isActive
+                                      ? 'Click to manually pause student access'
+                                      : 'Click to re-enable / arm exam access'
+                                  }
                                 >
                                   <span className="qm-row-status-dot" />
-                                  <span>{quiz.isActive ? 'Active' : 'Paused'}</span>
+                                  <span>{statusDisplay}</span>
                                 </button>
                               </div>
 
@@ -2273,6 +2433,125 @@ export function QuizManagerPage({
                           </label>
                         </div>
                       )}
+
+                      {/* Session Schedule (Active / Inactive Window) */}
+                      <div className="qm-schedule-panel">
+                        <div className="qm-schedule-header-row">
+                          <div>
+                            <strong className="qm-studio-card-title">🗓️ Session Schedule (Active / Inactive Window)</strong>
+                            <p className="qm-studio-card-sub">
+                              Optional automatic open &amp; entry-close times. Manual Pause always overrides the schedule.
+                            </p>
+                          </div>
+                          <span className="qm-schedule-tz-pill" title="Times entered below use this local timezone">
+                            🌐 {getLocalTimezoneLabel()}
+                          </span>
+                        </div>
+
+                        {schoolScheduleEntries.length > 0 && (
+                          <div className="qm-form-group" style={{ marginBottom: '2px' }}>
+                            <label className="qm-form-label" htmlFor="qm-school-sched-preset">
+                              Pick from School Exam Schedule (Quick-Fill):
+                            </label>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <select
+                                id="qm-school-sched-preset"
+                                className="qm-form-select"
+                                value={selectedSchedulePresetId}
+                                onChange={(e) => {
+                                  const presetId = e.target.value;
+                                  setSelectedSchedulePresetId(presetId);
+                                  const entry = schoolScheduleEntries.find((item) => item.id === presetId);
+                                  if (entry) {
+                                    const win = buildWindowFromSchoolScheduleEntry(
+                                      entry,
+                                      activeQuizDraft.durationMinutes || 60
+                                    );
+                                    setActiveQuizDraft({
+                                      ...activeQuizDraft,
+                                      scheduledStartAt: win.scheduledStartAt,
+                                      scheduledEndAt: win.scheduledEndAt,
+                                    });
+                                  }
+                                }}
+                              >
+                                <option value="">— Custom Date &amp; Time —</option>
+                                {schoolScheduleEntries.map((entry) => (
+                                  <option key={entry.id} value={entry.id}>
+                                    {entry.date} • {entry.time} — {entry.subject}
+                                    {entry.targetClass && entry.targetClass !== 'ALL' ? ` (${entry.targetClass})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                              {(activeQuizDraft.scheduledStartAt || activeQuizDraft.scheduledEndAt) && (
+                                <button
+                                  type="button"
+                                  className="qm-btn qm-btn-secondary"
+                                  style={{ whiteSpace: 'nowrap' }}
+                                  onClick={() => {
+                                    setSelectedSchedulePresetId('');
+                                    setActiveQuizDraft({
+                                      ...activeQuizDraft,
+                                      scheduledStartAt: null,
+                                      scheduledEndAt: null,
+                                    });
+                                  }}
+                                >
+                                  Clear
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="qm-form-row">
+                          <div className="qm-form-group" style={{ flex: 1 }}>
+                            <label className="qm-form-label" htmlFor="qm-sched-start">
+                              Auto-Open At (Start Date &amp; Time):
+                            </label>
+                            <input
+                              id="qm-sched-start"
+                              type="datetime-local"
+                              className="qm-form-input"
+                              value={isoToLocalDateTimeInput(activeQuizDraft.scheduledStartAt)}
+                              onChange={(e) => {
+                                setSelectedSchedulePresetId('');
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  scheduledStartAt: localDateTimeInputToIso(e.target.value),
+                                });
+                              }}
+                            />
+                            <span className="qm-form-hint">Leave blank to allow entry immediately when active.</span>
+                          </div>
+
+                          <div className="qm-form-group" style={{ flex: 1 }}>
+                            <label className="qm-form-label" htmlFor="qm-sched-end">
+                              Close Entry At (End Date &amp; Time, Optional):
+                            </label>
+                            <input
+                              id="qm-sched-end"
+                              type="datetime-local"
+                              className="qm-form-input"
+                              value={isoToLocalDateTimeInput(activeQuizDraft.scheduledEndAt)}
+                              onChange={(e) => {
+                                setSelectedSchedulePresetId('');
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  scheduledEndAt: localDateTimeInputToIso(e.target.value),
+                                });
+                              }}
+                            />
+                            <span className="qm-form-hint">Blocks new joins after this time; active candidates still finish.</span>
+                          </div>
+                        </div>
+
+                        {!validateExamScheduleWindow(activeQuizDraft.scheduledStartAt, activeQuizDraft.scheduledEndAt).valid && (
+                          <div className="qm-schedule-error">
+                            ⚠️ {validateExamScheduleWindow(activeQuizDraft.scheduledStartAt, activeQuizDraft.scheduledEndAt).error}
+                          </div>
+                        )}
+                      </div>
 
                       {/* Post-Exam Full Script PDF / Stem Review Policy (safe-by-default OFF) */}
                       <div className="qm-checkbox-row" style={{ marginTop: '12px' }}>

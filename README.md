@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.5`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.6`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.5-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.6-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `026`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `028`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -118,6 +118,8 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`024_phase3_deep_rls_ratelimit_and_game_security.sql`](supabase/migrations/024_phase3_deep_rls_ratelimit_and_game_security.sql) | `teacherPinHash` removal, `game_profiles` RLS & reward caps, `security_rate_limits` lockouts, roster PIN & draft-lock submission enforcement, and `get_student_game_paper` / `check_game_question_answer` |
 | [`025_personal_exam_pin_hardening.sql`](supabase/migrations/025_personal_exam_pin_hardening.sql) | `normalize_roster_class_label` spacing parity (`X IPA3` ↔ `X IPA 3`), strict enrolled-PIN rejection inside `verify_roster_pin_if_enrolled`, and composite `name__pin` draft lock resolution in `submit_student_exam_attempt` |
 | [`026_admin_teacher_account_management.sql`](supabase/migrations/026_admin_teacher_account_management.sql) | Centralized Admin Educator Account RPCs (`admin_list/create/update/reset_password/delete`), `must_change_password` temporary password flow, session revocation on suspension, and self-service `change_own_teacher_password` |
+| [`027_exam_session_scheduling.sql`](supabase/migrations/027_exam_session_scheduling.sql) | Scheduled Exam Session windows (`scheduled_start_at`, `scheduled_end_at`) enforced in `get_student_exam_paper` / `submit_student_exam_attempt` against server `NOW()`, plus teacher `set_quiz_schedule` RPC |
+| [`028_game_profiles_anon_grant.sql`](supabase/migrations/028_game_profiles_anon_grant.sql) | Restores table GRANT on `public.game_profiles` for `anon` role so `x-teacher-session` RLS policies allow backup/restore of Arena profiles |
 
 ---
 
@@ -133,6 +135,9 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Candidate Cards & Workbook Import** | `npm run test:desk-cards` | ICM multi-sheet workbook parsing, PIN-preserving diff import, schedule targeting, 2×3 A4 duplex mirroring |
 | **Personal Exam PIN Hardening** | `npm run test:student-pin` | Quiz PIN toggle inheritance, school-wide unique PINs, composite draft isolation, class normalization & `025` guards |
 | **Admin Educator Accounts** | `npm run test:teacher-accounts` | Migration `026` admin RPCs, bootstrap authorization, temporary password lifecycle, pre-026 fallback |
+| **Exam Session Scheduling** | `npm run test:exam-schedule` | Start/End time window resolution, Waiting Room sync, Migration `027` server gates & UI layout |
+| **Multiple Select Grading** | `npm run test:multi-select` | Strict all-or-nothing scoring across online deterministic and offline Excel grading |
+| **Backup & Folder Sync** | `npm run test:backup-restore` | Incremental PC folder media diffing, `v1.1` archive inspection, cross-project URL rewriting & cache sync |
 | **Topic Mastery & Reports** | `npm run test:topic-mastery` | Configurable mastery bands and student Excel diagnostic export generation |
 | **Emergency Fallback** | `npm run test:emergency` & `npm run test:emergency:sim` | `AES-256-GCM` `.exam` encryption, outbox retries, conflict resolution |
 | **Proctoring Hardening** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-hardening-023.mjs` | ECDSA P-256 command auth, UTF-8 byte clamping, `023` audit guards |
@@ -143,6 +148,20 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.6] — Exam Session Scheduling (`027`), Incremental PC Folder Backup (`028`), Strict Multi-Select & Proctor Fixes
+- **Scheduled Exam Session Windows (`027`) & Publish Exam Redesign**:
+  - Added [`src/lib/examSessionSchedule.ts`](src/lib/examSessionSchedule.ts) and [`supabase/migrations/027_exam_session_scheduling.sql`](supabase/migrations/027_exam_session_scheduling.sql) supporting `Scheduled`, `Active`, `Closed`, and `Paused` exam states gated server-side in `get_student_exam_paper` / `submit_student_exam_attempt`.
+  - Updated [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) with a synchronized pre-exam Waiting Room countdown and post-close lockout view, and redesigned [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx) / [`QuizManagerPage.css`](src/pages/QuizManagerPage.css) with schedule pickers, **Open Now**, clean List View action layout (eliminating hover overlap), and aligned Card View schedule chips.
+- **Proctor Dashboard Progress & Live Position Fixes**:
+  - Added `hasNonEmptyProctorAnswer`, `computeSubmissionProgress`, and `clampProgressPercent` in [`src/lib/proctorGuards.ts`](src/lib/proctorGuards.ts) so submitted hydration in [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx) flattens `subQuestionResults`, ignores unanswered blanks, clamps progress bars to `[0, 100]%`, and displays live `· Q#` question positions without extra WebSocket traffic.
+- **Strict All-or-Nothing Multiple Select Grading**:
+  - Updated `gradeDeterministicAnswer` in [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts) to award full marks only on an exact selection match (`0` otherwise), and routed Excel imports in [`offlineGradingService.ts`](src/services/offlineGradingService.ts) through the same strict multi-select evaluator.
+- **Incremental PC Folder Backup, Database-Only Snapshots & Full Restore Upgrade (`028`)**:
+  - Added [`src/services/localBackupFolderService.ts`](src/services/localBackupFolderService.ts) (`showDirectoryPicker` + `IndexedDB` folder handle persistence) to write fresh `data/*.json` snapshots and download **only** new/missing diagrams, audio, and PDFs already absent from your PC folder.
+  - Upgraded [`backupService.ts`](src/services/backupService.ts), [`restoreService.ts`](src/services/restoreService.ts), and [`BackupRestoreModal.tsx`](src/components/BackupRestoreModal.tsx) (`v1.1` manifest, fail-loud core DB reads, `42501` optional table skip with visible error/warning banners, PDF/resource URL backup & cross-project `published_quizzes` rewriting, **Database-Only (.zip)** mode, `STORE` media compression, full Clean Replace preserving the active educator session, complete `localStorage` cache sync, and [`028_game_profiles_anon_grant.sql`](supabase/migrations/028_game_profiles_anon_grant.sql)).
+- **Verification**:
+  - Added `npm run test:exam-schedule` (11/11), `npm run test:multi-select`, and `npm run test:backup-restore` (7/7), updated `scripts/test-proctor-p1-p2-p3.mjs` (64/64), ran `npm run test:proctor-alerts` (15/15), and verified `npm run build`.
 
 ### [v.2.5.5] — Mid-Run Audio Resume Fix Under 1x Playback Limits
 - **Resumable 1x Audio Playback (`ExamAudioPlayer`)**:
