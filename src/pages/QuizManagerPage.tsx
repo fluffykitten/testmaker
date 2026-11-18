@@ -29,7 +29,13 @@ import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
 import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
-import { getSavedSettings } from '../lib/settings';
+import { getSavedSettings, getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
+import {
+  normalizeTargetClassKey,
+  parseTargetClassList,
+  serializeTargetClassList,
+  toggleTargetClassSelection,
+} from '../lib/examTargetClasses';
 import {
   resolveEffectiveQuizStatus,
   validateExamScheduleWindow,
@@ -158,6 +164,9 @@ export function QuizManagerPage({
     }
   });
   const [selectedSchedulePresetId, setSelectedSchedulePresetId] = useState<string>('');
+  const [schoolClasses, setSchoolClasses] = useState<string[]>(() => getSchoolClasses());
+  const [showCustomTargetClassInput, setShowCustomTargetClassInput] = useState(false);
+  const [customTargetClassInput, setCustomTargetClassInput] = useState('');
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
@@ -169,6 +178,8 @@ export function QuizManagerPage({
     setActiveQuizDraft(null);
     setOriginalQuizCode(null);
     setAttachmentUploadError(null);
+    setShowCustomTargetClassInput(false);
+    setCustomTargetClassInput('');
   });
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
@@ -223,20 +234,29 @@ export function QuizManagerPage({
 
   useEffect(() => {
     loadData();
+    loadAndSyncSchoolClasses().then((classes) => {
+      if (classes && classes.length > 0) setSchoolClasses(classes);
+    });
 
     const handleSubmissionsUpdated = () => setSubmissionsVersion((v) => v + 1);
     const handleSettingsUpdated = () => setSecurityDefaults(getSavedSettings());
+    const handleSchoolClassesUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ classes?: string[] }>;
+      setSchoolClasses(custom.detail?.classes || getSchoolClasses());
+    };
     const handleTestsUpdated = () => loadData();
     const handleQuizzesUpdated = () => loadData();
 
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
     window.addEventListener('storage', handleSettingsUpdated);
+    window.addEventListener('school_classes_updated', handleSchoolClassesUpdated);
     window.addEventListener('tests_updated', handleTestsUpdated);
     window.addEventListener('quizzes_updated', handleQuizzesUpdated);
 
     return () => {
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
       window.removeEventListener('storage', handleSettingsUpdated);
+      window.removeEventListener('school_classes_updated', handleSchoolClassesUpdated);
       window.removeEventListener('tests_updated', handleTestsUpdated);
       window.removeEventListener('quizzes_updated', handleQuizzesUpdated);
     };
@@ -2179,24 +2199,121 @@ export function QuizManagerPage({
                   </div>
 
                   {/* Target Class Cohort */}
-                  <div className="qm-form-group">
-                    <label className="qm-form-label">Target Class / Cohort (Optional):</label>
-                    <input
-                      type="text"
-                      className="qm-form-input"
-                      value={activeQuizDraft.targetClass || ''}
-                      onChange={(e) =>
-                        setActiveQuizDraft({
-                          ...activeQuizDraft,
-                          targetClass: e.target.value,
-                        })
-                      }
-                      placeholder="e.g. 10-A, Grade 11 Chemistry, or leave blank for all students"
-                    />
-                    <span className="qm-form-hint">
-                      Filters student submissions by class roster during live invigilation and analytics.
-                    </span>
-                  </div>
+                  {(() => {
+                    const selectedTargets = parseTargetClassList(activeQuizDraft.targetClass);
+                    const selectedKeys = new Set(selectedTargets.map((c) => normalizeTargetClassKey(c)));
+                    const extraCustomTargets = selectedTargets.filter(
+                      (c) => !schoolClasses.some((sc) => normalizeTargetClassKey(sc) === normalizeTargetClassKey(c))
+                    );
+                    const pillOptions = [...schoolClasses, ...extraCustomTargets];
+
+                    const handleAddCustomTargetClass = () => {
+                      const trimmed = customTargetClassInput.trim();
+                      if (!trimmed) return;
+                      const merged = serializeTargetClassList([...selectedTargets, trimmed]);
+                      setActiveQuizDraft({
+                        ...activeQuizDraft,
+                        targetClass: merged,
+                      });
+                      setCustomTargetClassInput('');
+                      setShowCustomTargetClassInput(false);
+                    };
+
+                    return (
+                      <div className="qm-form-group">
+                        <div className="qm-target-classes-header">
+                          <label className="qm-form-label" style={{ marginBottom: 0 }}>
+                            Target Classes / Cohorts (Optional):
+                          </label>
+                          <div className="qm-target-classes-meta">
+                            <span
+                              className={`qm-target-classes-badge ${
+                                selectedTargets.length > 0 ? 'qm-target-classes-badge--filtered' : ''
+                              }`}
+                            >
+                              {selectedTargets.length === 0
+                                ? 'All Classes (Default)'
+                                : `${selectedTargets.length} Selected`}
+                            </span>
+                            {selectedTargets.length > 0 && (
+                              <button
+                                type="button"
+                                className="qm-target-clear-btn"
+                                onClick={() =>
+                                  setActiveQuizDraft({
+                                    ...activeQuizDraft,
+                                    targetClass: '',
+                                  })
+                                }
+                              >
+                                Clear (All)
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="qm-cohort-pills" role="group" aria-label="Target classes">
+                          {pillOptions.map((cls) => {
+                            const active = selectedKeys.has(normalizeTargetClassKey(cls));
+                            return (
+                              <button
+                                key={cls}
+                                type="button"
+                                className={`qm-cohort-pill ${active ? 'qm-cohort-pill--active' : ''}`}
+                                onClick={() =>
+                                  setActiveQuizDraft({
+                                    ...activeQuizDraft,
+                                    targetClass: toggleTargetClassSelection(activeQuizDraft.targetClass, cls),
+                                  })
+                                }
+                              >
+                                {active && <span>✓</span>}
+                                <span>{cls}</span>
+                              </button>
+                            );
+                          })}
+                          <button
+                            type="button"
+                            className="qm-cohort-pill qm-cohort-pill--add"
+                            onClick={() => setShowCustomTargetClassInput((v) => !v)}
+                          >
+                            {showCustomTargetClassInput ? 'Cancel' : '+ Custom'}
+                          </button>
+                        </div>
+
+                        {showCustomTargetClassInput && (
+                          <div className="qm-cohort-custom-row">
+                            <input
+                              type="text"
+                              className="qm-form-input"
+                              value={customTargetClassInput}
+                              onChange={(e) => setCustomTargetClassInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddCustomTargetClass();
+                                }
+                              }}
+                              placeholder="Enter ad-hoc class (e.g. 10-D, Olympians)..."
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              className="qm-btn-secondary"
+                              onClick={handleAddCustomTargetClass}
+                              disabled={!customTargetClassInput.trim()}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        )}
+
+                        <span className="qm-form-hint">
+                          Leave all unselected to show all school classes and candidate names. Selecting classes filters the exam dropdown, candidate autocomplete, and live proctor.
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {/* Assessment Format (Formal Exam vs Quizizz Game) */}
                   {isQuizizzAllowed && (

@@ -394,14 +394,22 @@ export async function checkStudentAttemptSubmitted(
   const cleanClass = normalizeIdentityPart(candidateClass);
   const cleanNumber = normalizeIdentityPart(candidateNumber);
 
-  // 1. Prefer the exact, server-side RPC (no 100-row truncation, no client-side scan).
+  // 1. Prefer the exact, server-side RPC (bounded timeout so slow connections don't stall exam entry).
+  let rpcMissing = false;
   try {
-    const { data, error } = await (supabase as any).rpc('check_student_attempt_submitted', {
+    const rpcPromise = (supabase as any).rpc('check_student_attempt_submitted', {
       p_quiz_code: cleanCode,
       p_student_name: candidateName,
       p_student_class: candidateClass || null,
       p_student_number: candidateNumber || null,
     });
+    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 4000)
+    );
+    const { data, error } = (await Promise.race([rpcPromise, timeoutPromise])) as {
+      data: any;
+      error: any;
+    };
     if (!error && data && typeof data === 'object') {
       return {
         submitted: data.submitted === true,
@@ -409,38 +417,43 @@ export async function checkStudentAttemptSubmitted(
         submissionId: data.submissionId || undefined,
       };
     }
+    const code = String(error?.code || '').toUpperCase();
+    const msg = String(error?.message || '');
+    rpcMissing = code === '42883' || code === 'PGRST202' || /could not find the function/i.test(msg);
   } catch (err) {
-    console.warn('Attempt RPC unavailable, falling back to table query:', err);
+    console.warn('Attempt RPC unavailable, falling back if supported:', err);
   }
 
-  // 2. Legacy fallback: query the table and normalise in JS.
-  try {
-    const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
-      .select('id, student_name, student_class, candidate_number, submitted_at')
-      .eq('quiz_code', cleanCode)
-      .limit(1000);
+  // 2. Legacy fallback only when RPC is missing (pre-019 DB); Phase 2 RLS blocks anon table reads.
+  if (rpcMissing) {
+    try {
+      const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
+        .select('id, student_name, student_class, candidate_number, submitted_at')
+        .eq('quiz_code', cleanCode)
+        .limit(1000);
 
-    if (!error && Array.isArray(data)) {
-      for (const row of data) {
-        const rowName = normalizeIdentityPart(row.student_name);
-        const rowClass = normalizeIdentityPart(row.student_class || row.candidate_class);
-        const rowNumber = normalizeIdentityPart(row.candidate_number);
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          const rowName = normalizeIdentityPart(row.student_name);
+          const rowClass = normalizeIdentityPart(row.student_class || row.candidate_class);
+          const rowNumber = normalizeIdentityPart(row.candidate_number);
 
-        const matchesName = Boolean(cleanName) && rowName === cleanName;
-        const matchesClass = !cleanClass || !rowClass || cleanClass === rowClass;
-        const matchesNumber = !cleanNumber || !rowNumber || cleanNumber === rowNumber;
+          const matchesName = Boolean(cleanName) && rowName === cleanName;
+          const matchesClass = !cleanClass || !rowClass || cleanClass === rowClass;
+          const matchesNumber = !cleanNumber || !rowNumber || cleanNumber === rowNumber;
 
-        if (matchesName && matchesClass && matchesNumber) {
-          return {
-            submitted: true,
-            submittedAt: row.submitted_at,
-            submissionId: row.id,
-          };
+          if (matchesName && matchesClass && matchesNumber) {
+            return {
+              submitted: true,
+              submittedAt: row.submitted_at,
+              submissionId: row.id,
+            };
+          }
         }
       }
+    } catch (err) {
+      console.warn('Could not check submission attempt in cloud:', err);
     }
-  } catch (err) {
-    console.warn('Could not check submission attempt in cloud:', err);
   }
 
   // 3. Check local device receipts as the offline fallback.

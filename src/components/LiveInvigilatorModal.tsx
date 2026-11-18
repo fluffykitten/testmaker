@@ -47,7 +47,11 @@ import {
 } from '../lib/proctorAlertEngine';
 import { exportProctorAuditLogExcelICM } from '../services/icmExcelExportService';
 import { supabase, hasActiveTeacherSession } from '../lib/supabase';
-import { getSchoolClasses } from '../lib/settings';
+import { getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
+import {
+  normalizeTargetClassKey,
+  resolveProctorSidebarClasses,
+} from '../lib/examTargetClasses';
 import {
   getSchoolRoster,
   loadAndSyncSchoolRoster,
@@ -147,6 +151,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const [activeFilter, setActiveFilter] = useState<
     'all' | 'exceeded' | 'locked' | 'warnings' | 'active' | 'submitted' | 'missing'
   >('all');
+  const [schoolClasses, setSchoolClasses] = useState<string[]>(() => getSchoolClasses());
   const [schoolRoster, setSchoolRoster] = useState<RosterStudent[]>(() => {
     try {
       return getSchoolRoster();
@@ -156,11 +161,24 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   });
 
   useEffect(() => {
+    loadAndSyncSchoolClasses().then((classes) => {
+      if (classes && classes.length > 0) {
+        setSchoolClasses(classes);
+      }
+    }).catch(() => {});
+
     loadAndSyncSchoolRoster().then((list) => {
       if (list && list.length > 0) {
         setSchoolRoster(list);
       }
     }).catch(() => { });
+
+    const handleSchoolClassesUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ classes?: string[] }>;
+      setSchoolClasses(custom.detail?.classes || getSchoolClasses());
+    };
+    window.addEventListener('school_classes_updated', handleSchoolClassesUpdated);
+    return () => window.removeEventListener('school_classes_updated', handleSchoolClassesUpdated);
   }, []);
   const [sortBy, setSortBy] = useState<ProctorSortOption>('class_seat');
   const [searchQuery, setSearchQuery] = useState('');
@@ -781,14 +799,23 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   // ─── 2B. Centralized School Roster Directory by Class ───────────────────────
   const rosterByClass = useMemo(() => {
     const map: Record<string, RosterStudent[]> = {};
+    const byNormalizedKey: Record<string, string> = {};
+    schoolClasses.forEach((sc) => {
+      const trimmed = sc.trim();
+      if (trimmed) {
+        byNormalizedKey[normalizeTargetClassKey(trimmed)] = trimmed;
+      }
+    });
+
     schoolRoster.forEach((r) => {
-      const cls = (r.class || '').trim();
-      if (!cls) return;
+      const rawCls = (r.class || '').trim();
+      if (!rawCls) return;
+      const cls = byNormalizedKey[normalizeTargetClassKey(rawCls)] || rawCls;
       if (!map[cls]) map[cls] = [];
       map[cls].push(r);
     });
     return map;
-  }, [schoolRoster]);
+  }, [schoolRoster, schoolClasses]);
 
   // ─── 3. Candidate Aggregations & Sidebar Navigation Models ─────────────────
   const allStudentList = useMemo(() => Object.values(students), [students]);
@@ -801,17 +828,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     return allStudentList.filter((s) => s.quizCode && allowed.has(s.quizCode.toUpperCase()));
   }, [allStudentList, monitoredQuizzes]);
 
-  // Distinct Classes (School Config + Live Discovered)
+  // Distinct Classes (Scoped to Exam Target Classes in focus mode, or All School Classes + Live Discovered)
   const sidebarClasses = useMemo(() => {
-    const classesSet = new Set<string>(getSchoolClasses());
-    activeMonitoredStudents.forEach((s) => {
-      classesSet.add(getStudentClass(s));
+    let list = resolveProctorSidebarClasses({
+      schoolClasses,
+      monitoredTargetClasses: monitoredQuizzes.map((q) => q.targetClass),
+      liveStudentClasses: activeMonitoredStudents.map((s) => getStudentClass(s)),
+      scope,
     });
-
-    let list = Array.from(classesSet).filter((c) => c !== 'Unassigned').sort();
-    if (classesSet.has('Unassigned')) {
-      list.push('Unassigned');
-    }
 
     if (hideEmptyClasses) {
       list = list.filter((cls) =>
@@ -819,7 +843,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       );
     }
     return list;
-  }, [activeMonitoredStudents, hideEmptyClasses]);
+  }, [schoolClasses, monitoredQuizzes, activeMonitoredStudents, hideEmptyClasses, scope]);
 
   // Per-Class metrics with Roster Reconciliation
   const classStats = useMemo(() => {
@@ -967,25 +991,25 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
   const missingStudents = useMemo(() => {
     let expectedRoster: RosterStudent[] = [];
 
-    const activeOrTargetClasses = new Set<string>(
+    const activeOrTargetClassKeys = new Set<string>(
       activeMonitoredStudents
-        .map((s) => getStudentClass(s))
-        .filter((c) => c !== 'Unassigned')
+        .map((s) => normalizeTargetClassKey(getStudentClass(s)))
+        .filter((k) => k && k !== 'unassigned')
     );
     monitoredQuizzes.forEach((q) => {
       if (q.targetClass) {
         q.targetClass
           .split(',')
-          .map((c) => c.trim())
-          .filter(Boolean)
-          .forEach((c) => activeOrTargetClasses.add(c));
+          .map((c) => normalizeTargetClassKey(c))
+          .filter((k) => k && k !== 'all')
+          .forEach((k) => activeOrTargetClassKeys.add(k));
       }
     });
 
     if (sidebarMode === 'class') {
       if (selectedKey === '__ALL__') {
         sidebarClasses.forEach((cls) => {
-          if (activeOrTargetClasses.has(cls) && rosterByClass[cls]) {
+          if (activeOrTargetClassKeys.has(normalizeTargetClassKey(cls)) && rosterByClass[cls]) {
             expectedRoster.push(...rosterByClass[cls]);
           }
         });
@@ -997,7 +1021,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         expectedRoster = rosterByClass[secondaryFilter] || [];
       } else {
         sidebarClasses.forEach((cls) => {
-          if (activeOrTargetClasses.has(cls) && rosterByClass[cls]) {
+          if (activeOrTargetClassKeys.has(normalizeTargetClassKey(cls)) && rosterByClass[cls]) {
             expectedRoster.push(...rosterByClass[cls]);
           }
         });

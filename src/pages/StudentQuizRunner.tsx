@@ -17,7 +17,8 @@ import {
   exportSubmissionToFile,
   exportSubmissionToken,
   saveDeviceReceipt,
-  generateResultPin,
+  ENABLE_POST_SUBMIT_RESULT_PIN,
+  createPostSubmitResultPin,
   formatProctorTimestamp,
   cleanMcqOptionContent,
   type StudentSubmission,
@@ -126,6 +127,11 @@ import {
   getSavedSettings,
   loadAndSyncEmergencyExamButtonVisibility,
 } from '../lib/settings';
+import {
+  filterRosterByTargetClasses,
+  parseTargetClassList,
+  resolveAvailableExamClasses,
+} from '../lib/examTargetClasses';
 import {
   type SecurityViolationTier,
   type SecurityTierAction,
@@ -442,13 +448,24 @@ export function StudentQuizRunner({
 
   // Configured Classes and Student Roster
   const [configuredClasses, setConfiguredClasses] = useState<string[]>(() => getSchoolClasses());
+  const [examTargetClass, setExamTargetClass] = useState<string>(() => savedExam?.targetClass || '');
   const [schoolRoster, setSchoolRoster] = useState<PublicRosterStudent[]>([]);
   const [isCustomClass, setIsCustomClass] = useState<boolean>(() => {
     if (!savedExam?.candidateClass) return false;
-    const initialList = getSchoolClasses();
+    const initialList = resolveAvailableExamClasses(getSchoolClasses(), savedExam?.targetClass);
     return !initialList.includes(savedExam.candidateClass);
   });
   const [lobbyError, setLobbyError] = useState<string | null>(null);
+
+  const selectableExamClasses = useMemo(
+    () => resolveAvailableExamClasses(configuredClasses, examTargetClass),
+    [configuredClasses, examTargetClass]
+  );
+
+  const selectableRoster = useMemo(
+    () => filterRosterByTargetClasses(schoolRoster, examTargetClass),
+    [schoolRoster, examTargetClass]
+  );
 
   useEffect(() => {
     loadAndSyncSchoolClasses().then((classes) => {
@@ -462,6 +479,19 @@ export function StudentQuizRunner({
       }
     });
   }, []);
+
+  useEffect(() => {
+    const explicitTargets = parseTargetClassList(examTargetClass);
+    if (
+      explicitTargets.length === 1 &&
+      selectableExamClasses.length === 1 &&
+      !candidateClass &&
+      !isCustomClass &&
+      !savedExam?.hasStarted
+    ) {
+      setCandidateClass(selectableExamClasses[0]);
+    }
+  }, [examTargetClass, selectableExamClasses, candidateClass, isCustomClass, savedExam?.hasStarted]);
 
   // Exam Progress State
   const [currentIndex, setCurrentIndex] = useState<number>(() => savedExam?.currentIndex || 0);
@@ -865,6 +895,7 @@ export function StudentQuizRunner({
       if (data.testId) setResolvedTestId(data.testId);
       if (data.publishedId) setResolvedPublishedId(data.publishedId);
       if ((data as any).gradeThresholds) setGradeThresholds((data as any).gradeThresholds);
+      setExamTargetClass(data.targetClass || '');
       setTitle(data.title);
       const resolvedDuration = data.durationMinutes || data.headerConfig?.durationMinutes || 45;
       setHeaderConfig(
@@ -1645,7 +1676,9 @@ export function StudentQuizRunner({
     };
 
     const handleWindowFocus = () => {
-      flushClipboard();
+      try {
+        window.getSelection?.()?.removeAllRanges?.();
+      } catch { /* ignore */ }
     };
 
     // C. Fullscreen change
@@ -2637,6 +2670,7 @@ export function StudentQuizRunner({
           item.percentage = item.totalMarks > 0 ? (item.earnedMarks / item.totalMarks) * 100 : 0;
         });
 
+        const issuedResultPin = createPostSubmitResultPin();
         const submission: StudentSubmission = {
           id: `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
           quizId: finalQuizId,
@@ -2665,7 +2699,7 @@ export function StudentQuizRunner({
           questionResults: qResults,
           topicBreakdown,
           status: 'submitted',
-          resultPin: generateResultPin(),
+          ...(issuedResultPin ? { resultPin: issuedResultPin } : {}),
           forensics: buildExamForensics(),
         };
 
@@ -2675,7 +2709,7 @@ export function StudentQuizRunner({
           studentName: candidateName.trim() || 'Candidate',
           candidateNumber: candidateNumber.trim() || undefined,
           submittedAt: submission.submittedAt,
-          resultPin: submission.resultPin,
+          ...(issuedResultPin ? { resultPin: issuedResultPin } : {}),
         });
 
         setCompletedSubmission(submission);
@@ -3144,6 +3178,7 @@ export function StudentQuizRunner({
       const finalQuizCode = resolvedQuizCode || (testIdOrCode || 'EXAM').toUpperCase();
       const finalQuizId = effectiveDraftQuizId;
       const baseForensics = buildExamForensics();
+      const emergencyResultPin = createPostSubmitResultPin();
 
       const emergencySubmission: StudentSubmission = {
         id: `sub_emerg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -3173,7 +3208,7 @@ export function StudentQuizRunner({
         questionResults: qResults,
         topicBreakdown,
         status: 'submitted',
-        resultPin: generateResultPin(),
+        ...(emergencyResultPin ? { resultPin: emergencyResultPin } : {}),
         forensics: {
           ...baseForensics,
           emergencyExitReason,
@@ -3192,7 +3227,7 @@ export function StudentQuizRunner({
         studentName: candidateName.trim() || 'Candidate',
         candidateNumber: candidateNumber.trim() || undefined,
         submittedAt: emergencySubmission.submittedAt,
-        resultPin: emergencySubmission.resultPin,
+        ...(emergencyResultPin ? { resultPin: emergencyResultPin } : {}),
       });
 
       setCompletedSubmission(emergencySubmission);
@@ -3721,19 +3756,34 @@ export function StudentQuizRunner({
     setLobbyError(null);
     setStudentPinError(null);
 
-    // Verify PIN before allowing candidate to resume a draft
+    const exitFullscreenIfEntered = () => {
+      if (typeof document !== 'undefined' && document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    };
+
+    // Validate synchronous client inputs first, then enter fullscreen immediately inside the user gesture
     if (requireStudentPin) {
       const pin = studentPinInput.trim();
       if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
         setStudentPinError('Please enter your valid 4-digit numeric PIN to resume your session.');
         return;
       }
+    }
 
+    if (securityEnabled && containerRef.current) {
+      await requestSecureFullscreen();
+    }
+
+    // Verify PIN before allowing candidate to resume a draft
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
       setIsCheckingAttempt(true);
       try {
         const result = await verifyStudentPin(candidateName, candidateClass, pin);
         if (!result.valid) {
           setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
           setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
           return;
         }
@@ -3742,6 +3792,7 @@ export function StudentQuizRunner({
         }
       } catch (err: any) {
         setIsCheckingAttempt(false);
+        exitFullscreenIfEntered();
         setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
         return;
       }
@@ -3761,6 +3812,7 @@ export function StudentQuizRunner({
         );
         if (didSubmitAttempt(alreadySubmitted)) {
           setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
           setDetectedDraft(null);
           setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
           return;
@@ -3820,9 +3872,7 @@ export function StudentQuizRunner({
       );
     }
 
-    await flushClipboard();
-
-    if (securityEnabled && containerRef.current) {
+    if (securityEnabled && containerRef.current && !document.fullscreenElement) {
       await requestSecureFullscreen();
     }
 
@@ -3839,23 +3889,37 @@ export function StudentQuizRunner({
       setLobbyError('Please select or specify your class / section.');
       return;
     }
-    setLobbyError(null);
-    setStudentPinError(null);
-    setAttemptBlockedMessage(null);
-
-    // 1. If student PIN verification is enabled, validate securely against server
     if (requireStudentPin) {
       const pin = studentPinInput.trim();
       if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
         setStudentPinError('Please enter a valid 4-digit numeric PIN.');
         return;
       }
+    }
+    setLobbyError(null);
+    setStudentPinError(null);
+    setAttemptBlockedMessage(null);
 
+    const exitFullscreenIfEntered = () => {
+      if (typeof document !== 'undefined' && document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    };
+
+    // Request fullscreen synchronously within the user click gesture before async network checks
+    if (securityEnabled && containerRef.current) {
+      await requestSecureFullscreen();
+    }
+
+    // 1. If student PIN verification is enabled, validate securely against server
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
       setIsCheckingAttempt(true);
       try {
         const result = await verifyStudentPin(candidateName, candidateClass, pin);
         if (!result.valid) {
           setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
           setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
           return;
         }
@@ -3865,6 +3929,7 @@ export function StudentQuizRunner({
         }
       } catch (err: any) {
         setIsCheckingAttempt(false);
+        exitFullscreenIfEntered();
         setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
         return;
       }
@@ -3884,6 +3949,7 @@ export function StudentQuizRunner({
         );
         if (attempt.submitted) {
           setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
           const timeStr = attempt.submittedAt
             ? new Date(attempt.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : 'earlier';
@@ -3898,9 +3964,6 @@ export function StudentQuizRunner({
         setIsCheckingAttempt(false);
       }
     }
-
-    // Sanitize clipboard on exam entry
-    await flushClipboard();
 
     // Shared school devices: if the saved sitting belongs to a different candidate,
     // purge the previous attempt (answers, strikes, receipt) before starting.
@@ -3963,7 +4026,7 @@ export function StudentQuizRunner({
     setStartTime(now);
     setTargetEndTime(end);
     setTimeLeft(durationToUseSec);
-    if (securityEnabled && containerRef.current) {
+    if (securityEnabled && containerRef.current && !document.fullscreenElement) {
       await requestSecureFullscreen();
     }
     setHasStarted(true);
@@ -5084,7 +5147,7 @@ export function StudentQuizRunner({
                   setCandidateName(val);
                   if (lobbyError) setLobbyError(null);
                   // Auto-fill class and candidate number if exact matching roster student typed manually
-                  const matched = schoolRoster.find(
+                  const matched = selectableRoster.find(
                     (s) => s.name.trim().toLowerCase() === val.trim().toLowerCase()
                   );
                   if (matched) {
@@ -5106,7 +5169,7 @@ export function StudentQuizRunner({
                   }
                   if (lobbyError) setLobbyError(null);
                 }}
-                roster={schoolRoster}
+                roster={selectableRoster}
                 selectedClass={candidateClass}
                 placeholder={requireStudentPin ? "Select or type your name..." : "e.g. Alex Johnson"}
                 hasError={!!lobbyError && !candidateName.trim()}
@@ -5146,7 +5209,7 @@ export function StudentQuizRunner({
                   }}
                 >
                   <option value="" disabled>-- Select Class / Section --</option>
-                  {configuredClasses.map((cls) => (
+                  {selectableExamClasses.map((cls) => (
                     <option key={cls} value={cls}>
                       {cls}
                     </option>
@@ -5652,7 +5715,7 @@ export function StudentQuizRunner({
             </div>
 
             {/* Personal Access PIN Card — High-contrast security ticket */}
-            {completedSubmission.resultPin && (
+            {ENABLE_POST_SUBMIT_RESULT_PIN && completedSubmission.resultPin && (
               <div
                 style={{
                   background: '#0f172a',
@@ -5726,7 +5789,7 @@ export function StudentQuizRunner({
                 </div>
 
                 <div style={{ fontSize: '0.875rem', color: '#cbd5e1', lineHeight: '1.5', maxWidth: '520px', margin: '0 auto' }}>
-                  ⚠️ <strong style={{ color: '#fbbf24' }}>Important:</strong> Please write down or screenshot this 3-digit PIN. You will need it together with your name to view your marked paper and examiner notes when results are released.
+                  ⚠️ <strong style={{ color: '#fbbf24' }}>Important:</strong> Please write down or screenshot this Personal Access PIN. You will need it together with your name to view your marked paper and examiner notes when results are released.
                 </div>
               </div>
             )}

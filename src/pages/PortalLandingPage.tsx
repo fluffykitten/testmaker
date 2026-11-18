@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
+  ENABLE_POST_SUBMIT_RESULT_PIN,
   getDeviceReceipts,
   getPendingOutboxSubmissions,
   flushSubmissionOutbox,
@@ -410,7 +411,9 @@ export function PortalLandingPage({
     if (receipts.length > 0) {
       setResultCodeInput(receipts[0].quizCode);
       setResultCandidateInput(receipts[0].studentName || receipts[0].candidateNumber || '');
-      setResultPinInput(receipts[0].resultPin || '');
+      if (ENABLE_POST_SUBMIT_RESULT_PIN) {
+        setResultPinInput(receipts[0].resultPin || '');
+      }
     }
 
     refreshPendingOutbox();
@@ -512,13 +515,17 @@ export function PortalLandingPage({
       setResultError('Please enter your Candidate Name or Seat #.');
       return;
     }
-    if (!resultPinInput.trim()) {
-      setResultError('Please enter your 3-digit Access PIN.');
+    if (ENABLE_POST_SUBMIT_RESULT_PIN && !resultPinInput.trim()) {
+      setResultError('Please enter your Access PIN.');
       return;
     }
 
     setResultError('');
-    setActiveResultLookup({ quizCode: cleanCode, candidateId: cleanId, pin: resultPinInput.trim() });
+    setActiveResultLookup({
+      quizCode: cleanCode,
+      candidateId: cleanId,
+      pin: ENABLE_POST_SUBMIT_RESULT_PIN ? resultPinInput.trim() : '',
+    });
     setIsResultModalOpen(true);
   };
 
@@ -750,25 +757,27 @@ export function PortalLandingPage({
                     />
                   </div>
 
-                  <div className="portal-field">
-                    <label className="portal-label">Access PIN (3-digit)</label>
-                    <input
-                      type="text"
-                      className="portal-input portal-input--pin"
-                      placeholder="PIN"
-                      value={resultPinInput}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/\D/g, '').slice(0, 3);
-                        setResultPinInput(v);
-                        if (resultError) setResultError('');
-                      }}
-                      maxLength={3}
-                      inputMode="numeric"
-                    />
-                    <span className="portal-field-hint">
-                      Found on your examination submission receipt.
-                    </span>
-                  </div>
+                  {ENABLE_POST_SUBMIT_RESULT_PIN && (
+                    <div className="portal-field">
+                      <label className="portal-label">Access PIN</label>
+                      <input
+                        type="text"
+                        className="portal-input portal-input--pin"
+                        placeholder="PIN"
+                        value={resultPinInput}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+                          setResultPinInput(v);
+                          if (resultError) setResultError('');
+                        }}
+                        maxLength={6}
+                        inputMode="numeric"
+                      />
+                      <span className="portal-field-hint">
+                        Found on your examination submission receipt.
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {resultError && <span className="portal-error-msg">{resultError}</span>}

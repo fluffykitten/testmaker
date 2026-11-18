@@ -200,12 +200,19 @@ export async function verifyStudentPin(
   const cleanPin = pin.trim();
 
   try {
-    // 1. Try Postgres RPC first (Direct, zero cold start, natively runs inside Supabase)
-    const { data: rpcData, error: rpcError } = await (supabase as any).rpc('verify_student_pin', {
+    // 1. Try Postgres RPC first (Direct, zero cold start, bounded timeout)
+    const rpcPromise = (supabase as any).rpc('verify_student_pin', {
       p_name: cleanName,
       p_class: cleanClass,
       p_pin: cleanPin,
     });
+    const rpcTimeout = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 5000)
+    );
+    const { data: rpcData, error: rpcError } = (await Promise.race([rpcPromise, rpcTimeout])) as {
+      data: any;
+      error: any;
+    };
 
     if (!rpcError && rpcData) {
       if (!rpcData.unconfigured) {
@@ -214,16 +221,33 @@ export async function verifyStudentPin(
       console.warn('Cloud roster unconfigured in Postgres RPC, attempting Edge function or local fallback.');
     }
 
-    // 2. Try Supabase Edge Function fallback
-    const { data: edgeData, error: edgeError } = await supabase.functions.invoke('verify-student-pin', {
-      body: { name: cleanName, class: cleanClass, pin: cleanPin },
-    });
+    const code = String(rpcError?.code || '').toUpperCase();
+    const msg = String(rpcError?.message || '');
+    const rpcUnavailable =
+      Boolean(rpcData?.unconfigured) ||
+      code === '42883' ||
+      code === 'PGRST202' ||
+      /could not find the function/i.test(msg);
 
-    if (!edgeError && edgeData) {
-      if (!edgeData.unconfigured) {
-        return edgeData;
+    // 2. Try Supabase Edge Function only if RPC is unconfigured or not deployed
+    if (rpcUnavailable) {
+      const edgePromise = supabase.functions.invoke('verify-student-pin', {
+        body: { name: cleanName, class: cleanClass, pin: cleanPin },
+      });
+      const edgeTimeout = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+        setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 4000)
+      );
+      const { data: edgeData, error: edgeError } = (await Promise.race([
+        edgePromise,
+        edgeTimeout,
+      ])) as { data: any; error: any };
+
+      if (!edgeError && edgeData) {
+        if (!edgeData.unconfigured) {
+          return edgeData;
+        }
+        console.warn('Cloud roster unconfigured in Edge function, attempting local fallback.');
       }
-      console.warn('Cloud roster unconfigured in Edge function, attempting local fallback.');
     }
   } catch (err) {
     console.warn('Network error verifying student PIN:', err);
