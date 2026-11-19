@@ -3,7 +3,11 @@
 // recover from crashes or transfer to another computer without consuming Supabase storage.
 
 import { supabase, supabaseUrl, supabaseAnonKey, isSupabaseConfigured } from '../lib/supabase';
-import { normalizeIdentityPart } from '../lib/examSubmissionGuards';
+import {
+  normalizeIdentityPart,
+  normalizeClassIdentityPart,
+  isMissingRpcError,
+} from '../lib/examSubmissionGuards';
 import type { SecurityViolationTier, SecurityTierEvent } from '../lib/securityTiers';
 
 export interface ExamDraftPayload {
@@ -34,12 +38,20 @@ export interface ExamDraftPayload {
   status: 'in_progress' | 'submitted';
 }
 
-export function buildStudentDraftIdentifier(studentName?: string, studentPin?: string): string {
+export function buildStudentDraftIdentifier(
+  studentName?: string,
+  studentPin?: string,
+  studentClass?: string
+): string {
   const cleanName = normalizeIdentityPart(studentName)
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   const cleanPin = String(studentPin || '').trim();
+  const cleanClass = normalizeClassIdentityPart(studentClass)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
   if (cleanName && cleanPin) return `${cleanName}__${cleanPin}`;
+  if (cleanName && cleanClass) return `${cleanName}__cls_${cleanClass}`;
   return cleanPin || cleanName || String(studentName || '').trim();
 }
 
@@ -55,6 +67,26 @@ export function getDraftKey(quizCode: string, studentIdentifier: string): string
 const LOCAL_DRAFT_PREFIX = 'fluffykitten_exam_draft_';
 const LOCAL_DRAFT_SECRET_PREFIX = 'fluffykitten_draft_secret_';
 const inMemoryDraftSecrets = new Map<string, string>();
+const draftCloudBackoffByKey = new Map<string, { failures: number; nextAllowedAt: number }>();
+
+/** Clears the per-key cloud autosave circuit breaker state (for automated tests). */
+export function resetDraftCloudBackoffForTests(): void {
+  draftCloudBackoffByKey.clear();
+}
+
+function recordDraftCloudFailure(draftKey: string): void {
+  const prev = draftCloudBackoffByKey.get(draftKey);
+  const failures = (prev?.failures || 0) + 1;
+  const delayMs = Math.min(120_000, 15_000 * Math.pow(2, failures - 1));
+  draftCloudBackoffByKey.set(draftKey, {
+    failures,
+    nextAllowedAt: Date.now() + delayMs,
+  });
+}
+
+function clearDraftCloudFailure(draftKey: string): void {
+  draftCloudBackoffByKey.delete(draftKey);
+}
 
 export function resolveDraftOwnerToken(
   quizCode: string,
@@ -95,10 +127,11 @@ export function resolveDraftOwnerToken(
 export function getDraftLockCredentials(
   quizCode: string,
   studentName: string,
-  studentPin?: string
+  studentPin?: string,
+  studentClass?: string
 ): { draftKey: string; ownerToken: string } {
   const cleanCode = (quizCode || 'EXAM').trim().toUpperCase();
-  const identifier = buildStudentDraftIdentifier(studentName, studentPin);
+  const identifier = buildStudentDraftIdentifier(studentName, studentPin, studentClass);
   const draftKey = getDraftKey(cleanCode, identifier);
   const ownerToken = resolveDraftOwnerToken(cleanCode, draftKey, studentPin, identifier);
   return { draftKey, ownerToken };
@@ -134,9 +167,10 @@ export async function computeStudentHeartbeatKey(
 export async function getActiveStudentHeartbeatProof(
   quizCode: string,
   studentName: string,
-  studentPin?: string
+  studentPin?: string,
+  studentClass?: string
 ): Promise<{ draftKey: string; heartbeatKey: string }> {
-  const { draftKey, ownerToken } = getDraftLockCredentials(quizCode, studentName, studentPin);
+  const { draftKey, ownerToken } = getDraftLockCredentials(quizCode, studentName, studentPin, studentClass);
   const heartbeatKey = await computeStudentHeartbeatKey(quizCode, draftKey, ownerToken);
   return { draftKey, heartbeatKey };
 }
@@ -147,11 +181,15 @@ export async function getActiveStudentHeartbeatProof(
  */
 export async function saveExamDraft(
   draft: ExamDraftPayload,
-  options?: { keepalive?: boolean }
+  options?: { keepalive?: boolean; force?: boolean }
 ): Promise<boolean> {
   if (!draft.quizCode || !draft.studentName) return false;
 
-  const identifier = buildStudentDraftIdentifier(draft.studentName, draft.studentPin);
+  const identifier = buildStudentDraftIdentifier(
+    draft.studentName,
+    draft.studentPin,
+    draft.candidateClass
+  );
   const draftKey = getDraftKey(draft.quizCode, identifier);
   const ownerToken = resolveDraftOwnerToken(draft.quizCode, draftKey, draft.studentPin, identifier);
   const payloadWithTimestamp: ExamDraftPayload = {
@@ -165,6 +203,14 @@ export async function saveExamDraft(
     localStorage.setItem(`${LOCAL_DRAFT_PREFIX}${draftKey}`, serialized);
   } catch (err) {
     console.warn('Could not cache exam draft to localStorage:', err);
+  }
+
+  // Engage per-key exponential backoff after transient cloud failures so 170 tabs don't amplify 544 storms
+  if (!options?.keepalive && !options?.force) {
+    const backoff = draftCloudBackoffByKey.get(draftKey);
+    if (backoff && Date.now() < backoff.nextAllowedAt) {
+      return false;
+    }
   }
 
   // 2. Push to Supabase via keepalive fetch on pagehide/beforeunload (up to 64 KB Chromium cap)
@@ -190,42 +236,63 @@ export async function saveExamDraft(
         },
         body: rpcBody,
       });
-      return res.ok;
+      if (res.ok) {
+        clearDraftCloudFailure(draftKey);
+        return true;
+      }
+      recordDraftCloudFailure(draftKey);
+      return false;
     } catch {
+      recordDraftCloudFailure(draftKey);
       return false;
     }
   }
 
-  // 2. Push to Supabase via SECURITY DEFINER RPC first (falls back to legacy 2-arg signature or app_config)
+  // 2. Push to Supabase via SECURITY DEFINER RPC first (only fall back to legacy signature / app_config on 42883)
   try {
     let rpcRes = await (supabase as any).rpc('save_student_exam_draft', {
       p_key: draftKey,
       p_value: serialized,
       p_owner_token: ownerToken,
     });
-    if (rpcRes?.error && /42883|function.*does not exist/i.test(String(rpcRes.error.message || rpcRes.error.code || ''))) {
+    if (rpcRes?.error && isMissingRpcError(rpcRes.error)) {
       rpcRes = await (supabase as any).rpc('save_student_exam_draft', {
         p_key: draftKey,
         p_value: serialized,
       });
     }
     if (!rpcRes?.error && rpcRes?.data === true) {
+      clearDraftCloudFailure(draftKey);
       return true;
     }
     if (rpcRes?.error) {
+      const errCode = String(rpcRes.error.code || '');
+      const errMsg = String(rpcRes.error.message || '');
+      if (errCode === '42501' || /belongs to another device/i.test(errMsg)) {
+        return false;
+      }
+      if (!isMissingRpcError(rpcRes.error)) {
+        recordDraftCloudFailure(draftKey);
+        console.warn('Cloud draft RPC transient failure (backoff engaged):', errMsg || errCode);
+        return false;
+      }
+
       const { error } = await (supabase.from('app_config' as any) as any).upsert({
         key: draftKey,
         value: serialized,
       });
 
       if (error) {
+        recordDraftCloudFailure(draftKey);
         console.warn('Cloud draft sync notice:', error.message);
         return false;
       }
+      clearDraftCloudFailure(draftKey);
       return true;
     }
     return false;
   } catch (err) {
+    recordDraftCloudFailure(draftKey);
     console.warn('Cloud draft network error:', err);
     return false;
   }
@@ -235,7 +302,8 @@ function parseAndCacheCloudDraft(
   rawValue: string,
   quizId: string,
   draftKey: string,
-  expectedStudentName?: string
+  expectedStudentName?: string,
+  expectedStudentClass?: string
 ): ExamDraftPayload | null {
   const parsed: ExamDraftPayload = JSON.parse(rawValue);
   if (parsed && parsed.status === 'in_progress') {
@@ -248,6 +316,12 @@ function parseAndCacheCloudDraft(
       normalizeIdentityPart(parsed.studentName) !== normalizeIdentityPart(expectedStudentName)
     ) {
       console.warn('Draft identity mismatch prevented via cloud.');
+      return null;
+    }
+    const expectedClassNorm = normalizeClassIdentityPart(expectedStudentClass);
+    const parsedClassNorm = normalizeClassIdentityPart(parsed.candidateClass);
+    if (expectedClassNorm && parsedClassNorm && parsedClassNorm !== expectedClassNorm) {
+      console.warn('Draft class mismatch prevented via cloud.');
       return null;
     }
     const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
@@ -268,7 +342,7 @@ export async function fetchExamDraft(
   quizCode: string,
   quizId: string,
   studentIdentifier: string,
-  options?: { studentPin?: string; expectedStudentName?: string }
+  options?: { studentPin?: string; expectedStudentName?: string; expectedStudentClass?: string }
 ): Promise<ExamDraftPayload | null> {
   if (!quizCode || !quizId || !studentIdentifier) return null;
 
@@ -276,6 +350,7 @@ export async function fetchExamDraft(
   const expectedNameNorm = options?.expectedStudentName
     ? normalizeIdentityPart(options.expectedStudentName)
     : '';
+  const expectedClassNorm = normalizeClassIdentityPart(options?.expectedStudentClass);
 
   // 1. Try local storage first
   try {
@@ -283,12 +358,15 @@ export async function fetchExamDraft(
     if (local) {
       const parsed: ExamDraftPayload = JSON.parse(local);
       if (parsed && parsed.status === 'in_progress') {
+        const parsedClassNorm = normalizeClassIdentityPart(parsed.candidateClass);
         if (parsed.quizId !== quizId) {
           console.warn(
             `Local draft quiz id mismatch (${parsed.quizId} != ${quizId}); checking cloud copy instead.`
           );
         } else if (expectedNameNorm && normalizeIdentityPart(parsed.studentName) !== expectedNameNorm) {
           console.warn('Local draft student identity mismatch ignored.');
+        } else if (expectedClassNorm && parsedClassNorm && parsedClassNorm !== expectedClassNorm) {
+          console.warn('Local draft student class mismatch ignored.');
         } else {
           // Verify not stale (> 24 hours)
           const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
@@ -302,7 +380,7 @@ export async function fetchExamDraft(
     console.warn('Local draft read error:', err);
   }
 
-  // 2. Fetch from Supabase cloud via SECURITY DEFINER RPC first (fallback to 1-arg or app_config pre-migration)
+  // 2. Fetch from Supabase cloud via SECURITY DEFINER RPC first (fallback to 1-arg or app_config only on 42883)
   try {
     const ownerToken = resolveDraftOwnerToken(quizCode, draftKey, options?.studentPin, studentIdentifier);
     let rpcRes = (await (supabase as any).rpc('get_student_exam_draft', {
@@ -310,7 +388,7 @@ export async function fetchExamDraft(
       p_owner_token: ownerToken,
     })) as { data: string | null; error: any };
 
-    if (rpcRes?.error && /42883|function.*does not exist/i.test(String(rpcRes.error.message || rpcRes.error.code || ''))) {
+    if (rpcRes?.error && isMissingRpcError(rpcRes.error)) {
       rpcRes = (await (supabase as any).rpc('get_student_exam_draft', {
         p_key: draftKey,
       })) as { data: string | null; error: any };
@@ -318,8 +396,18 @@ export async function fetchExamDraft(
 
     if (!rpcRes.error) {
       if (rpcRes.data) {
-        return parseAndCacheCloudDraft(rpcRes.data, quizId, draftKey, options?.expectedStudentName);
+        return parseAndCacheCloudDraft(
+          rpcRes.data,
+          quizId,
+          draftKey,
+          options?.expectedStudentName,
+          options?.expectedStudentClass
+        );
       }
+      return null;
+    }
+
+    if (!isMissingRpcError(rpcRes.error)) {
       return null;
     }
 
@@ -329,7 +417,13 @@ export async function fetchExamDraft(
       .maybeSingle()) as { data: { value: string } | null; error: any };
 
     if (!error && data?.value) {
-      return parseAndCacheCloudDraft(data.value, quizId, draftKey, options?.expectedStudentName);
+      return parseAndCacheCloudDraft(
+        data.value,
+        quizId,
+        draftKey,
+        options?.expectedStudentName,
+        options?.expectedStudentClass
+      );
     }
   } catch (err) {
     console.warn('Could not fetch cloud draft:', err);
@@ -357,18 +451,19 @@ export async function clearExamDraft(
     localStorage.removeItem(`${LOCAL_DRAFT_SECRET_PREFIX}${draftKey}`);
   } catch {}
   inMemoryDraftSecrets.delete(draftKey);
+  clearDraftCloudFailure(draftKey);
 
   try {
     let rpcRes = await (supabase as any).rpc('delete_student_exam_draft', {
       p_key: draftKey,
       p_owner_token: ownerToken,
     });
-    if (rpcRes?.error && /42883|function.*does not exist/i.test(String(rpcRes.error.message || rpcRes.error.code || ''))) {
+    if (rpcRes?.error && isMissingRpcError(rpcRes.error)) {
       rpcRes = await (supabase as any).rpc('delete_student_exam_draft', {
         p_key: draftKey,
       });
     }
-    if (rpcRes?.error) {
+    if (rpcRes?.error && isMissingRpcError(rpcRes.error)) {
       await (supabase.from('app_config' as any) as any)
         .delete()
         .eq('key', draftKey);
@@ -391,8 +486,10 @@ export async function checkStudentAttemptSubmitted(
 ): Promise<{ submitted: boolean; submittedAt?: string; submissionId?: string }> {
   const cleanCode = (quizCode || '').trim().toUpperCase();
   const cleanName = normalizeIdentityPart(candidateName);
-  const cleanClass = normalizeIdentityPart(candidateClass);
+  const cleanClass = normalizeClassIdentityPart(candidateClass);
   const cleanNumber = normalizeIdentityPart(candidateNumber);
+
+  let shouldRunLegacyTableFallback = false;
 
   // 1. Prefer the exact, server-side RPC (no 100-row truncation, no client-side scan).
   try {
@@ -409,38 +506,47 @@ export async function checkStudentAttemptSubmitted(
         submissionId: data.submissionId || undefined,
       };
     }
-  } catch (err) {
-    console.warn('Attempt RPC unavailable, falling back to table query:', err);
-  }
-
-  // 2. Legacy fallback: query the table and normalise in JS.
-  try {
-    const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
-      .select('id, student_name, student_class, candidate_number, submitted_at')
-      .eq('quiz_code', cleanCode)
-      .limit(1000);
-
-    if (!error && Array.isArray(data)) {
-      for (const row of data) {
-        const rowName = normalizeIdentityPart(row.student_name);
-        const rowClass = normalizeIdentityPart(row.student_class || row.candidate_class);
-        const rowNumber = normalizeIdentityPart(row.candidate_number);
-
-        const matchesName = Boolean(cleanName) && rowName === cleanName;
-        const matchesClass = !cleanClass || !rowClass || cleanClass === rowClass;
-        const matchesNumber = !cleanNumber || !rowNumber || cleanNumber === rowNumber;
-
-        if (matchesName && matchesClass && matchesNumber) {
-          return {
-            submitted: true,
-            submittedAt: row.submitted_at,
-            submissionId: row.id,
-          };
-        }
-      }
+    if (error && isMissingRpcError(error)) {
+      shouldRunLegacyTableFallback = true;
     }
   } catch (err) {
-    console.warn('Could not check submission attempt in cloud:', err);
+    if (isMissingRpcError(err)) {
+      shouldRunLegacyTableFallback = true;
+    } else {
+      console.warn('Attempt RPC unavailable:', err);
+    }
+  }
+
+  // 2. Legacy fallback (pre-migration DBs only): query the table and normalise in JS.
+  if (shouldRunLegacyTableFallback) {
+    try {
+      const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
+        .select('id, student_name, student_class, candidate_number, submitted_at')
+        .eq('quiz_code', cleanCode)
+        .limit(1000);
+
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          const rowName = normalizeIdentityPart(row.student_name);
+          const rowClass = normalizeClassIdentityPart(row.student_class || row.candidate_class);
+          const rowNumber = normalizeIdentityPart(row.candidate_number);
+
+          const matchesName = Boolean(cleanName) && rowName === cleanName;
+          const matchesClass = !cleanClass || !rowClass || cleanClass === rowClass;
+          const matchesNumber = !cleanNumber || !rowNumber || cleanNumber === rowNumber;
+
+          if (matchesName && matchesClass && matchesNumber) {
+            return {
+              submitted: true,
+              submittedAt: row.submitted_at,
+              submissionId: row.id,
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Could not check submission attempt in cloud:', err);
+    }
   }
 
   // 3. Check local device receipts as the offline fallback.
@@ -452,10 +558,12 @@ export async function checkStudentAttemptSubmitted(
         const found = receipts.find((r: any) => {
           const rCode = String(r.quizCode || '').trim().toUpperCase();
           const rName = normalizeIdentityPart(r.studentName);
+          const rClass = normalizeClassIdentityPart(r.studentClass || r.candidateClass);
           const rNumber = normalizeIdentityPart(r.candidateNumber);
           return (
             rCode === cleanCode &&
             rName === cleanName &&
+            (!cleanClass || !rClass || cleanClass === rClass) &&
             (!cleanNumber || !rNumber || cleanNumber === rNumber)
           );
         });

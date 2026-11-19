@@ -19,7 +19,12 @@ import {
   type RosterStudent,
   getSchoolRoster,
   loadAndSyncSchoolRoster,
+  saveSchoolRoster,
 } from '../services/studentRosterService';
+import {
+  exportRosterPinSheetDocx,
+  prepareRosterForPinExport,
+} from '../services/rosterPinDocxService';
 
 interface CandidateCardPrintModalProps {
   isOpen: boolean;
@@ -54,6 +59,7 @@ export function CandidateCardPrintModal({
   const [duplexFlip, setDuplexFlip] = useState<DuplexFlipEdge>('long');
   const [examTitle, setExamTitle] = useState<string>(initialExamTitle);
   const [printError, setPrintError] = useState<string | null>(null);
+  const [isExportingDocx, setIsExportingDocx] = useState<boolean>(false);
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
@@ -162,6 +168,34 @@ export function CandidateCardPrintModal({
       return;
     }
     onClose();
+  };
+
+  const handleExportPinSheetDocx = async () => {
+    if (targetStudents.length === 0 || isExportingDocx) return;
+    setPrintError(null);
+    setIsExportingDocx(true);
+    try {
+      const { updatedRoster, assignedCount } = prepareRosterForPinExport(roster);
+      if (assignedCount > 0) {
+        setRoster(updatedRoster);
+        await saveSchoolRoster(updatedRoster);
+      }
+      const updatedById = new Map(updatedRoster.map((s) => [s.id, s]));
+      const scopedStudents = targetStudents.map((s) => updatedById.get(s.id) || s);
+      const scopeLabel =
+        scopeType === 'class' && selectedClass
+          ? selectedClass
+          : scopeType === 'room' && selectedRoom
+            ? selectedRoom
+            : 'All_Classes';
+      await exportRosterPinSheetDocx(scopedStudents, {
+        scopeLabel,
+      });
+    } catch (err: any) {
+      setPrintError(err?.message || 'Could not export PIN sheet (.docx).');
+    } finally {
+      setIsExportingDocx(false);
+    }
   };
 
   return createPortal(
@@ -473,6 +507,22 @@ export function CandidateCardPrintModal({
             }}
           >
             Cancel
+          </button>
+          <button
+            type="button"
+            disabled={targetStudents.length === 0 || isExportingDocx}
+            onClick={handleExportPinSheetDocx}
+            style={{
+              padding: '8px 16px',
+              borderRadius: '8px',
+              border: '1px solid #0284c7',
+              background: targetStudents.length === 0 ? 'transparent' : 'rgba(2, 132, 199, 0.08)',
+              color: targetStudents.length === 0 ? '#94a3b8' : '#0369a1',
+              fontWeight: 700,
+              cursor: targetStudents.length === 0 || isExportingDocx ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {isExportingDocx ? '⏳ Exporting...' : `📄 Export PINs (.docx)`}
           </button>
           <button
             type="button"

@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.5`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.6`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.5-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.6-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `026`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `029`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -118,6 +118,9 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`024_phase3_deep_rls_ratelimit_and_game_security.sql`](supabase/migrations/024_phase3_deep_rls_ratelimit_and_game_security.sql) | `teacherPinHash` removal, `game_profiles` RLS & reward caps, `security_rate_limits` lockouts, roster PIN & draft-lock submission enforcement, and `get_student_game_paper` / `check_game_question_answer` |
 | [`025_personal_exam_pin_hardening.sql`](supabase/migrations/025_personal_exam_pin_hardening.sql) | `normalize_roster_class_label` spacing parity (`X IPA3` ↔ `X IPA 3`), strict enrolled-PIN rejection inside `verify_roster_pin_if_enrolled`, and composite `name__pin` draft lock resolution in `submit_student_exam_attempt` |
 | [`026_admin_teacher_account_management.sql`](supabase/migrations/026_admin_teacher_account_management.sql) | Centralized Admin Educator Account RPCs (`admin_list/create/update/reset_password/delete`), `must_change_password` temporary password flow, session revocation on suspension, and self-service `change_own_teacher_password` |
+| [`027_class_scoped_identity_and_170_student_scale.sql`](supabase/migrations/027_class_scoped_identity_and_170_student_scale.sql) | Class-scoped homonym disambiguation (`normalize_roster_class_label`), Practice `'graded'` submission status support, `fillfactor = 70` HOT tuning, 10-min `exam_draft_locks` refresh guard, functional audit/attempt lookup indexes, and `cleanup_stale_exam_drafts` RPC |
+| [`028_exam_paper_cache_and_fast_lobby.sql`](supabase/migrations/028_exam_paper_cache_and_fast_lobby.sql) | Private RLS-locked `exam_paper_cache` with trigger-based invalidation (`app_config` / `questions` / `custom_tests`), per-code advisory-lock single-flight builds, and indexed UUID/PK CTE question resolution |
+| [`029_resync_pin_verification_parity.sql`](supabase/migrations/029_resync_pin_verification_parity.sql) | Teacher unlock PIN RPC parity across `quiz_by_code_`, `quiz_by_code:`, `published_quizzes`, `previousCodes`, and default `'1234'` fallback |
 
 ---
 
@@ -130,6 +133,9 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Phase 2.5 Anti-Tamper** | `npm run test:phase25-security` | Draft locks, score zeroing, single-attempt enforcement, crash recovery |
 | **Phase 3A Client Security** | `npm run test:phase3a-security` | XSS & KaTeX `trust: false`, CSV neutralization, `.exam` crypto/re-grading, prompt-injection isolation |
 | **Phase 3B Deep Security** | `npm run test:phase3b-security` | Migration `024` contracts, `game_profiles` RLS/caps, rate limits, signed game frames, heartbeat proofs |
+| **Scale & Class Identity** | `npm run test:scale-170` | Class-scoped homonym locks/receipts, draft dirty-check fingerprint, `544` circuit breaker, `027` & `028` contracts |
+| **Post-Submit Re-Sync & PIN** | `npm run test:resync` | Unreachable vs. wrong Teacher PIN detection, outbox error propagation/cleanup, Practice UI, offline reload & `029` |
+| **Student PIN Sheet (.docx)** | `npm run test:roster-pin-docx` | Auto-assigned 4-digit PINs, per-class Master Tables, `3×6` cut-out slips, strict field filtering |
 | **Candidate Cards & Workbook Import** | `npm run test:desk-cards` | ICM multi-sheet workbook parsing, PIN-preserving diff import, schedule targeting, 2×3 A4 duplex mirroring |
 | **Personal Exam PIN Hardening** | `npm run test:student-pin` | Quiz PIN toggle inheritance, school-wide unique PINs, composite draft isolation, class normalization & `025` guards |
 | **Admin Educator Accounts** | `npm run test:teacher-accounts` | Migration `026` admin RPCs, bootstrap authorization, temporary password lifecycle, pre-026 fallback |
@@ -143,6 +149,22 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.6] — 200-Student Scale Hardening, Class-Scoped Identity, Re-Sync Recovery & Student PIN `.docx` Export (`027`–`029`)
+- **Class-Scoped Homonym Identity & Database Scale Hardening (`027`–`028`)**:
+  - Isolated non-PIN draft lock keys (`__cls_<class>`), offline receipts (`DeviceExamReceipt.studentClass`), shared-device session resets (`normalizeClassIdentityPart`), and `submit_student_exam_attempt` / `check_student_attempt_submitted` duplicate checks across classes (`"X IPA 1"` vs `"X IPA 2"`, normalizing spacing variants like `"X IPA3"`).
+  - Reduced Postgres draft write amplification by ~85–90% via `computeCloudDraftFingerprint` dirty-checking, removing `currentIndex` navigation from cloud debounces, relaxing edit debounce to `12s` and periodic sync to `90–110s` jittered, skipping redundant `exam_draft_locks` writes within 10 minutes, setting `fillfactor = 70` on `app_config` / `exam_draft_locks`, throttling duplicate student audit DB inserts to `3s`, adding `idx_proctor_audit_guard_lookup`, blocking RLS-failed table fallbacks on `544`/timeout with per-key backoff, and spreading timer-expiry auto-submits across `0–6s` jitter.
+  - Added RLS-locked `exam_paper_cache` with trigger-based invalidation and per-code `pg_advisory_xact_lock` in [`028_exam_paper_cache_and_fast_lobby.sql`](supabase/migrations/028_exam_paper_cache_and_fast_lobby.sql) plus 2-attempt `12s` retry logic in [`quizCodeService.ts`](src/services/quizCodeService.ts), raising Wave 1 live 200-student exam load throughput from `178/200` (`34.2s`) to `200/200` (`2.67s`).
+- **Post-Submission Re-Sync, Offline Reload & Teacher PIN Parity (`029`)**:
+  - Added `verifyTeacherUnlockPinDetailed` in [`quizCodeService.ts`](src/services/quizCodeService.ts) to distinguish unreachable servers (`544`/offline) from genuine wrong Teacher PINs, backed by [`029_resync_pin_verification_parity.sql`](supabase/migrations/029_resync_pin_verification_parity.sql).
+  - Preserved `resultPin` and `forensics.studentPin` in emergency fallback & Practice Mode submissions in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), exposed Pending Cloud Upload retry/backup controls in Practice Mode and offline browser reloads, fixed stuck modal spinners, and upgraded [`flushSubmissionOutbox`](src/services/quizSubmissionService.ts) & [`PortalLandingPage.tsx`](src/pages/PortalLandingPage.tsx) to surface real errors and clear synced session/draft residue.
+- **Printable Student Name & PIN `.docx` Export**:
+  - Added [`rosterPinDocxService.ts`](src/services/rosterPinDocxService.ts) (`prepareRosterForPinExport`, `exportRosterPinSheetDocx`) and wired **`📄 Export PINs (.docx)`** into [`AdvancedSettingsPage.tsx`](src/pages/AdvancedSettingsPage.tsx) and [`CandidateCardPrintModal.tsx`](src/components/CandidateCardPrintModal.tsx) (auto-assigns missing unique 4-digit PINs, outputs per-class A4 Proctor Master Tables followed by `3×6` dashed Cut-Out Student PIN Slips).
+- **Variant Image Grounding & Older Mac Trackpad/Scroll Shield**:
+  - Added Gemini Vision multimodal image grounding (`imageUrl` / inline base64), shared-passage Set Variant support, and override pruning across [`variantClassification.ts`](src/utils/variantClassification.ts), [`gemini.ts`](src/lib/gemini.ts), [`examVariantService.ts`](src/services/examVariantService.ts), [`QuestionVariantModal.tsx`](src/components/QuestionVariantModal.tsx), [`ExamVariantModal.tsx`](src/components/ExamVariantModal.tsx), and [`SavedTestsPage.tsx`](src/pages/SavedTestsPage.tsx).
+  - Refined diagonal trackpad wheel/touch handling and Split/Stacked View scroll containment in [`examGestureGuard.ts`](src/lib/examGestureGuard.ts), [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css), and [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx).
+- **Verification**:
+  - Verified with `npm run test:roster-pin-docx`, `npm run test:resync`, `npm run test:scale-170`, `npm run test:variants`, `npm run test:gestures`, `npm run test:student-pin`, `npm run test:phase1-security`, `npm run test:phase2-security`, `npm run test:phase25-security`, `npm run test:phase3a-security`, `npm run test:phase3b-security`, and `npm run build`.
 
 ### [v.2.5.5] — Mid-Run Audio Resume Fix Under 1x Playback Limits
 - **Resumable 1x Audio Playback (`ExamAudioPlayer`)**:

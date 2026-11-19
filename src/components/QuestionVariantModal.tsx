@@ -132,7 +132,13 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           enableImageGeneration: isImageGenEnabled,
         });
 
-        const finalSubs = targetMode === 'mcq' ? [] : (generated.sub_questions || []);
+        const resolvedStyle =
+          targetMode === 'structured'
+            ? 'Structured'
+            : targetMode === 'mcq'
+            ? 'Multiple Choice'
+            : (generated.question_style || question.question_style);
+        const finalSubs = resolvedStyle === 'Multiple Choice' ? [] : (generated.sub_questions || []);
         const cleanStem = stripDuplicateSubQuestionsFromStem(
           stripDuplicateOptionsFromStem(generated.question_text || '', generated.options),
           finalSubs
@@ -160,11 +166,12 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           question_number: `${question.question_number}V`,
           parent_question_id: null,
           question_text: cleanStem,
-          question_style: targetMode === 'structured' ? 'Structured' : targetMode === 'mcq' ? 'Multiple Choice' : (generated.question_style || question.question_style),
+          question_style: resolvedStyle,
           topic: generated.topic || question.topic,
           sub_topic: generated.sub_topic || question.sub_topic,
           difficulty: generated.difficulty || question.difficulty,
-          marks: generated.marks || (targetMode === 'mcq' ? 1 : question.marks),
+          cognitive_level: generated.cognitive_level ?? question.cognitive_level ?? null,
+          marks: targetMode === 'mcq' ? 1 : (generated.marks || question.marks),
           svg_content: resolvedSvg,
           diagram_url: resolvedDiagramUrl,
           ai_diagram_prompt: isImageGenEnabled ? (generated.ai_diagram_prompt || question.ai_diagram_prompt || null) : null,
@@ -173,10 +180,13 @@ export const QuestionVariantModal: React.FC<QuestionVariantModalProps> = ({
           diagram_source: question.diagram_source || null,
           resource_ref: generated.resource_ref !== undefined ? generated.resource_ref : (question.resource_ref || null),
           insert_page_number: generated.insert_page_number !== undefined ? generated.insert_page_number : (question.insert_page_number || null),
+          insert_resources: question.insert_resources || null,
           audio_url: generated.audio_url !== undefined ? generated.audio_url : (question.audio_url || null),
           audio_metadata: generated.audio_metadata !== undefined ? generated.audio_metadata : (question.audio_metadata || null),
-          options: targetMode === 'structured' ? null : (generated.options || null),
+          options: resolvedStyle === 'Multiple Choice' ? (generated.options || null) : null,
           sub_questions: finalSubs,
+          data_tables: generated.data_tables ?? question.data_tables,
+          scratchpad: generated.scratchpad,
           mark_scheme: generated.mark_scheme || null,
         };
 

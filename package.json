@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.5.5",
+  "version": "2.5.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -26,6 +26,7 @@
     "test:inline-gaps": "node --import ./scripts/register-ts.mjs scripts/test-inline-choice-gaps.mjs",
     "test:domain-helper": "node --import ./scripts/register-ts.mjs scripts/test-question-domain-detector.mjs",
     "test:audio-limit": "node --import ./scripts/register-ts.mjs scripts/test-audio-playback-limit.mjs",
+    "test:variants": "node --import ./scripts/register-ts.mjs scripts/test-variant-generation.mjs",
     "test:fillable-tables": "node --import ./scripts/register-ts.mjs scripts/test-fillable-data-tables.mjs",
     "test:passage-editor": "node --import ./scripts/register-ts.mjs scripts/test-reading-passage-and-editor-format.mjs",
     "test:topic-mastery": "node --import ./scripts/register-ts.mjs scripts/test-topic-mastery-excel.mjs",
@@ -42,6 +43,9 @@
     "test:phase25-security": "node --import ./scripts/register-ts.mjs scripts/test-phase25-anti-tamper.mjs",
     "test:phase3a-security": "node --import ./scripts/register-ts.mjs scripts/test-phase3a-client-security.mjs",
     "test:phase3b-security": "node --import ./scripts/register-ts.mjs scripts/test-phase3b-deep-security.mjs",
+    "test:scale-170": "node --import ./scripts/register-ts.mjs scripts/test-class-scoped-and-scale-hardening.mjs",
+    "test:resync": "node --import ./scripts/register-ts.mjs scripts/test-resync-after-submission.mjs",
+    "test:roster-pin-docx": "node --import ./scripts/register-ts.mjs scripts/test-roster-pin-docx.mjs",
     "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",

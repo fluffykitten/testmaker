@@ -8,7 +8,7 @@ import {
 } from './quizManagerService';
 import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
-import { hashTeacherPin, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
+import { hashTeacherPin, isMissingRpcError, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
 import { type SecurityViolationTier } from '../lib/securityTiers';
 import { getSecurityTiers, loadAndSyncSecurityTiers } from '../lib/settings';
 import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
@@ -351,43 +351,68 @@ async function resolveStudentQuizUncached(
 
   // 2A. On student devices with Supabase configured, deliver exam via hardened SECURITY DEFINER RPC first
   if (!published && isSupabaseConfigured() && !hasActiveTeacherSession()) {
-    try {
-      const rpcRes = await withTimeout<{ data: any; error: any }>(
-        (supabase as any).rpc('get_student_exam_paper', { p_code: cleanInput }),
-        5000,
-        { data: null, error: { message: 'timeout' } }
-      );
+    const maxRpcAttempts = 2;
+    for (let attempt = 1; attempt <= maxRpcAttempts; attempt++) {
+      try {
+        const rpcRes = await withTimeout<{ data: any; error: any }>(
+          (supabase as any).rpc('get_student_exam_paper', { p_code: cleanInput }),
+          12000,
+          { data: null, error: { message: 'timeout' } }
+        );
 
-      if (!rpcRes.error && rpcRes.data && rpcRes.data.publishedQuiz) {
-        const rpcPaper = rpcRes.data;
-        const rpcPublished = rpcPaper.publishedQuiz as PublishedQuiz;
-        const rpcQuestions = Array.isArray(rpcPaper.questions)
-          ? rpcPaper.questions.map((raw: any) => normalizeQuestionRecord(raw))
-          : [];
-        const schoolSecurityTiers = await withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers());
+        if (!rpcRes.error && rpcRes.data && rpcRes.data.publishedQuiz) {
+          const rpcPaper = rpcRes.data;
+          const rpcPublished = rpcPaper.publishedQuiz as PublishedQuiz;
+          const rpcQuestions = Array.isArray(rpcPaper.questions)
+            ? rpcPaper.questions.map((raw: any) => normalizeQuestionRecord(raw))
+            : [];
+          const schoolSecurityTiers = await withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers());
 
-        const result = buildStudentQuizData({
-          published: rpcPublished,
-          rawQuestions: rpcQuestions,
-          savedHeader: (rpcPaper.headerConfig || undefined) as ExamHeaderConfig | undefined,
-          savedTotalMarks: rpcPaper.customTest?.total_marks,
-          hasSavedTest: Boolean(rpcPaper.customTest || rpcQuestions.length > 0),
-          // VULN-P3-03: Never store or trust offline teacherPinHash for live cloud exams
-          teacherPinHash: '',
-          schoolSecurityTiers,
-        });
+          const result = buildStudentQuizData({
+            published: rpcPublished,
+            rawQuestions: rpcQuestions,
+            savedHeader: (rpcPaper.headerConfig || undefined) as ExamHeaderConfig | undefined,
+            savedTotalMarks: rpcPaper.customTest?.total_marks,
+            hasSavedTest: Boolean(rpcPaper.customTest || rpcQuestions.length > 0),
+            // VULN-P3-03: Never store or trust offline teacherPinHash for live cloud exams
+            teacherPinHash: '',
+            schoolSecurityTiers,
+          });
 
-        resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
-        return result;
+          resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+          return result;
+        }
+
+        // Code genuinely does not exist in Postgres (no need to retry)
+        if (!rpcRes.error && !rpcRes.data) {
+          break;
+        }
+
+        if (rpcRes.error) {
+          if (isMissingRpcError(rpcRes.error)) {
+            // Pre-migration 021 DB only: fall back to direct table query
+            allowLegacyCloudTableFallback = true;
+            break;
+          }
+          // Transient timeout / network / 5xx: retry once with jitter instead of falling back to RLS-blocked queries
+          if (attempt < maxRpcAttempts) {
+            const jitterMs = 300 + Math.floor(Math.random() * 700);
+            await new Promise((resolve) => setTimeout(resolve, jitterMs));
+            continue;
+          }
+        }
+      } catch (err) {
+        if (isMissingRpcError(err)) {
+          allowLegacyCloudTableFallback = true;
+          break;
+        }
+        if (attempt < maxRpcAttempts) {
+          const jitterMs = 300 + Math.floor(Math.random() * 700);
+          await new Promise((resolve) => setTimeout(resolve, jitterMs));
+          continue;
+        }
+        console.warn('get_student_exam_paper RPC transient failure:', err);
       }
-
-      if (rpcRes.error) {
-        // Migration 021 not yet applied / transient error — fall back cleanly
-        allowLegacyCloudTableFallback = true;
-      }
-    } catch (err) {
-      console.warn('get_student_exam_paper RPC fallback:', err);
-      allowLegacyCloudTableFallback = true;
     }
   }
 
@@ -577,6 +602,59 @@ async function resolveStudentQuizUncached(
   return null;
 }
 
+export interface TeacherPinVerificationResult {
+  valid: boolean;
+  unreachable?: boolean;
+  error?: string;
+}
+
+/**
+ * Verifies an invigilator unlock PIN without shipping the plaintext PIN to the
+ * candidate, reporting whether failure came from a wrong PIN vs. an
+ * unreachable server.
+ */
+export async function verifyTeacherUnlockPinDetailed(
+  quizCode: string,
+  pin: string,
+  expectedHash?: string
+): Promise<TeacherPinVerificationResult> {
+  const cleanCode = (quizCode || '').trim().toUpperCase();
+  const cleanPin = (pin || '').trim();
+  if (!cleanCode || !cleanPin) return { valid: false };
+
+  let rpcErrorMessage = '';
+
+  try {
+    const { data, error } = await withTimeout<{ data: any; error: any }>(
+      (supabase as any).rpc('verify_teacher_unlock_pin', {
+        p_quiz_code: cleanCode,
+        p_pin: cleanPin,
+      }),
+      8000,
+      { data: null, error: { message: 'Timed out contacting exam server.' } }
+    );
+    if (!error && data === true) return { valid: true };
+    // Server reachable and explicitly rejected the PIN (no offline fallback hash available)
+    if (!error && data === false && !expectedHash) return { valid: false };
+    if (error) {
+      rpcErrorMessage = String(error.message || error.code || 'Unable to verify PIN on server.');
+    }
+  } catch (err: any) {
+    rpcErrorMessage = String(err?.message || 'Unable to contact exam server.');
+  }
+
+  if (expectedHash) {
+    const matched = (await hashTeacherPin(cleanCode, cleanPin)) === expectedHash;
+    return { valid: matched };
+  }
+
+  if (rpcErrorMessage) {
+    return { valid: false, unreachable: true, error: rpcErrorMessage };
+  }
+
+  return { valid: false };
+}
+
 /**
  * Verifies an invigilator unlock PIN without shipping the plaintext PIN to the
  * candidate. Prefers the server-side `verify_teacher_unlock_pin` RPC and falls
@@ -587,25 +665,8 @@ export async function verifyTeacherUnlockPin(
   pin: string,
   expectedHash?: string
 ): Promise<boolean> {
-  const cleanCode = (quizCode || '').trim().toUpperCase();
-  const cleanPin = (pin || '').trim();
-  if (!cleanCode || !cleanPin) return false;
-
-  try {
-    const { data, error } = await (supabase as any).rpc('verify_teacher_unlock_pin', {
-      p_quiz_code: cleanCode,
-      p_pin: cleanPin,
-    });
-    if (!error && data === true) return true;
-    // If the RPC returned false for an exam without expectedHash (cloud Mode A), trust false;
-    // if an offline package / pre-023 paper supplied expectedHash, allow hash verification below.
-    if (!error && data === false && !expectedHash) return false;
-  } catch {
-    // RPC not deployed yet — fall through to the offline hash check.
-  }
-
-  if (!expectedHash) return false;
-  return (await hashTeacherPin(cleanCode, cleanPin)) === expectedHash;
+  const result = await verifyTeacherUnlockPinDetailed(quizCode, pin, expectedHash);
+  return result.valid;
 }
 
 /**

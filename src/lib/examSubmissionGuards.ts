@@ -70,6 +70,7 @@ export function resolveResumeClock(
 export interface SessionIdentityLike {
   candidateName?: string;
   candidateNumber?: string;
+  candidateClass?: string;
 }
 
 export function normalizeIdentityPart(value: string | undefined | null): string {
@@ -77,10 +78,32 @@ export function normalizeIdentityPart(value: string | undefined | null): string 
 }
 
 /**
+ * Normalizes class/section labels (e.g. "X IPA3", "10-IPA-03" -> "x ipa 3")
+ * to stay consistent with SQL `normalize_roster_class_label`.
+ */
+export function normalizeClassIdentityPart(value: string | undefined | null): string {
+  const collapsed = normalizeIdentityPart(value);
+  if (!collapsed) return '';
+  const match = collapsed.match(/^(x|xi|xii|10|11|12)\s*[- ]?\s*(ipa|ips)\s*[- ]?\s*0*(\d+)$/i);
+  if (match) {
+    const gradeRaw = match[1].toLowerCase();
+    const roman =
+      gradeRaw === '10' ? 'x' :
+      gradeRaw === '11' ? 'xi' :
+      gradeRaw === '12' ? 'xii' :
+      gradeRaw;
+    const stream = match[2].toLowerCase();
+    const num = String(parseInt(match[3], 10));
+    return `${roman} ${stream} ${num}`;
+  }
+  return collapsed;
+}
+
+/**
  * A saved session belongs to the current candidate when the names match and, if
- * both numbers are present, the numbers match too. Missing numbers are treated as
- * "unknown" rather than a mismatch so a candidate who leaves the optional field
- * blank is not logged out of their own attempt.
+ * both numbers or classes are present, they match too. Missing optional fields are
+ * treated as "unknown" rather than a mismatch so a candidate who leaves an
+ * optional field blank is not logged out of their own attempt.
  */
 export function isSameCandidateSession(
   saved: SessionIdentityLike | null | undefined,
@@ -90,6 +113,10 @@ export function isSameCandidateSession(
   const savedName = normalizeIdentityPart(saved.candidateName);
   const currentName = normalizeIdentityPart(current.candidateName);
   if (savedName && currentName && savedName !== currentName) return false;
+
+  const savedClass = normalizeClassIdentityPart(saved.candidateClass);
+  const currentClass = normalizeClassIdentityPart(current.candidateClass);
+  if (savedClass && currentClass && savedClass !== currentClass) return false;
 
   const savedNumber = normalizeIdentityPart(saved.candidateNumber);
   const currentNumber = normalizeIdentityPart(current.candidateNumber);
@@ -104,6 +131,59 @@ export function shouldResetSessionForCandidate(
 ): boolean {
   if (!saved) return false;
   return !isSameCandidateSession(saved, current);
+}
+
+export interface CloudDraftFingerprintInput {
+  answers?: Record<string | number, unknown>;
+  flaggedIndices?: number[];
+  audioProgress?: Record<string, { playedCount?: number }>;
+  violationsCount?: number;
+  strikeCount?: number;
+  isLockedByProctor?: boolean;
+  totalPenaltySeconds?: number;
+}
+
+/**
+ * Computes a deterministic dirty-check fingerprint for durable exam state so
+ * idle ticks and page navigation (currentIndex) do not trigger cloud draft writes.
+ */
+export function computeCloudDraftFingerprint(input: CloudDraftFingerprintInput): string {
+  const answers = input.answers || {};
+  const sortedAnswers = Object.keys(answers)
+    .sort()
+    .map((key) => [key, answers[key]]);
+
+  const sortedFlags = Array.isArray(input.flaggedIndices)
+    ? [...input.flaggedIndices].sort((a, b) => a - b)
+    : [];
+
+  const audio = input.audioProgress || {};
+  const sortedAudio = Object.keys(audio)
+    .sort()
+    .map((key) => [key, Number(audio[key]?.playedCount) || 0]);
+
+  return JSON.stringify({
+    answers: sortedAnswers,
+    flags: sortedFlags,
+    audio: sortedAudio,
+    violations: Number(input.violationsCount) || 0,
+    strikes: Number(input.strikeCount) || 0,
+    locked: Boolean(input.isLockedByProctor),
+    penalty: Number(input.totalPenaltySeconds) || 0,
+  });
+}
+
+/**
+ * Returns true strictly when Postgres/PostgREST reports that the RPC function is
+ * not deployed yet (42883 / PGRST202), preventing RLS-blocked table fallbacks on
+ * transient 544/timeout or 42501 security errors.
+ */
+export function isMissingRpcError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = String((err as any).code || '').trim().toUpperCase();
+  const message = String((err as any).message || '');
+  if (code === '42883' || code === 'PGRST202') return true;
+  return /function .* does not exist|could not find the function/i.test(message);
 }
 
 // ─── Submission outbox ─────────────────────────────────────────────────────────

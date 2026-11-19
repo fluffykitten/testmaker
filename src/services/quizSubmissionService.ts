@@ -14,6 +14,8 @@ import {
   computeNextRetryAt,
   isOutboxRetryable,
   normalizeIdentityPart,
+  normalizeClassIdentityPart,
+  isMissingRpcError,
 } from '../lib/examSubmissionGuards';
 import type { SecurityTierEvent } from '../lib/securityTiers';
 import {
@@ -28,7 +30,11 @@ import {
 import { getCanonicalProctorStudentId } from '../utils/examSecurityUtils';
 import { recordProctorAuditEvent } from './proctorAuditLogService';
 import { gradeSubmissionDeterministically } from './deterministicGradingService';
-import { getDraftLockCredentials } from './examDraftService';
+import {
+  buildStudentDraftIdentifier,
+  clearExamDraft,
+  getDraftLockCredentials,
+} from './examDraftService';
 import type { Question } from '../types/database';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
@@ -49,9 +55,17 @@ export interface DeviceExamReceipt {
   quizCode: string;
   quizTitle: string;
   studentName: string;
+  studentClass?: string;
   candidateNumber?: string;
   submittedAt: string;
   resultPin?: string;
+}
+
+const lastCloudWriteErrorById = new Map<string, string>();
+
+/** Returns the most recent cloud submission error recorded for a submission ID. */
+export function getLastCloudWriteError(submissionId: string): string | undefined {
+  return lastCloudWriteErrorById.get(submissionId);
 }
 
 /**
@@ -721,13 +735,18 @@ export async function importSubmissionToken(
  * Flushes all pending outbox submissions to Supabase cloud.
  * Automatically discards any items that have been tombstoned/deleted to prevent resurrection.
  */
-export async function flushSubmissionOutbox(): Promise<{ syncedCount: number; failedCount: number }> {
+export async function flushSubmissionOutbox(): Promise<{
+  syncedCount: number;
+  failedCount: number;
+  lastError?: string;
+}> {
   const pending = getPendingOutboxSubmissions();
   if (pending.length === 0) return { syncedCount: 0, failedCount: 0 };
 
   const deletedIds = getDeletedSubmissionIds();
   let syncedCount = 0;
   let failedCount = 0;
+  let lastError: string | undefined;
 
   for (const item of pending) {
     if (deletedIds.has(item.submission.id)) {
@@ -740,17 +759,47 @@ export async function flushSubmissionOutbox(): Promise<{ syncedCount: number; fa
       if (success) {
         markOutboxSynced(item.submission.id);
         syncedCount++;
+        try {
+          const code = (item.submission.quizCode || '').trim();
+          if (code && typeof localStorage !== 'undefined') {
+            localStorage.removeItem(`exam_sess_${code}`);
+            localStorage.removeItem(`exam_sess_${code.toUpperCase()}`);
+          }
+          if (code && typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem(`exam_sess_${code}`);
+            sessionStorage.removeItem(`exam_sess_${code.toUpperCase()}`);
+          }
+        } catch {}
+        const subPin = (item.submission.forensics as any)?.studentPin as string | undefined;
+        const draftIdent = buildStudentDraftIdentifier(
+          item.submission.studentName,
+          subPin,
+          item.submission.studentClass
+        );
+        if (draftIdent) {
+          clearExamDraft(
+            item.submission.quizCode,
+            item.submission.quizId,
+            draftIdent,
+            subPin
+          ).catch(() => {});
+        }
       } else {
-        saveToSubmissionOutbox(item.submission, 'failed', 'Cloud endpoint did not confirm receipt');
+        const errMsg =
+          getLastCloudWriteError(item.submission.id) || 'Cloud endpoint did not confirm receipt';
+        lastError = errMsg;
+        saveToSubmissionOutbox(item.submission, 'failed', errMsg);
         failedCount++;
       }
     } catch (err: any) {
-      saveToSubmissionOutbox(item.submission, 'failed', err?.message || 'Network error during flush');
+      const errMsg = err?.message || 'Network error during flush';
+      lastError = errMsg;
+      saveToSubmissionOutbox(item.submission, 'failed', errMsg);
       failedCount++;
     }
   }
 
-  return { syncedCount, failedCount };
+  return { syncedCount, failedCount, ...(lastError ? { lastError } : {}) };
 }
 
 /**
@@ -1440,6 +1489,8 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
     return false;
   }
 
+  lastCloudWriteErrorById.delete(submission.id);
+
   const updatedIso = submission.updatedAt || new Date().toISOString();
   const stampedSubmission: StudentSubmission =
     submission.updatedAt === updatedIso ? submission : { ...submission, updatedAt: updatedIso };
@@ -1491,7 +1542,8 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
         const lockCreds = getDraftLockCredentials(
           stampedSubmission.quizCode,
           stampedSubmission.studentName,
-          studentPin
+          studentPin,
+          stampedSubmission.studentClass
         );
         const rpcRow = {
           ...row,
@@ -1506,10 +1558,11 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
         } else if (rpcRes?.error) {
           const errMsg = String(rpcRes.error.message || '');
           const errCode = String(rpcRes.error.code || '');
-          // If server explicitly blocked ownership/PIN conflict (42501), do not fall back to table insert
+          // If server explicitly blocked ownership/PIN conflict (42501) or returned a non-42883 failure (e.g. 544/timeout),
+          // do NOT fall back to an RLS-blocked table insert that doubles load under stress.
           if (errCode === '42501' || /active exam session belongs to another device/i.test(errMsg)) {
             writeError = rpcRes.error;
-          } else {
+          } else if (isMissingRpcError(rpcRes.error)) {
             // Pre-migration 021 fallback
             const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
             if (!error) {
@@ -1518,9 +1571,14 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
             } else {
               writeError = error;
             }
+          } else {
+            writeError = { message: errMsg || `Cloud database RPC failed (${errCode || 'transient error'})` };
           }
         } else {
-          writeError = { message: 'Submission RPC rejected row payload.' };
+          writeError = {
+            message:
+              'Submission rejected by server (duplicate attempt in this class or invalid Personal Exam PIN).',
+          };
         }
       } else {
         const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(row);
@@ -1533,15 +1591,15 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
       }
 
       if (!tableSuccess && writeError) {
-        saveToSubmissionOutbox(stampedSubmission, 'failed', writeError.message);
-        console.warn('Could not sync submission to Supabase table:', writeError.message);
+        const errText = writeError.message || 'Cloud database write failed';
+        lastCloudWriteErrorById.set(stampedSubmission.id, errText);
+        saveToSubmissionOutbox(stampedSubmission, 'failed', errText);
+        console.warn('Could not sync submission to Supabase table:', errText);
       }
     } catch (err: any) {
-      saveToSubmissionOutbox(
-        stampedSubmission,
-        'failed',
-        err?.message || 'Could not push submission to Supabase table'
-      );
+      const errText = err?.message || 'Could not push submission to Supabase table';
+      lastCloudWriteErrorById.set(stampedSubmission.id, errText);
+      saveToSubmissionOutbox(stampedSubmission, 'failed', errText);
       console.warn('Error pushing submission to Supabase table:', err);
     }
 
@@ -1588,8 +1646,10 @@ export async function saveQuizSubmissionWithVerification(
   saveToSubmissionOutbox(submission, 'pending');
 
   let lastErr = '';
+  let attemptsDone = 0;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    attemptsDone = attempt;
     if (onAttempt) onAttempt(attempt, maxRetries);
     try {
       const success = await saveQuizSubmissionCloud(submission);
@@ -1597,19 +1657,28 @@ export async function saveQuizSubmissionWithVerification(
         markOutboxSynced(submission.id);
         return { success: true, attempts: attempt };
       }
-      lastErr = 'Cloud database returned non-success response';
+      lastErr =
+        lastCloudWriteErrorById.get(submission.id) || 'Cloud database returned non-success response';
+      if (
+        /belongs to another device|duplicate attempt|invalid Personal Exam PIN|rejected by server/i.test(
+          lastErr
+        )
+      ) {
+        break;
+      }
     } catch (err: any) {
       lastErr = err?.message || 'Network error during cloud save';
     }
 
-    // Wait with exponential backoff (e.g. 500ms, 1200ms, 2000ms)
+    // Jittered exponential backoff (~1.2-1.8s, 2.2-2.8s, 3.9-4.5s) to prevent retry storms
     if (attempt < maxRetries) {
-      await new Promise((res) => setTimeout(res, 400 * Math.pow(1.8, attempt - 1)));
+      const delayMs = Math.round(1200 * Math.pow(1.8, attempt - 1) + Math.random() * 600);
+      await new Promise((res) => setTimeout(res, delayMs));
     }
   }
 
   saveToSubmissionOutbox(submission, 'failed', lastErr);
-  return { success: false, attempts: maxRetries, error: lastErr };
+  return { success: false, attempts: attemptsDone, error: lastErr };
 }
 
 /**
@@ -2233,13 +2302,14 @@ export async function setQuizSubmissionsStatus(
 export function saveDeviceReceipt(receipt: DeviceExamReceipt): void {
   try {
     const existing = getDeviceReceipts();
-    const filtered = existing.filter(
-      (r) =>
-        !(
-          r.quizCode.toUpperCase() === receipt.quizCode.toUpperCase() &&
-          r.studentName.toLowerCase() === receipt.studentName.toLowerCase()
-        )
-    );
+    const nextClass = normalizeClassIdentityPart(receipt.studentClass);
+    const filtered = existing.filter((r) => {
+      const sameCode = r.quizCode.toUpperCase() === receipt.quizCode.toUpperCase();
+      const sameName = r.studentName.toLowerCase() === receipt.studentName.toLowerCase();
+      const rClass = normalizeClassIdentityPart(r.studentClass);
+      const sameClass = !rClass || !nextClass || rClass === nextClass;
+      return !(sameCode && sameName && sameClass);
+    });
     const updated = [receipt, ...filtered].slice(0, 6);
     localStorage.setItem(DEVICE_RECEIPTS_KEY, JSON.stringify(updated));
   } catch (e) {

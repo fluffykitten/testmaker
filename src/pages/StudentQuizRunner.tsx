@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
-import { resolveStudentQuiz, verifyTeacherUnlockPin } from '../services/quizCodeService';
+import { resolveStudentQuiz, verifyTeacherUnlockPinDetailed } from '../services/quizCodeService';
 import {
   saveQuizSubmission,
   saveQuizSubmissionWithVerification,
@@ -29,6 +29,7 @@ import {
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
 import {
   buildAnswersByQuestionId,
+  computeCloudDraftFingerprint,
   didSubmitAttempt,
   resolveResumeClock,
   shouldResetSessionForCandidate,
@@ -512,7 +513,7 @@ export function StudentQuizRunner({
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(() => savedExam?.syncErrorMessage || null);
   const [hasCopiedToken, setHasCopiedToken] = useState<boolean>(false);
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
-  const [resolvedQuizCode, setResolvedQuizCode] = useState<string>(() => (testIdOrCode || 'EXAM').toUpperCase());
+  const [resolvedQuizCode, setResolvedQuizCode] = useState<string>(() => (savedExam?.completedSubmission?.quizCode || testIdOrCode || 'EXAM').toUpperCase());
   const [resolvedTestId, setResolvedTestId] = useState<string>(() => testIdOrCode || 'direct_quiz');
   const [resolvedPublishedId, setResolvedPublishedId] = useState<string | null>(null);
 
@@ -612,6 +613,11 @@ export function StudentQuizRunner({
   const latestCloudDraftRef = useRef<ExamDraftPayload | null>(null);
   const cloudDraftDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushCloudDraftRef = useRef<(keepalive?: boolean) => void>(() => { });
+  const lastSyncedCloudFingerprintRef = useRef<string>('');
+  const lastSyncedCloudAtRef = useRef<number>(0);
+  const lastStudentAuditWriteByTypeRef = useRef<Record<string, number>>({});
+  const timerExpiryAutoSubmitTriggeredRef = useRef<boolean>(false);
+  const timerExpiryAutoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 🕵️ Forensic Telemetry Refs (Answer Change History & Dwell Times)
   const answerChangeHistoryRef = useRef<AnswerChangeLogEntry[]>([]);
@@ -1033,19 +1039,24 @@ export function StudentQuizRunner({
         };
         const eventId = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         sendStudentViolation(resolvedQuizCode, enrichedTelemetry, { id: eventId, ...auditEvent });
-        recordProctorAuditEvent({
-          id: eventId,
-          quizCode: resolvedQuizCode,
-          studentId: sessionHash,
-          studentName: candidateName || 'Candidate',
-          candidateNumber,
-          candidateClass,
-          eventType: auditEvent.type,
-          severity: auditEvent.severity,
-          detail: auditEvent.detail,
-          actor: 'student',
-          createdAt: nowIso,
-        });
+        const nowMs = Date.now();
+        const lastAuditMs = lastStudentAuditWriteByTypeRef.current[auditEvent.type] || 0;
+        if (nowMs - lastAuditMs >= 3000) {
+          lastStudentAuditWriteByTypeRef.current[auditEvent.type] = nowMs;
+          recordProctorAuditEvent({
+            id: eventId,
+            quizCode: resolvedQuizCode,
+            studentId: sessionHash,
+            studentName: candidateName || 'Candidate',
+            candidateNumber,
+            candidateClass,
+            eventType: auditEvent.type,
+            severity: auditEvent.severity,
+            detail: auditEvent.detail,
+            actor: 'student',
+            createdAt: nowIso,
+          });
+        }
       };
 
       // If skipLock is requested (e.g. initial 5s fullscreen grace warning), broadcast telemetry without strike count increment
@@ -1407,10 +1418,14 @@ export function StudentQuizRunner({
     }
 
     setIsUnlocking(true);
-    const valid = await verifyTeacherUnlockPin(resolvedQuizCode, entered, teacherPinHash);
-    if (!valid) {
+    const pinCheck = await verifyTeacherUnlockPinDetailed(resolvedQuizCode, entered, teacherPinHash);
+    if (!pinCheck.valid) {
       setIsUnlocking(false);
-      setPinError('❌ Incorrect Teacher PIN. Please have the exam invigilator verify and re-enter.');
+      setPinError(
+        pinCheck.unreachable
+          ? '⚠️ Unable to reach examiner server to verify Teacher PIN. Check connection and try again.'
+          : '❌ Incorrect Teacher PIN. Please have the exam invigilator verify and re-enter.'
+      );
       return;
     }
 
@@ -1941,7 +1956,8 @@ export function StudentQuizRunner({
     void getActiveStudentHeartbeatProof(
       resolvedQuizCode,
       candidateName || 'Candidate',
-      studentPinInput || undefined
+      studentPinInput || undefined,
+      candidateClass
     )
       .then((proof) => {
         if (!cancelled) {
@@ -1953,7 +1969,7 @@ export function StudentQuizRunner({
     return () => {
       cancelled = true;
     };
-  }, [hasStarted, resolvedQuizCode, candidateName, studentPinInput]);
+  }, [hasStarted, resolvedQuizCode, candidateName, studentPinInput, candidateClass]);
 
   useEffect(() => {
     if (!hasStarted || !resolvedQuizCode) return;
@@ -2422,6 +2438,10 @@ export function StudentQuizRunner({
   // ─── 4. Submit & Grading Handler (Deterministic + AI Pipeline) ────────────
   const handleSubmitExam = useCallback(async () => {
     if (isSubmitted || isGrading || isSubmittingRef.current || isSubmittedRef.current) return;
+    if (timerExpiryAutoSubmitTimerRef.current) {
+      clearTimeout(timerExpiryAutoSubmitTimerRef.current);
+      timerExpiryAutoSubmitTimerRef.current = null;
+    }
     isSubmittingRef.current = true;
     setShowSubmitModal(false);
     setIsGrading(true);
@@ -2477,7 +2497,7 @@ export function StudentQuizRunner({
       const finalQuizId = effectiveDraftQuizId;
       try {
         const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-        const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+        const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 1), 0);
         let earnedMarks = 0;
         const qResults: QuestionSubmissionResult[] = [];
         const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
@@ -2643,6 +2663,7 @@ export function StudentQuizRunner({
           quizCode: finalQuizCode,
           quizTitle: title,
           studentName: candidateName.trim() || 'Candidate',
+          studentClass: candidateClass.trim() || undefined,
           candidateNumber: candidateNumber.trim() || undefined,
           submittedAt: submission.submittedAt,
           resultPin: submission.resultPin,
@@ -2665,7 +2686,7 @@ export function StudentQuizRunner({
             clearExamDraft(
               finalQuizCode,
               finalQuizId,
-              buildStudentDraftIdentifier(candidateName, studentPinInput),
+              buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
               studentPinInput || undefined
             ).catch(() => { });
           } catch { }
@@ -2685,7 +2706,7 @@ export function StudentQuizRunner({
         // Never leave the result screen without a submission object: if grading
         // or serialization throws, keep a local receipt of the raw responses so the
         // candidate can still see that the attempt was recorded.
-        const fallbackTotalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+        const fallbackTotalMarks = questions.reduce((sum, q) => sum + (q.marks || 1), 0);
         const fallback: StudentSubmission = {
           id: `sub_local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
           quizId: finalQuizId,
@@ -2714,11 +2735,15 @@ export function StudentQuizRunner({
           topicBreakdown: {},
           rawAnswers: { ...answers },
           status: 'submitted',
+          resultPin: generateResultPin(),
           forensics: {
             answersByQuestionId: buildAnswersByQuestionId(questions, answers),
             proctorStudentId: sessionHash,
+            studentPin: studentPinInput || undefined,
           },
         };
+        saveQuizSubmission(fallback);
+        saveToSubmissionOutbox(fallback, 'failed', err?.message || 'Submission interrupted locally');
         setCompletedSubmission(fallback);
         setSyncStatus('offline_failed');
         setSyncErrorMessage(err?.message || 'Network error occurred during submission. Encrypted .exam backup downloaded.');
@@ -2739,7 +2764,7 @@ export function StudentQuizRunner({
 
     try {
       const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-      const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+      const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 1), 0);
       let earnedMarks = 0;
       const qResults: QuestionSubmissionResult[] = [];
       const topicBreakdown: Record<string, { totalMarks: number; earnedMarks: number; percentage: number }> = {};
@@ -2908,6 +2933,7 @@ export function StudentQuizRunner({
         questionResults: qResults,
         topicBreakdown,
         status: 'graded',
+        resultPin: generateResultPin(),
         forensics: buildExamForensics(),
       };
 
@@ -2928,7 +2954,7 @@ export function StudentQuizRunner({
           clearExamDraft(
             finalQuizCode,
             finalQuizId,
-            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
             studentPinInput || undefined
           ).catch(() => { });
         } catch { }
@@ -2996,7 +3022,7 @@ export function StudentQuizRunner({
           clearExamDraft(
             completedSubmission.quizCode,
             completedSubmission.quizId,
-            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
             studentPinInput || undefined
           ).catch(() => { });
         } catch { }
@@ -3008,7 +3034,7 @@ export function StudentQuizRunner({
     } finally {
       setIsRetryingSync(false);
     }
-  }, [completedSubmission, isRetryingSync, sessionKey, resolvedQuizCode, studentPinInput, candidateName]);
+  }, [completedSubmission, isRetryingSync, sessionKey, resolvedQuizCode, studentPinInput, candidateName, candidateClass]);
 
   /**
    * Guarded Mid-Exam Emergency Save & Exit:
@@ -3017,6 +3043,10 @@ export function StudentQuizRunner({
    */
   const handleEmergencySaveAndExit = useCallback(async () => {
     if (isSubmitted || isGrading || isSubmittingRef.current || isSubmittedRef.current) return;
+    if (timerExpiryAutoSubmitTimerRef.current) {
+      clearTimeout(timerExpiryAutoSubmitTimerRef.current);
+      timerExpiryAutoSubmitTimerRef.current = null;
+    }
     isSubmittingRef.current = true;
     isSubmittedRef.current = true;
     setIsLockedByProctor(false);
@@ -3160,6 +3190,7 @@ export function StudentQuizRunner({
         quizCode: finalQuizCode,
         quizTitle: title,
         studentName: candidateName.trim() || 'Candidate',
+        studentClass: candidateClass.trim() || undefined,
         candidateNumber: candidateNumber.trim() || undefined,
         submittedAt: emergencySubmission.submittedAt,
         resultPin: emergencySubmission.resultPin,
@@ -3218,14 +3249,18 @@ export function StudentQuizRunner({
     }
 
     setIsTeacherActionRunning(true);
-    const valid = await verifyTeacherUnlockPin(
+    const pinCheck = await verifyTeacherUnlockPinDetailed(
       completedSubmission?.quizCode || resolvedQuizCode,
       entered,
       teacherPinHash
     );
-    if (!valid) {
+    if (!pinCheck.valid) {
       setIsTeacherActionRunning(false);
-      setTeacherActionError('❌ Incorrect Teacher PIN. Please check with the exam invigilator.');
+      setTeacherActionError(
+        pinCheck.unreachable
+          ? '⚠️ Cannot reach examiner server to verify Teacher PIN right now. Check Wi-Fi or use the Emergency Manual Backups below.'
+          : '❌ Incorrect Teacher PIN. Please check with the exam invigilator.'
+      );
       return;
     }
 
@@ -3235,6 +3270,7 @@ export function StudentQuizRunner({
 
     if (teacherActionType === 'resubmit') {
       if (!completedSubmission) {
+        setIsTeacherActionRunning(false);
         setTeacherActionError('No completed submission found to re-upload.');
         return;
       }
@@ -3256,7 +3292,7 @@ export function StudentQuizRunner({
             clearExamDraft(
             completedSubmission.quizCode,
             completedSubmission.quizId,
-            buildStudentDraftIdentifier(candidateName, studentPinInput),
+            buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
             studentPinInput || undefined
           ).catch(() => { });
           } catch { }
@@ -3276,6 +3312,11 @@ export function StudentQuizRunner({
       setIsTeacherActionRunning(true);
       try {
         isSubmittingRef.current = false;
+        timerExpiryAutoSubmitTriggeredRef.current = false;
+        if (timerExpiryAutoSubmitTimerRef.current) {
+          clearTimeout(timerExpiryAutoSubmitTimerRef.current);
+          timerExpiryAutoSubmitTimerRef.current = null;
+        }
         setIsSubmitted(false);
         setCompletedSubmission(null);
         setSyncStatus('idle');
@@ -3306,6 +3347,7 @@ export function StudentQuizRunner({
     sessionKey,
     studentPinInput,
     candidateName,
+    candidateClass,
     isTeacherActionRunning,
     isExamMode,
     timeLeft,
@@ -3454,6 +3496,7 @@ export function StudentQuizRunner({
       document.removeEventListener('visibilitychange', handleVisibility);
       if (sessionPersistTimerRef.current) clearTimeout(sessionPersistTimerRef.current);
       if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
+      if (timerExpiryAutoSubmitTimerRef.current) clearTimeout(timerExpiryAutoSubmitTimerRef.current);
     };
   }, []);
 
@@ -3463,7 +3506,7 @@ export function StudentQuizRunner({
       latestCloudDraftRef.current = null;
       return;
     }
-    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput);
+    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass);
     if (!identifier || !resolvedQuizCode) {
       latestCloudDraftRef.current = null;
       return;
@@ -3504,7 +3547,36 @@ export function StudentQuizRunner({
       }
       const snapshot = latestCloudDraftRef.current;
       if (!snapshot) return;
-      saveExamDraft(snapshot, keepalive ? { keepalive: true } : undefined).catch(() => { });
+
+      const fingerprint = computeCloudDraftFingerprint({
+        answers: snapshot.answers,
+        flaggedIndices: snapshot.flaggedIndices,
+        audioProgress: snapshot.audioProgress,
+        violationsCount: snapshot.violations?.length || 0,
+        strikeCount: snapshot.strikeCount,
+        isLockedByProctor: snapshot.isLockedByProctor,
+        totalPenaltySeconds: snapshot.totalPenaltySeconds,
+      });
+      const now = Date.now();
+      if (!keepalive && fingerprint === lastSyncedCloudFingerprintRef.current && now - lastSyncedCloudAtRef.current < 180000) {
+        return;
+      }
+      if (keepalive && fingerprint === lastSyncedCloudFingerprintRef.current && now - lastSyncedCloudAtRef.current < 15000) {
+        return;
+      }
+      if (keepalive) {
+        lastSyncedCloudFingerprintRef.current = fingerprint;
+        lastSyncedCloudAtRef.current = now;
+      }
+
+      saveExamDraft(snapshot, keepalive ? { keepalive: true } : undefined)
+        .then((ok) => {
+          if (ok) {
+            lastSyncedCloudFingerprintRef.current = fingerprint;
+            lastSyncedCloudAtRef.current = Date.now();
+          }
+        })
+        .catch(() => { });
     };
   }, [
     hasStarted,
@@ -3534,7 +3606,7 @@ export function StudentQuizRunner({
     isFinalSecurityLock,
   ]);
 
-  // Debounced cloud draft sync (~2.5s after student changes an answer, flag, question, or lock state)
+  // Debounced cloud draft sync (12s after durable answer/flag/violation edits; navigation stays local-only)
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading) return;
     if (!latestCloudDraftRef.current) return;
@@ -3542,7 +3614,7 @@ export function StudentQuizRunner({
     if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
     cloudDraftDebounceRef.current = setTimeout(() => {
       flushCloudDraftRef.current(false);
-    }, 2500);
+    }, 12000);
 
     return () => {
       if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
@@ -3552,25 +3624,27 @@ export function StudentQuizRunner({
     isSubmitted,
     isGrading,
     answers,
-    currentIndex,
     flaggedIndices,
+    audioProgress,
     violations,
     isLockedByProctor,
     strikeCount,
+    totalPenaltySeconds,
     isFinalSecurityLock,
   ]);
 
-  // Stable 25-second periodic cloud heartbeat (intentionally excludes volatile `timeLeft` so it never resets every second)
+  // Jittered periodic cloud safety heartbeat (~90-110s, dirty-checked so idle tabs skip Postgres writes)
   useEffect(() => {
     if (!hasStarted || isSubmitted || isGrading) return;
-    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput);
+    const identifier = buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass);
     if (!identifier || !resolvedQuizCode) return;
 
+    const intervalMs = 90000 + Math.floor(Math.random() * 20000);
     const interval = setInterval(() => {
       flushCloudDraftRef.current(false);
-    }, 25000);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [hasStarted, isSubmitted, isGrading, resolvedQuizCode, effectiveDraftQuizId, candidateName, studentPinInput]);
+  }, [hasStarted, isSubmitted, isGrading, resolvedQuizCode, effectiveDraftQuizId, candidateName, studentPinInput, candidateClass]);
 
   // ─── 5. Absolute Epoch Countdown Timer & Device Sleep / Tab Sync ─────────
   useEffect(() => {
@@ -3583,10 +3657,18 @@ export function StudentQuizRunner({
 
       if (remainingSec <= 0) {
         if (!isLockedByProctorRef.current || isFinalSecurityLockRef.current) {
-          if (submitExamRef.current) {
-            submitExamRef.current();
-          } else {
-            handleSubmitExam();
+          if (!timerExpiryAutoSubmitTriggeredRef.current) {
+            timerExpiryAutoSubmitTriggeredRef.current = true;
+            setTimeWarning('⏱️ Time Expired! Finalizing and uploading your examination responses...');
+            const jitterMs = Math.floor(Math.random() * 6000);
+            timerExpiryAutoSubmitTimerRef.current = setTimeout(() => {
+              timerExpiryAutoSubmitTimerRef.current = null;
+              if (submitExamRef.current) {
+                submitExamRef.current();
+              } else {
+                handleSubmitExam();
+              }
+            }, jitterMs);
           }
         }
       } else {
@@ -3666,10 +3748,11 @@ export function StudentQuizRunner({
 
     const timer = setTimeout(async () => {
       const finalId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
-      const draftIdent = buildStudentDraftIdentifier(candidateName, studentPinInput);
+      const draftIdent = buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass);
       const fetchOpts = {
         studentPin: studentPinInput || undefined,
         expectedStudentName: candidateName,
+        expectedStudentClass: candidateClass,
       };
       let draft = await fetchExamDraft(resolvedQuizCode, finalId, draftIdent, fetchOpts);
       if (!draft && resolvedTestId && resolvedTestId !== finalId) {
@@ -3683,7 +3766,7 @@ export function StudentQuizRunner({
     }, 600);
 
     return () => clearTimeout(timer);
-  }, [candidateName, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
+  }, [candidateName, candidateClass, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleResumeDraft = async () => {
@@ -3796,6 +3879,9 @@ export function StudentQuizRunner({
       await requestSecureFullscreen();
     }
 
+    lastSyncedCloudFingerprintRef.current = '';
+    lastSyncedCloudAtRef.current = 0;
+    timerExpiryAutoSubmitTriggeredRef.current = false;
     setHasStarted(true);
     setDetectedDraft(null);
   };
@@ -3877,7 +3963,7 @@ export function StudentQuizRunner({
     const previousSession = getSavedExamState();
     if (
       previousSession &&
-      shouldResetSessionForCandidate(previousSession, { candidateName, candidateNumber })
+      shouldResetSessionForCandidate(previousSession, { candidateName, candidateNumber, candidateClass })
     ) {
       setAnswers({});
       setCurrentIndex(0);
@@ -3911,7 +3997,8 @@ export function StudentQuizRunner({
 
       const previousIdentifier = buildStudentDraftIdentifier(
         previousSession.candidateName,
-        previousSession.studentPin
+        previousSession.studentPin,
+        previousSession.candidateClass
       );
       if (previousIdentifier) {
         clearExamDraft(
@@ -3936,6 +4023,9 @@ export function StudentQuizRunner({
     if (securityEnabled && containerRef.current) {
       await requestSecureFullscreen();
     }
+    lastSyncedCloudFingerprintRef.current = '';
+    lastSyncedCloudAtRef.current = 0;
+    timerExpiryAutoSubmitTriggeredRef.current = false;
     setHasStarted(true);
 
     // Initial draft sync
@@ -4609,7 +4699,7 @@ export function StudentQuizRunner({
   };
 
   // ─── Loading / Grading / Error Screens ─────────────────────────────────────
-  if (loading) {
+  if (loading && !(isSubmitted && completedSubmission)) {
     return (
       <div className="student-quiz-loading-screen">
         <div className="student-quiz-spinner" />
@@ -4695,7 +4785,7 @@ export function StudentQuizRunner({
     );
   }
 
-  if (error || (!loading && questions.length === 0)) {
+  if (!(isSubmitted && completedSubmission) && (error || (!loading && questions.length === 0))) {
     return (
       <div className="student-quiz-error-screen">
         <div className="error-icon">⚠️</div>
@@ -5595,7 +5685,7 @@ export function StudentQuizRunner({
                 </div>
 
                 <div style={{ fontSize: '0.875rem', color: '#cbd5e1', lineHeight: '1.5', maxWidth: '520px', margin: '0 auto' }}>
-                  ⚠️ <strong style={{ color: '#fbbf24' }}>Important:</strong> Please write down or screenshot this 3-digit PIN. You will need it together with your name to view your marked paper and examiner notes when results are released.
+                  ⚠️ <strong style={{ color: '#fbbf24' }}>Important:</strong> Please write down or screenshot this {completedSubmission.resultPin.length}-digit PIN. You will need it together with your name to view your marked paper and examiner notes when results are released.
                 </div>
               </div>
             )}
@@ -6137,6 +6227,61 @@ export function StudentQuizRunner({
           <div className="results-badge">ASSESSMENT COMPLETED</div>
           <h1 className="results-title">Great Job! Assessment Submitted 🎉</h1>
           <p className="results-sub">{title} • Candidate Performance Summary</p>
+
+          {syncStatus === 'offline_failed' && (
+            <div
+              style={{
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '2px solid #ef4444',
+                borderRadius: '14px',
+                padding: '16px 20px',
+                margin: '16px 0',
+                textAlign: 'left',
+              }}
+            >
+              <strong style={{ color: '#ef4444', display: 'block', marginBottom: '4px' }}>
+                ⚠️ Cloud Sync Pending — Responses Saved Locally
+              </strong>
+              <p style={{ margin: '0 0 12px', fontSize: '0.84rem', color: 'var(--color-text-secondary, #475569)' }}>
+                {syncErrorMessage || 'Could not upload to examiner cloud. Your responses are safely stored on this device.'}
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={handleRetryCloudSync}
+                  disabled={isRetryingSync}
+                  style={{
+                    background: '#3b82f6',
+                    border: 'none',
+                    color: '#ffffff',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    cursor: isRetryingSync ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {isRetryingSync ? '⏳ Syncing...' : '🔄 Retry Cloud Sync'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportSubmissionToFile(completedSubmission)}
+                  style={{
+                    background: '#10b981',
+                    border: 'none',
+                    color: '#ffffff',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  📥 Download Backup (.exam)
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="results-score-row">
             <div className="results-score-circle">
@@ -6937,7 +7082,7 @@ export function StudentQuizRunner({
             <div className={isReadingSplitActive ? 'sq-reading-split-grid' : 'sq-reading-stacked-flow'}>
               {/* Active Stimulus / Reading Passage for Multi-Question Sections */}
               {activeReadingPassage && (
-                <div className="sq-stimulus-card animate-fade-in">
+                <div className="sq-stimulus-card">
                   <div className="sq-stimulus-header">
                     <span className="sq-stimulus-title">📖 Reference Reading Passage</span>
                     {activeReadingPassage.length >= 600 && (

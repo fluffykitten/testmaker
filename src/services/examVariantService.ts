@@ -16,6 +16,11 @@ import {
 } from '../lib/gemini';
 import { generateExamDiagram } from './imageGenerationService';
 import { getSavedSettings } from '../lib/settings';
+import {
+  buildSharedPassageRefSet,
+  classifyQuestionForVariant,
+  pruneQuestionOverridesForVariantSet,
+} from '../utils/variantClassification';
 
 export type VariantGenerationStatus = 'pending' | 'generating' | 'done' | 'failed' | 'skipped';
 
@@ -68,57 +73,16 @@ export function cleanQuestionNumber(rawNumber: string | undefined | null, fallba
  * - Photographs: Generatable with Visual Asset Reuse (same photo, new question & mark scheme).
  * - Standard/Diagram questions: Generatable with AI twin values & SVGs.
  */
-export function classifyQuestion(q: Question): {
+export function classifyQuestion(
+  q: Question,
+  allQuestions?: Question[],
+  sharedRefs?: Set<string>
+): {
   action: 'generate' | 'skip';
   reason?: string;
   isPhotoReused?: boolean;
 } {
-  // Audio questions cannot be auto-synthesized cleanly
-  if (q.audio_url || (q.audio_metadata && q.audio_metadata.duration)) {
-    return {
-      action: 'skip',
-      reason: 'Audio/listening track cannot be automatically synthesized',
-    };
-  }
-
-  // Multi-question passage dependency
-  const rawQ = q as any;
-  if (rawQ.passage_ref && rawQ.is_shared_passage) {
-    return {
-      action: 'skip',
-      reason: 'Shared multi-question reading passage',
-    };
-  }
-
-  // Photograph-dependent questions: reuse existing image asset with newly generated questions
-  const hasPhotoMention =
-    /photo/i.test(q.resource_ref || '') ||
-    /(?:photograph|micrograph|photo\b|specimen)/i.test(q.question_text || '') ||
-    q.sub_questions?.some(
-      (s) =>
-        s.diagram_type === 'photo' ||
-        /photo/i.test(s.resource_ref || '') ||
-        /(?:photograph|micrograph|photo\b|specimen)/i.test(s.question_text || '')
-    );
-
-  const isPhoto =
-    q.diagram_type === 'photo' ||
-    hasPhotoMention ||
-    (Boolean(q.diagram_url) &&
-      !q.svg_content &&
-      !extractSvgFromDiagramUrl(q.diagram_url) &&
-      /(\.png|\.jpe?g|\.webp|photo|micrograph)/i.test(q.diagram_url || ''));
-
-  if (isPhoto) {
-    return {
-      action: 'generate',
-      isPhotoReused: true,
-    };
-  }
-
-  return {
-    action: 'generate',
-  };
+  return classifyQuestionForVariant(q, allQuestions, sharedRefs);
 }
 
 /**
@@ -178,7 +142,7 @@ export function constructNormalizedVariant(
     question_text: cleanStem || original.question_text,
     question_style: generated.question_style || original.question_style || 'Structured',
     difficulty: generated.difficulty || original.difficulty || 'Medium',
-    marks: generated.marks !== undefined ? generated.marks : original.marks,
+    marks: Number(original.marks) > 0 ? original.marks : (generated.marks ?? 1),
     options: Array.isArray(generated.options) ? generated.options : (generated.question_style === 'Multiple Choice' ? original.options : null),
     sub_questions: normalizedSubs,
     mark_scheme: (generated.mark_scheme as any) || original.mark_scheme,
@@ -197,6 +161,84 @@ export function constructNormalizedVariant(
   };
 }
 
+function buildVariantDirective(
+  item: VariantGenerationItem,
+  directives: Array<string | undefined>,
+  isImageGenActive: boolean
+): string | undefined {
+  const parts = directives.filter(Boolean).map((s) => s!.trim()).filter(Boolean);
+  const hasAnyVisual = Boolean(
+    item.originalQuestion.diagram_url ||
+      item.originalQuestion.svg_content ||
+      item.originalQuestion.sub_questions?.some((s) => s.diagram_url || s.svg_content)
+  );
+
+  if (item.isPhotoReused) {
+    parts.push(
+      `CRITICAL MANDATORY VISUAL ASSET REUSE: This question references an existing photograph/micrograph/specimen (${item.originalQuestion.resource_ref || 'Photograph/Figure'}). Maintain this exact visual unchanged and do NOT generate SVG or invent unseen labels/features. Ground every label, reading, and concept strictly in what is visibly shown in the attached image.`
+    );
+  } else if (hasAnyVisual && !isImageGenActive) {
+    parts.push(
+      `VISUAL GROUNDING: Retain the original diagram (${item.originalQuestion.resource_ref || 'attached visual'}) unchanged. Do NOT invent labels, scale numbers, or components that contradict what is shown in the attached image.`
+    );
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : undefined;
+}
+
+async function generateNormalizedVariantForItem(
+  item: VariantGenerationItem,
+  options: {
+    directives: Array<string | undefined>;
+    generateAiDiagrams?: boolean;
+  }
+): Promise<{ normalized: Question; isAiDiagramGenerated: boolean }> {
+  const selectedApiKey = getApiKeyForChunk(item.index);
+  const isImageGenActive = options.generateAiDiagrams ?? getSavedSettings().enableVariantImageGeneration ?? false;
+  const combinedInstruction = buildVariantDirective(item, options.directives, isImageGenActive);
+
+  const generated = await generateQuestionVariant(item.originalQuestion, {
+    mode: 'parallel',
+    customInstruction: combinedInstruction,
+    apiKey: selectedApiKey || undefined,
+    enableImageGeneration: isImageGenActive,
+  });
+
+  const cleanNum = cleanQuestionNumber(item.originalQuestion.question_number, item.index);
+  const normalized = constructNormalizedVariant(
+    item.originalQuestion,
+    generated,
+    cleanNum,
+    item.isPhotoReused,
+    isImageGenActive
+  );
+
+  let isAiDiagramGenerated = false;
+  if (
+    isImageGenActive &&
+    generated.ai_diagram_prompt &&
+    !normalized.svg_content &&
+    !item.isPhotoReused
+  ) {
+    try {
+      const diagRes = await generateExamDiagram(generated.ai_diagram_prompt, {
+        topic: item.originalQuestion.topic,
+      });
+      if (diagRes.success && diagRes.url) {
+        normalized.diagram_url = diagRes.url;
+        normalized.svg_content = null;
+        normalized.diagram_type = 'apparatus';
+        normalized.ai_diagram_prompt = generated.ai_diagram_prompt;
+        isAiDiagramGenerated = true;
+      }
+    } catch (diagErr) {
+      console.warn(`[examVariantService] Diagram generation skipped for Q${item.index + 1}:`, diagErr);
+    }
+  }
+
+  return { normalized, isAiDiagramGenerated };
+}
+
 /**
  * Generates a full parallel twin exam batch with concurrency control and progress tracking.
  */
@@ -204,8 +246,9 @@ export async function generateExamVariantBatch(
   questions: Question[],
   options: VariantBatchOptions
 ): Promise<VariantBatchResult> {
+  const sharedRefs = buildSharedPassageRefSet(questions);
   const items: VariantGenerationItem[] = questions.map((q, idx) => {
-    const classification = classifyQuestion(q);
+    const classification = classifyQuestion(q, questions, sharedRefs);
     const cleanNum = cleanQuestionNumber(q.question_number, idx);
 
     if (classification.action === 'skip') {
@@ -266,56 +309,13 @@ export async function generateExamVariantBatch(
 
         attempts++;
         try {
-          const selectedApiKey = getApiKeyForChunk(item.index);
-
-          // Build directive
-          const isImageGenActive = options.generateAiDiagrams ?? getSavedSettings().enableVariantImageGeneration ?? false;
-          let combinedInstruction = options.globalDirective?.trim() || '';
-          if (item.isPhotoReused && isImageGenActive) {
-            const photoNote = `CRITICAL MANDATORY VISUAL ASSET REUSE: This question references an existing photograph/micrograph/specimen (${item.originalQuestion.resource_ref || 'Photograph/Figure'}). Maintain this exact reference. Do NOT generate SVG. Formulate a NEW, DIFFERENT question and mark scheme that tests a different structure, calculation (e.g. magnification/scale/actual size), observation, or scientific concept based on this same visual resource.`;
-            combinedInstruction = combinedInstruction ? `${combinedInstruction}\n\n${photoNote}` : photoNote;
-          }
-
-          const generated = await generateQuestionVariant(item.originalQuestion, {
-            mode: 'parallel',
-            customInstruction: combinedInstruction || undefined,
-            apiKey: selectedApiKey || undefined,
-            enableImageGeneration: isImageGenActive,
+          const { normalized, isAiDiagramGenerated } = await generateNormalizedVariantForItem(item, {
+            directives: [options.globalDirective],
+            generateAiDiagrams: options.generateAiDiagrams,
           });
 
-          const cleanNum = cleanQuestionNumber(item.originalQuestion.question_number, item.index);
-          const normalized = constructNormalizedVariant(
-            item.originalQuestion,
-            generated,
-            cleanNum,
-            item.isPhotoReused,
-            isImageGenActive
-          );
-
-          // AI Diagram Generation for altered apparatus/schematics when SVG is absent and not a photo reuse
-          if (
-            options.generateAiDiagrams &&
-            generated.ai_diagram_prompt &&
-            !normalized.svg_content &&
-            !item.isPhotoReused
-          ) {
-            try {
-              const diagRes = await generateExamDiagram(generated.ai_diagram_prompt, {
-                topic: item.originalQuestion.topic,
-              });
-              if (diagRes.success && diagRes.url) {
-                normalized.diagram_url = diagRes.url;
-                normalized.svg_content = null;
-                normalized.diagram_type = 'apparatus';
-                normalized.ai_diagram_prompt = generated.ai_diagram_prompt;
-                item.isAiDiagramGenerated = true;
-              }
-            } catch (diagErr) {
-              console.warn(`[examVariantService] Diagram generation skipped for Q${item.index + 1}:`, diagErr);
-            }
-          }
-
           item.variantQuestion = normalized;
+          item.isAiDiagramGenerated = isAiDiagramGenerated;
           item.status = 'done';
           item.errorMessage = undefined;
           success = true;
@@ -324,11 +324,15 @@ export async function generateExamVariantBatch(
           const errMsg = err?.message || String(err);
           const isRateLimit = errMsg.includes('429') || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate limit');
 
-          if (isRateLimit && attempts < maxAttempts) {
-            const delayMs = Math.pow(2, attempts) * 1000 + Math.random() * 500;
-            console.warn(`[examVariantService] Rate limit encountered for Q${item.index + 1}, retrying in ${Math.round(delayMs)}ms...`);
+          if (attempts < maxAttempts) {
+            const delayMs = isRateLimit
+              ? Math.pow(2, attempts) * 1000 + Math.random() * 500
+              : 600 * attempts;
+            console.warn(
+              `[examVariantService] Attempt ${attempts} failed for Q${item.index + 1} (${isRateLimit ? 'rate limit' : 'transient'}), retrying in ${Math.round(delayMs)}ms...`
+            );
             await new Promise((res) => setTimeout(res, delayMs));
-          } else if (attempts >= maxAttempts) {
+          } else {
             console.error(`[examVariantService] Failed to generate variant for Q${item.index + 1}:`, errMsg);
             item.status = 'failed';
             item.errorMessage = errMsg;
@@ -365,57 +369,10 @@ export async function regenerateSingleVariant(
     generateAiDiagrams?: boolean;
   }
 ): Promise<VariantGenerationItem> {
-  const selectedApiKey = getApiKeyForChunk(item.index);
-
-  let combinedInstruction = [options?.globalDirective, options?.tweakDirective]
-    .filter(Boolean)
-    .map((s) => s!.trim())
-    .join('\n\n');
-
-  const isImageGenActive = options?.generateAiDiagrams ?? getSavedSettings().enableVariantImageGeneration ?? false;
-  if (item.isPhotoReused && isImageGenActive) {
-    const photoNote = `CRITICAL MANDATORY VISUAL ASSET REUSE: This question references an existing photograph/specimen (${item.originalQuestion.resource_ref || 'Photograph/Figure'}). Maintain this exact reference. Do NOT generate SVG. Formulate a NEW, DIFFERENT question and mark scheme testing a different structure, calculation (e.g. magnification/scale), observation, or scientific concept based on this same visual resource.`;
-    combinedInstruction = combinedInstruction ? `${combinedInstruction}\n\n${photoNote}` : photoNote;
-  }
-
-  const generated = await generateQuestionVariant(item.originalQuestion, {
-    mode: 'parallel',
-    customInstruction: combinedInstruction || undefined,
-    apiKey: selectedApiKey || undefined,
-    enableImageGeneration: isImageGenActive,
+  const { normalized, isAiDiagramGenerated } = await generateNormalizedVariantForItem(item, {
+    directives: [options?.globalDirective, options?.tweakDirective],
+    generateAiDiagrams: options?.generateAiDiagrams,
   });
-
-  const cleanNum = cleanQuestionNumber(item.originalQuestion.question_number, item.index);
-  const normalized = constructNormalizedVariant(
-    item.originalQuestion,
-    generated,
-    cleanNum,
-    item.isPhotoReused,
-    isImageGenActive
-  );
-
-  let isAiDiagramGenerated = false;
-  if (
-    options?.generateAiDiagrams &&
-    generated.ai_diagram_prompt &&
-    !normalized.svg_content &&
-    !item.isPhotoReused
-  ) {
-    try {
-      const diagRes = await generateExamDiagram(generated.ai_diagram_prompt, {
-        topic: item.originalQuestion.topic,
-      });
-      if (diagRes.success && diagRes.url) {
-        normalized.diagram_url = diagRes.url;
-        normalized.svg_content = null;
-        normalized.diagram_type = 'apparatus';
-        normalized.ai_diagram_prompt = generated.ai_diagram_prompt;
-        isAiDiagramGenerated = true;
-      }
-    } catch (diagErr) {
-      console.warn(`[examVariantService] Diagram generation skipped for Q${item.index + 1}:`, diagErr);
-    }
-  }
 
   return {
     ...item,
@@ -427,21 +384,32 @@ export async function regenerateSingleVariant(
   };
 }
 
+export interface PersistVariantExamResult {
+  savedTest: CustomTest;
+  savedQuestions: Question[];
+  updatedHeaderConfig: ExamHeaderConfig;
+}
+
 /**
  * Persists the generated variant questions to Supabase, then creates the CustomTest record.
+ * Returns both savedTest and the persisted Question[] (with real database UUIDs).
  */
 export async function persistVariantExam(
   items: VariantGenerationItem[],
   originalHeaderConfig: ExamHeaderConfig,
   newTitle: string
-): Promise<CustomTest> {
+): Promise<PersistVariantExamResult> {
   const resolvedQuestionIds: string[] = [];
+  const savedQuestions: Question[] = [];
+  const keptOriginalIds = new Set<string>();
   let totalMarks = 0;
 
   for (const item of items) {
     // If the teacher elected to use original, or generation failed/skipped, keep original UUID
     if (item.useOriginal || item.status === 'skipped' || item.status === 'failed' || !item.variantQuestion) {
       resolvedQuestionIds.push(item.originalQuestion.id);
+      savedQuestions.push(item.originalQuestion);
+      keptOriginalIds.add(item.originalQuestion.id);
       totalMarks += Number(item.originalQuestion.marks) || 1;
       continue;
     }
@@ -450,19 +418,26 @@ export async function persistVariantExam(
     const saved = await createQuestion(item.variantQuestion);
     if (saved && saved.id) {
       resolvedQuestionIds.push(saved.id);
+      savedQuestions.push(saved);
       totalMarks += Number(saved.marks) || Number(item.variantQuestion.marks) || 1;
     } else {
       // Fallback to original question ID if saving fails
       console.warn(`[examVariantService] createQuestion fallback to original for Q${item.index + 1}`);
       resolvedQuestionIds.push(item.originalQuestion.id);
+      savedQuestions.push(item.originalQuestion);
+      keptOriginalIds.add(item.originalQuestion.id);
       totalMarks += Number(item.originalQuestion.marks) || 1;
     }
   }
 
-  // Update header config for Set B
+  // Update header config for Set B and prune orphaned Set A questionOverrides
   const updatedHeaderConfig: ExamHeaderConfig = {
     ...originalHeaderConfig,
     title: newTitle,
+    questionOverrides: pruneQuestionOverridesForVariantSet(
+      originalHeaderConfig.questionOverrides,
+      keptOriginalIds
+    ),
   };
 
   const savedTest = await saveCustomTest({
@@ -476,5 +451,5 @@ export async function persistVariantExam(
     window.dispatchEvent(new Event('tests_updated'));
   }
 
-  return savedTest;
+  return { savedTest, savedQuestions, updatedHeaderConfig };
 }

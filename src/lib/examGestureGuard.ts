@@ -70,8 +70,8 @@ export function shouldBlockWheel(input: WheelDecisionInput): boolean {
   const absX = Math.abs(input.deltaX);
   const absY = Math.abs(input.deltaY);
 
-  // Vertical scrolling is never touched.
-  if (absX <= absY || absX <= MIN_WHEEL_DELTA) return false;
+  // Vertical and near-diagonal vertical trackpad scrolling is never blocked.
+  if (absX <= absY * HORIZONTAL_DOMINANCE || absX <= MIN_WHEEL_DELTA) return false;
 
   if (input.insideScroller) {
     // Let the table pan until its own edge, then swallow the remainder so the

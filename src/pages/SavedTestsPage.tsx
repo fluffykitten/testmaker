@@ -1259,8 +1259,8 @@ export function SavedTestsPage({
           onSaveComplete={() => {
             loadTests();
           }}
-          onOpenInBuilder={(qs, hc) => {
-            onLoadTestIntoBuilder(qs, hc);
+          onOpenInBuilder={(qs, hc, testId) => {
+            onLoadTestIntoBuilder(qs, hc, testId);
           }}
         />
       )}

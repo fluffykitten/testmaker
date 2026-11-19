@@ -91,6 +91,10 @@ import {
 } from '../services/teacherProfileService';
 import type { TeacherProfile } from '../types/database';
 import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
+import {
+  exportRosterPinSheetDocx,
+  prepareRosterForPinExport,
+} from '../services/rosterPinDocxService';
 import './AdvancedSettingsPage.css';
 
 const ADVANCED_MASTER_PIN = '140798';
@@ -824,6 +828,31 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
     }
     exportRosterToExcel(roster, selectedRosterClass);
     showNotice('✓ Exported class roster Excel spreadsheet');
+  };
+
+  const handleExportRosterPinDocx = async () => {
+    if (roster.length === 0) {
+      alert('No students found in roster to export.');
+      return;
+    }
+    try {
+      const { updatedRoster, assignedCount } = prepareRosterForPinExport(roster);
+      if (assignedCount > 0) {
+        setRoster(updatedRoster);
+        await saveSchoolRoster(updatedRoster);
+      }
+      const { exportedCount } = await exportRosterPinSheetDocx(updatedRoster, {
+        classFilter: selectedRosterClass,
+        scopeLabel: selectedRosterClass === 'ALL' ? 'All_Classes' : selectedRosterClass,
+      });
+      showNotice(
+        assignedCount > 0
+          ? `✓ Assigned ${assignedCount} missing PIN(s) & exported Word (.docx) for ${exportedCount} students`
+          : `✓ Exported Student Name & PIN Word (.docx) for ${exportedCount} students`
+      );
+    } catch (err: any) {
+      alert(err?.message || 'Could not export Student PIN Word document.');
+    }
   };
 
   const handleExecuteBulkImport = () => {
@@ -1804,6 +1833,15 @@ export function AdvancedSettingsPage({ onBack }: AdvancedSettingsPageProps) {
                       title="Export candidate list with Room, Seat # & 4-digit PIN slips to Excel"
                     >
                       📊 Export to Excel
+                    </button>
+                    <button
+                      type="button"
+                      className="adv-btn-secondary"
+                      disabled={roster.length === 0}
+                      onClick={handleExportRosterPinDocx}
+                      title="Export A4 Word (.docx) with Proctor Master Table & 3x6 Cut-Out Student Name & PIN Slips"
+                    >
+                      📄 Export PINs (.docx)
                     </button>
                     <button
                       type="button"

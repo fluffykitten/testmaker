@@ -2,13 +2,20 @@
 // Sends PDF pages to Google's multimodal AI for structured question extraction.
 // Features dynamic model discovery, auto-fallback, and retry.
 
-import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion, type QuestionStyle } from '../types/database';
+import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion } from '../types/database';
 import type { PaperOutline } from './paperOutlineParse';
 import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import { getIeltsCefrExtractionPrompt } from './ieltsPrompt';
 import type { SubjectProfile } from './subjectClassifier';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
+import { hasInlineGaps } from './inlineGapParser';
+import { hasBlankDataTableCells } from './dataTableUtils';
+import { classifyQuestionDomain } from '../utils/questionDomainDetector';
+import {
+  buildMisconceptionsWithDistractors,
+  resolveVariantStyleAndSubs,
+} from '../utils/variantClassification';
 import {
   getSavedSettings,
   getGeminiExtractionModel,
@@ -2948,7 +2955,7 @@ export async function generateQuestionVariant(
       modeInstruction = `Generate a PARALLEL TWIN question. Keep the exact same format (${original.question_style || 'Structured'}), total marks (${original.marks}), and structure. Alter numerical values, chemical compounds, biological specimens, or physical contexts while testing the identical core concepts.`;
       break;
     case 'scaffold':
-      modeInstruction = `Generate a SCAFFOLDED / FOUNDATION variant. Make this question slightly more accessible (Easy / Foundation level) by breaking down complex multi-step reasoning into step-by-step guided sub-parts, providing clearer scaffolding prompts, or using simpler numerical values.`;
+      modeInstruction = `Generate a SCAFFOLDED / FOUNDATION variant. Make this question slightly more accessible (Easy / Foundation level) by breaking down complex multi-step reasoning into 2 to 3 step-by-step guided sub-questions (with "question_style": "Structured", "options": null, and clear "sub_questions"), providing clearer scaffolding prompts, or using simpler values.${original.question_style === 'Multiple Choice' ? ' Converting this MCQ into guided "Structured" sub-parts is encouraged.' : ''}`;
       break;
     case 'extension':
       modeInstruction = `Generate a CHALLENGING EXTENSION variant. Increase the difficulty (Hard / Higher-order thinking) by combining concepts, asking for evaluation/justification, requiring inverted algebraic calculations, or removing scaffolding.`;
@@ -2993,15 +3000,68 @@ YOU MUST STRICTLY ADHERE TO THIS INSTRUCTION:
   );
 
   const isImageGenEnabled = options.enableImageGeneration ?? getSavedSettings().enableVariantImageGeneration ?? false;
-  const hasVisual = Boolean(original.diagram_url || original.svg_content || original.ai_diagram_prompt);
+  const subVisualUrls = Array.isArray(original.sub_questions)
+    ? original.sub_questions
+        .map((s) => s.diagram_url)
+        .filter((u): u is string => Boolean(u))
+    : [];
+  const subSvgSnippets = Array.isArray(original.sub_questions)
+    ? original.sub_questions
+        .map((s) => ({
+          id: s.sub_id,
+          svg: s.svg_content || extractSvgFromDiagramUrl(s.diagram_url),
+        }))
+        .filter((item): item is { id: string; svg: string } => Boolean(item.svg))
+    : [];
+  const topSvgSnippet = original.svg_content || extractSvgFromDiagramUrl(original.diagram_url);
+  const allSvgContext = [
+    topSvgSnippet ? `Main Question SVG:\n${topSvgSnippet.slice(0, 5000)}` : '',
+    ...subSvgSnippets.slice(0, 2).map((s) => `Sub-question ${s.id} SVG:\n${s.svg.slice(0, 3000)}`),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const rasterVisualUrls: string[] = [];
+  for (const url of [original.diagram_url, ...subVisualUrls]) {
+    if (url && !url.startsWith('data:image/svg+xml') && !rasterVisualUrls.includes(url)) {
+      rasterVisualUrls.push(url);
+    }
+  }
+
+  const hasVisual = Boolean(
+    original.diagram_url ||
+      original.svg_content ||
+      original.ai_diagram_prompt ||
+      original.sub_questions?.some((s) => s.diagram_url || s.svg_content || s.ai_diagram_prompt)
+  );
+
+  // Fetch attached raster images (photos, graphs, apparatus, maps) so Gemini Vision sees them directly instead of hallucinating
+  const inlineImageParts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+  if (rasterVisualUrls.length > 0) {
+    const resolvedImages = await Promise.all(
+      rasterVisualUrls.slice(0, 3).map((u) => urlToInlineData(u).catch(() => null))
+    );
+    for (const img of resolvedImages) {
+      if (img) inlineImageParts.push({ inlineData: img });
+    }
+  }
+
+  const mustGroundToOriginalImage = Boolean(
+    hasVisual && (!isImageGenEnabled || original.diagram_type === 'photo')
+  );
 
   const visualDirective = !hasVisual
     ? ''
-    : !isImageGenEnabled
-    ? `VISUAL RESOURCE:
-Reference the visual figure (${original.resource_ref || 'the visual figure'}). The authentic original visual is already provided and retained unchanged. Formulate an alternative question, scenario, or calculation that asks about this visual.`
-    : `PARAMETRIC SVG GENERATION (DIAGRAM-VALUE COHERENCE):
-Does this question require or reference a quantitative/schematic visual?
+    : mustGroundToOriginalImage
+    ? `STRICT VISUAL GROUNDING — ZERO HALLUCINATION RULE (AUTHENTIC ORIGINAL IMAGE RETAINED):
+Reference the visual resource (${original.resource_ref || 'the attached diagram/photograph'}). The authentic original visual is KEPT UNCHANGED and attached directly to this request${allSvgContext ? ' (with its SVG markup below)' : ''}.
+YOU MUST STRICTLY FOLLOW THESE GROUNDING RULES:
+1. Examine ONLY the labels, letters (e.g. A, B, C, P, Q), numbers, axes, units, readings, objects, specimens, or features visibly present in the attached visual${allSvgContext ? ' / SVG' : ''}.
+2. NEVER invent, guess, rename, or alter labels, scale readings, dimensions, curves, or components that are not visibly shown in the attached visual.
+3. Every visual reference in "question_text", "sub_questions", "options", and "mark_scheme" MUST remain 100% faithful to what is literally shown in the image.
+4. Vary the question by asking about a different visible feature/label, changing the concept/property tested from the same figure, inverting what is solved using clearly stated non-visual text parameters (without contradicting numbers printed in the figure), or scaffolding reasoning steps.${allSvgContext ? `\n\nATTACHED SVG SOURCE FOR EXACT LABELS/VALUES:\n${allSvgContext}` : ''}`
+    : `PARAMETRIC SVG GENERATION & VISUAL REFERENCE GROUNDING (DIAGRAM-VALUE COHERENCE):
+${inlineImageParts.length > 0 ? 'An original visual is attached for reference—do NOT hallucinate unrelated features or mismatched geometry.\n' : ''}${allSvgContext ? `ORIGINAL SVG SOURCE:\n${allSvgContext}\n` : ''}Does this question require or reference a quantitative/schematic visual?
 - WHITELIST (ONLY GENERATE SVG FOR THESE):
   * Cartesian coordinate graphs (axes with ticks & units, speed-time, extension-load, cooling curve, reaction profile).
   * Electrical circuit schematics (standard symbols: cell/battery, switch, lamp, resistors, ammeter, voltmeter).
@@ -3016,12 +3076,32 @@ Does this question require or reference a quantitative/schematic visual?
 - BLACKLIST (DO NOT GENERATE SVG):
   * If it is a real photograph, biological anatomical specimen/tissue, or complex laboratory glassware setup (or diagram_type is 'photo'):
     - Set "svg_content": null.
-    - VISUAL ASSET REUSE: Maintain the visual reference (${original.resource_ref || 'the photograph/figure'}). Generate a fresh, alternative question and mark scheme testing a different structure, calculation (e.g. magnification/actual size), observation, or scientific concept based on this same visual resource!
+    - VISUAL ASSET REUSE: Maintain the visual reference (${original.resource_ref || 'the photograph/figure'}) and strictly reference ONLY what is visibly shown in the attached photograph!
 
 AI DIAGRAM GENERATION (FOR APPARATUS, EXPERIMENTS, SPECIMENS, GEOGRAPHY, OR HISTORY):
 If this question requires an apparatus diagram, experimental glassware, biological structure, geography map/landform, or historical illustration (and SVG is ill-suited):
 - Provide a concise, clear description in "ai_diagram_prompt" (under 40 words) describing the physical objects, connections, and arrangement to be drawn as a black-and-white exam figure.
 - ANTI-HALLUCINATION RULE: Focus on the physical geometry, layout, and scientific objects. NEVER request specific numerical text labels in the prompt; state all exact numbers in the question text instead, or use simple letter labels like [A] and [B] for unknown components.`;
+
+  const originalDomain = classifyQuestionDomain(original);
+  const originalHasInlineGaps =
+    hasInlineGaps(original.question_text || '') ||
+    Boolean(original.sub_questions?.some((s) => hasInlineGaps(s.question_text || '')));
+  const originalHasBlankTables = hasBlankDataTableCells(original.data_tables);
+
+  const formatPreservationNotes = [
+    originalHasInlineGaps && options.mode !== 'mcq'
+      ? '- INLINE CLOZE GAPS: The original question uses inline gap placeholders ([1], [2] or [choice1|choice2]). Preserve valid bracketed gap syntax cleanly in the variant text and align acceptable answers in "mark_scheme".'
+      : '',
+    originalHasBlankTables
+      ? '- FILLABLE DATA TABLES: Preserve interactive blank cell entries ({ "value": "", "is_blank": true, "expected_answer": "..." }) in "data_tables" matching any altered data values.'
+      : '',
+    originalDomain.isLanguage
+      ? '- LANGUAGE / HUMANITIES SUBJECT: Keep authentic linguistic/comprehension style; do NOT force STEM chemistry/physics jargon unless present in the original question.'
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const prompt = `You are an expert exam author for Cambridge IGCSE, GCSE, and A-Level assessments.
 Create a new syllabus-aligned variant of the following exam question.
@@ -3036,12 +3116,13 @@ ORIGINAL QUESTION DETAILS:
 ${original.diagram_url ? `- Has Diagram/Visual Resource: Yes (${original.resource_ref ? `Referenced as ${original.resource_ref}` : 'Visual figure/diagram attached'}). Diagram Type: ${original.diagram_type || 'unclassified'}.` : ''}
 ${original.options ? `- Original Options: ${JSON.stringify(original.options)}` : ''}
 ${original.sub_questions && original.sub_questions.length > 0 ? `- Original Sub-questions: ${JSON.stringify(original.sub_questions)}` : ''}
+${original.data_tables && original.data_tables.length > 0 ? `- Original Data Tables: ${JSON.stringify(original.data_tables)}` : ''}
 ${original.mark_scheme ? `- Original Mark Scheme: ${JSON.stringify(original.mark_scheme)}` : ''}
 
 GENERATION GOAL:
 ${modeInstruction}
 ${customInstructionDirective}
-
+${formatPreservationNotes ? `\nFORMAT & SUBJECT PRESERVATION:\n${formatPreservationNotes}\n` : ''}
 STEM ANTI-HALLUCINATION & DERIVATION SCRATCHPAD:
 If this question involves quantitative calculations, physical laws, or chemical reactions:
 - Execute derivations in the "scratchpad" object:
@@ -3105,10 +3186,11 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
   }
 } `;
 
-  console.log(`[generateQuestionVariant] Generating (${options.mode}) with customInstruction:`, trimmedCustomInstruction || '(none)');
+  console.log(`[generateQuestionVariant] Generating (${options.mode}) with ${inlineImageParts.length} attached image(s), customInstruction:`, trimmedCustomInstruction || '(none)');
 
   const text = await callGeminiWithProxyFallback({
     prompt,
+    parts: inlineImageParts.length > 0 ? [{ text: prompt }, ...inlineImageParts] : undefined,
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.35,
@@ -3172,64 +3254,80 @@ ${trimmedCustomInstruction ? '6.' : '5.'} Return strictly a single valid JSON ob
       })
     : [];
 
-  // If structured mode was requested but LLM didn't return sub-questions, synthesize basic parts
+  // If structured mode was requested but LLM didn't return sub-questions, synthesize domain-appropriate parts
   if (options.mode === 'structured' && sanitizedSubs.length === 0) {
-    sanitizedSubs = [
-      {
-        sub_id: '(a)',
-        question_text: parsed.question_text || 'Explain the underlying chemical/physical principle.',
-        marks: 1,
-        mark_scheme: parsed.mark_scheme?.marking_points?.[0] || 'Correct explanation [1]',
-      },
-      {
-        sub_id: '(b)',
-        question_text: 'Describe one method to verify this result experimentally.',
-        marks: 2,
-        mark_scheme: 'Apparatus described [1]; measurement recorded [1]',
-      },
-    ];
+    const fallbackSubs = originalDomain.isLanguage
+      ? [
+          {
+            sub_id: '(a)',
+            question_text: parsed.question_text || 'Identify one key point or detail stated in the question.',
+            marks: 1,
+            mark_scheme: parsed.mark_scheme?.marking_points?.[0] || 'Relevant detail stated [1]',
+          },
+          {
+            sub_id: '(b)',
+            question_text: 'Explain your reasoning using evidence from the passage or context.',
+            marks: 2,
+            mark_scheme: 'Clear explanation [1]; supporting evidence [1]',
+          },
+        ]
+      : originalDomain.isMath
+      ? [
+          {
+            sub_id: '(a)',
+            question_text: parsed.question_text || 'Write down the equation or mathematical relationship required.',
+            marks: 1,
+            mark_scheme: parsed.mark_scheme?.marking_points?.[0] || 'Correct relationship [1]',
+          },
+          {
+            sub_id: '(b)',
+            question_text: 'Calculate the final value, showing your full working.',
+            marks: 2,
+            mark_scheme: 'Valid method [1]; accurate final value [1]',
+          },
+        ]
+      : [
+          {
+            sub_id: '(a)',
+            question_text: parsed.question_text || `Explain the core ${original.topic || 'scientific'} concept involved.`,
+            marks: 1,
+            mark_scheme: parsed.mark_scheme?.marking_points?.[0] || 'Correct explanation [1]',
+          },
+          {
+            sub_id: '(b)',
+            question_text: 'Justify your answer with a second supporting point or calculation.',
+            marks: 2,
+            mark_scheme: 'Supporting step [1]; accurate conclusion [1]',
+          },
+        ];
+    sanitizedSubs = fallbackSubs;
   }
 
-  // Format resolution based on requested mode
-  let finalStyle: QuestionStyle = 'Structured';
-  let finalOptions: string[] | null = null;
-  let finalSubs: SubQuestion[] | undefined = undefined;
-
+  // Format resolution based on requested mode (supports scaffold converting MCQ -> Structured)
   const normalizedTopOptions = normalizeOptions(parsed.options);
+  const {
+    questionStyle: finalStyle,
+    options: finalOptions,
+    subQuestions: finalSubs,
+    marks: computedMarks,
+  } = resolveVariantStyleAndSubs({
+    mode: options.mode,
+    originalStyle: original.question_style,
+    parsedStyle: parsed.question_style,
+    normalizedOptions: normalizedTopOptions,
+    sanitizedSubs,
+    originalMarks: original.marks,
+    parsedMarks: parsed.marks,
+  });
 
-  if (options.mode === 'mcq') {
-    finalStyle = 'Multiple Choice';
-    finalOptions = normalizedTopOptions && normalizedTopOptions.length > 0
-      ? normalizedTopOptions
-      : ['A. Option A', 'B. Option B', 'C. Option C', 'D. Option D'];
-    finalSubs = undefined;
-  } else if (options.mode === 'structured') {
-    finalStyle = 'Structured';
-    finalOptions = null;
-    finalSubs = sanitizedSubs.length > 0 ? sanitizedSubs : undefined;
-  } else {
-    finalStyle = (parsed.question_style as QuestionStyle) || original.question_style || 'Structured';
-    finalOptions = finalStyle === 'Multiple Choice' ? normalizedTopOptions : null;
-    finalSubs = finalStyle !== 'Multiple Choice' && sanitizedSubs.length > 0
-      ? sanitizedSubs
-      : undefined;
-  }
-
-  // Calculate total marks
-  const computedMarks = finalSubs && finalSubs.length > 0
-    ? finalSubs.reduce((sum, s) => sum + s.marks, 0)
-    : (finalStyle === 'Multiple Choice' ? 1 : Number(parsed.marks) || original.marks || 1);
-
-  // Compile misconceptions including diagnostic distractor analysis
-  const baseMisconceptions: string[] = Array.isArray(parsed.mark_scheme?.common_misconceptions)
+  // Compile misconceptions from wrong-option distractors (excluding CORRECT rationale)
+  const rawBaseMisconceptions: string[] = Array.isArray(parsed.mark_scheme?.common_misconceptions)
     ? parsed.mark_scheme.common_misconceptions.map(String)
     : [];
-
-  if (parsed.distractor_analysis && typeof parsed.distractor_analysis === 'object') {
-    Object.entries(parsed.distractor_analysis).forEach(([letter, desc]) => {
-      baseMisconceptions.push(`Option ${letter}: ${desc}`);
-    });
-  }
+  const baseMisconceptions = buildMisconceptionsWithDistractors(
+    rawBaseMisconceptions,
+    parsed.distractor_analysis
+  );
 
   // Sanitize mark scheme
   const sanitizedMarkScheme = {

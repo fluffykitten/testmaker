@@ -383,11 +383,15 @@ export function PortalLandingPage({
     setOutboxSyncMsg('Syncing pending exam submissions...');
     try {
       const res = await flushSubmissionOutbox();
-      if (res.syncedCount > 0) {
+      if (res.syncedCount > 0 && res.failedCount === 0) {
         setOutboxSyncMsg(`Successfully synced ${res.syncedCount} exam submission(s).`);
         setTimeout(() => setOutboxSyncMsg(null), 4000);
       } else if (res.failedCount > 0) {
-        setOutboxSyncMsg('Sync attempt failed. Will retry automatically.');
+        setOutboxSyncMsg(
+          res.lastError
+            ? `Sync failed: ${res.lastError}`
+            : 'Sync attempt failed. Will retry automatically.'
+        );
       } else {
         setOutboxSyncMsg(null);
       }

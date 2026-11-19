@@ -86,13 +86,13 @@ check(
 
 const runnerTsx = fs.readFileSync(path.resolve('src/pages/StudentQuizRunner.tsx'), 'utf8');
 check(
-  '9. Crash/shutdown draft persistence: keepalive exit flush + decoupled 25s interval + 2.5s edit debounce',
+  '9. Crash/shutdown draft persistence: keepalive exit flush + jittered periodic heartbeat + edit debounce',
   examDraftTs.includes('keepalive: true') &&
     runnerTsx.includes("window.addEventListener('beforeunload', flushOnExit)") &&
     runnerTsx.includes("window.addEventListener('pagehide', flushOnExit)") &&
     runnerTsx.includes('flushCloudDraftRef.current(true)') &&
     runnerTsx.includes('flushCloudDraftRef.current(false)') &&
-    runnerTsx.includes('25000')
+    (runnerTsx.includes('25000') || runnerTsx.includes('90000'))
 );
 
 assert.equal(failed, 0, `${failed} check(s) failed`);

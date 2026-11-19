@@ -13,6 +13,7 @@ import {
   persistVariantExam,
   type VariantGenerationItem,
 } from '../services/examVariantService';
+import { buildSharedPassageRefSet } from '../utils/variantClassification';
 import { getSavedSettings } from '../lib/settings';
 import './ExamVariantModal.css';
 
@@ -22,7 +23,7 @@ interface ExamVariantModalProps {
   originalQuestions: Question[];
   originalHeaderConfig: ExamHeaderConfig;
   onSaveComplete: () => void;
-  onOpenInBuilder?: (questions: Question[], headerConfig: ExamHeaderConfig) => void;
+  onOpenInBuilder?: (questions: Question[], headerConfig: ExamHeaderConfig, testId?: string) => void;
 }
 
 type ModalStep = 'config' | 'generating' | 'review';
@@ -60,16 +61,17 @@ export const ExamVariantModal: React.FC<ExamVariantModalProps> = ({
     const baseTitle = originalHeaderConfig.title || 'Exam Assessment';
     setExamTitle(`${baseTitle} - Set B`);
     setGlobalDirective('');
-    setGenerateAiDiagrams(true);
+    setGenerateAiDiagrams(Boolean(getSavedSettings().enableVariantImageGeneration));
     setStep('config');
     setSaveError(null);
     setActiveTweakIdx(null);
     setTweakTextMap({});
     setRegeneratingIdx(null);
 
-    // Initial pre-classification of questions
+    // Initial pre-classification of questions (including shared reading passage detection)
+    const sharedRefs = buildSharedPassageRefSet(originalQuestions);
     const initialItems: VariantGenerationItem[] = originalQuestions.map((q, idx) => {
-      const classification = classifyQuestion(q);
+      const classification = classifyQuestion(q, originalQuestions, sharedRefs);
       const cleanNum = cleanQuestionNumber(q.question_number, idx);
 
       if (classification.action === 'skip') {
@@ -210,7 +212,7 @@ export const ExamVariantModal: React.FC<ExamVariantModalProps> = ({
     setSaveError(null);
 
     try {
-      await persistVariantExam(
+      const { savedTest, savedQuestions, updatedHeaderConfig } = await persistVariantExam(
         items,
         originalHeaderConfig,
         examTitle.trim() || `${originalHeaderConfig.title || 'Exam'} - Set B`
@@ -219,17 +221,7 @@ export const ExamVariantModal: React.FC<ExamVariantModalProps> = ({
       onSaveComplete();
 
       if (openInBuilder && onOpenInBuilder) {
-        // Collect resolved questions for builder
-        const resolvedQs = items.map((it) => {
-          if (it.useOriginal || !it.variantQuestion) {
-            return it.originalQuestion;
-          }
-          return it.variantQuestion;
-        });
-        onOpenInBuilder(resolvedQs, {
-          ...originalHeaderConfig,
-          title: examTitle.trim() || `${originalHeaderConfig.title || 'Exam'} - Set B`,
-        });
+        onOpenInBuilder(savedQuestions, updatedHeaderConfig, savedTest.id);
       }
 
       onClose();

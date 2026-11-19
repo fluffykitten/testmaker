@@ -41,6 +41,7 @@ check('edge swipe beats widget exemption', move({ currentX: 512, startedAtEdge: 
 console.log('\n## Layer 2 — trackpad wheel decisions');
 const wheel = (o) => shouldBlockWheel({ deltaX: 0, deltaY: 0, insideScroller: false, atLeftEdge: false, atRightEdge: false, ...o });
 check('vertical wheel untouched', !wheel({ deltaY: 120 }));
+check('diagonal vertical trackpad scroll untouched', !wheel({ deltaX: 12, deltaY: 11 }));
 check('horizontal wheel blocked', wheel({ deltaX: 60, deltaY: 3 }));
 check('tiny horizontal delta ignored', !wheel({ deltaX: 3, deltaY: 1 }));
 check('table scroll with room allowed', !wheel({ deltaX: 60, deltaY: 2, insideScroller: true }));
