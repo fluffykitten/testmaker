@@ -210,11 +210,11 @@ const practiceBlock = runnerSrc.slice(
 
 check(
   'RS-3a: Emergency catch fallback preserves resultPin, studentPin, and outbox; Practice Mode includes resultPin & offline_failed retry UI',
-  catchBlock.includes('resultPin: generateResultPin()') &&
+  catchBlock.includes('resultPin: createPostSubmitResultPin()') &&
     catchBlock.includes('studentPin: studentPinInput || undefined') &&
     catchBlock.includes('saveToSubmissionOutbox(fallback') &&
     runnerSrc.includes("status: 'graded'") &&
-    /status:\s*'graded',[\s\S]{0,120}resultPin:\s*generateResultPin\(\)/.test(runnerSrc) &&
+    /status:\s*'graded',[\s\S]{0,120}resultPin:\s*createPostSubmitResultPin\(\)/.test(runnerSrc) &&
     runnerSrc.includes("syncStatus === 'offline_failed'") &&
     practiceBlock !== undefined
 );
@@ -229,19 +229,19 @@ check(
     !runnerSrc.includes('this 3-digit PIN')
 );
 
-// ── Test 4: Migration 029 SQL Parity ────────────────────────────────────────
-const mig029 = fs.readFileSync(
-  path.resolve('supabase/migrations/029_resync_pin_verification_parity.sql'),
+// ── Test 4: Migration 033 SQL Parity ────────────────────────────────────────
+const mig033 = fs.readFileSync(
+  path.resolve('supabase/migrations/033_resync_pin_verification_parity.sql'),
   'utf8'
 );
 check(
-  'RS-4a: Migration 029 updates verify_teacher_unlock_pin across quiz_by_code_, quiz_by_code:, published_quizzes, previousCodes, and default 1234 fallback',
-  /CREATE OR REPLACE FUNCTION public\.verify_teacher_unlock_pin/i.test(mig029) &&
-    mig029.includes("'quiz_by_code_' || v_code") &&
-    mig029.includes("'quiz_by_code:' || v_code") &&
-    mig029.includes("elem->'previousCodes'") &&
-    mig029.includes("'1234'") &&
-    /GRANT EXECUTE ON FUNCTION public\.verify_teacher_unlock_pin\(TEXT, TEXT\) TO anon, authenticated;/i.test(mig029)
+  'RS-4a: Migration 033 updates verify_teacher_unlock_pin across quiz_by_code_, quiz_by_code:, published_quizzes, previousCodes, and default 1234 fallback',
+  /CREATE OR REPLACE FUNCTION public\.verify_teacher_unlock_pin/i.test(mig033) &&
+    mig033.includes("'quiz_by_code_' || v_code") &&
+    mig033.includes("'quiz_by_code:' || v_code") &&
+    mig033.includes("elem->'previousCodes'") &&
+    mig033.includes("'1234'") &&
+    /GRANT EXECUTE ON FUNCTION public\.verify_teacher_unlock_pin\(TEXT, TEXT\) TO anon, authenticated;/i.test(mig033)
 );
 
 console.log(`\nRe-sync after submission tests: ${passed} passed, ${failed} failed.`);

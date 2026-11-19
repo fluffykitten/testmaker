@@ -491,14 +491,21 @@ export async function checkStudentAttemptSubmitted(
 
   let shouldRunLegacyTableFallback = false;
 
-  // 1. Prefer the exact, server-side RPC (no 100-row truncation, no client-side scan).
+  // 1. Prefer the exact, server-side RPC (bounded timeout so slow connections don't stall exam entry).
   try {
-    const { data, error } = await (supabase as any).rpc('check_student_attempt_submitted', {
+    const rpcPromise = (supabase as any).rpc('check_student_attempt_submitted', {
       p_quiz_code: cleanCode,
       p_student_name: candidateName,
       p_student_class: candidateClass || null,
       p_student_number: candidateNumber || null,
     });
+    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 4000)
+    );
+    const { data, error } = (await Promise.race([rpcPromise, timeoutPromise])) as {
+      data: any;
+      error: any;
+    };
     if (!error && data && typeof data === 'object') {
       return {
         submitted: data.submitted === true,
@@ -517,7 +524,7 @@ export async function checkStudentAttemptSubmitted(
     }
   }
 
-  // 2. Legacy fallback (pre-migration DBs only): query the table and normalise in JS.
+  // 2. Legacy fallback only when RPC is missing (pre-019 DB); Phase 2 RLS blocks anon table reads.
   if (shouldRunLegacyTableFallback) {
     try {
       const { data, error } = await (supabase.from('quiz_submissions' as any) as any)

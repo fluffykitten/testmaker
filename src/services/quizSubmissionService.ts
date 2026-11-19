@@ -803,6 +803,13 @@ export async function flushSubmissionOutbox(): Promise<{
 }
 
 /**
+ * Global toggle for issuing & displaying the post-submission Personal Access PIN.
+ * Disabled by default so candidates are not shown a result PIN ticket/guide on submit;
+ * legacy submissions that already stored `result_pin` continue to be verified on lookup.
+ */
+export const ENABLE_POST_SUBMIT_RESULT_PIN = false;
+
+/**
  * Generates a cryptographically random 6-digit personal PIN (100000–999999) for result retrieval.
  */
 export function generateResultPin(): string {
@@ -812,6 +819,13 @@ export function generateResultPin(): string {
     return String(100000 + (arr[0] % 900000));
   }
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+/**
+ * Issues a post-submission Personal Access PIN only when enabled.
+ */
+export function createPostSubmitResultPin(enabled: boolean = ENABLE_POST_SUBMIT_RESULT_PIN): string | undefined {
+  return enabled ? generateResultPin() : undefined;
 }
 
 export interface QuestionSubmissionResult {
@@ -1050,7 +1064,7 @@ export interface StudentSubmission {
   teacherNotes?: string;         // Optional teacher annotation / remark notes
   rawAnswers?: Record<string | number, string | number>;
   status?: SubmissionStatus;     // 'submitted' (pending) | 'grading' | 'graded' | 'published' (released)
-  resultPin?: string;            // 3-digit personal PIN for secure result retrieval
+  resultPin?: string;            // Optional personal PIN for result retrieval
   updatedAt?: string;            // Timestamp of latest grading or teacher adjustment
   forensics?: ExamForensics;     // Forensic audit telemetry (answer changes, dwell times, violation threshold)
 }

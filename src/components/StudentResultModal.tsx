@@ -43,6 +43,17 @@ export function StudentResultModal({
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
   const [cloudQuizPolicy, setCloudQuizPolicy] = useState<PublishedQuiz | null>(null);
   const [rpcAllowScriptDownload, setRpcAllowScriptDownload] = useState<boolean | undefined>(undefined);
+  const [overridePin, setOverridePin] = useState<string | undefined>(undefined);
+  const [legacyPinInput, setLegacyPinInput] = useState<string>('');
+  const [hasSubmittedOverridePin, setHasSubmittedOverridePin] = useState<boolean>(false);
+
+  useEffect(() => {
+    setOverridePin(undefined);
+    setLegacyPinInput('');
+    setHasSubmittedOverridePin(false);
+  }, [isOpen, quizCode, candidateIdentifier, pin]);
+
+  const effectivePin = overridePin !== undefined ? overridePin : pin;
 
   useEffect(() => {
     if (!isOpen || !quizCode || !candidateIdentifier) {
@@ -64,7 +75,7 @@ export function StudentResultModal({
       })
       .catch(() => {});
 
-    fetchStudentResultsCloud(quizCode, candidateIdentifier, pin)
+    fetchStudentResultsCloud(quizCode, candidateIdentifier, effectivePin)
       .then((res) => {
         if (!isMounted) return;
         setSubmissions(res.submissions);
@@ -88,7 +99,7 @@ export function StudentResultModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, quizCode, candidateIdentifier, pin]);
+  }, [isOpen, quizCode, candidateIdentifier, effectivePin]);
 
   const backdropDismiss = useBackdropDismiss(onClose);
 
@@ -169,18 +180,79 @@ export function StudentResultModal({
               <div className="srm-empty-icon">{pinMismatch ? '🔐' : hasUnreleased ? '⏳' : '🔍'}</div>
               <h3 className="srm-empty-title">
                 {pinMismatch
-                  ? 'Incorrect Personal Access PIN'
+                  ? (hasSubmittedOverridePin || (pin && pin.trim().length > 0)
+                      ? 'Incorrect Personal Access PIN'
+                      : 'Personal Access PIN Required')
                   : hasUnreleased
                     ? 'Evaluation In Progress'
                     : 'No Published Submissions Found'}
               </h3>
               <p className="srm-empty-desc">
                 {pinMismatch
-                  ? "The 3-digit PIN entered does not match this candidate's examination receipt. Please verify the 3-digit PIN displayed on your exam confirmation screen and try again."
+                  ? (hasSubmittedOverridePin || (pin && pin.trim().length > 0)
+                      ? "The PIN entered does not match this candidate's examination receipt. Please verify the Personal Access PIN displayed on your exam confirmation screen and try again."
+                      : 'This examination submission is protected by a Personal Access PIN from your confirmation receipt. Enter it below to view your marked paper.')
                   : hasUnreleased
                     ? 'Your examination responses have been safely received! The examiner is currently reviewing and grading the class. Please check back soon once results are officially released.'
                     : `We could not find any published exam attempts for "${candidateIdentifier}" under code "${quizCode}". Please double check your Quiz Code or Candidate Name / Number.`}
               </p>
+              {pinMismatch && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const trimmed = legacyPinInput.trim();
+                    if (!trimmed) return;
+                    setHasSubmittedOverridePin(true);
+                    setOverridePin(trimmed);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    marginTop: '16px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    placeholder="Access PIN"
+                    value={legacyPinInput}
+                    onChange={(e) => setLegacyPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    style={{
+                      width: '140px',
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      border: '1.5px solid #cbd5e1',
+                      fontSize: '1rem',
+                      fontWeight: 700,
+                      textAlign: 'center',
+                      letterSpacing: '0.18em',
+                      color: '#0f172a',
+                      background: '#ffffff',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!legacyPinInput.trim()}
+                    style={{
+                      padding: '10px 18px',
+                      borderRadius: '10px',
+                      border: 'none',
+                      background: '#2563eb',
+                      color: '#ffffff',
+                      fontWeight: 700,
+                      fontSize: '0.9rem',
+                      cursor: legacyPinInput.trim() ? 'pointer' : 'not-allowed',
+                      opacity: legacyPinInput.trim() ? 1 : 0.6,
+                    }}
+                  >
+                    Unlock Marked Paper →
+                  </button>
+                </form>
+              )}
             </div>
           ) : selectedSubmission ? (
             /* Detailed Result View for Selected Attempt */

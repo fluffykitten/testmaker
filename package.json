@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.5.6",
+  "version": "2.5.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -33,6 +33,9 @@
     "test:desk-cards": "node --import ./scripts/register-ts.mjs scripts/test-candidate-desk-cards.mjs",
     "test:student-pin": "node --import ./scripts/register-ts.mjs scripts/test-personal-exam-pin.mjs",
     "test:teacher-accounts": "node --import ./scripts/register-ts.mjs scripts/test-admin-teacher-accounts.mjs",
+    "test:exam-schedule": "node --import ./scripts/register-ts.mjs scripts/test-exam-session-schedule.mjs",
+    "test:multi-select": "node --import ./scripts/register-ts.mjs scripts/test-multiple-select-grading.mjs",
+    "test:backup-restore": "node --import ./scripts/register-ts.mjs scripts/test-backup-restore.mjs",
     "test:proctor-alerts": "node --import ./scripts/register-ts.mjs scripts/test-proctor-alert-engine.mjs",
     "test:submission-tombstones": "node scripts/test-submission-deletion-tombstones.mjs",
     "test:resource-booklet": "node --import ./scripts/register-ts.mjs scripts/test-resource-booklet.mjs",
@@ -46,6 +49,7 @@
     "test:scale-170": "node --import ./scripts/register-ts.mjs scripts/test-class-scoped-and-scale-hardening.mjs",
     "test:resync": "node --import ./scripts/register-ts.mjs scripts/test-resync-after-submission.mjs",
     "test:roster-pin-docx": "node --import ./scripts/register-ts.mjs scripts/test-roster-pin-docx.mjs",
+    "test:optional-result-pin": "node --import ./scripts/register-ts.mjs scripts/test-optional-result-pin.mjs",
     "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "preview": "vite preview",
     "deploy": "npm run build && npx netlify deploy --prod --dir=dist",

@@ -1,20 +1,20 @@
 -- ============================================================================
--- Migration 028: RLS-Locked Exam Paper Cache & Fast Lobby Resolution
+-- Migration 032: RLS-Locked Exam Paper Cache & Scheduled Lobby Resolution
 -- ============================================================================
--- Eliminates Wave 1 (200-way simultaneous exam load) statement timeouts in
--- `get_student_exam_paper`:
---   1. Stores sanitized exam papers in a private, RLS-locked cache table
---      (`public.exam_paper_cache`) with 5-minute TTL and per-code advisory-lock
---      single-flight build (`pg_advisory_xact_lock`), so 200 simultaneous
---      students opening a quiz compile the sanitized paper once instead of
---      executing 200 redundant TOAST/JSONB sanitization builds.
---   2. Attaches AFTER triggers on `app_config` (guarded to quiz/header keys so
+-- Combines Wave 1 (200-way simultaneous exam load) caching with Migration 027's
+-- `scheduledStartAt` / `scheduledEndAt` gating in `get_student_exam_paper`:
+--   1. Stores sanitized active exam papers in a private, RLS-locked cache table
+--      (`public.exam_paper_cache`) with 5-minute TTL, scheduled window bounds,
+--      and per-code advisory-lock single-flight build (`pg_advisory_xact_lock`),
+--      so 200 simultaneous students opening an active quiz compile the sanitized
+--      paper once instead of executing 200 redundant TOAST/JSONB builds.
+--   2. Re-evaluates `scheduledStartAt` / `scheduledEndAt` against live `NOW()`
+--      before serving cached payloads, returning live `scheduleStatus` and
+--      `serverNow` without caching `'paused' | 'scheduled' | 'closed'` states.
+--   3. Attaches AFTER triggers on `app_config` (guarded to quiz/header keys so
 --      high-frequency `draft_%` writes never fire it), `questions`, and
---      `custom_tests` so pausing, re-activating, or editing any question or
+--      `custom_tests` so pausing, rescheduling, or editing any question or
 --      header invalidates cached papers immediately.
---   3. Optimizes cold misses with indexed UUID `custom_tests` lookup and an
---      indexed `questions` PK CTE while keeping answer-key stripping and
---      `teacherPinHash: NULL` guarantees intact.
 -- ============================================================================
 
 -- ─── 1. Private RLS-Locked Exam Paper Cache Table ────────────────────────────
@@ -22,9 +22,15 @@
 CREATE TABLE IF NOT EXISTS public.exam_paper_cache (
     quiz_code TEXT PRIMARY KEY,
     strip_keys BOOLEAN NOT NULL DEFAULT TRUE,
+    scheduled_start_at TIMESTAMPTZ NULL,
+    scheduled_end_at TIMESTAMPTZ NULL,
     payload JSONB NOT NULL,
     cached_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 ) WITH (fillfactor = 70);
+
+ALTER TABLE public.exam_paper_cache
+    ADD COLUMN IF NOT EXISTS scheduled_start_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS scheduled_end_at TIMESTAMPTZ NULL;
 
 ALTER TABLE public.exam_paper_cache ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.exam_paper_cache FROM PUBLIC, anon, authenticated;
@@ -106,7 +112,7 @@ CREATE TRIGGER trg_invalidate_exam_paper_cache_custom_tests
     FOR EACH STATEMENT
     EXECUTE FUNCTION public.invalidate_exam_paper_cache_all();
 
--- ─── 3. Optimized `get_student_exam_paper` With Single-Flight Cache ──────────
+-- ─── 3. Optimized `get_student_exam_paper` With Single-Flight Cache & Schedule ─
 
 CREATE OR REPLACE FUNCTION public.get_student_exam_paper(
     p_code TEXT
@@ -118,10 +124,15 @@ SET search_path = public
 AS $$
 DECLARE
     v_code TEXT := UPPER(TRIM(COALESCE(p_code, '')));
+    v_now TIMESTAMPTZ := NOW();
     v_cached_payload JSONB;
     v_raw TEXT;
     v_quiz JSONB;
     v_is_active BOOLEAN;
+    v_quiz_mode TEXT;
+    v_scheduled_start TIMESTAMPTZ := NULL;
+    v_scheduled_end TIMESTAMPTZ := NULL;
+    v_schedule_status TEXT := 'active';
     v_test_id TEXT;
     v_test_row RECORD;
     v_test_meta JSONB := NULL;
@@ -139,31 +150,42 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    -- Fast path: return cached sanitized payload immediately without locking
+    -- Fast path: return cached active paper immediately if still within live schedule bounds
     SELECT c.payload
     INTO v_cached_payload
     FROM public.exam_paper_cache c
     WHERE c.quiz_code = v_code
-      AND c.cached_at > (NOW() - INTERVAL '5 minutes')
+      AND c.cached_at > (v_now - INTERVAL '5 minutes')
+      AND (c.scheduled_start_at IS NULL OR v_now >= c.scheduled_start_at)
+      AND (c.scheduled_end_at IS NULL OR v_now <= c.scheduled_end_at)
     LIMIT 1;
 
     IF FOUND AND v_cached_payload IS NOT NULL THEN
-        RETURN v_cached_payload;
+        RETURN v_cached_payload || jsonb_build_object(
+            'scheduleStatus', 'active',
+            'serverNow', v_now
+        );
     END IF;
 
     -- Single-flight per-code build so 200 cold hits do not run 200 duplicate TOAST builds
     PERFORM pg_advisory_xact_lock(hashtext('exam_paper_cache:' || v_code));
+    v_now := NOW();
 
     -- Re-check cache after acquiring lock (workers #2..#200 return right away)
     SELECT c.payload
     INTO v_cached_payload
     FROM public.exam_paper_cache c
     WHERE c.quiz_code = v_code
-      AND c.cached_at > (NOW() - INTERVAL '5 minutes')
+      AND c.cached_at > (v_now - INTERVAL '5 minutes')
+      AND (c.scheduled_start_at IS NULL OR v_now >= c.scheduled_start_at)
+      AND (c.scheduled_end_at IS NULL OR v_now <= c.scheduled_end_at)
     LIMIT 1;
 
     IF FOUND AND v_cached_payload IS NOT NULL THEN
-        RETURN v_cached_payload;
+        RETURN v_cached_payload || jsonb_build_object(
+            'scheduleStatus', 'active',
+            'serverNow', v_now
+        );
     END IF;
 
     SELECT value INTO v_raw
@@ -225,20 +247,48 @@ BEGIN
     v_quiz := v_quiz - 'teacherPin' - 'teacherPinHash';
 
     v_is_active := COALESCE((v_quiz->>'isActive')::boolean, TRUE);
+    v_quiz_mode := LOWER(COALESCE(NULLIF(TRIM(v_quiz->>'quizMode'), ''), 'exam'));
+
+    IF NULLIF(TRIM(COALESCE(v_quiz->>'scheduledStartAt', '')), '') IS NOT NULL THEN
+        BEGIN
+            v_scheduled_start := (v_quiz->>'scheduledStartAt')::timestamptz;
+        EXCEPTION WHEN OTHERS THEN
+            v_scheduled_start := NULL;
+        END;
+    END IF;
+
+    IF NULLIF(TRIM(COALESCE(v_quiz->>'scheduledEndAt', '')), '') IS NOT NULL THEN
+        BEGIN
+            v_scheduled_end := (v_quiz->>'scheduledEndAt')::timestamptz;
+        EXCEPTION WHEN OTHERS THEN
+            v_scheduled_end := NULL;
+        END;
+    END IF;
+
     IF NOT v_is_active THEN
-        v_result := jsonb_build_object(
+        v_schedule_status := 'paused';
+    ELSIF v_quiz_mode <> 'game' THEN
+        IF v_scheduled_start IS NOT NULL AND v_now < v_scheduled_start THEN
+            v_schedule_status := 'scheduled';
+        ELSIF v_scheduled_end IS NOT NULL AND v_now > v_scheduled_end THEN
+            v_schedule_status := 'closed';
+        ELSE
+            v_schedule_status := 'active';
+        END IF;
+    ELSE
+        v_schedule_status := 'active';
+    END IF;
+
+    IF v_schedule_status <> 'active' THEN
+        DELETE FROM public.exam_paper_cache WHERE quiz_code = v_code;
+        RETURN jsonb_build_object(
             'publishedQuiz', v_quiz,
             'teacherPinHash', NULL,
             'isActive', FALSE,
+            'scheduleStatus', v_schedule_status,
+            'serverNow', v_now,
             'questions', '[]'::jsonb
         );
-        INSERT INTO public.exam_paper_cache (quiz_code, strip_keys, payload, cached_at)
-        VALUES (v_code, TRUE, v_result, NOW())
-        ON CONFLICT (quiz_code) DO UPDATE
-        SET strip_keys = EXCLUDED.strip_keys,
-            payload = EXCLUDED.payload,
-            cached_at = NOW();
-        RETURN v_result;
     END IF;
 
     v_test_id := TRIM(COALESCE(v_quiz->>'testId', ''));
@@ -361,13 +411,26 @@ BEGIN
         'headerConfig', v_header_clean,
         'teacherPinHash', NULL,
         'isActive', TRUE,
+        'scheduleStatus', 'active',
+        'serverNow', v_now,
         'questions', v_questions
     );
 
-    INSERT INTO public.exam_paper_cache (quiz_code, strip_keys, payload, cached_at)
-    VALUES (v_code, v_strip_keys, v_result, NOW())
+    INSERT INTO public.exam_paper_cache (
+        quiz_code, strip_keys, scheduled_start_at, scheduled_end_at, payload, cached_at
+    )
+    VALUES (
+        v_code,
+        v_strip_keys,
+        CASE WHEN v_quiz_mode <> 'game' THEN v_scheduled_start ELSE NULL END,
+        CASE WHEN v_quiz_mode <> 'game' THEN v_scheduled_end ELSE NULL END,
+        v_result,
+        NOW()
+    )
     ON CONFLICT (quiz_code) DO UPDATE
     SET strip_keys = EXCLUDED.strip_keys,
+        scheduled_start_at = EXCLUDED.scheduled_start_at,
+        scheduled_end_at = EXCLUDED.scheduled_end_at,
         payload = EXCLUDED.payload,
         cached_at = NOW();
 
@@ -377,5 +440,5 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_student_exam_paper(TEXT) TO anon, authenticated;
 
--- Clear any stale cache entries upon applying Migration 028
+-- Clear any stale cache entries upon applying Migration 032
 DELETE FROM public.exam_paper_cache;

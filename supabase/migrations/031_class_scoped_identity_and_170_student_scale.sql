@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration 027: Class-Scoped Same-Name Attempt Identity & 170-Student Scale
+-- Migration 031: Class-Scoped Same-Name Attempt Identity & 170-Student Scale
 -- ============================================================================
 -- Combines:
 --   1. HOT-update fillfactor tuning on `app_config` & `exam_draft_locks`,
@@ -13,7 +13,8 @@
 --      and `submit_student_exam_attempt` using `normalize_roster_class_label`
 --      so same-name students in different classes never collide or inherit
 --      another class's draft lock / duplicate-attempt rejection.
---   4. Support for Practice Mode `'graded'` status in `submit_student_exam_attempt`.
+--   4. Support for Practice Mode `'graded'` status and Migration 030 optional
+--      empty `result_pin` idempotency in `submit_student_exam_attempt`.
 --   5. Stale draft cleanup RPC (`cleanup_stale_exam_drafts`) for teachers.
 -- ============================================================================
 
@@ -331,6 +332,25 @@ BEGIN
     END IF;
     v_final_status := CASE WHEN v_is_exam_mode THEN 'submitted' ELSE v_requested_status END;
 
+    -- Acknowledge idempotent duplicate retries / Force Re-Submit cleanly when the
+    -- submitted row already exists without a result_pin and the draft lock was cleared.
+    IF v_lock_hash IS NULL AND EXISTS (
+        SELECT 1
+        FROM public.quiz_submissions s
+        WHERE s.id = v_id
+          AND UPPER(TRIM(s.quiz_code)) = v_quiz_code
+          AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(s.student_name, '')), '\s+', ' ', 'g')) = v_norm_name
+          AND (
+              v_norm_class = ''
+              OR COALESCE(TRIM(s.student_class), '') = ''
+              OR public.normalize_roster_class_label(s.student_class) = v_norm_class
+          )
+          AND s.status IN ('submitted', 'graded')
+          AND NULLIF(TRIM(s.result_pin), '') IS NULL
+    ) THEN
+        RETURN TRUE;
+    END IF;
+
     IF v_is_exam_mode THEN
         v_score := 0;
         v_percentage := 0;
@@ -412,8 +432,23 @@ BEGIN
         teacher_adjusted_marks = 0,
         updated_at = NOW()
     WHERE public.quiz_submissions.status IN ('submitted', 'graded')
-      AND NULLIF(TRIM(public.quiz_submissions.result_pin), '') IS NOT NULL
-      AND TRIM(public.quiz_submissions.result_pin) = v_result_pin;
+      AND (
+          (
+              NULLIF(TRIM(public.quiz_submissions.result_pin), '') IS NOT NULL
+              AND TRIM(public.quiz_submissions.result_pin) = v_result_pin
+          )
+          OR (
+              NULLIF(TRIM(public.quiz_submissions.result_pin), '') IS NULL
+              AND v_lock_hash IS NOT NULL
+              AND UPPER(TRIM(public.quiz_submissions.quiz_code)) = v_quiz_code
+              AND LOWER(REGEXP_REPLACE(TRIM(COALESCE(public.quiz_submissions.student_name, '')), '\s+', ' ', 'g')) = v_norm_name
+              AND (
+                  v_norm_class = ''
+                  OR COALESCE(TRIM(public.quiz_submissions.student_class), '') = ''
+                  OR public.normalize_roster_class_label(public.quiz_submissions.student_class) = v_norm_class
+              )
+          )
+      );
 
     GET DIAGNOSTICS v_affected = ROW_COUNT;
     RETURN v_affected > 0;

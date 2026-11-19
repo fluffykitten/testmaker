@@ -14,12 +14,32 @@ export function formatSessionHash(seed: string): string {
 }
 
 /**
- * Sanitizes and clears the OS / browser clipboard buffer.
- * Fails silently if clipboard write permissions are restricted.
+ * Sanitizes active text selection and, only when clipboard permissions are already granted,
+ * clears the async clipboard buffer without ever triggering a browser permission prompt.
  */
 export async function flushClipboard(): Promise<boolean> {
   try {
+    if (typeof window !== 'undefined' && typeof window.getSelection === 'function') {
+      window.getSelection()?.removeAllRanges?.();
+    }
     if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      // Check both clipboard-write and clipboard-read: Edge groups them under a single
+      // "See text and images copied to the clipboard" prompt in InPrivate windows.
+      if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
+        return false;
+      }
+      try {
+        const [writePerm, readPerm] = await Promise.all([
+          navigator.permissions.query({ name: 'clipboard-write' as PermissionName }),
+          navigator.permissions.query({ name: 'clipboard-read' as PermissionName }),
+        ]);
+        if (writePerm?.state !== 'granted' || readPerm?.state !== 'granted') {
+          return false;
+        }
+      } catch {
+        // Unsupported permission name (Safari/Firefox) — skip async writeText to avoid prompts
+        return false;
+      }
       await navigator.clipboard.writeText('');
       return true;
     }

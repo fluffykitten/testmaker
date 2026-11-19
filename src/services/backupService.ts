@@ -17,15 +17,44 @@ export interface BackupManifest {
   timestamp: number;
   createdAt: string;
   supabaseProjectRef?: string;
-  diagramMapping?: Record<string, string>; // Maps original image URL -> zip archive filename
+  mediaIncluded?: boolean;
+  diagramMapping?: Record<string, string>; // Maps original image URL -> archive filename
+  warnings?: string[];
   stats: {
     syllabusesCount: number;
     questionsCount: number;
     customTestsCount: number;
     quizSubmissionsCount: number;
     appConfigCount?: number;
+    teacherProfilesCount?: number;
+    proctorAuditEventsCount?: number;
+    gameProfilesCount?: number;
     diagramsCount: number;
+    mediaSkippedCount?: number;
+    failedMediaCount?: number;
   };
+}
+
+export interface BackupDataset {
+  syllabuses: Syllabus[];
+  customTests: CustomTest[];
+  appConfig: any[];
+  quizSubmissions: any[];
+  teacherProfiles: any[];
+  proctorAuditEvents: any[];
+  gameProfiles: any[];
+  questions: Question[];
+  tableWarnings: string[];
+}
+
+export interface BackupArchiveOptions {
+  includeMedia?: boolean;
+}
+
+export interface IncrementalMediaPlan {
+  diagramMapping: Record<string, string>;
+  toDownload: Array<{ url: string; fileName: string }>;
+  skippedExistingCount: number;
 }
 
 export interface BackupArchiveResult {
@@ -52,7 +81,7 @@ export function extractDiagramFileName(url: string): string {
 /**
  * Fetches all records from a Supabase table with pagination to bypass the default 1,000 row cap.
  */
-async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<Response> {
+export async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<Response> {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
@@ -62,9 +91,21 @@ async function fetchWithTimeout(url: string, timeoutMs = 15000): Promise<Respons
   }
 }
 
+function isSkippableOptionalTableError(error: { code?: string; message?: string }): boolean {
+  const code = String(error.code || '').toUpperCase();
+  const msg = String(error.message || '');
+  return (
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    code === '42501' ||
+    /does not exist|schema cache|could not find the table|permission denied/i.test(msg)
+  );
+}
+
 async function fetchAllTableRows<T = any>(
   tableName: string,
-  onBatch?: (fetched: number) => void
+  onBatch?: (fetched: number) => void,
+  options?: { optional?: boolean; warnings?: string[] }
 ): Promise<T[]> {
   let allRows: T[] = [];
   let from = 0;
@@ -76,8 +117,12 @@ async function fetchAllTableRows<T = any>(
       .range(from, from + batchSize - 1);
 
     if (error) {
-      console.warn(`[BackupService] Warning fetching ${tableName}:`, error.message);
-      break;
+      if (options?.optional && isSkippableOptionalTableError(error)) {
+        console.warn(`[BackupService] Optional table ${tableName} skipped:`, error.message);
+        options.warnings?.push(`Optional table "${tableName}" skipped (${error.message}).`);
+        return [];
+      }
+      throw new Error(`Failed to read "${tableName}" from database: ${error.message}`);
     }
 
     if (!data || data.length === 0) break;
@@ -91,29 +136,77 @@ async function fetchAllTableRows<T = any>(
   return allRows;
 }
 
+function addHttpUrl(urls: Set<string>, candidate: unknown): void {
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (/^https?:\/\//i.test(trimmed)) {
+      urls.add(trimmed);
+    }
+  }
+}
+
+function collectQuestionMediaUrls(q: any, urls: Set<string>): void {
+  if (!q || typeof q !== 'object') return;
+  addHttpUrl(urls, q.diagram_url);
+  addHttpUrl(urls, q.audio_url);
+  addHttpUrl(urls, q.source_pdf_url);
+  addHttpUrl(urls, q.insert_pdf_url);
+
+  const ms = q.mark_scheme;
+  if (ms && typeof ms === 'object') {
+    addHttpUrl(urls, ms._source_pdf_url);
+    addHttpUrl(urls, ms._insert_pdf_url);
+    if (Array.isArray(ms._insert_resources)) {
+      for (const res of ms._insert_resources) {
+        addHttpUrl(urls, res?.url);
+      }
+    }
+  }
+
+  if (Array.isArray(q.insert_resources)) {
+    for (const res of q.insert_resources) {
+      addHttpUrl(urls, res?.url);
+    }
+  }
+
+  if (Array.isArray(q.sub_questions)) {
+    for (const sub of q.sub_questions) {
+      addHttpUrl(urls, sub?.diagram_url);
+      addHttpUrl(urls, sub?.audio_url);
+    }
+  }
+}
+
 /**
- * Collects all unique diagram and audio URLs referenced in questions and sub-questions.
+ * Collects all unique diagram, audio, PDF, and insert-resource URLs referenced
+ * across questions and cached published_quizzes snapshots.
  */
-function collectMediaUrls(questions: Question[]): Set<string> {
+export function collectMediaUrls(
+  questions: Question[],
+  appConfigRows?: Array<{ key?: string; value?: string }>
+): Set<string> {
   const urls = new Set<string>();
 
   for (const q of questions) {
-    if (q.diagram_url && typeof q.diagram_url === 'string' && q.diagram_url.startsWith('http')) {
-      urls.add(q.diagram_url);
-    }
-    if (q.audio_url && typeof q.audio_url === 'string' && q.audio_url.startsWith('http')) {
-      urls.add(q.audio_url);
-    }
-    // Check sub_questions if present
-    const subQuestions = (q as any).sub_questions;
-    if (Array.isArray(subQuestions)) {
-      for (const sub of subQuestions) {
-        if (sub?.diagram_url && typeof sub.diagram_url === 'string' && sub.diagram_url.startsWith('http')) {
-          urls.add(sub.diagram_url);
+    collectQuestionMediaUrls(q, urls);
+  }
+
+  if (Array.isArray(appConfigRows)) {
+    const pubRow = appConfigRows.find((r) => r?.key === 'published_quizzes');
+    if (pubRow?.value) {
+      try {
+        const parsedQuizzes = JSON.parse(pubRow.value);
+        if (Array.isArray(parsedQuizzes)) {
+          for (const quiz of parsedQuizzes) {
+            if (Array.isArray(quiz?.questions)) {
+              for (const qq of quiz.questions) {
+                collectQuestionMediaUrls(qq, urls);
+              }
+            }
+          }
         }
-        if (sub?.audio_url && typeof sub.audio_url === 'string' && sub.audio_url.startsWith('http')) {
-          urls.add(sub.audio_url);
-        }
+      } catch {
+        // Ignore malformed published_quizzes cache during URL scan
       }
     }
   }
@@ -148,56 +241,84 @@ export async function getBackupEstimate(): Promise<{
 }
 
 /**
- * Generates a complete snapshot archive (.zip) containing:
- * - manifest.json (metadata, counts, timestamps)
- * - data/syllabuses.json
- * - data/questions.json
- * - data/custom_tests.json
- * - data/app_config.json
- * - data/quiz_submissions.json
- * - diagrams/* (all binary diagram image & audio files)
+ * Fetches all SQL tables needed for both ZIP snapshots and incremental PC folder syncs.
  */
-export async function createFullBackupArchive(
+export async function fetchBackupDataset(
   onProgress?: BackupProgressCallback
-): Promise<BackupArchiveResult> {
-  // Dynamically import JSZip so it never adds weight to initial page load
-  const JSZip = (await import('jszip')).default;
-  const zip = new JSZip();
-
-  // ─── Step 1: Export SQL Tables ──────────────────────────────────────────
+): Promise<BackupDataset> {
   onProgress?.('Fetching syllabuses and configurations…', 5);
   const syllabuses = await fetchAllTableRows<Syllabus>('syllabuses');
 
   onProgress?.('Fetching custom tests…', 10);
   const customTests = await fetchAllTableRows<CustomTest>('custom_tests');
 
-  onProgress?.('Fetching app configurations…', 15);
+  onProgress?.('Fetching app configurations…', 14);
   const appConfig = await fetchAllTableRows('app_config');
 
-  onProgress?.('Fetching quiz submissions…', 20);
+  onProgress?.('Fetching quiz submissions…', 18);
   const quizSubmissions = await fetchAllTableRows('quiz_submissions');
 
-  onProgress?.('Fetching question bank records…', 25);
+  const tableWarnings: string[] = [];
+  onProgress?.('Fetching educator profiles, proctor logs & arena profiles…', 22);
+  const teacherProfiles = await fetchAllTableRows('teacher_profiles', undefined, {
+    optional: true,
+    warnings: tableWarnings,
+  });
+  const proctorAuditEvents = await fetchAllTableRows('proctor_audit_events', undefined, {
+    optional: true,
+    warnings: tableWarnings,
+  });
+  const gameProfiles = await fetchAllTableRows('game_profiles', undefined, {
+    optional: true,
+    warnings: tableWarnings,
+  });
+
+  onProgress?.('Fetching question bank records…', 26);
   const questions = await fetchAllTableRows<Question>('questions', (count) => {
     onProgress?.(`Fetching question bank records (${count} retrieved)…`, 30);
   });
 
-  // ─── Step 2: Pack Database JSON ─────────────────────────────────────────
-  const dataFolder = zip.folder('data')!;
-  dataFolder.file('syllabuses.json', JSON.stringify(syllabuses, null, 2));
-  dataFolder.file('questions.json', JSON.stringify(questions, null, 2));
-  dataFolder.file('custom_tests.json', JSON.stringify(customTests, null, 2));
-  dataFolder.file('app_config.json', JSON.stringify(appConfig, null, 2));
-  dataFolder.file('quiz_submissions.json', JSON.stringify(quizSubmissions, null, 2));
+  return {
+    syllabuses,
+    customTests,
+    appConfig,
+    quizSubmissions,
+    teacherProfiles,
+    proctorAuditEvents,
+    gameProfiles,
+    questions,
+    tableWarnings,
+  };
+}
 
-  // ─── Step 3: Fetch & Pack Storage Diagram & Audio Blobs ─────────────────
-  const mediaUrls = Array.from(collectMediaUrls(questions));
-  const diagramsFolder = zip.folder('diagrams')!;
+/**
+ * Plans collision-free filenames for all media URLs and diffs against files already stored
+ * locally so existing diagrams, audio, and PDFs do not need to be re-downloaded.
+ */
+export function planIncrementalMediaNames(
+  mediaUrls: string[],
+  existingMapping?: Record<string, string>,
+  existingFilesOnDisk?: Set<string>
+): IncrementalMediaPlan {
   const diagramMapping: Record<string, string> = {};
   const usedFileNames = new Set<string>();
-  let diagramsPacked = 0;
+  const toDownload: Array<{ url: string; fileName: string }> = [];
+  let skippedExistingCount = 0;
 
-  function getUniqueArchiveFileName(url: string): string {
+  // Preserve mappings whose files already exist on disk so filenames never churn.
+  if (existingMapping && existingFilesOnDisk && existingFilesOnDisk.size > 0) {
+    const urlSet = new Set(mediaUrls);
+    for (const url of mediaUrls) {
+      const mapped = existingMapping[url];
+      if (mapped && existingFilesOnDisk.has(mapped) && !usedFileNames.has(mapped) && urlSet.has(url)) {
+        diagramMapping[url] = mapped;
+        usedFileNames.add(mapped);
+        skippedExistingCount++;
+      }
+    }
+  }
+
+  function allocateUniqueFileName(url: string): string {
     const raw = extractDiagramFileName(url);
     if (!usedFileNames.has(raw)) {
       usedFileNames.add(raw);
@@ -215,37 +336,101 @@ export async function createFullBackupArchive(
     return unique;
   }
 
-  // Pre-assign collision-free filenames for all unique media URLs
   for (const url of mediaUrls) {
-    diagramMapping[url] = getUniqueArchiveFileName(url);
+    if (diagramMapping[url]) continue;
+    const fileName = allocateUniqueFileName(url);
+    diagramMapping[url] = fileName;
+    toDownload.push({ url, fileName });
   }
 
-  if (mediaUrls.length > 0) {
-    onProgress?.(`Backing up ${mediaUrls.length} exam diagrams and audio assets from storage…`, 40);
+  return { diagramMapping, toDownload, skippedExistingCount };
+}
 
-    // Fetch images/audio in concurrent batches of 8 to balance speed and network stability
+function isAlreadyCompressedMediaFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    lower.endsWith('.webp') ||
+    lower.endsWith('.png') ||
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.jpeg') ||
+    lower.endsWith('.gif') ||
+    lower.endsWith('.mp3') ||
+    lower.endsWith('.webm') ||
+    lower.endsWith('.ogg') ||
+    lower.endsWith('.m4a') ||
+    lower.endsWith('.pdf')
+  );
+}
+
+/**
+ * Generates a snapshot archive (.zip) containing SQL tables and, unless disabled,
+ * all binary diagram, audio, and PDF files from storage.
+ */
+export async function createFullBackupArchive(
+  onProgress?: BackupProgressCallback,
+  options?: BackupArchiveOptions
+): Promise<BackupArchiveResult> {
+  const includeMedia = options?.includeMedia !== false;
+  // Dynamically import JSZip so it never adds weight to initial page load
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+
+  // ─── Step 1: Export SQL Tables ──────────────────────────────────────────
+  const dataset = await fetchBackupDataset(onProgress);
+
+  // ─── Step 2: Pack Database JSON ─────────────────────────────────────────
+  const dataFolder = zip.folder('data')!;
+  dataFolder.file('syllabuses.json', JSON.stringify(dataset.syllabuses, null, 2));
+  dataFolder.file('questions.json', JSON.stringify(dataset.questions, null, 2));
+  dataFolder.file('custom_tests.json', JSON.stringify(dataset.customTests, null, 2));
+  dataFolder.file('app_config.json', JSON.stringify(dataset.appConfig, null, 2));
+  dataFolder.file('quiz_submissions.json', JSON.stringify(dataset.quizSubmissions, null, 2));
+  dataFolder.file('teacher_profiles.json', JSON.stringify(dataset.teacherProfiles, null, 2));
+  dataFolder.file('proctor_audit_events.json', JSON.stringify(dataset.proctorAuditEvents, null, 2));
+  dataFolder.file('game_profiles.json', JSON.stringify(dataset.gameProfiles, null, 2));
+
+  // ─── Step 3: Fetch & Pack Storage Diagram, Audio & PDF Blobs ────────────
+  const mediaUrls = includeMedia ? Array.from(collectMediaUrls(dataset.questions, dataset.appConfig)) : [];
+  const diagramsFolder = zip.folder('diagrams')!;
+  const mediaPlan = planIncrementalMediaNames(mediaUrls);
+  const diagramMapping = mediaPlan.diagramMapping;
+  const failedMediaUrls: string[] = [];
+  let diagramsPacked = 0;
+
+  if (includeMedia && mediaPlan.toDownload.length > 0) {
+    onProgress?.(
+      `Backing up ${mediaPlan.toDownload.length} exam diagrams, audio, and PDFs from storage…`,
+      40
+    );
+
     const BATCH_SIZE = 8;
-    for (let i = 0; i < mediaUrls.length; i += BATCH_SIZE) {
-      const batch = mediaUrls.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < mediaPlan.toDownload.length; i += BATCH_SIZE) {
+      const batch = mediaPlan.toDownload.slice(i, i + BATCH_SIZE);
       await Promise.all(
-        batch.map(async (url) => {
+        batch.map(async ({ url, fileName }) => {
           try {
-            const fileName = diagramMapping[url];
             const res = await fetchWithTimeout(url, 15000);
             if (res.ok) {
               const arrayBuffer = await res.arrayBuffer();
-              diagramsFolder.file(fileName, arrayBuffer);
+              diagramsFolder.file(fileName, arrayBuffer, {
+                compression: isAlreadyCompressedMediaFile(fileName) ? 'STORE' : 'DEFLATE',
+              });
               diagramsPacked++;
+            } else {
+              failedMediaUrls.push(`${fileName} (HTTP ${res.status})`);
+              delete diagramMapping[url];
             }
           } catch (err) {
             console.warn(`[BackupService] Failed to download media asset ${url}:`, err);
+            failedMediaUrls.push(fileName);
+            delete diagramMapping[url];
           }
         })
       );
 
-      const pct = 40 + Math.round(((i + batch.length) / mediaUrls.length) * 45);
+      const pct = 40 + Math.round(((i + batch.length) / mediaPlan.toDownload.length) * 45);
       onProgress?.(
-        `Archiving diagrams & audio (${diagramsPacked}/${mediaUrls.length})…`,
+        `Archiving media assets (${diagramsPacked}/${mediaPlan.toDownload.length})…`,
         Math.min(85, pct)
       );
     }
@@ -253,19 +438,32 @@ export async function createFullBackupArchive(
 
   // ─── Step 4: Write Manifest ─────────────────────────────────────────────
   const now = new Date();
+  const warnings: string[] = [...dataset.tableWarnings];
+  if (failedMediaUrls.length > 0) {
+    warnings.push(
+      `${failedMediaUrls.length} media asset(s) could not be downloaded: ${failedMediaUrls.slice(0, 5).join(', ')}${failedMediaUrls.length > 5 ? '…' : ''}`
+    );
+  }
+
   const manifest: BackupManifest = {
-    version: '1.0',
+    version: '1.1',
     generator: 'TestMaker Cloud Backup Engine',
     timestamp: now.getTime(),
     createdAt: now.toISOString(),
+    mediaIncluded: includeMedia,
     diagramMapping,
+    ...(warnings.length > 0 ? { warnings } : {}),
     stats: {
-      syllabusesCount: syllabuses.length,
-      questionsCount: questions.length,
-      customTestsCount: customTests.length,
-      quizSubmissionsCount: quizSubmissions.length,
-      appConfigCount: appConfig.length,
+      syllabusesCount: dataset.syllabuses.length,
+      questionsCount: dataset.questions.length,
+      customTestsCount: dataset.customTests.length,
+      quizSubmissionsCount: dataset.quizSubmissions.length,
+      appConfigCount: dataset.appConfig.length,
+      teacherProfilesCount: dataset.teacherProfiles.length,
+      proctorAuditEventsCount: dataset.proctorAuditEvents.length,
+      gameProfilesCount: dataset.gameProfiles.length,
       diagramsCount: diagramsPacked,
+      failedMediaCount: failedMediaUrls.length,
     },
   };
 
@@ -277,7 +475,7 @@ export async function createFullBackupArchive(
     {
       type: 'blob',
       compression: 'DEFLATE',
-      compressionOptions: { level: 6 },
+      compressionOptions: { level: 3 },
     },
     (metadata) => {
       onProgress?.(`Compressing: ${Math.round(metadata.percent)}%`, 90 + Math.round(metadata.percent * 0.09));
@@ -286,9 +484,10 @@ export async function createFullBackupArchive(
 
   const dateStr = now.toISOString().slice(0, 10);
   const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '');
-  const fileName = `testmaker-backup-${dateStr}-${timeStr}.zip`;
+  const prefix = includeMedia ? 'testmaker-backup' : 'testmaker-db-snapshot';
+  const fileName = `${prefix}-${dateStr}-${timeStr}.zip`;
 
-  onProgress?.('Backup archive ready!', 100);
+  onProgress?.(includeMedia ? 'Backup archive ready!' : 'Quick database snapshot ready!', 100);
 
   return {
     blob,

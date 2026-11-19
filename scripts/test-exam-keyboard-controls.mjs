@@ -5,6 +5,7 @@ import {
   EXAM_FALLBACK_LOCKED_KEYS,
   EXAM_LOCKED_KEYS,
   enableKeyboardLock,
+  flushClipboard,
   isCopyShortcut,
   isPasteShortcut,
   isWindowsOrCopilotKey,
@@ -195,8 +196,60 @@ function runRunnerRegressionChecks() {
   console.log('✓ StudentQuizRunner structural regression checks passed');
 }
 
+async function runClipboardPermissionTests() {
+  const prevDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let writeCalled = 0;
+
+  try {
+    // When clipboard-write is granted but clipboard-read is 'prompt' (Edge InPrivate default),
+    // flushClipboard must NOT call writeText('') to avoid popping the clipboard prompt.
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: async () => {
+            writeCalled++;
+          },
+        },
+        permissions: {
+          query: async ({ name }) => ({
+            state: name === 'clipboard-write' ? 'granted' : 'prompt',
+          }),
+        },
+      },
+    });
+    const blockedOnPrompt = await flushClipboard();
+    assert.equal(blockedOnPrompt, false);
+    assert.equal(writeCalled, 0, 'Must never prompt clipboard permission when clipboard-read is prompt');
+
+    // When both clipboard-write and clipboard-read are granted, writeText runs silently
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: async () => {
+            writeCalled++;
+          },
+        },
+        permissions: {
+          query: async () => ({ state: 'granted' }),
+        },
+      },
+    });
+    const allowedWhenGranted = await flushClipboard();
+    assert.equal(allowedWhenGranted, true);
+    assert.equal(writeCalled, 1);
+  } finally {
+    if (prevDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', prevDescriptor);
+    }
+  }
+  console.log('✓ Clipboard flush permission-guard checks passed');
+}
+
 runUnitTests();
 await runKeyboardLockTests();
+await runClipboardPermissionTests();
 runRunnerRegressionChecks();
 console.log('\nALL EXAM KEYBOARD CONTROL TESTS PASSED');
 

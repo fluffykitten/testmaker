@@ -337,34 +337,35 @@ check(
 supabase.rpc = origRpc;
 supabase.from = origFrom;
 
-// ── Test 7: Migration 027 & Client Contract Checks ──────────────────────────
-const mig027 = fs.readFileSync(
-  path.resolve('supabase/migrations/027_class_scoped_identity_and_170_student_scale.sql'),
+// ── Test 7: Migration 031 & Client Contract Checks ──────────────────────────
+const mig031 = fs.readFileSync(
+  path.resolve('supabase/migrations/031_class_scoped_identity_and_170_student_scale.sql'),
   'utf8'
 );
 const runnerSrc = fs.readFileSync(path.resolve('src/pages/StudentQuizRunner.tsx'), 'utf8');
 
 check(
-  'SC-7a: Migration 027 sets fillfactor = 70 on app_config & exam_draft_locks and adds audit + class lookup indexes',
-  /ALTER TABLE public\.app_config SET \(fillfactor = 70\);/i.test(mig027) &&
-    /ALTER TABLE public\.exam_draft_locks SET \(fillfactor = 70\);/i.test(mig027) &&
-    mig027.includes('idx_proctor_audit_guard_lookup') &&
-    mig027.includes('idx_quiz_submissions_attempt_class_lookup')
+  'SC-7a: Migration 031 sets fillfactor = 70 on app_config & exam_draft_locks and adds audit + class lookup indexes',
+  /ALTER TABLE public\.app_config SET \(fillfactor = 70\);/i.test(mig031) &&
+    /ALTER TABLE public\.exam_draft_locks SET \(fillfactor = 70\);/i.test(mig031) &&
+    mig031.includes('idx_proctor_audit_guard_lookup') &&
+    mig031.includes('idx_quiz_submissions_attempt_class_lookup')
 );
 
 check(
-  'SC-7b: Migration 027 skips redundant exam_draft_locks updates within 10 minutes and uses valid 3-column schema',
-  mig027.includes("INTERVAL '10 minutes'") &&
-    mig027.includes('INSERT INTO public.exam_draft_locks (draft_key, owner_token_hash, updated_at)') &&
-    !/INSERT\s+INTO\s+public\.exam_draft_locks[^;]*created_at/i.test(mig027)
+  'SC-7b: Migration 031 skips redundant exam_draft_locks updates within 10 minutes and uses valid 3-column schema',
+  mig031.includes("INTERVAL '10 minutes'") &&
+    mig031.includes('INSERT INTO public.exam_draft_locks (draft_key, owner_token_hash, updated_at)') &&
+    !/INSERT\s+INTO\s+public\.exam_draft_locks[^;]*created_at/i.test(mig031)
 );
 
 check(
-  'SC-7c: Migration 027 preserves RETURNS JSONB on check_student_attempt_submitted and normalizes student_class in both RPCs',
-  /CREATE OR REPLACE FUNCTION public\.check_student_attempt_submitted[\s\S]*?RETURNS JSONB/i.test(mig027) &&
-    (mig027.match(/public\.normalize_roster_class_label\(s\.student_class\)/g) || []).length >= 2 &&
-    mig027.includes("__cls_") &&
-    mig027.includes('cleanup_stale_exam_drafts')
+  'SC-7c: Migration 031 preserves RETURNS JSONB on check_student_attempt_submitted, class normalization, Practice graded, and Migration 030 optional result_pin idempotency',
+  /CREATE OR REPLACE FUNCTION public\.check_student_attempt_submitted[\s\S]*?RETURNS JSONB/i.test(mig031) &&
+    (mig031.match(/public\.normalize_roster_class_label\(s\.student_class\)/g) || []).length >= 2 &&
+    mig031.includes("__cls_") &&
+    mig031.includes("NULLIF(TRIM(s.result_pin), '') IS NULL") &&
+    mig031.includes('cleanup_stale_exam_drafts')
 );
 
 check(
@@ -376,25 +377,28 @@ check(
     runnerSrc.includes('timerExpiryAutoSubmitTriggeredRef')
 );
 
-// ── Test 8: Migration 028 Exam Paper Cache & Lobby Resilience ───────────────
-const mig028 = fs.readFileSync(
-  path.resolve('supabase/migrations/028_exam_paper_cache_and_fast_lobby.sql'),
+// ── Test 8: Migration 032 Exam Paper Cache & Lobby Resilience ───────────────
+const mig032 = fs.readFileSync(
+  path.resolve('supabase/migrations/032_exam_paper_cache_and_fast_lobby.sql'),
   'utf8'
 );
 const quizCodeSrc = fs.readFileSync(path.resolve('src/services/quizCodeService.ts'), 'utf8');
 
 check(
-  'SC-8a: Migration 028 creates RLS-locked exam_paper_cache, trigger invalidation (app_config/questions/custom_tests), advisory-lock build, indexed UUID lookup & zero teacherPinHash',
-  /CREATE TABLE IF NOT EXISTS public\.exam_paper_cache[\s\S]*fillfactor = 70/i.test(mig028) &&
-    /ALTER TABLE public\.exam_paper_cache ENABLE ROW LEVEL SECURITY;/i.test(mig028) &&
-    /REVOKE ALL ON TABLE public\.exam_paper_cache FROM PUBLIC, anon, authenticated;/i.test(mig028) &&
-    mig028.includes('trg_invalidate_exam_paper_cache_app_config_iu') &&
-    mig028.includes('trg_invalidate_exam_paper_cache_app_config_d') &&
-    mig028.includes('trg_invalidate_exam_paper_cache_questions') &&
-    mig028.includes('trg_invalidate_exam_paper_cache_custom_tests') &&
-    mig028.includes('pg_advisory_xact_lock') &&
-    mig028.includes('WHERE id = v_test_id::uuid') &&
-    /'teacherPinHash',\s*NULL/i.test(mig028)
+  'SC-8a: Migration 032 creates RLS-locked exam_paper_cache, trigger invalidation (app_config/questions/custom_tests), advisory-lock build, live scheduleStatus gating & zero teacherPinHash',
+  /CREATE TABLE IF NOT EXISTS public\.exam_paper_cache[\s\S]*fillfactor = 70/i.test(mig032) &&
+    /ALTER TABLE public\.exam_paper_cache ENABLE ROW LEVEL SECURITY;/i.test(mig032) &&
+    /REVOKE ALL ON TABLE public\.exam_paper_cache FROM PUBLIC, anon, authenticated;/i.test(mig032) &&
+    mig032.includes('trg_invalidate_exam_paper_cache_app_config_iu') &&
+    mig032.includes('trg_invalidate_exam_paper_cache_app_config_d') &&
+    mig032.includes('trg_invalidate_exam_paper_cache_questions') &&
+    mig032.includes('trg_invalidate_exam_paper_cache_custom_tests') &&
+    mig032.includes('pg_advisory_xact_lock') &&
+    mig032.includes('WHERE id = v_test_id::uuid') &&
+    mig032.includes("'scheduleStatus'") &&
+    mig032.includes("'serverNow'") &&
+    mig032.includes('scheduled_end_at') &&
+    /'teacherPinHash',\s*NULL/i.test(mig032)
 );
 
 check(

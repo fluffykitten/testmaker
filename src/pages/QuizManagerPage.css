@@ -773,7 +773,7 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 14px;
-  gap: 10px;
+  gap: 8px;
 }
 
 .qm-card-sub-badge {
@@ -785,6 +785,8 @@
   border: 1px solid var(--color-border);
   font-size: 0.6875rem;
   font-weight: 700;
+  min-width: 0;
+  max-width: calc(100% - 108px);
 }
 
 .qm-card-sub-name {
@@ -848,6 +850,52 @@
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.25);
   color: #ef4444;
+}
+
+.qm-card-schedule-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  color: #4338ca;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.qm-card-schedule-strip--closed {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.22);
+  color: #b91c1c;
+}
+
+.qm-card-schedule-strip--paused {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.qm-card-schedule-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root.dark .qm-card-schedule-strip {
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(129, 140, 248, 0.35);
+  color: #c7d2fe;
+}
+
+:root.dark .qm-card-schedule-strip--closed {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(248, 113, 113, 0.32);
+  color: #fca5a5;
 }
 
 /* Access Code Box */
@@ -1281,6 +1329,85 @@
   color: var(--color-text-secondary);
 }
 
+.qm-row-status--scheduled {
+  background: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+  border-color: rgba(99, 102, 241, 0.28);
+}
+
+.qm-row-status--scheduled:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.qm-row-status--closed {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.qm-row-status--closed:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.qm-card-chip--schedule {
+  background: rgba(99, 102, 241, 0.1);
+  color: #4338ca;
+  border: 1px solid rgba(99, 102, 241, 0.22);
+}
+
+.qm-open-now-btn {
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.qm-open-now-btn:hover {
+  background: rgba(16, 185, 129, 0.22);
+}
+
+.qm-schedule-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qm-schedule-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qm-schedule-tz-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--color-surface-sunken);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.qm-schedule-error {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
 .qm-row-status-dot {
   width: 6px;
   height: 6px;
@@ -1288,37 +1415,31 @@
   background: currentColor;
 }
 
-/* ─── Hover Quick Actions Dock ────────────────────────────────────────────── */
-/* Completely invisible by default to keep the interface calm & clutter-free */
+/* ─── Persistent Non-Overlapping Row Actions Dock ─────────────────────────── */
+/* Sits in its own dedicated flex column on the right so it never covers status/Open Now pills */
 .qm-row-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: var(--color-surface);
+  gap: 3px;
+  flex-shrink: 0;
+  background: var(--color-surface-sunken);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 3px;
-  box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.12);
-  opacity: 0;
-  transform: translateX(10px);
-  pointer-events: none;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  position: absolute;
-  right: 14px;
-  z-index: 10;
+  opacity: 0.78;
+  transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
-/* Revealed on row hover or row focus-within */
 .qm-exam-row:hover .qm-row-actions,
 .qm-exam-row:focus-within .qm-row-actions {
   opacity: 1;
-  transform: translateX(0);
-  pointer-events: auto;
+  background: var(--color-surface);
+  border-color: var(--color-border-strong, var(--color-border));
 }
 
 .qm-action-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
@@ -1374,8 +1495,12 @@
 }
 
 :root.dark .qm-row-actions {
+  background: var(--color-surface-sunken);
+}
+
+:root.dark .qm-exam-row:hover .qm-row-actions,
+:root.dark .qm-exam-row:focus-within .qm-row-actions {
   background: var(--color-surface);
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.45);
 }
 
 :root.dark .qm-action-btn--primary {
@@ -1497,6 +1622,16 @@
 }
 
 /* Responsive row actions */
+@media (max-width: 1080px) {
+  .qm-exam-row {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+  }
+  .qm-exam-main {
+    flex: 1 1 280px;
+  }
+}
+
 @media (max-width: 768px) {
   .qm-row-actions {
     display: none !important;
@@ -2673,5 +2808,116 @@
     grid-template-columns: 1fr;
     gap: 20px;
   }
+}
+
+/* ─── Target Classes / Cohorts Picker (Publish Exam Settings) ───────────── */
+
+.qm-target-classes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qm-target-classes-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qm-target-classes-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.qm-target-classes-badge--filtered {
+  color: #3730a3;
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.qm-target-clear-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #4f46e5;
+  cursor: pointer;
+}
+
+.qm-target-clear-btn:hover {
+  text-decoration: underline;
+}
+
+.qm-cohort-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.qm-cohort-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.qm-cohort-pill:hover {
+  border-color: #6366f1;
+  color: #3730a3;
+}
+
+.qm-cohort-pill--active {
+  background: #eef2ff;
+  border-color: #6366f1;
+  color: #3730a3;
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.12);
+}
+
+.qm-cohort-pill--add {
+  border-style: dashed;
+  border-color: #94a3b8;
+  color: #475569;
+  background: transparent;
+}
+
+.qm-cohort-pill--add:hover {
+  border-color: #0f172a;
+  color: #0f172a;
+  background: #ffffff;
+}
+
+.qm-cohort-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.qm-cohort-custom-row .qm-form-input {
+  padding: 6px 10px !important;
+  font-size: 0.78rem !important;
 }
 

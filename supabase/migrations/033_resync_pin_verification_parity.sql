@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration 029: Re-Sync Teacher PIN Verification Parity
+-- Migration 033: Re-Sync Teacher PIN Verification Parity
 -- ============================================================================
 -- Ensures `verify_teacher_unlock_pin(p_quiz_code, p_pin)` checks both
 -- `quiz_by_code_<CODE>` and `quiz_by_code:<CODE>`, matches `published_quizzes`

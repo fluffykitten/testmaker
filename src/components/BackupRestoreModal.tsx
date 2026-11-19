@@ -12,7 +12,16 @@ import {
   executeRestore,
   type RestoreInspectionResult,
   type RestoreResult,
+  type RestoreSourceInput,
 } from '../services/restoreService';
+import {
+  clearSavedBackupFolderHandle,
+  executeLocalFolderSyncBackup,
+  isLocalFolderSyncSupported,
+  loadSavedBackupFolderHandle,
+  pickBackupFolderHandle,
+  type LocalFolderSyncResult,
+} from '../services/localBackupFolderService';
 import {
   loadGsiScript,
   requestGoogleDriveTokenDetails,
@@ -58,10 +67,16 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
     status: '',
     pct: 0,
   });
+  const [backupError, setBackupError] = useState<string | null>(null);
   const [lastDownloadedFile, setLastDownloadedFile] = useState<string | null>(null);
+  const [lastBackupWarnings, setLastBackupWarnings] = useState<string[]>([]);
+  const [folderSyncSupported] = useState<boolean>(() => isLocalFolderSyncSupported());
+  const [savedFolderHandle, setSavedFolderHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [lastFolderSync, setLastFolderSync] = useState<LocalFolderSyncResult | null>(null);
 
   // ─── Restore State ───────────────────────────────────────────────────────
-  const [restoreFile, setRestoreFile] = useState<File | Blob | null>(null);
+  const [restoreFile, setRestoreFile] = useState<RestoreSourceInput | null>(null);
+  const [restoreSourceLabel, setRestoreSourceLabel] = useState<string>('');
   const [inspection, setInspection] = useState<RestoreInspectionResult | null>(null);
   const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('merge');
   const [isRestoring, setIsRestoring] = useState(false);
@@ -101,13 +116,18 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       loadGsiScript().catch(() => {});
       getBackupEstimate().then((est) => setStats(est));
       setGdriveToken(getSessionDriveToken());
+      if (folderSyncSupported) {
+        loadSavedBackupFolderHandle()
+          .then((h) => setSavedFolderHandle(h))
+          .catch(() => {});
+      }
       loadAndSyncGoogleDriveClientId().then((id) => {
         if (id) {
           setGdriveClientId((prev) => prev || id);
         }
       });
     }
-  }, [isOpen]);
+  }, [isOpen, folderSyncSupported]);
 
   // Listen for background session expiration
   useEffect(() => {
@@ -130,19 +150,89 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
 
   // ─── Handle Snapshot Backup ──────────────────────────────────────────────
 
-  const handleDownloadBackup = async () => {
+  const handlePickLocalFolder = async (): Promise<FileSystemDirectoryHandle | null> => {
+    setBackupError(null);
+    try {
+      const handle = await pickBackupFolderHandle('readwrite');
+      setSavedFolderHandle(handle);
+      setLastFolderSync(null);
+      return handle;
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        setBackupError(err?.message || 'Could not open backup folder.');
+      }
+      return null;
+    }
+  };
+
+  const handleUnlinkLocalFolder = async () => {
+    await clearSavedBackupFolderHandle();
+    setSavedFolderHandle(null);
+    setLastFolderSync(null);
+  };
+
+  const handleSyncToLocalFolder = async () => {
     setIsBackingUp(true);
-    setBackupProgress({ status: 'Initializing full backup snapshot…', pct: 2 });
+    setBackupProgress({ status: 'Preparing incremental folder sync…', pct: 2 });
+    setBackupError(null);
     setLastDownloadedFile(null);
+    setLastFolderSync(null);
+    setLastBackupWarnings([]);
+
+    try {
+      const targetHandle = savedFolderHandle || (await handlePickLocalFolder());
+      if (!targetHandle) {
+        return;
+      }
+
+      const syncRes = await executeLocalFolderSyncBackup(targetHandle, (status, pct) => {
+        setBackupProgress({ status, pct });
+      });
+
+      setLastFolderSync(syncRes);
+      setLastBackupWarnings(syncRes.manifest.warnings || []);
+
+      const s = getSavedSettings();
+      saveSettings({
+        ...s,
+        lastBackupTimestamp: Date.now(),
+        lastBackupFileName: `${syncRes.folderName} (Folder Sync)`,
+      });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      const msg = err?.message || 'Unknown error';
+      setBackupError(msg);
+      setBackupProgress({
+        status: `Folder sync failed: ${msg}`,
+        pct: 0,
+      });
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  const handleDownloadBackup = async (includeMedia = true) => {
+    setIsBackingUp(true);
+    setBackupProgress({
+      status: includeMedia
+        ? 'Initializing full backup snapshot…'
+        : 'Initializing quick database snapshot…',
+      pct: 2,
+    });
+    setBackupError(null);
+    setLastDownloadedFile(null);
+    setLastFolderSync(null);
+    setLastBackupWarnings([]);
 
     const onProgress: BackupProgressCallback = (status, pct) => {
       setBackupProgress({ status, pct });
     };
 
     try {
-      const archive = await createFullBackupArchive(onProgress);
+      const archive = await createFullBackupArchive(onProgress, { includeMedia });
       saveAs(archive.blob, archive.fileName);
       setLastDownloadedFile(archive.fileName);
+      setLastBackupWarnings(archive.manifest.warnings || []);
 
       // Update settings with last backup info
       const s = getSavedSettings();
@@ -152,8 +242,10 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
         lastBackupFileName: archive.fileName,
       });
     } catch (err: any) {
+      const msg = err?.message || 'Unknown error';
+      setBackupError(msg);
       setBackupProgress({
-        status: `Backup failed: ${err?.message || 'Unknown error'}`,
+        status: `Backup failed: ${msg}`,
         pct: 0,
       });
     } finally {
@@ -167,17 +259,43 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      await processSelectedRestoreFile(file);
+      await processSelectedRestoreFile(file, file.name);
     }
   };
 
-  const processSelectedRestoreFile = async (file: File | Blob) => {
-    setRestoreFile(file);
+  const processSelectedRestoreFile = async (source: RestoreSourceInput, label?: string) => {
+    setRestoreFile(source);
+    setRestoreSourceLabel(label || '');
     setRestoreResult(null);
-    setRestoreProgress({ status: 'Inspecting backup archive…', pct: 10 });
-    const insp = await inspectBackupArchive(file);
+    setRestoreProgress({ status: 'Inspecting backup source…', pct: 10 });
+    const insp = await inspectBackupArchive(source);
     setInspection(insp);
     setRestoreProgress({ status: '', pct: 0 });
+  };
+
+  const handlePickRestoreFolder = async () => {
+    try {
+      const picker = (
+        window as unknown as {
+          showDirectoryPicker: (opts?: { mode?: 'read' | 'readwrite'; startIn?: string }) => Promise<FileSystemDirectoryHandle>;
+        }
+      ).showDirectoryPicker;
+      const folderHandle = await picker({ mode: 'read', startIn: 'documents' });
+      await processSelectedRestoreFile(folderHandle, `Folder: ${folderHandle.name}`);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        setInspection({
+          isValid: false,
+          error: err?.message || 'Could not open backup folder.',
+          syllabusesCount: 0,
+          questionsCount: 0,
+          customTestsCount: 0,
+          quizSubmissionsCount: 0,
+          appConfigCount: 0,
+          diagramsCount: 0,
+        });
+      }
+    }
   };
 
   const handleExecuteRestore = async () => {
@@ -208,6 +326,9 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
         customTestsRestored: 0,
         quizSubmissionsRestored: 0,
         appConfigRestored: 0,
+        teacherProfilesRestored: 0,
+        proctorAuditEventsRestored: 0,
+        gameProfilesRestored: 0,
         errors: [err?.message || 'Failed to restore archive.'],
       });
     } finally {
@@ -325,6 +446,9 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
       const blob = await downloadBackupFromGoogleDrive(gdriveToken, file.id);
       setRestoreProgress({ status: 'Inspecting backup archive…', pct: 75 });
       await processSelectedRestoreFile(blob);
+      setDriveActionNotice(
+        `Downloaded ${file.name}. Review the archive summary below, choose Merge or Clean Replace, then click "Confirm & Restore to Supabase".`
+      );
     } catch (err: any) {
       if (err instanceof GoogleDriveAuthExpiredError) {
         setGdriveToken(null);
@@ -449,26 +573,112 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                 </div>
               </div>
 
+              {folderSyncSupported && (
+                <div className="backup-action-card" style={{ marginBottom: 14 }}>
+                  <div className="backup-action-card-header">
+                    <span style={{ fontSize: '1.25rem' }}>📂</span>
+                    <div style={{ flex: 1 }}>
+                      <div className="backup-action-card-title">Incremental PC Folder Sync (Recommended)</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                        Syncs directly to one folder on your PC. Skips existing diagrams, audio, and PDFs so only new files download.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      background: 'var(--color-bg)',
+                      border: '1px solid var(--color-border)',
+                      marginBottom: 10,
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {savedFolderHandle ? (
+                        <>
+                          Linked folder: <strong>{savedFolderHandle.name}</strong>
+                        </>
+                      ) : (
+                        'No PC backup folder linked yet'
+                      )}
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className="gdrive-action-btn"
+                        onClick={handlePickLocalFolder}
+                        disabled={isBackingUp}
+                      >
+                        {savedFolderHandle ? 'Change Folder' : 'Choose Folder…'}
+                      </button>
+                      {savedFolderHandle && (
+                        <button
+                          type="button"
+                          className="gdrive-action-btn"
+                          onClick={handleUnlinkLocalFolder}
+                          disabled={isBackingUp}
+                        >
+                          Unlink
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="backup-btn-primary"
+                    onClick={handleSyncToLocalFolder}
+                    disabled={isBackingUp}
+                    id="sync-local-folder-btn"
+                  >
+                    {isBackingUp
+                      ? 'Syncing Backup…'
+                      : savedFolderHandle
+                      ? `⚡ Sync New Changes to "${savedFolderHandle.name}"`
+                      : '📂 Choose Folder & Run First Sync'}
+                  </button>
+                </div>
+              )}
+
               <div className="backup-action-card">
                 <div className="backup-action-card-header">
                   <span style={{ fontSize: '1.25rem' }}>🗜️</span>
                   <div>
-                    <div className="backup-action-card-title">Download Offline Archive (.zip)</div>
+                    <div className="backup-action-card-title">Download Portable Archive (.zip)</div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                      Zero external setup required. Safe to store anywhere (Hard drive, USB, Dropbox, Google Drive).
+                      Use Quick Database-Only for fast snapshots (~1–2s), or Full Archive for complete portability.
                     </div>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  className="backup-btn-primary"
-                  onClick={handleDownloadBackup}
-                  disabled={isBackingUp}
-                  id="download-backup-btn"
-                >
-                  {isBackingUp ? 'Generating Archive…' : '⚡ Download Full Backup (.zip)'}
-                </button>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="backup-btn-primary"
+                    style={{ flex: 1, minWidth: 180 }}
+                    onClick={() => handleDownloadBackup(true)}
+                    disabled={isBackingUp}
+                    id="download-backup-btn"
+                  >
+                    {isBackingUp ? 'Generating Archive…' : '⚡ Full Archive (.zip)'}
+                  </button>
+                  <button
+                    type="button"
+                    className="gdrive-action-btn"
+                    style={{ padding: '10px 14px', fontWeight: 600 }}
+                    onClick={() => handleDownloadBackup(false)}
+                    disabled={isBackingUp}
+                    id="download-db-only-btn"
+                  >
+                    🗄️ Database-Only (.zip)
+                  </button>
+                </div>
 
                 {isBackingUp && (
                   <div className="backup-progress-wrap">
@@ -485,9 +695,44 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                   </div>
                 )}
 
+                {backupError && !isBackingUp && (
+                  <div
+                    className="backup-success-alert animate-fade-in"
+                    style={{
+                      background: 'rgba(244, 63, 94, 0.12)',
+                      borderColor: 'rgba(244, 63, 94, 0.35)',
+                      color: '#f43f5e',
+                    }}
+                  >
+                    ✕ Backup failed: {backupError}
+                  </div>
+                )}
+
+                {lastFolderSync && !isBackingUp && (
+                  <div className="backup-success-alert animate-fade-in">
+                    ✓ Synced <strong>{lastFolderSync.folderName}</strong> —{' '}
+                    <strong>{lastFolderSync.mediaSkippedExisting}</strong> existing file(s) skipped,{' '}
+                    <strong>{lastFolderSync.mediaDownloadedNew}</strong> new file(s) downloaded!
+                    {lastBackupWarnings.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: '0.75rem', color: '#d97706' }}>
+                        {lastBackupWarnings.map((w, idx) => (
+                          <div key={idx}>⚠️ {w}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {lastDownloadedFile && !isBackingUp && (
                   <div className="backup-success-alert animate-fade-in">
                     ✓ Saved <strong>{lastDownloadedFile}</strong> to your computer!
+                    {lastBackupWarnings.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: '0.75rem', color: '#d97706' }}>
+                        {lastBackupWarnings.map((w, idx) => (
+                          <div key={idx}>⚠️ {w}</div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -523,11 +768,26 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                 <div className="restore-dropzone-desc">or click to browse files from your device</div>
               </div>
 
+              {folderSyncSupported && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                  <button
+                    type="button"
+                    className="gdrive-action-btn"
+                    onClick={handlePickRestoreFolder}
+                    disabled={isRestoring}
+                  >
+                    📂 Or Select Synced PC Backup Folder…
+                  </button>
+                </div>
+              )}
+
               {/* Inspection Preview Card */}
               {inspection && (
                 <div className="restore-inspection-card animate-fade-in">
                   <div className="restore-inspection-header">
-                    <span className="restore-inspection-title">Archive Details</span>
+                    <span className="restore-inspection-title">
+                      Archive Details{restoreSourceLabel ? ` — ${restoreSourceLabel}` : ''}
+                    </span>
                     <span
                       style={{
                         fontSize: '0.75rem',
@@ -541,6 +801,21 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
 
                   {inspection.isValid ? (
                     <>
+                      {inspection.manifest?.mediaIncluded === false && (
+                        <div
+                          style={{
+                            marginBottom: 10,
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            fontSize: '0.75rem',
+                            background: 'rgba(99, 102, 241, 0.1)',
+                            border: '1px solid rgba(99, 102, 241, 0.25)',
+                            color: 'var(--color-text-secondary)',
+                          }}
+                        >
+                          🗄️ Database-only snapshot: restores SQL records &amp; settings while keeping existing storage media links intact.
+                        </div>
+                      )}
                       <div className="backup-stats-grid" style={{ marginBottom: 12 }}>
                         <div className="backup-stat-card">
                           <span className="backup-stat-val">{inspection.questionsCount}</span>
@@ -566,7 +841,43 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                           <span className="backup-stat-val">{inspection.appConfigCount}</span>
                           <span className="backup-stat-lbl">App Settings</span>
                         </div>
+                        {(inspection.teacherProfilesCount || 0) > 0 && (
+                          <div className="backup-stat-card">
+                            <span className="backup-stat-val">{inspection.teacherProfilesCount}</span>
+                            <span className="backup-stat-lbl">Educators</span>
+                          </div>
+                        )}
+                        {(inspection.proctorAuditEventsCount || 0) > 0 && (
+                          <div className="backup-stat-card">
+                            <span className="backup-stat-val">{inspection.proctorAuditEventsCount}</span>
+                            <span className="backup-stat-lbl">Audit Events</span>
+                          </div>
+                        )}
+                        {(inspection.gameProfilesCount || 0) > 0 && (
+                          <div className="backup-stat-card">
+                            <span className="backup-stat-val">{inspection.gameProfilesCount}</span>
+                            <span className="backup-stat-lbl">Arena Profiles</span>
+                          </div>
+                        )}
                       </div>
+
+                      {inspection.warnings && inspection.warnings.length > 0 && (
+                        <div
+                          style={{
+                            marginBottom: 12,
+                            padding: '8px 10px',
+                            borderRadius: 6,
+                            fontSize: '0.75rem',
+                            background: 'rgba(245, 158, 11, 0.12)',
+                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                            color: '#d97706',
+                          }}
+                        >
+                          {inspection.warnings.map((w, idx) => (
+                            <div key={idx}>⚠️ {w}</div>
+                          ))}
+                        </div>
+                      )}
 
                       <div className="restore-mode-toggle" style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '12px 0' }}>
                         <label className="restore-mode-label" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -584,13 +895,13 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                             name="restoreMode"
                             checked={restoreMode === 'replace'}
                             onChange={() => {
-                              if (confirm('Clean Replace mode will wipe existing questions and tests before importing from this archive. Are you sure?')) {
+                              if (confirm('Clean Replace mode will wipe existing questions, custom tests, syllabuses, submissions, and app settings before importing from this archive. Are you sure?')) {
                                 setRestoreMode('replace');
                               }
                             }}
                           />
                           <span style={{ color: restoreMode === 'replace' ? '#f43f5e' : 'inherit' }}>
-                            <strong>Clean Replace</strong> (Wipes existing questions and tests before importing)
+                            <strong>Clean Replace</strong> (Wipes existing questions, tests, syllabuses, submissions &amp; settings before importing)
                           </span>
                         </label>
                       </div>
@@ -664,7 +975,10 @@ export function BackupRestoreModal({ isOpen, onClose }: BackupRestoreModalProps)
                       : '❌ Restore Failed:'}
                   </strong>
                   <div style={{ marginTop: 4 }}>
-                    Restored {restoreResult.questionsRestored} questions, {restoreResult.diagramsRestored} storage diagrams, {restoreResult.syllabusesRestored} syllabuses, {restoreResult.customTestsRestored} custom tests, {restoreResult.quizSubmissionsRestored} submissions, and {restoreResult.appConfigRestored} app settings.
+                    Restored {restoreResult.questionsRestored} questions, {restoreResult.diagramsRestored} storage media files, {restoreResult.syllabusesRestored} syllabuses, {restoreResult.customTestsRestored} custom tests, {restoreResult.quizSubmissionsRestored} submissions, and {restoreResult.appConfigRestored} app settings
+                    {(restoreResult.teacherProfilesRestored || 0) > 0 ? `, ${restoreResult.teacherProfilesRestored} educator accounts` : ''}
+                    {(restoreResult.proctorAuditEventsRestored || 0) > 0 ? `, ${restoreResult.proctorAuditEventsRestored} audit logs` : ''}
+                    {(restoreResult.gameProfilesRestored || 0) > 0 ? `, ${restoreResult.gameProfilesRestored} arena profiles` : ''}.
                   </div>
 
                   {/* Render error list if any error occurred */}

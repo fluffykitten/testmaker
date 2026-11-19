@@ -1281,18 +1281,8 @@ export function gradeDeterministicAnswer(
       const incorrectSelected = studentLetters.filter((l) => !multiTargetLetters.includes(l));
       const missedTargets = multiTargetLetters.filter((l) => !studentLetters.includes(l));
 
-      let earnedMarks = 0;
-      if (isExactMatch) {
-        earnedMarks = maxMarks;
-      } else if (
-        multiTargetLetters.length === maxMarks &&
-        studentLetters.length <= multiTargetLetters.length &&
-        correctSelected.length > 0
-      ) {
-        earnedMarks = correctSelected.length;
-      } else {
-        earnedMarks = 0;
-      }
+      // Strict all-or-nothing: full marks only when selected set matches target exactly.
+      const earnedMarks = isExactMatch ? maxMarks : 0;
 
       let feedback = '';
       if (isExactMatch) {
@@ -1302,10 +1292,7 @@ export function gradeDeterministicAnswer(
         if (correctSelected.length > 0) breakdownParts.push(`✓ Correct: ${correctSelected.join(', ')}`);
         if (incorrectSelected.length > 0) breakdownParts.push(`✗ Incorrect: ${incorrectSelected.join(', ')}`);
         if (missedTargets.length > 0) breakdownParts.push(`Missed: ${missedTargets.join(', ')}`);
-        feedback =
-          earnedMarks > 0
-            ? `Partial credit (${earnedMarks}/${maxMarks} mark${maxMarks !== 1 ? 's' : ''}): Selected ${studentLetters.join(', ') || rawAnswerStr}, target is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}).`
-            : `✗ Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}). All selections must be correct to earn marks (0/${maxMarks}).`;
+        feedback = `✗ Selected ${studentLetters.join(', ') || rawAnswerStr}, correct answer is ${multiTargetLetters.join(', ')} (${breakdownParts.join('; ')}). All selections must be correct to earn marks (0/${maxMarks}).`;
       }
 
       return {

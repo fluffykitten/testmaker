@@ -8,8 +8,11 @@ import fs from 'node:fs';
 import {
   claimCommandId,
   clampAddTimeMinutes,
+  clampProgressPercent,
   clampTelemetry,
   checkRateLimit,
+  computeSubmissionProgress,
+  hasNonEmptyProctorAnswer,
   highWaterViolations,
   isAllowedProctorCommand,
   mergeAuditEvents,
@@ -152,11 +155,58 @@ function check(name, condition, detail = '') {
   const modal = fs.readFileSync('src/components/LiveInvigilatorModal.tsx', 'utf8');
   check('P1-A dashboard stamps receipt time on the heartbeat', /lastHeartbeat: Date\.now\(\)/.test(modal));
   check('P1-C teacher interventions are written to the audit log', (modal.match(/recordProctorAuditEvent\(/g) || []).length >= 4);
-  check('P1-C audit log is rehydrated on mount', /loadProctorAuditEvents\(codes\)/.test(modal));
+  check('P1-C audit log is rehydrated on mount', /loadProctorAuditEvents\(codes\b/.test(modal));
 
   const runner = fs.readFileSync('src/pages/StudentQuizRunner.tsx', 'utf8');
   check('P1-B runner emits the canonical id', /getCanonicalProctorStudentId\(\{/.test(runner) && /proctorStudentId: sessionHash/.test(runner));
   check('P3-2 heartbeat history is bounded by default', /sendCurrentHeartbeatRef\.current\(true\)/.test(runner));
+  check('Dashboard uses computeSubmissionProgress for local, cloud, and .exam ingest', (modal.match(/computeSubmissionProgress\(/g) || []).length >= 3);
+  check('Dashboard uses clampProgressPercent in Table and Card views', (modal.match(/clampProgressPercent\(/g) || []).length >= 2);
+  check('Dashboard displays live Q# indicator from broadcast currentIndex', /` · Q\$\{s\.currentIndex\}`/.test(modal));
+}
+
+// ─── Dashboard progress accuracy & clamping ──────────────────────────────────
+{
+  check('Empty string answer is treated as unanswered', !hasNonEmptyProctorAnswer('   '));
+  check('Numeric zero option index is treated as answered', hasNonEmptyProctorAnswer(0));
+  check('Empty JSON map of cloze/table gaps is unanswered', !hasNonEmptyProctorAnswer('{"g1":"","g2":"  "}'));
+  check('JSON map with at least one filled gap is answered', hasNonEmptyProctorAnswer('{"g1":"","g2":"H2O"}'));
+  check('Math brace notation text still counts as answered', hasNonEmptyProctorAnswer('{x | x > 0}'));
+  check('Empty array is unanswered', !hasNonEmptyProctorAnswer([]));
+  check('Non-empty array is answered', hasNonEmptyProctorAnswer(['A']));
+
+  const subProgress = computeSubmissionProgress(
+    {
+      questionResults: [
+        { studentAnswer: 2 },
+        { studentAnswer: '   ' },
+        {
+          subQuestionResults: [
+            { studentAnswer: 'Sodium' },
+            { studentAnswer: '' },
+            { studentAnswer: '{"0_0":"2.5","0_1":""}' },
+          ],
+        },
+      ],
+    },
+    3
+  );
+  check(
+    'computeSubmissionProgress flattens sub-questions and skips blank answers',
+    subProgress.answeredCount === 3 && subProgress.totalQuestions === 5,
+    JSON.stringify(subProgress)
+  );
+
+  const fallbackSub = computeSubmissionProgress({ questionResults: [] }, 12);
+  check(
+    'computeSubmissionProgress falls back to quiz questionCount when results are empty',
+    fallbackSub.answeredCount === 0 && fallbackSub.totalQuestions === 12
+  );
+
+  check('clampProgressPercent clamps >100% ratios to 100', clampProgressPercent(25, 10) === 100);
+  check('clampProgressPercent clamps negative counts to 0', clampProgressPercent(-2, 10) === 0);
+  check('clampProgressPercent handles zero denominator safely', clampProgressPercent(5, 0) === 0);
+  check('clampProgressPercent rounds valid ratio accurately', clampProgressPercent(3, 4) === 75);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

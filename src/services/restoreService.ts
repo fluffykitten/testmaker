@@ -7,7 +7,64 @@
 import { supabase } from '../lib/supabase';
 import { extractDiagramFileName, type BackupManifest } from './backupService';
 import { getSavedSettings, saveSettings } from '../lib/settings';
+import {
+  ensureFolderPermission,
+  isDirectoryHandleLike,
+  listMediaFilesFromDirectory,
+  readTextFileFromDirectory,
+} from './localBackupFolderService';
 import type { Question, Syllabus, CustomTest } from '../types/database';
+
+export type RestoreSourceInput = File | Blob | ArrayBuffer | FileSystemDirectoryHandle;
+
+interface RestoreArchiveReader {
+  readText: (relativePath: string) => Promise<string | null>;
+  listMediaEntries: () => Promise<Array<{ fileName: string; getBlob: () => Promise<Blob> }>>;
+}
+
+async function openRestoreArchive(source: RestoreSourceInput): Promise<RestoreArchiveReader> {
+  if (isDirectoryHandleLike(source)) {
+    const granted = await ensureFolderPermission(source, 'read');
+    if (!granted) {
+      throw new Error('Folder read permission was denied. Please allow read access to restore from this folder.');
+    }
+    return {
+      readText: (relativePath: string) => readTextFileFromDirectory(source, relativePath),
+      listMediaEntries: async () => {
+        const items = await listMediaFilesFromDirectory(source);
+        return items.map(({ fileName, getBlob }) => ({ fileName, getBlob }));
+      },
+    };
+  }
+
+  const JSZip = (await import('jszip')).default;
+  const dataToLoad =
+    source instanceof ArrayBuffer
+      ? source
+      : typeof (source as Blob).arrayBuffer === 'function'
+      ? await (source as Blob).arrayBuffer()
+      : source;
+  const zip = await JSZip.loadAsync(dataToLoad);
+
+  return {
+    readText: async (relativePath: string) => {
+      const f = zip.file(relativePath);
+      return f ? f.async('string') : null;
+    },
+    listMediaEntries: async () => {
+      const entries: Array<{ fileName: string; getBlob: () => Promise<Blob> }> = [];
+      const diagramsFolder = zip.folder('diagrams');
+      if (!diagramsFolder) return entries;
+      diagramsFolder.forEach((relativePath: string, file: any) => {
+        if (!file.dir) {
+          const fileName = relativePath.split('/').pop() || relativePath;
+          entries.push({ fileName, getBlob: () => file.async('blob') });
+        }
+      });
+      return entries;
+    },
+  };
+}
 
 export interface RestoreInspectionResult {
   isValid: boolean;
@@ -18,7 +75,11 @@ export interface RestoreInspectionResult {
   customTestsCount: number;
   quizSubmissionsCount: number;
   appConfigCount: number;
+  teacherProfilesCount?: number;
+  proctorAuditEventsCount?: number;
+  gameProfilesCount?: number;
   diagramsCount: number;
+  warnings?: string[];
 }
 
 export interface RestoreOptions {
@@ -34,6 +95,9 @@ export interface RestoreResult {
   customTestsRestored: number;
   quizSubmissionsRestored: number;
   appConfigRestored: number;
+  teacherProfilesRestored?: number;
+  proctorAuditEventsRestored?: number;
+  gameProfilesRestored?: number;
   errors: string[];
 }
 
@@ -89,6 +153,7 @@ function getStorageMimeType(fileName: string): string {
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.svg')) return 'image/svg+xml';
   if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.pdf')) return 'application/pdf';
   if (lower.endsWith('.webm')) return 'audio/webm';
   if (lower.endsWith('.mp3')) return 'audio/mpeg';
   if (lower.endsWith('.ogg')) return 'audio/ogg';
@@ -97,27 +162,34 @@ function getStorageMimeType(fileName: string): string {
   return 'application/octet-stream';
 }
 
-/**
- * Inspects a backup archive (.zip) and extracts manifest and preview stats.
- */
-export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer): Promise<RestoreInspectionResult> {
-  try {
-    const JSZip = (await import('jszip')).default;
-    const dataToLoad =
-      fileOrBlob instanceof ArrayBuffer
-        ? fileOrBlob
-        : typeof (fileOrBlob as any).arrayBuffer === 'function'
-        ? await (fileOrBlob as any).arrayBuffer()
-        : fileOrBlob;
+function getRestoreStoragePath(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.pdf')) return `papers/${fileName}`;
+  if (
+    lower.endsWith('.mp3') ||
+    lower.endsWith('.webm') ||
+    lower.endsWith('.ogg') ||
+    lower.endsWith('.wav') ||
+    lower.endsWith('.m4a')
+  ) {
+    return `audio/${fileName}`;
+  }
+  return `diagrams/${fileName}`;
+}
 
-    const zip = await JSZip.loadAsync(dataToLoad);
+/**
+ * Inspects a backup archive (.zip) or synced local backup folder and extracts manifest & preview stats.
+ */
+export async function inspectBackupArchive(source: RestoreSourceInput): Promise<RestoreInspectionResult> {
+  try {
+    const archive = await openRestoreArchive(source);
 
     // Check for manifest.json
-    const manifestFile = zip.file('manifest.json');
-    if (!manifestFile) {
+    const manifestText = await archive.readText('manifest.json');
+    if (!manifestText) {
       return {
         isValid: false,
-        error: 'Invalid archive: Missing manifest.json file.',
+        error: 'Invalid backup source: Missing manifest.json file.',
         syllabusesCount: 0,
         questionsCount: 0,
         customTestsCount: 0,
@@ -127,62 +199,26 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
       };
     }
 
-    const manifestText = await manifestFile.async('string');
     const manifest = JSON.parse(manifestText) as BackupManifest;
 
-    // Check for questions.json
-    const questionsFile = zip.file('data/questions.json');
-    let questionsCount = manifest.stats?.questionsCount || 0;
-    if (questionsFile) {
-      const qText = await questionsFile.async('string');
-      const qList = JSON.parse(qText);
-      if (Array.isArray(qList)) questionsCount = qList.length;
-    }
+    const readArrayCount = async (path: string, fallback = 0): Promise<number> => {
+      const text = await archive.readText(path);
+      if (!text) return fallback;
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed.length : fallback;
+    };
 
-    // Check for syllabuses.json
-    const syllabusesFile = zip.file('data/syllabuses.json');
-    let syllabusesCount = manifest.stats?.syllabusesCount || 0;
-    if (syllabusesFile) {
-      const sText = await syllabusesFile.async('string');
-      const sList = JSON.parse(sText);
-      if (Array.isArray(sList)) syllabusesCount = sList.length;
-    }
+    const questionsCount = await readArrayCount('data/questions.json', manifest.stats?.questionsCount || 0);
+    const syllabusesCount = await readArrayCount('data/syllabuses.json', manifest.stats?.syllabusesCount || 0);
+    const customTestsCount = await readArrayCount('data/custom_tests.json', manifest.stats?.customTestsCount || 0);
+    const quizSubmissionsCount = await readArrayCount('data/quiz_submissions.json', manifest.stats?.quizSubmissionsCount || 0);
+    const appConfigCount = await readArrayCount('data/app_config.json', manifest.stats?.appConfigCount || 0);
+    const teacherProfilesCount = await readArrayCount('data/teacher_profiles.json', manifest.stats?.teacherProfilesCount || 0);
+    const proctorAuditEventsCount = await readArrayCount('data/proctor_audit_events.json', manifest.stats?.proctorAuditEventsCount || 0);
+    const gameProfilesCount = await readArrayCount('data/game_profiles.json', manifest.stats?.gameProfilesCount || 0);
 
-    // Check for custom_tests.json
-    const testsFile = zip.file('data/custom_tests.json');
-    let customTestsCount = manifest.stats?.customTestsCount || 0;
-    if (testsFile) {
-      const tText = await testsFile.async('string');
-      const tList = JSON.parse(tText);
-      if (Array.isArray(tList)) customTestsCount = tList.length;
-    }
-
-    // Check for quiz_submissions.json
-    const submissionsFile = zip.file('data/quiz_submissions.json');
-    let quizSubmissionsCount = manifest.stats?.quizSubmissionsCount || 0;
-    if (submissionsFile) {
-      const subText = await submissionsFile.async('string');
-      const subList = JSON.parse(subText);
-      if (Array.isArray(subList)) quizSubmissionsCount = subList.length;
-    }
-
-    // Check for app_config.json
-    const appConfigFile = zip.file('data/app_config.json');
-    let appConfigCount = manifest.stats?.appConfigCount || 0;
-    if (appConfigFile) {
-      const cfgText = await appConfigFile.async('string');
-      const cfgList = JSON.parse(cfgText);
-      if (Array.isArray(cfgList)) appConfigCount = cfgList.length;
-    }
-
-    // Count diagrams in diagrams/ folder
-    const diagramsFolder = zip.folder('diagrams');
-    let diagramsCount = 0;
-    if (diagramsFolder) {
-      diagramsFolder.forEach((_relativePath, file) => {
-        if (!file.dir) diagramsCount++;
-      });
-    }
+    const mediaEntries = await archive.listMediaEntries();
+    const diagramsCount = mediaEntries.length;
 
     return {
       isValid: true,
@@ -192,12 +228,16 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
       customTestsCount,
       quizSubmissionsCount,
       appConfigCount,
+      teacherProfilesCount,
+      proctorAuditEventsCount,
+      gameProfilesCount,
       diagramsCount,
+      warnings: manifest.warnings,
     };
   } catch (err) {
     return {
       isValid: false,
-      error: err instanceof Error ? err.message : 'Corrupted or unreadable archive.',
+      error: err instanceof Error ? err.message : 'Corrupted or unreadable backup source.',
       syllabusesCount: 0,
       questionsCount: 0,
       customTestsCount: 0,
@@ -209,22 +249,15 @@ export async function inspectBackupArchive(fileOrBlob: File | Blob | ArrayBuffer
 }
 
 /**
- * Re-uploads diagram and audio files from archive into Supabase Storage and maps old URLs to new URLs.
- * Returns both the urlMap and any captured storage errors for maximum diagnostic visibility.
+ * Re-uploads diagram, audio, and PDF files from archive/folder into Supabase Storage and maps old URLs to new URLs.
  */
 async function restoreDiagramsToStorage(
-  zip: any,
+  archive: RestoreArchiveReader,
   onProgress?: (count: number, total: number) => void
 ): Promise<{ urlMap: Map<string, string>; storageErrors: string[] }> {
   const urlMap = new Map<string, string>();
   const storageErrors: string[] = [];
-  const diagramsFolder = zip.folder('diagrams');
-  if (!diagramsFolder) return { urlMap, storageErrors };
-
-  const entries: { path: string; file: any }[] = [];
-  diagramsFolder.forEach((relativePath: string, file: any) => {
-    if (!file.dir) entries.push({ path: relativePath, file });
-  });
+  const entries = await archive.listMediaEntries();
 
   if (entries.length === 0) return { urlMap, storageErrors };
 
@@ -234,11 +267,10 @@ async function restoreDiagramsToStorage(
     const batch = entries.slice(i, i + BATCH_SIZE);
 
     await Promise.all(
-      batch.map(async ({ path, file }) => {
+      batch.map(async ({ fileName, getBlob }) => {
         try {
-          const blob = await file.async('blob');
-          const fileName = path.split('/').pop() || path;
-          const storagePath = `diagrams/${fileName}`;
+          const blob = await getBlob();
+          const storagePath = getRestoreStoragePath(fileName);
           const contentType = getStorageMimeType(fileName);
 
           const { error } = await supabase.storage
@@ -264,7 +296,7 @@ async function restoreDiagramsToStorage(
             storageErrors.push(`Storage upload failed for ${fileName}: ${error.message}${hint}`);
           }
         } catch (err: any) {
-          storageErrors.push(`Failed to upload media ${path}: ${err?.message || 'Storage error'}`);
+          storageErrors.push(`Failed to upload media ${fileName}: ${err?.message || 'Storage error'}`);
         }
       })
     );
@@ -276,16 +308,16 @@ async function restoreDiagramsToStorage(
 }
 
 /**
- * Rewrites a question's diagram_url and audio_url using newly uploaded storage URLs,
- * checking manifest.diagramMapping first for collision-safe lookup.
+ * Rewrites a question's diagram_url, audio_url, PDF links, and insert_resources URLs
+ * using newly uploaded storage URLs, checking manifest.diagramMapping first for collision-safe lookup.
  */
-function rewriteQuestionMediaUrls(
+export function rewriteQuestionMediaUrls(
   q: Question,
   mediaUrlMap: Map<string, string>,
   diagramMapping?: Record<string, string>
 ): Question {
   function getNewMediaUrl(origUrl: string | null | undefined): string | null {
-    if (!origUrl || typeof origUrl !== 'string' || !origUrl.startsWith('http')) {
+    if (!origUrl || typeof origUrl !== 'string' || !/^https?:\/\//i.test(origUrl.trim())) {
       return origUrl || null;
     }
     // 1. Try manifest mapping
@@ -303,8 +335,35 @@ function rewriteQuestionMediaUrls(
     return origUrl;
   }
 
+  function rewriteResourceList(list: any): any {
+    if (!Array.isArray(list)) return list;
+    return list.map((res: any) =>
+      res && typeof res === 'object' && res.url
+        ? { ...res, url: getNewMediaUrl(res.url) || res.url }
+        : res
+    );
+  }
+
   const updatedDiagramUrl = getNewMediaUrl(q.diagram_url);
   const updatedAudioUrl = getNewMediaUrl(q.audio_url);
+  const updatedSourcePdfUrl = getNewMediaUrl((q as any).source_pdf_url);
+  const updatedInsertPdfUrl = getNewMediaUrl((q as any).insert_pdf_url);
+
+  let updatedMarkScheme = (q as any).mark_scheme;
+  if (updatedMarkScheme && typeof updatedMarkScheme === 'object') {
+    updatedMarkScheme = { ...updatedMarkScheme };
+    if (updatedMarkScheme._source_pdf_url) {
+      updatedMarkScheme._source_pdf_url =
+        getNewMediaUrl(updatedMarkScheme._source_pdf_url) || updatedMarkScheme._source_pdf_url;
+    }
+    if (updatedMarkScheme._insert_pdf_url) {
+      updatedMarkScheme._insert_pdf_url =
+        getNewMediaUrl(updatedMarkScheme._insert_pdf_url) || updatedMarkScheme._insert_pdf_url;
+    }
+    if (Array.isArray(updatedMarkScheme._insert_resources)) {
+      updatedMarkScheme._insert_resources = rewriteResourceList(updatedMarkScheme._insert_resources);
+    }
+  }
 
   // Also rewrite any sub-questions with diagrams or audio
   const subQuestions = (q as any).sub_questions;
@@ -327,15 +386,165 @@ function rewriteQuestionMediaUrls(
     ...q,
     diagram_url: updatedDiagramUrl,
     audio_url: updatedAudioUrl,
+    ...(updatedSourcePdfUrl !== null ? { source_pdf_url: updatedSourcePdfUrl } : {}),
+    ...(updatedInsertPdfUrl !== null ? { insert_pdf_url: updatedInsertPdfUrl } : {}),
+    ...(Array.isArray((q as any).insert_resources)
+      ? { insert_resources: rewriteResourceList((q as any).insert_resources) }
+      : {}),
+    mark_scheme: updatedMarkScheme,
     sub_questions: updatedSubs,
   } as Question;
 }
 
 /**
- * Executes full restore from a verified backup archive.
+ * Rewrites embedded question snapshot URLs inside app_config's published_quizzes JSON value.
+ */
+export function rewritePublishedQuizzesMediaUrls(
+  rawValue: string,
+  mediaUrlMap: Map<string, string>,
+  diagramMapping?: Record<string, string>
+): string {
+  if (!rawValue || mediaUrlMap.size === 0) return rawValue;
+  try {
+    const quizzes = JSON.parse(rawValue);
+    if (!Array.isArray(quizzes)) return rawValue;
+    const rewritten = quizzes.map((quiz: any) => {
+      if (!quiz || typeof quiz !== 'object' || !Array.isArray(quiz.questions)) return quiz;
+      return {
+        ...quiz,
+        questions: quiz.questions.map((qq: any) =>
+          rewriteQuestionMediaUrls(qq, mediaUrlMap, diagramMapping)
+        ),
+      };
+    });
+    return JSON.stringify(rewritten);
+  } catch {
+    return rawValue;
+  }
+}
+
+/**
+ * Synchronizes restored app_config entries into browser localStorage caches and emits update events.
+ */
+export function syncRestoredAppConfigToLocalStorage(
+  cfgList: Array<{ key?: string; value?: string }>
+): void {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined' || !Array.isArray(cfgList)) {
+    return;
+  }
+
+  const byKey = new Map<string, string>();
+  for (const row of cfgList) {
+    if (row?.key && typeof row.value === 'string') {
+      byKey.set(row.key, row.value);
+    }
+  }
+
+  const pubQuizzes = byKey.get('published_quizzes');
+  if (pubQuizzes !== undefined) {
+    localStorage.setItem('fluffykitten_published_quizzes', pubQuizzes);
+    window.dispatchEvent(new Event('published_quizzes_updated'));
+  }
+
+  const schoolRoster = byKey.get('school_roster');
+  if (schoolRoster !== undefined) {
+    localStorage.setItem('testmaker_school_student_roster', schoolRoster);
+    window.dispatchEvent(new Event('school_roster_updated'));
+  }
+
+  const examSchedule = byKey.get('exam_schedule_entries');
+  if (examSchedule !== undefined) {
+    localStorage.setItem('testmaker_school_exam_schedule', examSchedule);
+    try {
+      window.dispatchEvent(
+        new CustomEvent('exam_schedule_updated', { detail: { entries: JSON.parse(examSchedule) } })
+      );
+    } catch {
+      window.dispatchEvent(new Event('exam_schedule_updated'));
+    }
+  }
+
+  const cur = getSavedSettings();
+  const nextSettings = { ...cur };
+  let settingsChanged = false;
+
+  const tryParseJson = (key: string): any => {
+    const raw = byKey.get(key);
+    if (raw === undefined) return undefined;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const classes = tryParseJson('school_classes');
+  if (Array.isArray(classes) && classes.length > 0) {
+    nextSettings.classes = classes;
+    settingsChanged = true;
+  }
+  const subjects = tryParseJson('school_subjects');
+  if (Array.isArray(subjects) && subjects.length > 0) {
+    nextSettings.subjects = subjects;
+    settingsChanged = true;
+  }
+  const driveId = byKey.get('google_drive_client_id');
+  if (driveId !== undefined) {
+    nextSettings.googleDriveClientId = driveId;
+    settingsChanged = true;
+  }
+  const hideCreative = byKey.get('hide_creative_mode_landing');
+  if (hideCreative !== undefined) {
+    nextSettings.hideCreativeModeOnLanding = hideCreative === 'true';
+    settingsChanged = true;
+  }
+  const allowClaim = byKey.get('allow_teacher_account_claiming');
+  if (allowClaim !== undefined) {
+    nextSettings.allowTeacherAccountClaiming = allowClaim === 'true';
+    settingsChanged = true;
+  }
+  const hideEmerg = byKey.get('hide_emergency_exam_button');
+  if (hideEmerg !== undefined) {
+    nextSettings.hideEmergencyExamButton = hideEmerg === 'true';
+    settingsChanged = true;
+  }
+  const geminiModel = byKey.get('gemini_extraction_model');
+  if (geminiModel) {
+    nextSettings.geminiExtractionModel = geminiModel;
+    settingsChanged = true;
+  }
+  const geminiTier = byKey.get('gemini_api_key_tier');
+  if (geminiTier === 'auto' || geminiTier === 'paid' || geminiTier === 'free') {
+    nextSettings.geminiApiKeyTier = geminiTier;
+    settingsChanged = true;
+  }
+  const secTiers = tryParseJson('exam_security_tiers');
+  if (Array.isArray(secTiers)) {
+    nextSettings.securityTiers = secTiers;
+    settingsChanged = true;
+  }
+  const masteryTiers = tryParseJson('topic_mastery_tiers');
+  if (Array.isArray(masteryTiers)) {
+    nextSettings.topicMasteryTiers = masteryTiers;
+    settingsChanged = true;
+    window.dispatchEvent(
+      new CustomEvent('topic_mastery_tiers_updated', {
+        detail: { topicMasteryTiers: masteryTiers },
+      })
+    );
+  }
+
+  if (settingsChanged) {
+    saveSettings(nextSettings);
+    window.dispatchEvent(new Event('settings_updated'));
+  }
+}
+
+/**
+ * Executes full restore from a verified backup archive (.zip) or synced PC folder.
  */
 export async function executeRestore(
-  fileOrBlob: File | Blob | ArrayBuffer,
+  source: RestoreSourceInput,
   options: RestoreOptions = { mode: 'merge' },
   onProgress?: RestoreProgressCallback
 ): Promise<RestoreResult> {
@@ -346,32 +555,30 @@ export async function executeRestore(
   let customTestsRestored = 0;
   let quizSubmissionsRestored = 0;
   let appConfigRestored = 0;
+  let teacherProfilesRestored = 0;
+  let proctorAuditEventsRestored = 0;
+  let gameProfilesRestored = 0;
 
   try {
-    const JSZip = (await import('jszip')).default;
-    onProgress?.('Unpacking backup archive…', 10);
-    const dataToLoad =
-      fileOrBlob instanceof ArrayBuffer
-        ? fileOrBlob
-        : typeof (fileOrBlob as any).arrayBuffer === 'function'
-        ? await (fileOrBlob as any).arrayBuffer()
-        : fileOrBlob;
-
-    const zip = await JSZip.loadAsync(dataToLoad);
+    onProgress?.('Opening backup source…', 10);
+    const archive = await openRestoreArchive(source);
 
     // Read manifest for collision-free diagram mapping if available
     let diagramMapping: Record<string, string> | undefined;
-    const manifestFile = zip.file('manifest.json');
-    if (manifestFile) {
+    const manifestText = await archive.readText('manifest.json');
+    if (manifestText) {
       try {
-        const manifest = JSON.parse(await manifestFile.async('string')) as BackupManifest;
+        const manifest = JSON.parse(manifestText) as BackupManifest;
         diagramMapping = manifest.diagramMapping;
       } catch {
         // Continue with standard filename extraction if manifest parse fails
       }
     }
 
-    // ─── Optional: If Replace mode, clear existing questions & tests ───────
+    const auditText = await archive.readText('data/proctor_audit_events.json');
+    const gameProfilesText = await archive.readText('data/game_profiles.json');
+
+    // ─── Optional: If Replace mode, clear existing records cleanly ─────────
     if (options.mode === 'replace') {
       onProgress?.('Clearing existing records for clean replace…', 15);
       const { error: testDelErr } = await (supabase.from('custom_tests') as any)
@@ -383,11 +590,42 @@ export async function executeRestore(
         .delete()
         .neq('id', '00000000-0000-0000-0000-000000000000');
       if (qDelErr) errors.push(`Replace mode error (questions): ${qDelErr.message}`);
+
+      const { error: sylDelErr } = await (supabase.from('syllabuses') as any)
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (sylDelErr) errors.push(`Replace mode error (syllabuses): ${sylDelErr.message}`);
+
+      const { error: subDelErr } = await (supabase.from('quiz_submissions') as any)
+        .delete()
+        .neq('id', '__never_id__');
+      if (subDelErr) errors.push(`Replace mode error (quiz_submissions): ${subDelErr.message}`);
+
+      const { error: cfgDelErr } = await (supabase.from('app_config') as any)
+        .delete()
+        .neq('key', '__never_key__');
+      if (cfgDelErr) errors.push(`Replace mode error (app_config): ${cfgDelErr.message}`);
+
+      if (auditText) {
+        const { error: auditDelErr } = await (supabase.from('proctor_audit_events') as any)
+          .delete()
+          .neq('id', '__never_id__');
+        if (auditDelErr) errors.push(`Replace mode error (proctor_audit_events): ${auditDelErr.message}`);
+      }
+
+      if (gameProfilesText) {
+        const { error: gpDelErr } = await (supabase.from('game_profiles') as any)
+          .delete()
+          .neq('id', '00000000-0000-0000-0000-000000000000');
+        if (gpDelErr && gpDelErr.code !== '42501') {
+          errors.push(`Replace mode error (game_profiles): ${gpDelErr.message}`);
+        }
+      }
     }
 
     // ─── Step 1: Re-upload storage diagrams & audio ───────────────────────
-    onProgress?.('Restoring exam diagrams and audio to Supabase Storage…', 20);
-    const { urlMap: mediaUrlMap, storageErrors } = await restoreDiagramsToStorage(zip, (done, total) => {
+    onProgress?.('Restoring exam diagrams, audio, and PDFs to Supabase Storage…', 20);
+    const { urlMap: mediaUrlMap, storageErrors } = await restoreDiagramsToStorage(archive, (done, total) => {
       onProgress?.(
         `Uploading media (${done}/${total})…`,
         20 + Math.round((done / total) * 35)
@@ -400,9 +638,9 @@ export async function executeRestore(
 
     // ─── Step 2: Restore Syllabuses (Batched) ─────────────────────────────
     onProgress?.('Restoring syllabuses…', 60);
-    const syllabusesFile = zip.file('data/syllabuses.json');
-    if (syllabusesFile) {
-      const sList = JSON.parse(await syllabusesFile.async('string')) as Syllabus[];
+    const syllabusesText = await archive.readText('data/syllabuses.json');
+    if (syllabusesText) {
+      const sList = JSON.parse(syllabusesText) as Syllabus[];
       if (Array.isArray(sList) && sList.length > 0) {
         const { error } = await (supabase.from('syllabuses') as any).upsert(sList, {
           onConflict: 'id',
@@ -417,9 +655,9 @@ export async function executeRestore(
 
     // ─── Step 3: Restore Questions with Schema Drift Fallback ──────────────
     onProgress?.('Restoring question bank records…', 70);
-    const questionsFile = zip.file('data/questions.json');
-    if (questionsFile) {
-      const qList = JSON.parse(await questionsFile.async('string')) as Question[];
+    const questionsText = await archive.readText('data/questions.json');
+    if (questionsText) {
+      const qList = JSON.parse(questionsText) as Question[];
       if (Array.isArray(qList) && qList.length > 0) {
         const BATCH_SIZE = 100;
         for (let i = 0; i < qList.length; i += BATCH_SIZE) {
@@ -502,9 +740,9 @@ export async function executeRestore(
 
     // ─── Step 4: Restore Custom Tests with Schema & Foreign Key Fallback ────
     onProgress?.('Restoring custom tests…', 86);
-    const testsFile = zip.file('data/custom_tests.json');
-    if (testsFile) {
-      const tList = JSON.parse(await testsFile.async('string')) as CustomTest[];
+    const testsText = await archive.readText('data/custom_tests.json');
+    if (testsText) {
+      const tList = JSON.parse(testsText) as CustomTest[];
       if (Array.isArray(tList) && tList.length > 0) {
         const sqlTests = tList
           .filter((t: any) => UUID_REGEX.test(String(t?.id || '')))
@@ -572,10 +810,10 @@ export async function executeRestore(
 
     // ─── Step 5: Restore Quiz Submissions ─────────────────────────────────
     onProgress?.('Restoring quiz submissions…', 90);
-    const submissionsFile = zip.file('data/quiz_submissions.json');
-    if (submissionsFile) {
+    const submissionsText = await archive.readText('data/quiz_submissions.json');
+    if (submissionsText) {
       try {
-        const subList = JSON.parse(await submissionsFile.async('string'));
+        const subList = JSON.parse(submissionsText);
         if (Array.isArray(subList) && subList.length > 0) {
           const BATCH_SIZE = 100;
           for (let i = 0; i < subList.length; i += BATCH_SIZE) {
@@ -596,19 +834,29 @@ export async function executeRestore(
     }
 
     // ─── Step 6: Restore App Config (onConflict: 'key') ────────────────────
-    onProgress?.('Restoring application configurations…', 94);
-    const appConfigFile = zip.file('data/app_config.json');
-    if (appConfigFile) {
+    onProgress?.('Restoring application configurations…', 93);
+    let restoredCfgList: Array<{ key?: string; value?: string }> | null = null;
+    const appConfigText = await archive.readText('data/app_config.json');
+    if (appConfigText) {
       try {
-        const cfgList = JSON.parse(await appConfigFile.async('string'));
-        if (Array.isArray(cfgList) && cfgList.length > 0) {
-          const { error } = await (supabase.from('app_config') as any).upsert(cfgList, {
+        const parsedCfg = JSON.parse(appConfigText);
+        if (Array.isArray(parsedCfg) && parsedCfg.length > 0) {
+          restoredCfgList = parsedCfg.map((row: any) =>
+            row?.key === 'published_quizzes' && typeof row.value === 'string'
+              ? {
+                  ...row,
+                  value: rewritePublishedQuizzesMediaUrls(row.value, mediaUrlMap, diagramMapping),
+                }
+              : row
+          );
+
+          const { error } = await (supabase.from('app_config') as any).upsert(restoredCfgList, {
             onConflict: 'key',
           });
           if (error) {
             errors.push(`App config: ${error.message}`);
           } else {
-            appConfigRestored = cfgList.length;
+            appConfigRestored = restoredCfgList.length;
           }
         }
       } catch (err: any) {
@@ -616,29 +864,85 @@ export async function executeRestore(
       }
     }
 
+    // ─── Step 6b: Restore Teacher Accounts, Audit Events & Arena Profiles ──
+    onProgress?.('Restoring educator accounts & extended records…', 96);
+    const teacherText = await archive.readText('data/teacher_profiles.json');
+    if (teacherText) {
+      try {
+        const tProfiles = JSON.parse(teacherText);
+        if (Array.isArray(tProfiles) && tProfiles.length > 0) {
+          const validProfiles = tProfiles.filter((tp: any) => !tp?.id || UUID_REGEX.test(String(tp.id)));
+          if (validProfiles.length > 0) {
+            const { error } = await (supabase.from('teacher_profiles') as any).upsert(validProfiles, {
+              onConflict: 'id',
+            });
+            if (error) {
+              errors.push(`Teacher profiles: ${error.message}`);
+            } else {
+              teacherProfilesRestored = validProfiles.length;
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Teacher profiles: ${err?.message || 'Parse error'}`);
+      }
+    }
+
+    if (auditText) {
+      try {
+        const auditList = JSON.parse(auditText);
+        if (Array.isArray(auditList) && auditList.length > 0) {
+          const BATCH_SIZE = 200;
+          for (let i = 0; i < auditList.length; i += BATCH_SIZE) {
+            const batch = auditList.slice(i, i + BATCH_SIZE);
+            const { error } = await (supabase.from('proctor_audit_events') as any).upsert(batch, {
+              onConflict: 'id',
+            });
+            if (error) {
+              errors.push(`Proctor audit events batch ${i}: ${error.message}`);
+            } else {
+              proctorAuditEventsRestored += batch.length;
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Proctor audit events: ${err?.message || 'Parse error'}`);
+      }
+    }
+
+    if (gameProfilesText) {
+      try {
+        const gpList = JSON.parse(gameProfilesText);
+        if (Array.isArray(gpList) && gpList.length > 0) {
+          const BATCH_SIZE = 100;
+          for (let i = 0; i < gpList.length; i += BATCH_SIZE) {
+            const batch = gpList.slice(i, i + BATCH_SIZE);
+            const { error } = await (supabase.from('game_profiles') as any).upsert(batch, {
+              onConflict: 'id',
+            });
+            if (error) {
+              if (error.code === '42501') {
+                errors.push('Game profiles skipped (run Migration 028 in Supabase to allow restore).');
+              } else {
+                errors.push(`Game profiles batch ${i}: ${error.message}`);
+              }
+              break;
+            } else {
+              gameProfilesRestored += batch.length;
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Game profiles: ${err?.message || 'Parse error'}`);
+      }
+    }
+
     // ─── Step 7: Sync Client LocalStorage & Notify Application ────────────
     onProgress?.('Synchronizing local caches & finalizing restore…', 98);
     if (typeof window !== 'undefined') {
-      // Sync published quizzes and school classes to localStorage
-      if (appConfigFile) {
+      if (restoredCfgList) {
         try {
-          const cfgList = JSON.parse(await appConfigFile.async('string'));
-          if (Array.isArray(cfgList)) {
-            const pubQuizzes = cfgList.find((c: any) => c.key === 'published_quizzes');
-            if (pubQuizzes?.value) {
-              localStorage.setItem('fluffykitten_published_quizzes', pubQuizzes.value);
-              window.dispatchEvent(new Event('published_quizzes_updated'));
-            }
-            const schoolClasses = cfgList.find((c: any) => c.key === 'school_classes');
-            if (schoolClasses?.value) {
-              const parsed = JSON.parse(schoolClasses.value);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                const cur = getSavedSettings();
-                saveSettings({ ...cur, classes: parsed });
-                window.dispatchEvent(new Event('settings_updated'));
-              }
-            }
-          }
+          syncRestoredAppConfigToLocalStorage(restoredCfgList);
         } catch (e) {
           console.warn('[RestoreService] Cache sync note:', e);
         }
@@ -658,7 +962,10 @@ export async function executeRestore(
         syllabusesRestored > 0 ||
         customTestsRestored > 0 ||
         quizSubmissionsRestored > 0 ||
-        appConfigRestored > 0);
+        appConfigRestored > 0 ||
+        teacherProfilesRestored > 0 ||
+        proctorAuditEventsRestored > 0 ||
+        gameProfilesRestored > 0);
 
     return {
       success,
@@ -669,6 +976,9 @@ export async function executeRestore(
       customTestsRestored,
       quizSubmissionsRestored,
       appConfigRestored,
+      teacherProfilesRestored,
+      proctorAuditEventsRestored,
+      gameProfilesRestored,
       errors,
     };
   } catch (err: any) {
@@ -682,6 +992,9 @@ export async function executeRestore(
       customTestsRestored,
       quizSubmissionsRestored,
       appConfigRestored,
+      teacherProfilesRestored,
+      proctorAuditEventsRestored,
+      gameProfilesRestored,
       errors,
     };
   }

@@ -2076,7 +2076,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                             fontFamily: 'monospace',
                             fontWeight: 700,
                           }}
-                          title="Candidate 3-digit Personal Access PIN"
+                          title="Candidate Personal Access PIN"
                         >
                           PIN: {selectedSubmission.resultPin}
                         </span>

@@ -73,6 +73,86 @@ export function clampTelemetry(
   };
 }
 
+export interface SubmissionProgressItem {
+  studentAnswer?: unknown;
+  subQuestionResults?: Array<{ studentAnswer?: unknown }>;
+}
+
+/**
+ * Checks whether a persisted student answer contains a real response rather than
+ * an empty string, empty container, or JSON map of empty table/cloze fields.
+ */
+export function hasNonEmptyProctorAnswer(val: unknown): boolean {
+  if (val === null || val === undefined) return false;
+  if (typeof val === 'number') return Number.isFinite(val);
+  if (typeof val === 'boolean') return true;
+  if (Array.isArray(val)) return val.some((item) => hasNonEmptyProctorAnswer(item));
+  if (typeof val === 'object') {
+    return Object.values(val as Record<string, unknown>).some((item) =>
+      hasNonEmptyProctorAnswer(item)
+    );
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return false;
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed !== null && typeof parsed === 'object') {
+          return hasNonEmptyProctorAnswer(parsed);
+        }
+      } catch {
+        // Non-JSON text starting with a brace (e.g. set/math notation) counts as answered.
+        return true;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Computes answeredCount and totalQuestions from a stored submission at sub-question
+ * granularity so submitted totals match live heartbeat telemetry and skip blanks.
+ */
+export function computeSubmissionProgress(
+  submission: { questionResults?: SubmissionProgressItem[] } | null | undefined,
+  fallbackQuestionCount = 1
+): { answeredCount: number; totalQuestions: number } {
+  const qResults = Array.isArray(submission?.questionResults) ? submission.questionResults : [];
+  const leafAnswers: unknown[] = [];
+
+  for (const q of qResults) {
+    if (Array.isArray(q?.subQuestionResults) && q.subQuestionResults.length > 0) {
+      for (const sub of q.subQuestionResults) {
+        leafAnswers.push(sub?.studentAnswer);
+      }
+    } else {
+      leafAnswers.push(q?.studentAnswer);
+    }
+  }
+
+  const totalQuestions = Math.max(
+    1,
+    leafAnswers.length || Math.round(Number(fallbackQuestionCount) || 1)
+  );
+  const answeredCount = Math.min(
+    totalQuestions,
+    leafAnswers.filter((ans) => hasNonEmptyProctorAnswer(ans)).length
+  );
+
+  return { answeredCount, totalQuestions };
+}
+
+/**
+ * Converts answered/total progress into a percentage strictly clamped to [0, 100].
+ */
+export function clampProgressPercent(answeredCount: number, totalQuestions: number): number {
+  if (!Number.isFinite(totalQuestions) || totalQuestions <= 0) return 0;
+  if (!Number.isFinite(answeredCount) || answeredCount <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((answeredCount / totalQuestions) * 100)));
+}
+
 /**
  * Strike counts must never fall on the invigilator's screen without a pardon, otherwise a
  * reloaded or tampered student client can erase its own record.

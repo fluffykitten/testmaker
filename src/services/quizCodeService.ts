@@ -11,6 +11,7 @@ import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankS
 import { hashTeacherPin, isMissingRpcError, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
 import { type SecurityViolationTier } from '../lib/securityTiers';
 import { getSecurityTiers, loadAndSyncSecurityTiers } from '../lib/settings';
+import { resolveEffectiveQuizStatus, type EffectiveQuizStatus } from '../lib/examSessionSchedule';
 import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
 
 export interface StudentQuizData {
@@ -24,6 +25,10 @@ export interface StudentQuizData {
   durationMinutes?: number;
   isExamMode?: boolean;
   isActive?: boolean;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  scheduleStatus?: EffectiveQuizStatus;
+  serverNow?: string;
   securityEnabled?: boolean;
   enableWatermark?: boolean;
   enableMultiMonitorDetection?: boolean;
@@ -212,6 +217,8 @@ function buildStudentQuizData(params: {
   hasSavedTest: boolean;
   teacherPinHash: string;
   schoolSecurityTiers: SecurityViolationTier[];
+  serverScheduleStatus?: EffectiveQuizStatus;
+  serverNow?: string;
 }): StudentQuizData {
   const {
     published,
@@ -221,9 +228,14 @@ function buildStudentQuizData(params: {
     hasSavedTest,
     teacherPinHash,
     schoolSecurityTiers,
+    serverScheduleStatus,
+    serverNow,
   } = params;
+  const nowMs = serverNow && Number.isFinite(Date.parse(serverNow)) ? Date.parse(serverNow) : Date.now();
+  const effectiveScheduleStatus = serverScheduleStatus || resolveEffectiveQuizStatus(published, nowMs);
+  const effectiveIsActive = effectiveScheduleStatus === 'active';
   const effectiveDuration = published.durationMinutes || published.headerConfig?.durationMinutes || 45;
-  let questions = rawQuestions;
+  let questions = effectiveIsActive ? rawQuestions : [];
 
   // Auto-heal: If questions are from a single assessment numbered 1..N and were stored
   // in alphabetical string order (e.g. Q1, Q10, Q11, ... Q2), restore natural numeric order.
@@ -294,7 +306,11 @@ function buildStudentQuizData(params: {
     totalMarks: effectiveTotalMarks,
     durationMinutes: effectiveDuration,
     isExamMode: published.isExamMode,
-    isActive: published.isActive !== undefined ? published.isActive : true,
+    isActive: effectiveIsActive,
+    scheduledStartAt: published.scheduledStartAt ?? null,
+    scheduledEndAt: published.scheduledEndAt ?? null,
+    scheduleStatus: effectiveScheduleStatus,
+    serverNow: serverNow || new Date(nowMs).toISOString(),
     securityEnabled: published.securityEnabled,
     enableWatermark: published.enableWatermark ?? false,
     enableMultiMonitorDetection: published.enableMultiMonitorDetection ?? false,
@@ -377,9 +393,15 @@ async function resolveStudentQuizUncached(
             // VULN-P3-03: Never store or trust offline teacherPinHash for live cloud exams
             teacherPinHash: '',
             schoolSecurityTiers,
+            serverScheduleStatus: rpcPaper.scheduleStatus as EffectiveQuizStatus | undefined,
+            serverNow: typeof rpcPaper.serverNow === 'string' ? rpcPaper.serverNow : undefined,
           });
 
-          resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+          if (result.scheduleStatus === 'active') {
+            resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+          } else {
+            resolvedQuizMemoryCache.delete(cleanInput);
+          }
           return result;
         }
 
@@ -464,7 +486,11 @@ async function resolveStudentQuizUncached(
       schoolSecurityTiers,
     });
 
-    resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+    if (result.scheduleStatus === 'active') {
+      resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+    } else {
+      resolvedQuizMemoryCache.delete(cleanInput);
+    }
     return result;
   }
 

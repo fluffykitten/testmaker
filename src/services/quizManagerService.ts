@@ -44,7 +44,9 @@ export interface PublishedQuiz {
   requireStudentPin?: boolean;           // Require 4-digit student PIN from school roster (default: false)
   limitOneAttempt?: boolean;             // Limit candidate to 1 attempt (default: true for exams)
   targetClass?: string;                  // Optional target class cohort filter (e.g. "10-A")
-  isActive: boolean;                     // Open for student submissions
+  isActive: boolean;                     // Master Enabled / Armed switch for student entry
+  scheduledStartAt?: string | null;      // Optional ISO UTC timestamp when Exam Mode auto-opens
+  scheduledEndAt?: string | null;        // Optional ISO UTC timestamp when new student entry closes
   createdAt: string;
   updatedAt: string;
 
@@ -737,6 +739,8 @@ export function createDraftFromTest(
     maxViolations: existing?.maxViolations || 3,
     showInstantSolutions: existing?.showInstantSolutions ?? false,
     isActive: existing?.isActive ?? true,
+    scheduledStartAt: existing?.scheduledStartAt ?? null,
+    scheduledEndAt: existing?.scheduledEndAt ?? null,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     // Student Exam Reference Tools Suite (off by default)
