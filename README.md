@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.7`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.8`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.7-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.8-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -157,6 +157,16 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.8] — Atomic Draft-Lock Upsert, Normalized Submission Index & Student Join PIN Rate-Limit Hardening (`034`)
+- **Database Scale & Security Hardening (`034`)**:
+  - Added [`supabase/migrations/034_atomic_draft_lock_index_and_pin_ratelimit.sql`](supabase/migrations/034_atomic_draft_lock_index_and_pin_ratelimit.sql):
+    - Added expression index `idx_quiz_submissions_code_norm_name_class` (matching `REGEXP_REPLACE` normalized `student_name` and `normalize_roster_class_label(student_class)`) + `ANALYZE public.quiz_submissions`.
+    - Fixed simultaneous first-write `exam_draft_locks` contention inside `save_student_exam_draft` using an atomic conditional `ON CONFLICT (draft_key) DO UPDATE ... WHERE ... RETURNING TRUE INTO v_lock_acquired`.
+    - Re-applied `normalize_roster_class_label`-normalized rate-limit scoping in `verify_student_pin` so mixed class notations (e.g. `'X IPA 3'` vs `'10-IPA-03'`) share one brute-force lockout bucket.
+- **200-Student Stress Test & Student Join PIN Suite**:
+  - Upgraded [`scripts/simulate-200-students-stress-and-redteam.mjs`](scripts/simulate-200-students-stress-and-redteam.mjs) with Wave 1B Student Join PIN burst (`200/200` `get_public_roster_directory` + `verify_student_pin`), exact & mixed-class brute-force lockout verification (`JOIN-PIN-GUARD`), homonym isolation, blank- vs 6-digit `result_pin` duplicate races, and expanded RLS scraping (`published_quizzes`, `exam_paper_cache`, `exam_draft_locks`, `teacher_auth_sessions`, `security_rate_limits`).
+  - Added [`scripts/test-migration-034.mjs`](scripts/test-migration-034.mjs) and verified `11/11` security/functional probes in [`Plan/student_200_stress_test_report.md`](Plan/student_200_stress_test_report.md) (`mwniyqcp`).
 
 ### [v.2.5.7] — 200-Student Scale Hardening, Class-Scoped Identity, Re-Sync Recovery & Student PIN `.docx` Export (`031`–`033`)
 - **Class-Scoped Homonym Identity & Database Scale Hardening (`031`–`032`)**:

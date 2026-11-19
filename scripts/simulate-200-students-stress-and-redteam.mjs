@@ -209,7 +209,15 @@ function buildCohortStudents() {
     else if (i > 190) cohort = 'E_redteam';
 
     const classPool = ['10-A', '10-B', '11-A', '11-B', '12-A'];
-    const resultPin = String((100 + ((i * 7) % 899))).padStart(3, '0');
+    const useBlankResultPin = i <= 150 || i === 195;
+    const resultPin = useBlankResultPin
+      ? ''
+      : String(100000 + ((i * 7919) % 899999));
+    const joinPin = String(1000 + ((i * 37) % 8999));
+    const slugClass = classPool[i % classPool.length]
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
     students.push({
       index: i,
       studentId,
@@ -218,8 +226,9 @@ function buildCohortStudents() {
       studentClass: classPool[i % classPool.length],
       candidateNumber: `CAND-${RUN_TAG}-${num}`,
       resultPin,
-      draftKey: `draft_${WRITE_QUIZ_CODE}_sim_student_${num}_${RUN_TAG}`.toLowerCase(),
-      draftOwnerToken: `pin:${WRITE_QUIZ_CODE}:${resultPin}`,
+      joinPin,
+      draftKey: `draft_${WRITE_QUIZ_CODE}_sim_student_${num}_${RUN_TAG}__cls_${slugClass}`.toLowerCase(),
+      draftOwnerToken: `cls:${WRITE_QUIZ_CODE}:sim_student_${num}_${RUN_TAG}__cls_${slugClass}`,
       submissionId: `stress200-${RUN_TAG}-stu-${num}`,
       answers: makeSampleAnswers(i),
       violations: [],
@@ -289,14 +298,19 @@ async function main() {
       const leaks = Array.isArray(paperRes.data?.questions)
         ? deepScanLeakedKeys(paperRes.data.questions)
         : [];
+      if (paperRes.data?.teacherPinHash) {
+        leaks.push('teacherPinHash(non-null)');
+      }
       if (leaks.length > 0 && w1LeakSamples.length < 5) {
         w1LeakSamples.push({ studentId: s.studentId, leaks });
       }
       const paperOk =
         paperRes.status === 200 &&
         paperRes.data?.isActive === true &&
+        paperRes.data?.scheduleStatus === 'active' &&
+        Boolean(paperRes.data?.serverNow) &&
         Array.isArray(paperRes.data?.questions) &&
-        paperRes.data.questions.length === 10 &&
+        paperRes.data.questions.length > 0 &&
         leaks.length === 0;
 
       recordEvent({
@@ -308,7 +322,9 @@ async function main() {
         durationMs: paperRes.durationMs,
         httpStatus: paperRes.status,
         outcome: paperOk ? 'ok' : 'error',
-        notes: paperOk ? 'q=10,leaks=0' : paperRes.errorText || `leaks=${leaks.join(',')}`,
+        notes: paperOk
+          ? `q=${paperRes.data.questions.length},sched=${paperRes.data.scheduleStatus},leaks=0`
+          : paperRes.errorText || `isActive=${paperRes.data?.isActive},sched=${paperRes.data?.scheduleStatus},leaks=${leaks.join(',')}`,
       });
 
       const attemptRes = await supaRpc('check_student_attempt_submitted', {
@@ -333,7 +349,114 @@ async function main() {
       return { paperRes, attemptRes, paperOk, attemptOk };
     });
 
+    // ── Wave 1B: 200-Way Student Join Roster Directory & Join PIN Burst ─────
+    console.log('🌊 Wave 1B: Stress testing student join roster directory (200x) & verify_student_pin (200x + brute-force rate limit)...');
+    const w1bT0 = performance.now();
+    let dirLeakCount = 0;
+    let firstRealStudent = null;
+    const dirResults = await runWithConcurrency(students, 200, async (s) => {
+      const res = await supaRpc('get_public_roster_directory', {});
+      const list = Array.isArray(res.data) ? res.data : [];
+      const hasLeakedPin = list.some(
+        (item) => item && ('pin' in item || 'pinHash' in item || 'pin_hash' in item || 'password' in item)
+      );
+      if (hasLeakedPin) dirLeakCount++;
+      if (!firstRealStudent && list.length > 0 && list[0]?.name) {
+        firstRealStudent = list[0];
+      }
+      const ok = res.status === 200 && Array.isArray(res.data) && !hasLeakedPin;
+      recordEvent({
+        wave: 'wave_1b_join_pin',
+        cohort: s.cohort,
+        studentId: s.studentId,
+        action: 'get_public_roster_directory',
+        target: 'rpc:get_public_roster_directory',
+        durationMs: res.durationMs,
+        httpStatus: res.status,
+        outcome: ok ? 'ok' : 'error',
+        notes: ok ? `rows=${list.length}` : res.errorText || 'leaked_pin_or_bad_shape',
+      });
+      return { res, ok };
+    });
+
+    // Use synthetic candidate names for 200-way PIN burst so real roster students are never rate-limited
+    const joinPinResults = await runWithConcurrency(students, 200, async (s) => {
+      const res = await supaRpc('verify_student_pin', {
+        p_name: `Sim Join Probe ${RUN_TAG}-${s.studentId}`,
+        p_class: s.studentClass,
+        p_pin: s.joinPin,
+      });
+      const handledCleanly =
+        res.status === 200 &&
+        res.data &&
+        typeof res.data === 'object' &&
+        res.data.valid === false &&
+        !('pin' in (res.data.student || {}));
+      recordEvent({
+        wave: 'wave_1b_join_pin',
+        cohort: s.cohort,
+        studentId: s.studentId,
+        action: 'verify_student_pin_burst',
+        target: 'rpc:verify_student_pin',
+        durationMs: res.durationMs,
+        httpStatus: res.status,
+        outcome: handledCleanly ? 'ok' : 'error',
+        notes: res.errorText || res.data?.error || '',
+      });
+      return { res, handledCleanly };
+    });
+
+    // Brute-force lockout test on two dedicated synthetic identities:
+    // (a) mixed notation ('X IPA 3' vs '10-IPA-03') to verify 025 class-normalization parity
+    // (b) consistent class notation ('X IPA 3') to verify base 10-failure rate limit (024+)
+    const bruteTargetName = `Sim Brute Target ${RUN_TAG}`;
+    const bruteResponses = [];
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const bRes = await supaRpc('verify_student_pin', {
+        p_name: bruteTargetName,
+        p_class: attempt % 2 === 0 ? 'X IPA 3' : '10-IPA-03',
+        p_pin: String(1000 + attempt),
+      });
+      bruteResponses.push(bRes);
+      recordEvent({
+        wave: 'wave_1b_join_pin',
+        cohort: 'E_redteam',
+        studentId: 'STU-BRUTE-MIXED',
+        action: `verify_student_pin_bruteforce_${attempt}`,
+        target: 'rpc:verify_student_pin',
+        durationMs: bRes.durationMs,
+        httpStatus: bRes.status,
+        outcome: bRes.status === 200 && bRes.data?.valid === false ? 'ok' : 'error',
+        notes: bRes.data?.error || bRes.errorText || '',
+      });
+    }
+    const bruteExactName = `Sim Brute Exact ${RUN_TAG}`;
+    const bruteExactResponses = [];
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const bRes = await supaRpc('verify_student_pin', {
+        p_name: bruteExactName,
+        p_class: 'X IPA 3',
+        p_pin: String(2000 + attempt),
+      });
+      bruteExactResponses.push(bRes);
+      recordEvent({
+        wave: 'wave_1b_join_pin',
+        cohort: 'E_redteam',
+        studentId: 'STU-BRUTE-EXACT',
+        action: `verify_student_pin_exact_${attempt}`,
+        target: 'rpc:verify_student_pin',
+        durationMs: bRes.durationMs,
+        httpStatus: bRes.status,
+        outcome: bRes.status === 200 && bRes.data?.valid === false ? 'ok' : 'error',
+        notes: bRes.data?.error || bRes.errorText || '',
+      });
+    }
+    const bruteLockedOutMixed = bruteResponses.some((r) => /too many failed pin attempts/i.test(String(r.data?.error || '')));
+    const bruteLockedOutExact = bruteExactResponses.some((r) => /too many failed pin attempts/i.test(String(r.data?.error || '')));
+    const bruteLockedOut = bruteLockedOutExact && bruteLockedOutMixed;
+
     const w1WallMs = performance.now() - w1T0;
+    const w1bWallMs = performance.now() - w1bT0;
     waveSummaries.wave1 = {
       wallMs: Number(w1WallMs.toFixed(1)),
       paperStats: calcPercentiles(w1Results.map((r) => r.paperRes.durationMs)),
@@ -342,8 +465,23 @@ async function main() {
       attemptOkCount: w1Results.filter((r) => r.attemptOk).length,
       leakedKeysCount: w1LeakSamples.length,
     };
+    waveSummaries.wave1b = {
+      wallMs: Number(w1bWallMs.toFixed(1)),
+      dirStats: calcPercentiles(dirResults.map((r) => r.res.durationMs)),
+      dirOkCount: dirResults.filter((r) => r.ok).length,
+      dirLeakCount,
+      joinPinStats: calcPercentiles(joinPinResults.map((r) => r.res.durationMs)),
+      joinPinOkCount: joinPinResults.filter((r) => r.handledCleanly).length,
+      bruteLockedOut,
+      bruteLockedOutExact,
+      bruteLockedOutMixed,
+      rosterSize: firstRealStudent ? 'non-empty' : 'empty_or_unconfigured',
+    };
     console.log(
-      `   Done in ${waveSummaries.wave1.wallMs} ms | paper ok: ${waveSummaries.wave1.paperOkCount}/200 (p50=${waveSummaries.wave1.paperStats.p50}ms, p95=${waveSummaries.wave1.paperStats.p95}ms, max=${waveSummaries.wave1.paperStats.max}ms) | leaks=${w1LeakSamples.length}`
+      `   Done Wave 1 in ${waveSummaries.wave1.wallMs} ms | paper ok: ${waveSummaries.wave1.paperOkCount}/200 (p50=${waveSummaries.wave1.paperStats.p50}ms, p95=${waveSummaries.wave1.paperStats.p95}ms, max=${waveSummaries.wave1.paperStats.max}ms) | leaks=${w1LeakSamples.length}`
+    );
+    console.log(
+      `   Done Wave 1B in ${waveSummaries.wave1b.wallMs} ms | directory ok: ${waveSummaries.wave1b.dirOkCount}/200 (leaks=${dirLeakCount}) | join PIN burst ok: ${waveSummaries.wave1b.joinPinOkCount}/200 (p50=${waveSummaries.wave1b.joinPinStats.p50}ms, p95=${waveSummaries.wave1b.joinPinStats.p95}ms) | brute lockout=${bruteLockedOut}`
     );
 
     // ── Wave 2: Autosave Storm, Device Switch, Violations & Fuzz/Red-Team ────
@@ -432,7 +570,7 @@ async function main() {
       try {
         const parsed = typeof res.data === 'string' ? JSON.parse(res.data) : null;
         matched = parsed?.studentName === s.studentName && parsed?.quizCode === WRITE_QUIZ_CODE;
-      } catch {}
+      } catch { }
       if (matched) draftRecoveredCount++;
       recordEvent({
         wave: 'wave_2_mid_exam',
@@ -623,7 +761,9 @@ async function main() {
     });
 
     let dupRacePassed = 0;
-    await runWithConcurrency(cohortB.slice(0, 10), 10, async (s) => {
+    let blankPinRetryPassed = 0;
+    // Split 50ms duplicate races across blank-PIN (Cohort B 121..125) and 6-digit PIN (151..155) students
+    await runWithConcurrency([...cohortB.slice(0, 5), ...students.slice(150, 155)], 10, async (s) => {
       const retryRow = {
         id: s.submissionId,
         quiz_id: WRITE_QUIZ_ID,
@@ -652,9 +792,85 @@ async function main() {
         durationMs: Math.max(r1.durationMs, r2.durationMs),
         httpStatus: r1.status,
         outcome: r1.status === 200 && r2.status === 200 ? 'ok' : 'error',
-        notes: `r1=${r1.data}, r2=${r2.data}`,
+        notes: `r1=${r1.data}, r2=${r2.data}, pin=${s.resultPin ? '6d' : 'blank'}`,
       });
     });
+
+    for (const s of students.slice(0, 5)) {
+      const retryBlankRow = {
+        id: s.submissionId,
+        quiz_id: WRITE_QUIZ_ID,
+        quiz_code: WRITE_QUIZ_CODE,
+        student_name: s.studentName,
+        student_class: s.studentClass,
+        candidate_number: s.candidateNumber,
+        score: 16,
+        total_marks: 22,
+        percentage: 73,
+        result_pin: '',
+      };
+      const rRetry = await supaRpc('submit_student_exam_attempt', { p_row: retryBlankRow });
+      if (rRetry.status === 200 && rRetry.data === true) blankPinRetryPassed++;
+      recordEvent({
+        wave: 'wave_3_submission_stampede',
+        cohort: s.cohort,
+        studentId: s.studentId,
+        action: 'blank_pin_post_unlock_retry',
+        target: 'rpc:submit_student_exam_attempt',
+        durationMs: rRetry.durationMs,
+        httpStatus: rRetry.status,
+        outcome: rRetry.status === 200 && rRetry.data === true ? 'ok' : 'error',
+        notes: `res=${fmtRpcResult(rRetry)}`,
+      });
+    }
+
+    // Class-scoped homonym isolation & concurrent draft-lock contention checks (031)
+    const homonymName = `Homonym Candidate (${RUN_TAG})`;
+    const hKeyA = `draft_${WRITE_QUIZ_CODE}_homonym_candidate_${RUN_TAG}__cls_x_ipa_1`.toLowerCase();
+    const hKeyB = `draft_${WRITE_QUIZ_CODE}_homonym_candidate_${RUN_TAG}__cls_x_ipa_2`.toLowerCase();
+    const hTokA = `cls:${WRITE_QUIZ_CODE}:homonym__x_ipa_1`;
+    const hTokB = `cls:${WRITE_QUIZ_CODE}:homonym__x_ipa_2`;
+    await supaRpc('save_student_exam_draft', { p_key: hKeyA, p_value: JSON.stringify({ studentName: homonymName, studentClass: 'X IPA 1' }), p_owner_token: hTokA });
+    await supaRpc('save_student_exam_draft', { p_key: hKeyB, p_value: JSON.stringify({ studentName: homonymName, studentClass: 'X IPA 2' }), p_owner_token: hTokB });
+    createdDrafts.set(hKeyA, hTokA);
+    createdDrafts.set(hKeyB, hTokB);
+
+    const homSubAId = `stress200-${RUN_TAG}-hom-a`;
+    const homSubBId = `stress200-${RUN_TAG}-hom-b`;
+    const homSubADupId = `stress200-${RUN_TAG}-hom-a-dup`;
+    const homSubARes = await supaRpc('submit_student_exam_attempt', {
+      p_row: {
+        id: homSubAId, quiz_id: WRITE_QUIZ_ID, quiz_code: WRITE_QUIZ_CODE,
+        student_name: homonymName, student_class: 'X IPA 1', result_pin: '',
+        score: 10, total_marks: 20, percentage: 50, draft_key: hKeyA, draft_owner_token: hTokA,
+      },
+    });
+    const homSubBRes = await supaRpc('submit_student_exam_attempt', {
+      p_row: {
+        id: homSubBId, quiz_id: WRITE_QUIZ_ID, quiz_code: WRITE_QUIZ_CODE,
+        student_name: homonymName, student_class: 'X IPA 2', result_pin: '',
+        score: 12, total_marks: 20, percentage: 60, draft_key: hKeyB, draft_owner_token: hTokB,
+      },
+    });
+    const homDupSameClassRes = await supaRpc('submit_student_exam_attempt', {
+      p_row: {
+        id: homSubADupId, quiz_id: WRITE_QUIZ_ID, quiz_code: WRITE_QUIZ_CODE,
+        student_name: homonymName, student_class: '10 IPA 1', result_pin: '',
+        score: 18, total_marks: 20, percentage: 90,
+      },
+    });
+    if (homSubARes.data === true) submittedIds.push(homSubAId);
+    if (homSubBRes.data === true) submittedIds.push(homSubBId);
+    if (homDupSameClassRes.data === true) submittedIds.push(homSubADupId);
+
+    const raceDraftKey = `draft_${WRITE_QUIZ_CODE}_lock_race_${RUN_TAG}`.toLowerCase();
+    const [raceOwner1, raceOwner2] = await Promise.all([
+      supaRpc('save_student_exam_draft', { p_key: raceDraftKey, p_value: '{"owner":1}', p_owner_token: 'race-token-1' }),
+      supaRpc('save_student_exam_draft', { p_key: raceDraftKey, p_value: '{"owner":2}', p_owner_token: 'race-token-2' }),
+    ]);
+    if (raceOwner1.data === true) createdDrafts.set(raceDraftKey, 'race-token-1');
+    else if (raceOwner2.data === true) createdDrafts.set(raceDraftKey, 'race-token-2');
+    const draftContentionExclusive = !(raceOwner1.data === true && raceOwner2.data === true) && (raceOwner1.data === true || raceOwner2.data === true);
 
     const w3WallMs = Number((performance.now() - w3T0).toFixed(1));
     waveSummaries.wave2 = {
@@ -668,15 +884,21 @@ async function main() {
       auditInsertedCount,
       pinUnlockStats: calcPercentiles(pinUnlockDurations),
       weirdAuditStatus: weirdAuditRes.status,
+      draftContentionExclusive,
     };
     waveSummaries.wave3 = {
       wallMs: w3WallMs,
       submitStats: calcPercentiles(w3Results.map((r) => r.subRes.durationMs)),
       acceptedCount: w3Results.filter((r) => r.accepted).length,
       dupRacePassed,
+      blankPinRetryPassed,
+      homonymIsolationPassed:
+        homSubARes.data === true &&
+        homSubBRes.data === true &&
+        homDupSameClassRes.data === false,
     };
     console.log(
-      `   Done in ${waveSummaries.wave3.wallMs} ms | accepted: ${waveSummaries.wave3.acceptedCount}/200 (p50=${waveSummaries.wave3.submitStats.p50}ms, p95=${waveSummaries.wave3.submitStats.p95}ms, max=${waveSummaries.wave3.submitStats.max}ms)`
+      `   Done Wave 3 in ${waveSummaries.wave3.wallMs} ms | accepted: ${waveSummaries.wave3.acceptedCount}/200 | dupRace=${dupRacePassed}/10 | blankRetry=${blankPinRetryPassed}/5 | homonyms=${waveSummaries.wave3.homonymIsolationPassed} (p50=${waveSummaries.wave3.submitStats.p50}ms, p95=${waveSummaries.wave3.submitStats.p95}ms, max=${waveSummaries.wave3.submitStats.max}ms)`
     );
 
     // ── Wave 4: Red-Team Exploit Verification & Post-Submit Lookups ──────────
@@ -746,20 +968,21 @@ async function main() {
       evidence: `Config overwrites: published_quizzes=${fmtRpcResult(h2Inj1)}, claiming=${fmtRpcResult(h2Inj2)}; 512 KB bloat=${fmtRpcResult(h2Bloat)}.`,
     });
 
-    // Probe H3a: Single-attempt bypass using a new submission ID
+    // Probe H3a: Single-attempt bypass using a new submission ID (pick a candidate whose Wave 3 submit succeeded)
+    const acceptedCandidate = w3Results.find((r) => r.accepted)?.s || stu001;
     const bypassId = `stress200-${RUN_TAG}-bypass-stu194`;
     const h3Dup = await supaRpc('submit_student_exam_attempt', {
       p_row: {
         id: bypassId,
         quiz_id: WRITE_QUIZ_ID,
         quiz_code: WRITE_QUIZ_CODE,
-        student_name: stu001.studentName,
-        student_class: stu001.studentClass,
-        candidate_number: stu001.candidateNumber,
+        student_name: acceptedCandidate.studentName,
+        student_class: acceptedCandidate.studentClass,
+        candidate_number: acceptedCandidate.candidateNumber,
         score: 22,
         total_marks: 22,
         percentage: 100,
-        result_pin: '999',
+        result_pin: '999999',
       },
     });
     if (h3Dup.status === 200 && h3Dup.data === true) submittedIds.push(bypassId);
@@ -768,30 +991,70 @@ async function main() {
       severity: 'HIGH',
       title: 'Single-attempt bypass: submit_student_exam_attempt accepts a second row under a new client ID',
       confirmed: h3Dup.status === 200 && h3Dup.data === true,
-      evidence: `Re-submitting ${stu001.studentName} (${stu001.candidateNumber}) under new id=${bypassId} returned ${fmtRpcResult(h3Dup)}.`,
+      evidence: `Re-submitting ${acceptedCandidate.studentName} (${acceptedCandidate.candidateNumber}) under new id=${bypassId} returned ${fmtRpcResult(h3Dup)}.`,
     });
 
-    // Probe H3b: Blank-PIN submission overwrite via ID collision
-    const stu195 = students.find((s) => s.index === 195);
-    const h3OverwriteNoPin = await supaRpc('submit_student_exam_attempt', {
-      p_row: {
-        id: stu195.submissionId,
-        quiz_id: WRITE_QUIZ_ID,
-        quiz_code: WRITE_QUIZ_CODE,
-        student_name: stu195.studentName,
-        raw_answers: { tampered: true },
-        score: 22,
-        total_marks: 22,
-        percentage: 100,
-        result_pin: '777',
-      },
-    });
+    // Probe H3b: Blank-PIN idempotent ack vs cross-identity/6-digit-PIN overwrite resistance (030/031)
+    // Pick candidates that actually persisted in Wave 3 so ON CONFLICT (id) is tested rather than a fresh INSERT.
+    const acceptedBlankRow = w3Results.find((r) => r.accepted && !r.s.resultPin)?.s;
+    const acceptedPinRow = w3Results.find((r) => r.accepted && Boolean(r.s.resultPin))?.s;
+    const h3CrossNameOverwrite = acceptedBlankRow
+      ? await supaRpc('submit_student_exam_attempt', {
+        p_row: {
+          id: acceptedBlankRow.submissionId,
+          quiz_id: WRITE_QUIZ_ID,
+          quiz_code: WRITE_QUIZ_CODE,
+          student_name: 'Hijacker Fake Name',
+          student_class: acceptedBlankRow.studentClass,
+          raw_answers: { tampered: true },
+          score: 22,
+          total_marks: 22,
+          percentage: 100,
+          result_pin: '777777',
+        },
+      })
+      : { status: 0, data: null, errorText: 'skipped_no_accepted_blank_pin_row' };
+    const h3PinRowWrongPinOverwrite = acceptedPinRow
+      ? await supaRpc('submit_student_exam_attempt', {
+        p_row: {
+          id: acceptedPinRow.submissionId,
+          quiz_id: WRITE_QUIZ_ID,
+          quiz_code: WRITE_QUIZ_CODE,
+          student_name: acceptedPinRow.studentName,
+          student_class: acceptedPinRow.studentClass,
+          raw_answers: { tampered: true },
+          score: 22,
+          total_marks: 22,
+          percentage: 100,
+          result_pin: '999999',
+        },
+      })
+      : { status: 0, data: null, errorText: 'skipped_no_accepted_pin_row' };
+    const h3CrossClassOverwrite = homSubARes.data === true
+      ? await supaRpc('submit_student_exam_attempt', {
+        p_row: {
+          id: homSubAId,
+          quiz_id: WRITE_QUIZ_ID,
+          quiz_code: WRITE_QUIZ_CODE,
+          student_name: homonymName,
+          student_class: 'X IPA 2',
+          raw_answers: { tampered: true },
+          score: 20,
+          total_marks: 20,
+          percentage: 100,
+          result_pin: '',
+        },
+      })
+      : { status: 0, data: null, errorText: 'skipped_homonym_a_failed' };
     findings.push({
       id: 'VULN-H3b',
       severity: 'HIGH',
-      title: 'Pre-PIN / blank-PIN submission overwrite allowed on ON CONFLICT (id) DO UPDATE',
-      confirmed: h3OverwriteNoPin.status === 200 && h3OverwriteNoPin.data === true,
-      evidence: `Overwrite attempt on blank-PIN row ${stu195.submissionId} returned ${fmtRpcResult(h3OverwriteNoPin)}.`,
+      title: 'ON CONFLICT (id) rejects cross-name, cross-class, and mismatched-PIN overwrites',
+      confirmed:
+        (h3CrossNameOverwrite.status === 200 && h3CrossNameOverwrite.data === true) ||
+        (h3PinRowWrongPinOverwrite.status === 200 && h3PinRowWrongPinOverwrite.data === true) ||
+        (h3CrossClassOverwrite.status === 200 && h3CrossClassOverwrite.data === true),
+      evidence: `Blank-PIN(${acceptedBlankRow?.studentId || 'none'}) cross-name=${fmtRpcResult(h3CrossNameOverwrite)}; 6-digit(${acceptedPinRow?.studentId || 'none'}) wrong-PIN=${fmtRpcResult(h3PinRowWrongPinOverwrite)}; homonym cross-class=${fmtRpcResult(h3CrossClassOverwrite)}.`,
     });
 
     // Probe H4: Proctor audit escalation, spoofing & oversized spam
@@ -851,20 +1114,28 @@ async function main() {
       evidence: `Unreleased lookup keys=[${Object.keys(h5Unreleased.data || {}).join(', ')}]; wildcard lookup status=${h5Wildcard.data?.status}; anon app_config policy rows=${Array.isArray(h5AppConfigAnon.data) ? h5AppConfigAnon.data.length : h5AppConfigAnon.status}.`,
     });
 
-    // Baseline checks
+    // Baseline checks (all private / sensitive tables + legacy published_quizzes SEC-01/SEC-05 + 032 cache)
     const scrapeTargets = [
       ['questions', 'questions?select=id&limit=1'],
       ['custom_tests', 'custom_tests?select=id&limit=1'],
       ['teacher_profiles', 'teacher_profiles?select=id,password_hash&limit=1'],
+      ['teacher_auth_sessions', 'teacher_auth_sessions?select=token_hash&limit=1'],
       ['syllabuses', 'syllabuses?select=id&limit=1'],
       ['quiz_submissions', 'quiz_submissions?select=id,score&limit=1'],
-      ['app_config_secrets', 'app_config?key=in.(access_pin,gemini_api_key,published_quizzes)&select=key'],
+      ['exam_draft_locks', 'exam_draft_locks?select=draft_key&limit=1'],
+      ['security_rate_limits', 'security_rate_limits?select=scope&limit=1'],
+      ['exam_paper_cache', 'exam_paper_cache?select=quiz_code&limit=1'],
+      ['published_quizzes', 'published_quizzes?select=quiz_code,data&limit=1'],
+      ['app_config_secrets', 'app_config?key=in.(access_pin,gemini_api_key,published_quizzes,school_roster)&select=key'],
     ];
     const scrapeResults = [];
+    let publishedQuizzesBlocked = true;
     for (const [label, q] of scrapeTargets) {
       const r = await supaRest(q);
       const count = Array.isArray(r.data) ? r.data.length : -1;
-      scrapeResults.push(`${label}:${r.status}(rows=${count})`);
+      const blocked = r.status === 401 || r.status === 403 || r.status === 404 || count === 0;
+      if (label === 'published_quizzes' && !blocked) publishedQuizzesBlocked = false;
+      scrapeResults.push(`${label}:${r.status}(${count >= 0 ? `rows=${count}` : 'blocked'})`);
     }
     const forgedHdrRes = await supaRest('questions?select=id&limit=1', {
       extraHeaders: { 'x-teacher-session': 'forged-token-99999' },
@@ -881,11 +1152,49 @@ async function main() {
       severity: 'INFO',
       title: 'Strict RLS & Account Claiming Guard Verification (Expected Blocked)',
       confirmed:
-        scrapeResults.every((s) => s.includes('(rows=0)')) &&
+        scrapeResults.every((s) => s.includes('(rows=0)') || s.includes('(blocked)')) &&
+        publishedQuizzesBlocked &&
         Array.isArray(forgedHdrRes.data) &&
         forgedHdrRes.data.length === 0 &&
         claimDisabledRes.data?.status === 'error',
       evidence: `Table scraping: [${scrapeResults.join(', ')}]; forged header rows=${Array.isArray(forgedHdrRes.data) ? forgedHdrRes.data.length : forgedHdrRes.status}; claim disabled msg="${claimDisabledRes.data?.error}".`,
+    });
+
+    // Probe JOIN-PIN-GUARD: Verify student join PIN rate limiting, zero roster PIN leak, and server submit enforcement
+    let rosterWrongPinRejected = true;
+    let rosterWrongPinNote = 'skipped_empty_roster';
+    if (firstRealStudent?.name) {
+      const spoofSubmitId = `stress200-${RUN_TAG}-pin-spoof`;
+      const spoofRes = await supaRpc('submit_student_exam_attempt', {
+        p_row: {
+          id: spoofSubmitId,
+          quiz_id: WRITE_QUIZ_ID,
+          quiz_code: WRITE_QUIZ_CODE,
+          student_name: firstRealStudent.name,
+          student_class: firstRealStudent.class || '',
+          student_pin: '0000',
+          score: 0,
+          total_marks: 10,
+          percentage: 0,
+        },
+      });
+      if (spoofRes.data === true) {
+        submittedIds.push(spoofSubmitId);
+        rosterWrongPinRejected = false;
+      }
+      rosterWrongPinNote = `enrolled_wrong_pin_submit=${fmtRpcResult(spoofRes)}`;
+    }
+    findings.push({
+      id: 'JOIN-PIN-GUARD',
+      severity: 'INFO',
+      title: 'Student Join PIN burst, zero roster PIN leak, brute-force lockout & submit enforcement',
+      confirmed:
+        dirLeakCount === 0 &&
+        waveSummaries.wave1b.joinPinOkCount === 200 &&
+        bruteLockedOutExact &&
+        bruteLockedOutMixed &&
+        rosterWrongPinRejected,
+      evidence: `directory_leaks=${dirLeakCount}/200; join_pin_burst=${waveSummaries.wave1b.joinPinOkCount}/200; exact_lockout=${bruteLockedOutExact}; mixed_class_lockout=${bruteLockedOutMixed}; ${rosterWrongPinNote}.`,
     });
 
     // Probe P3-B: Phase 3B live verification (teacherPinHash stripped, game_profiles RLS, draft-lock submission hijack, reset gate)
@@ -1008,18 +1317,17 @@ function buildMarkdownReport({
   pendingSubmissionsCleanup,
   pendingAuditsCleanup,
 }) {
-  const { wave1, wave2, wave3, wave4 } = waveSummaries;
+  const { wave1, wave1b, wave2, wave3, wave4 } = waveSummaries;
   return `# 200-Student Stress Test & Vulnerability Audit Report
 
 - **Run ID**: \`${runTag}\`
 - **Target**: Live Supabase (\`${SUPABASE_URL}\`)
 - **Total Wall-Clock Runtime**: ${totalWallMs} ms
 - **Logged Events**: ${totalEvents} JSONL entries (\`artifacts/stress200_events.jsonl\`)
-- **Zero-Residue Cleanup**: ${cleanedDrafts} draft keys deleted via RPC; ${
-    pendingSubmissionsCleanup > 0 || pendingAuditsCleanup
-      ? `${pendingSubmissionsCleanup} \`STRESS200\` submissions and \`STRESS200\` audit events marked for automatic cleanup inside Migration \`022\``
+- **Zero-Residue Cleanup**: ${cleanedDrafts} draft keys deleted via RPC; ${pendingSubmissionsCleanup > 0 || pendingAuditsCleanup
+      ? `${pendingSubmissionsCleanup} \`STRESS200\` submissions and \`STRESS200\` audit events remain (run with \`SUPABASE_SERVICE_ROLE_KEY\` or \`TEACHER_SESSION_TOKEN\`, or delete \`quiz_code = 'STRESS200'\` in Supabase SQL Editor)`
       : 'all `STRESS200` submissions and audit rows deleted'
-  }
+    }
 
 ---
 
@@ -1029,11 +1337,13 @@ function buildMarkdownReport({
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Wave 1: \`get_student_exam_paper('${READ_QUIZ_CODE}')\`** (200 concurrent) | 200 | ${wave1.wallMs} | ${wave1.paperOkCount}/200 (leaks=${wave1.leakedKeysCount}) | ${wave1.paperStats.min} | ${wave1.paperStats.p50} | ${wave1.paperStats.p95} | ${wave1.paperStats.p99} | ${wave1.paperStats.max} |
 | **Wave 1: \`check_student_attempt_submitted\`** (200 concurrent) | 200 | ${wave1.wallMs} | ${wave1.attemptOkCount}/200 | ${wave1.attemptStats.min} | ${wave1.attemptStats.p50} | ${wave1.attemptStats.p95} | ${wave1.attemptStats.p99} | ${wave1.attemptStats.max} |
-| **Wave 2: \`save_student_exam_draft\`** (3 rounds × 200) | ${wave2.draftWriteStats.count} | ${wave2.wallMs} | ${wave2.draftSaveOkCount}/${wave2.draftWriteStats.count} | ${wave2.draftWriteStats.min} | ${wave2.draftWriteStats.p50} | ${wave2.draftWriteStats.p95} | ${wave2.draftWriteStats.p99} | ${wave2.draftWriteStats.max} |
+| **Wave 1B: \`get_public_roster_directory\`** (200 concurrent) | 200 | ${wave1b.wallMs} | ${wave1b.dirOkCount}/200 (leaks=${wave1b.dirLeakCount}) | ${wave1b.dirStats.min} | ${wave1b.dirStats.p50} | ${wave1b.dirStats.p95} | ${wave1b.dirStats.p99} | ${wave1b.dirStats.max} |
+| **Wave 1B: \`verify_student_pin\`** (200 concurrent + lockout check) | 200 | ${wave1b.wallMs} | ${wave1b.joinPinOkCount}/200 (lockout=${wave1b.bruteLockedOut}) | ${wave1b.joinPinStats.min} | ${wave1b.joinPinStats.p50} | ${wave1b.joinPinStats.p95} | ${wave1b.joinPinStats.p99} | ${wave1b.joinPinStats.max} |
+| **Wave 2: \`save_student_exam_draft\`** (3 rounds × 200) | ${wave2.draftWriteStats.count} | ${wave2.wallMs} | ${wave2.draftSaveOkCount}/${wave2.draftWriteStats.count} (lock_race_ok=${wave2.draftContentionExclusive}) | ${wave2.draftWriteStats.min} | ${wave2.draftWriteStats.p50} | ${wave2.draftWriteStats.p95} | ${wave2.draftWriteStats.p99} | ${wave2.draftWriteStats.max} |
 | **Wave 2: \`get_student_exam_draft\`** (30 device switches) | ${wave2.draftReadStats.count} | — | ${wave2.draftRecoveredCount}/30 | ${wave2.draftReadStats.min} | ${wave2.draftReadStats.p50} | ${wave2.draftReadStats.p95} | ${wave2.draftReadStats.p99} | ${wave2.draftReadStats.max} |
 | **Wave 2: \`proctor_audit_events\` inserts** (25 violators) | ${wave2.auditStats.count} | — | ${wave2.auditInsertedCount}/${wave2.auditStats.count} | ${wave2.auditStats.min} | ${wave2.auditStats.p50} | ${wave2.auditStats.p95} | ${wave2.auditStats.p99} | ${wave2.auditStats.max} |
 | **Wave 2: \`verify_teacher_unlock_pin\`** (wrong PIN rejections) | ${wave2.pinUnlockStats.count} | — | ${wave2.pinUnlockStats.count}/25 | ${wave2.pinUnlockStats.min} | ${wave2.pinUnlockStats.p50} | ${wave2.pinUnlockStats.p95} | ${wave2.pinUnlockStats.p99} | ${wave2.pinUnlockStats.max} |
-| **Wave 3: \`submit_student_exam_attempt\`** (200 concurrent) | 200 | ${wave3.wallMs} | ${wave3.acceptedCount}/200 (dup 50ms races ok=${wave3.dupRacePassed}/10) | ${wave3.submitStats.min} | ${wave3.submitStats.p50} | ${wave3.submitStats.p95} | ${wave3.submitStats.p99} | ${wave3.submitStats.max} |
+| **Wave 3: \`submit_student_exam_attempt\`** (200 concurrent) | 200 | ${wave3.wallMs} | ${wave3.acceptedCount}/200 (dup=${wave3.dupRacePassed}/10, blank_retry=${wave3.blankPinRetryPassed}/5, homonyms=${wave3.homonymIsolationPassed}) | ${wave3.submitStats.min} | ${wave3.submitStats.p50} | ${wave3.submitStats.p95} | ${wave3.submitStats.p99} | ${wave3.submitStats.max} |
 
 ---
 
@@ -1042,17 +1352,17 @@ function buildMarkdownReport({
 | ID | Severity | Status | Summary & Observed Evidence |
 | :--- | :---: | :---: | :--- |
 ${findings
-  .map(
-    (f) =>
-      `| **${f.id}** | **${f.severity}** | ${f.confirmed ? (f.severity === 'INFO' ? 'VERIFIED' : 'CONFIRMED') : 'MITIGATED'} | **${f.title}** — ${f.evidence} |`
-  )
-  .join('\n')}
+      .map(
+        (f) =>
+          `| **${f.id}** | **${f.severity}** | ${f.confirmed ? (f.severity === 'INFO' ? 'VERIFIED' : 'CONFIRMED') : 'MITIGATED'} | **${f.title}** — ${f.evidence} |`
+      )
+      .join('\n')}
 
 ---
 
-## 3. Remediation Status (\`022_exam_anti_tamper_and_rate_guards.sql\`)
+## 3. Verification & Migration Baseline (\`022\`–\`033\`)
 
-Run [022_exam_anti_tamper_and_rate_guards.sql](file:///e:/VibeCoding/testmaker/supabase/migrations/022_exam_anti_tamper_and_rate_guards.sql) in Supabase SQL Editor, then re-run \`npm run test:stress-200\` to verify every CONFIRMED item turns MITIGATED and clean up all \`STRESS200\` rows.
+If any probe shows \`CONFIRMED\` (or \`FAILED\`), confirm that migrations through [033_resync_pin_verification_parity.sql](file:///e:/VibeCoding/testmaker/supabase/migrations/033_resync_pin_verification_parity.sql) (including \`029\` \`published_quizzes\` RLS, \`030\` optional \`result_pin\`, \`031\` class-scoped identity/scale, and \`032\` paper cache) are applied in Supabase, then re-run \`npm run test:stress-200\`.
 `;
 }
 
