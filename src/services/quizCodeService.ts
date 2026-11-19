@@ -1,6 +1,6 @@
 import { supabase, isSupabaseConfigured, hasActiveTeacherSession } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
-import { fetchCustomTestWithQuestions, type ExamHeaderConfig } from './testBuilderService';
+import { fetchCustomTestWithQuestions, getLocalTests, type ExamHeaderConfig } from './testBuilderService';
 import {
   getPublishedQuizzes,
   fetchPublishedQuizzesFromSupabase,
@@ -365,8 +365,9 @@ async function resolveStudentQuizUncached(
 
   let allowLegacyCloudTableFallback = !isSupabaseConfigured() || hasActiveTeacherSession();
 
-  // 2A. On student devices with Supabase configured, deliver exam via hardened SECURITY DEFINER RPC first
-  if (!published && isSupabaseConfigured() && !hasActiveTeacherSession()) {
+  // 2A. On student devices (or a new non-teacher tab on the same browser) with Supabase configured,
+  // ALWAYS deliver exam via hardened SECURITY DEFINER RPC first — even when localStorage has a slimmed snapshot.
+  if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
     const maxRpcAttempts = 2;
     for (let attempt = 1; attempt <= maxRpcAttempts; attempt++) {
       try {
@@ -397,12 +398,17 @@ async function resolveStudentQuizUncached(
             serverNow: typeof rpcPaper.serverNow === 'string' ? rpcPaper.serverNow : undefined,
           });
 
-          if (result.scheduleStatus === 'active') {
-            resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
-          } else {
-            resolvedQuizMemoryCache.delete(cleanInput);
+          if (result.scheduleStatus !== 'active' || result.questions.length > 0 || !published) {
+            if (result.scheduleStatus === 'active') {
+              resolvedQuizMemoryCache.set(cleanInput, { data: result, timestamp: Date.now() });
+            } else {
+              resolvedQuizMemoryCache.delete(cleanInput);
+            }
+            return result;
           }
-          return result;
+          // RPC returned 0 questions for an active exam while localStorage has a local snapshot:
+          // fall through to local overrides fallback before giving up.
+          break;
         }
 
         // Code genuinely does not exist in Postgres (no need to retry)
@@ -462,8 +468,8 @@ async function resolveStudentQuizUncached(
     const effectiveTeacherPin = published.teacherPin || published.headerConfig?.teacherPin || '1234';
 
     // Saved test is the single source of truth for paper questions, overrides, mark schemes, and total marks.
-    // Falls back to published.questionIds only when published.testId does not resolve to a saved test (e.g. offline import).
-    const [savedTestData, teacherPinHash, schoolSecurityTiers] = await Promise.all([
+    // Falls back to localStorage saved test or published overrides when remote saved tests are unavailable.
+    const [savedTestData, rawTeacherPinHash, schoolSecurityTiers] = await Promise.all([
       published.testId && allowLegacyCloudTableFallback
         ? fetchCustomTestWithQuestions(published.testId)
         : Promise.resolve(null),
@@ -471,17 +477,37 @@ async function resolveStudentQuizUncached(
       withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers()),
     ]);
 
+    const localSavedFallback =
+      (!savedTestData || savedTestData.questions.length === 0) && published.testId
+        ? getLocalTests().find((t) => t.id === published!.testId)
+        : undefined;
+    const localFallbackOverrides = localSavedFallback?.header_config?.questionOverrides;
+    const mergedFallbackOverrides =
+      localFallbackOverrides || published.headerConfig?.questionOverrides
+        ? {
+            ...(localFallbackOverrides || {}),
+            ...(published.headerConfig?.questionOverrides || {}),
+          }
+        : undefined;
+    const mergedFallbackQuestionIds =
+      localSavedFallback?.question_ids && localSavedFallback.question_ids.length > 0
+        ? localSavedFallback.question_ids
+        : published.questionIds || [];
+
     const hasSavedTest = Boolean(savedTestData && savedTestData.questions.length > 0);
     const rawQuestions = hasSavedTest
       ? savedTestData!.questions
-      : await fetchAndApplyOverrides(published.questionIds || [], published.headerConfig?.questionOverrides);
+      : await fetchAndApplyOverrides(mergedFallbackQuestionIds, mergedFallbackOverrides);
+
+    const teacherPinHash =
+      isSupabaseConfigured() && !hasActiveTeacherSession() ? '' : rawTeacherPinHash;
 
     const result = buildStudentQuizData({
       published,
       rawQuestions,
-      savedHeader: hasSavedTest ? savedTestData!.test.header_config : undefined,
-      savedTotalMarks: hasSavedTest ? savedTestData!.test.total_marks : undefined,
-      hasSavedTest,
+      savedHeader: hasSavedTest ? savedTestData!.test.header_config : localSavedFallback?.header_config,
+      savedTotalMarks: hasSavedTest ? savedTestData!.test.total_marks : localSavedFallback?.total_marks,
+      hasSavedTest: hasSavedTest || Boolean(localSavedFallback && rawQuestions.length > 0),
       teacherPinHash,
       schoolSecurityTiers,
     });

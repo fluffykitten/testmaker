@@ -5,7 +5,9 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
 import { inferTopicFromContent, normalizeQuestionRecord } from './questionBankService';
+import { fetchAudioLibraryTracks } from './audioService';
 import { PILOT_CUSTOM_TEST, PILOT_EXAM_ID } from '../data/pilotExam170Data';
+import { PILOT_SIM_PART2_CUSTOM_TEST, PILOT_SIM_PART2_ID } from '../data/pilotExamPart2Data';
 
 export interface ExamHeaderConfig {
   title: string;
@@ -94,13 +96,16 @@ export function getLocalTests(): CustomTest[] {
     const deletedIds = getDeletedTestIds();
     const active = list.filter((t) => t && t.id && !deletedIds.has(t.id));
 
-    // Auto-seed pilot test into Saved Tests if not deleted and not in list
+    // Auto-seed pilot simulation tests into Saved Tests if not deleted and not in list
     if (!deletedIds.has(PILOT_EXAM_ID) && !active.some((t) => t.id === PILOT_EXAM_ID)) {
       active.unshift(PILOT_CUSTOM_TEST);
     }
+    if (!deletedIds.has(PILOT_SIM_PART2_ID) && !active.some((t) => t.id === PILOT_SIM_PART2_ID)) {
+      active.unshift(PILOT_SIM_PART2_CUSTOM_TEST);
+    }
     return active;
   } catch {
-    return [PILOT_CUSTOM_TEST];
+    return [PILOT_SIM_PART2_CUSTOM_TEST, PILOT_CUSTOM_TEST];
   }
 }
 
@@ -286,6 +291,123 @@ async function saveCloudTestHeaderConfig(
   }
 }
 
+export interface CloudTestHeaderBackfillInput {
+  testId: string;
+  headerConfig?: ExamHeaderConfig;
+  questionIds?: string[];
+  totalMarks?: number;
+}
+
+/**
+ * Checks which `custom_test_header_<testId>` keys already exist in Supabase `app_config`
+ * (using a lightweight `select('key')` query) and backfills ONLY missing keys from the
+ * provided entries. Never overwrites an existing `custom_test_header_<testId>` row so
+ * Saved Test edits remain the single source of truth.
+ *
+ * Returns the Set of testIds confirmed backed in cloud `app_config` (already existing OR
+ * newly written).
+ */
+export async function ensureCloudTestHeadersExist(
+  entries: CloudTestHeaderBackfillInput[]
+): Promise<Set<string>> {
+  const confirmed = new Set<string>();
+  const uniqueMap = new Map<string, CloudTestHeaderBackfillInput>();
+  for (const entry of entries || []) {
+    const cleanId = (entry?.testId || '').trim();
+    const overrides = entry?.headerConfig?.questionOverrides;
+    if (!cleanId || !overrides || Object.keys(overrides).length === 0) continue;
+    if (!uniqueMap.has(cleanId)) {
+      uniqueMap.set(cleanId, { ...entry, testId: cleanId });
+    }
+  }
+
+  const uniqueEntries = Array.from(uniqueMap.values());
+  if (uniqueEntries.length === 0) return confirmed;
+
+  try {
+    const chunkSize = 50;
+    const missingEntries: CloudTestHeaderBackfillInput[] = [];
+
+    for (let i = 0; i < uniqueEntries.length; i += chunkSize) {
+      const slice = uniqueEntries.slice(i, i + chunkSize);
+      const keys = slice.map((e) => `custom_test_header_${e.testId}`);
+      const existingRes = await withTimeout<{ data: Array<{ key?: string }> | null; error: any }>(
+        (supabase.from('app_config' as any) as any).select('key').in('key', keys),
+        5000,
+        { data: null, error: { message: 'Timeout' } }
+      );
+
+      if (existingRes.error || !Array.isArray(existingRes.data)) {
+        // Abort rather than risking overwriting an existing Saved Test header in cloud
+        return new Set<string>();
+      }
+
+      const existingKeys = new Set(
+        existingRes.data
+          .map((row) => (typeof row?.key === 'string' ? row.key : ''))
+          .filter(Boolean)
+      );
+
+      for (const entry of slice) {
+        if (existingKeys.has(`custom_test_header_${entry.testId}`)) {
+          confirmed.add(entry.testId);
+        } else {
+          missingEntries.push(entry);
+        }
+      }
+    }
+
+    if (missingEntries.length > 0) {
+      const rowsToInsert: Array<{ key: string; value: string; testId: string }> = [];
+      for (const entry of missingEntries) {
+        const payload = serializeHeaderForCloud(
+          entry.headerConfig,
+          entry.questionIds,
+          entry.testId,
+          entry.totalMarks
+        );
+        if (payload) {
+          rowsToInsert.push({
+            key: `custom_test_header_${entry.testId}`,
+            value: JSON.stringify(payload),
+            testId: entry.testId,
+          });
+        }
+      }
+
+      // Upload per-row with bounded concurrency of 2 so one oversized header cannot abort all others
+      const concurrency = 2;
+      for (let i = 0; i < rowsToInsert.length; i += concurrency) {
+        const pair = rowsToInsert.slice(i, i + concurrency);
+        await Promise.all(
+          pair.map(async (item) => {
+            const upsertRes = await withTimeout<{ error: any }>(
+              (supabase.from('app_config' as any) as any).upsert(
+                { key: item.key, value: item.value },
+                { onConflict: 'key' }
+              ),
+              15000,
+              { error: { message: 'Timeout' } }
+            );
+            if (!upsertRes?.error) {
+              confirmed.add(item.testId);
+            } else {
+              console.warn(
+                `Cloud header backfill skipped for ${item.testId} (${Math.round(item.value.length / 1024)} KB):`,
+                upsertRes.error?.message || upsertRes.error
+              );
+            }
+          })
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('Cloud test header backfill notice:', err);
+  }
+
+  return confirmed;
+}
+
 async function fetchCloudTestHeaderConfig(testId: string): Promise<StoredCloudTestHeader | undefined> {
   if (!testId || !isSupabaseConfigured()) return undefined;
   try {
@@ -417,16 +539,22 @@ function syncLocalPublishedQuizzesWithSavedTest(savedTest: CustomTest): void {
     const updatedList = list.map((q: any) => {
       if (!q || q.testId !== savedTest.id) return q;
       changed = true;
+      // Omit questionOverrides from the published quiz snapshot because savedTest already
+      // stores authoritative overrides in fluffykitten_custom_tests & custom_test_header_<id>.
+      const { questionOverrides: _omitSavedOverrides, ...cleanSavedHeader } = (savedTest.header_config || {}) as ExamHeaderConfig;
+      const { questionOverrides: _omitQuizOverrides, ...cleanQuizHeader } = (q.headerConfig || {}) as ExamHeaderConfig;
       const nextHeader = q.headerConfig
         ? {
-            ...q.headerConfig,
-            ...(savedTest.header_config || {}),
-            title: q.headerConfig.title || q.title || savedTest.title,
-            subject: q.subject || q.headerConfig.subject || savedTest.header_config?.subject,
-            durationMinutes: q.durationMinutes || q.headerConfig.durationMinutes,
-            teacherPin: q.teacherPin || q.headerConfig.teacherPin,
+            ...cleanQuizHeader,
+            ...cleanSavedHeader,
+            title: cleanQuizHeader.title || q.title || savedTest.title,
+            subject: q.subject || cleanQuizHeader.subject || cleanSavedHeader.subject,
+            durationMinutes: q.durationMinutes || cleanQuizHeader.durationMinutes,
+            teacherPin: q.teacherPin || cleanQuizHeader.teacherPin,
           }
-        : savedTest.header_config;
+        : Object.keys(cleanSavedHeader).length > 0
+        ? (cleanSavedHeader as ExamHeaderConfig)
+        : undefined;
 
       return {
         ...q,
@@ -1115,6 +1243,74 @@ export async function fetchCustomTestWithQuestions(
     const computedMarks = orderedQuestions.reduce((sum, q) => sum + (Number(q.marks) || 0), 0);
     if (computedMarks > 0) {
       test = { ...test, total_marks: computedMarks };
+    }
+  }
+
+  // Dynamically resolve any audio tracks referenced by libraryLookupTitle (e.g., "0L1 my room")
+  const pendingAudioLookups = orderedQuestions.filter(
+    (q) => !q.audio_url && Boolean((q.audio_metadata as { libraryLookupTitle?: string } | null | undefined)?.libraryLookupTitle)
+  );
+  if (pendingAudioLookups.length > 0 && isSupabaseConfigured()) {
+    try {
+      const tracks = await withTimeout(fetchAudioLibraryTracks(), 3000, []);
+      if (Array.isArray(tracks) && tracks.length > 0) {
+        const nextOverrides: Record<string, Question> = {
+          ...(test.header_config?.questionOverrides || {}),
+        };
+        let overridesChanged = false;
+
+        for (let i = 0; i < orderedQuestions.length; i++) {
+          const q = orderedQuestions[i];
+          const meta = (q.audio_metadata || {}) as Record<string, any>;
+          const lookupTitle = typeof meta.libraryLookupTitle === 'string' ? meta.libraryLookupTitle.trim() : '';
+          if (q.audio_url || !lookupTitle) continue;
+
+          const normTarget = lookupTitle.toLowerCase().replace(/\s+/g, ' ');
+          const targetTokens = normTarget.split(' ').filter((tok) => tok.length >= 2);
+          const remainderTarget = targetTokens.length > 1 ? targetTokens.slice(1).join(' ') : normTarget;
+          const matched =
+            tracks.find((t) => (t.title || '').trim().toLowerCase().replace(/\s+/g, ' ') === normTarget) ||
+            tracks.find((t) => (t.title || '').trim().toLowerCase().includes(normTarget)) ||
+            tracks.find((t) => {
+              const normTitle = (t.title || '').trim().toLowerCase().replace(/\s+/g, ' ');
+              const normUrl = (t.url || '').toLowerCase();
+              return (
+                (remainderTarget.length >= 4 && normTitle.includes(remainderTarget)) ||
+                (targetTokens[0] && targetTokens[0].length >= 3 && normUrl.includes(targetTokens[0]))
+              );
+            });
+
+          if (matched?.url) {
+            const resolvedMeta = {
+              ...meta,
+              title: matched.title || lookupTitle,
+              duration: matched.duration ?? meta.duration,
+              transcript: matched.transcript ?? meta.transcript,
+              play_limit: meta.play_limit ?? matched.play_limit ?? 2,
+            };
+            const updatedQ: Question = normalizeQuestionRecord({
+              ...q,
+              audio_url: matched.url,
+              audio_metadata: resolvedMeta,
+            });
+            orderedQuestions[i] = updatedQ;
+            nextOverrides[q.id] = updatedQ;
+            overridesChanged = true;
+          }
+        }
+
+        if (overridesChanged) {
+          test = {
+            ...test,
+            header_config: {
+              ...(test.header_config || {}),
+              questionOverrides: nextOverrides,
+            },
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Dynamic audio library resolution notice:', err);
     }
   }
 

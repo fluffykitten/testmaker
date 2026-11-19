@@ -52,7 +52,8 @@ BEGIN
     ELSIF v_key = 'published_quizzes'
        OR v_key LIKE 'custom_test_header_%'
        OR v_key LIKE 'test_header_%' THEN
-        DELETE FROM public.exam_paper_cache;
+        DELETE FROM public.exam_paper_cache
+        WHERE quiz_code IS NOT NULL;
     END IF;
     RETURN NULL;
 END;
@@ -65,7 +66,8 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-    DELETE FROM public.exam_paper_cache;
+    DELETE FROM public.exam_paper_cache
+    WHERE quiz_code IS NOT NULL;
     RETURN NULL;
 END;
 $$;
@@ -441,4 +443,4 @@ $$;
 GRANT EXECUTE ON FUNCTION public.get_student_exam_paper(TEXT) TO anon, authenticated;
 
 -- Clear any stale cache entries upon applying Migration 032
-DELETE FROM public.exam_paper_cache;
+DELETE FROM public.exam_paper_cache WHERE quiz_code IS NOT NULL;

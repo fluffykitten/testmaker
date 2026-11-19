@@ -17,6 +17,7 @@ import {
   deletePublishedQuiz,
   toggleQuizActiveStatus,
   createDraftFromTest,
+  getLastQuizCloudSyncStatus,
   type PublishedQuiz,
   type ExamAttachment,
 } from '../services/quizManagerService';
@@ -62,6 +63,15 @@ interface QuizManagerPageProps {
 type SortOption = 'latest' | 'submissions' | 'title';
 type FilterStatus = 'all' | 'active' | 'scheduled' | 'paused' | 'exam' | 'game';
 
+function sanitizePublishedQuizList(list: PublishedQuiz[]): PublishedQuiz[] {
+  return list.map((q) => {
+    if (!q.subject || q.subject.toLowerCase() === 'assessment') {
+      return { ...q, subject: q.headerConfig?.subject?.trim() || 'General' };
+    }
+    return q;
+  });
+}
+
 export function QuizManagerPage({
   onLaunchTestRun,
   onLaunchGameHost,
@@ -71,13 +81,7 @@ export function QuizManagerPage({
 }: QuizManagerPageProps) {
   const [quizzes, setQuizzes] = useState<PublishedQuiz[]>(() => {
     try {
-      const pubList = getPublishedQuizzes();
-      return pubList.map((q) => {
-        if (!q.subject || q.subject.toLowerCase() === 'assessment') {
-          return { ...q, subject: q.headerConfig?.subject?.trim() || 'General' };
-        }
-        return q;
-      });
+      return sanitizePublishedQuizList(getPublishedQuizzes());
     } catch {
       return [];
     }
@@ -132,8 +136,12 @@ export function QuizManagerPage({
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
+  const [saveWarningMsg, setSaveWarningMsg] = useState<string | null>(null);
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
   const [showDraftPin, setShowDraftPin] = useState<boolean>(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const isSavingConfigRef = useRef(false);
+  const [busyQuizIds, setBusyQuizIds] = useState<Record<string, boolean>>({});
   const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; quizId: string; title: string }>({
     isOpen: false,
     quizId: '',
@@ -174,6 +182,7 @@ export function QuizManagerPage({
   const [isSelectOfflineTestOpen, setIsSelectOfflineTestOpen] = useState(false);
 
   const configModalDismiss = useBackdropDismiss(() => {
+    if (isSavingConfigRef.current) return;
     setIsConfigModalOpen(false);
     setActiveQuizDraft(null);
     setOriginalQuizCode(null);
@@ -184,19 +193,11 @@ export function QuizManagerPage({
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
   const loadData = useCallback(async () => {
-    const sanitize = (list: PublishedQuiz[]) =>
-      list.map((q) => {
-        if (!q.subject || q.subject.toLowerCase() === 'assessment') {
-          return { ...q, subject: q.headerConfig?.subject?.trim() || 'General' };
-        }
-        return q;
-      });
-
     try {
       setSecurityDefaults(getSavedSettings());
       const pubList = getPublishedQuizzes();
       if (pubList.length > 0) {
-        setQuizzes(sanitize(pubList));
+        setQuizzes(sanitizePublishedQuizList(pubList));
         setLoading(false);
       }
 
@@ -218,7 +219,7 @@ export function QuizManagerPage({
       ]);
 
       if (syncedRes.status === 'fulfilled') {
-        setQuizzes(sanitize(syncedRes.value));
+        setQuizzes(sanitizePublishedQuizList(syncedRes.value));
       }
       if (submissionsRes.status === 'fulfilled') {
         setSubmissionsVersion((v) => v + 1);
@@ -244,8 +245,14 @@ export function QuizManagerPage({
       const custom = e as CustomEvent<{ classes?: string[] }>;
       setSchoolClasses(custom.detail?.classes || getSchoolClasses());
     };
-    const handleTestsUpdated = () => loadData();
-    const handleQuizzesUpdated = () => loadData();
+    const handleTestsUpdated = () => {
+      fetchCustomTestsWithMetadata()
+        .then((tests) => setSavedTests(tests))
+        .catch((err) => console.warn('Error refreshing custom tests after update:', err));
+    };
+    const handleQuizzesUpdated = () => {
+      setQuizzes(sanitizePublishedQuizList(getPublishedQuizzes()));
+    };
 
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
     window.addEventListener('storage', handleSettingsUpdated);
@@ -669,7 +676,7 @@ export function QuizManagerPage({
   };
 
   const handleSaveQuizConfig = async () => {
-    if (!activeQuizDraft) return;
+    if (!activeQuizDraft || isSavingConfigRef.current) return;
     const cleanCode = activeQuizDraft.quizCode.trim().toUpperCase();
     if (!cleanCode) {
       alert('Please provide a valid Quiz Code.');
@@ -745,14 +752,44 @@ export function QuizManagerPage({
       updatedAt: new Date().toISOString(),
     };
 
-    const saved = await savePublishedQuiz(updated, originalQuizCode || undefined);
-    setQuizzes(saved);
+    isSavingConfigRef.current = true;
+    setIsSavingConfig(true);
+    try {
+      const saved = await savePublishedQuiz(updated, originalQuizCode || undefined);
+      setQuizzes(sanitizePublishedQuizList(saved));
 
-    setIsConfigModalOpen(false);
-    setActiveQuizDraft(null);
-    setOriginalQuizCode(null);
-    setSaveSuccessMsg(`✨ Quiz "${updated.title}" saved successfully with Code [${updated.quizCode}]!`);
-    setTimeout(() => setSaveSuccessMsg(null), 4000);
+      setIsConfigModalOpen(false);
+      setActiveQuizDraft(null);
+      setOriginalQuizCode(null);
+
+      const syncStatus = getLastQuizCloudSyncStatus();
+      if (syncStatus && syncStatus.quizId === updated.id && !syncStatus.listSynced) {
+        setSaveSuccessMsg(null);
+        const sizeNote =
+          typeof syncStatus.payloadBytes === 'number' && syncStatus.payloadBytes > 0
+            ? `, ${Math.round(syncStatus.payloadBytes / 1024)} KB`
+            : '';
+        const reasonText = syncStatus.error ? ` (${syncStatus.error}${sizeNote})` : '';
+        if (syncStatus.codeIndexSynced) {
+          setSaveWarningMsg(
+            `Saved locally and exam code [${updated.quizCode}] is live for students, but the cloud dashboard list sync failed${reasonText} — click Save or reload shortly if using another device.`
+          );
+          setTimeout(() => setSaveWarningMsg(null), 10000);
+        } else {
+          setSaveWarningMsg(
+            `Saved locally only — Supabase cloud sync failed${reasonText || ' (timeout)'}. Check your internet connection and re-save before students join.`
+          );
+          setTimeout(() => setSaveWarningMsg(null), 10000);
+        }
+      } else {
+        setSaveWarningMsg(null);
+        setSaveSuccessMsg(`✨ Quiz "${updated.title}" saved successfully with Code [${updated.quizCode}]!`);
+        setTimeout(() => setSaveSuccessMsg(null), 4000);
+      }
+    } finally {
+      isSavingConfigRef.current = false;
+      setIsSavingConfig(false);
+    }
   };
 
   const handleDeleteQuiz = (id: string, title: string) => {
@@ -774,21 +811,51 @@ export function QuizManagerPage({
   };
 
   const handleToggleActive = async (id: string) => {
-    await toggleQuizActiveStatus(id);
-    setQuizzes(getPublishedQuizzes());
+    if (busyQuizIds[id]) return;
+    setBusyQuizIds((prev) => ({ ...prev, [id]: true }));
+    try {
+      await toggleQuizActiveStatus(id);
+      setQuizzes(sanitizePublishedQuizList(getPublishedQuizzes()));
+    } finally {
+      setBusyQuizIds((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    }
   };
 
   const handleOpenQuizNow = async (quiz: PublishedQuiz) => {
-    const updated: PublishedQuiz = {
-      ...quiz,
-      isActive: true,
-      scheduledStartAt: null,
-      updatedAt: new Date().toISOString(),
-    };
-    const saved = await savePublishedQuiz(updated);
-    setQuizzes(saved);
-    setSaveSuccessMsg(`🟢 "${quiz.title}" opened immediately for candidates.`);
-    setTimeout(() => setSaveSuccessMsg(null), 3500);
+    if (busyQuizIds[quiz.id]) return;
+    setBusyQuizIds((prev) => ({ ...prev, [quiz.id]: true }));
+    try {
+      const updated: PublishedQuiz = {
+        ...quiz,
+        isActive: true,
+        scheduledStartAt: null,
+        updatedAt: new Date().toISOString(),
+      };
+      const saved = await savePublishedQuiz(updated);
+      setQuizzes(sanitizePublishedQuizList(saved));
+      const syncStatus = getLastQuizCloudSyncStatus();
+      if (syncStatus && syncStatus.quizId === updated.id && !syncStatus.codeIndexSynced) {
+        setSaveSuccessMsg(null);
+        setSaveWarningMsg(
+          `Opened locally only — Supabase cloud sync failed (${syncStatus.error || 'timeout'}). Retry shortly.`
+        );
+        setTimeout(() => setSaveWarningMsg(null), 8000);
+      } else {
+        setSaveWarningMsg(null);
+        setSaveSuccessMsg(`🟢 "${quiz.title}" opened immediately for candidates.`);
+        setTimeout(() => setSaveSuccessMsg(null), 3500);
+      }
+    } finally {
+      setBusyQuizIds((prev) => {
+        const next = { ...prev };
+        delete next[quiz.id];
+        return next;
+      });
+    }
   };
 
   const handleCopyCode = (quizCode: string, id: string) => {
@@ -925,6 +992,28 @@ export function QuizManagerPage({
         {saveSuccessMsg && (
           <div className="qm-success-banner animate-slide-up">
             <span>✓</span> {saveSuccessMsg}
+          </div>
+        )}
+
+        {/* Cloud Sync Warning Alert */}
+        {saveWarningMsg && (
+          <div
+            className="animate-slide-up"
+            role="alert"
+            style={{
+              background: 'rgba(245, 158, 11, 0.12)',
+              border: '1px solid rgba(245, 158, 11, 0.4)',
+              color: '#d97706',
+              padding: '12px 18px',
+              borderRadius: 'var(--radius-lg)',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span>⚠</span> {saveWarningMsg}
           </div>
         )}
 
@@ -3060,7 +3149,9 @@ export function QuizManagerPage({
               <button
                 type="button"
                 className="qm-btn qm-btn-secondary"
+                disabled={isSavingConfig}
                 onClick={() => {
+                  if (isSavingConfigRef.current) return;
                   setIsConfigModalOpen(false);
                   setActiveQuizDraft(null);
                   setOriginalQuizCode(null);
@@ -3071,9 +3162,10 @@ export function QuizManagerPage({
               <button
                 type="button"
                 className="qm-btn qm-btn-primary"
+                disabled={isSavingConfig}
                 onClick={handleSaveQuizConfig}
               >
-                {originalQuizCode ? 'Save Changes' : 'Save & Publish Exam'}
+                {isSavingConfig ? 'Saving...' : originalQuizCode ? 'Save Changes' : 'Save & Publish Exam'}
               </button>
             </div>
           </div>

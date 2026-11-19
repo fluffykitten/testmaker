@@ -3,7 +3,7 @@
 
 import { supabase } from '../lib/supabase';
 import type { Question, CustomTest } from '../types/database';
-import type { ExamHeaderConfig } from './testBuilderService';
+import { ensureCloudTestHeadersExist, getLocalTests, type ExamHeaderConfig } from './testBuilderService';
 import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
 import type { GradeThresholds } from '../utils/gradeThresholdUtils';
 import { getSavedSettings } from '../lib/settings';
@@ -143,7 +143,7 @@ export function recordDeletedQuiz(id?: string): void {
     const trimmed = arr.length > 500 ? arr.slice(arr.length - 500) : arr;
     localStorage.setItem(DELETED_QUIZZES_KEY, JSON.stringify(trimmed));
     // Asynchronously push tombstones to cloud
-    syncDeletedQuizIdsToCloud(trimmed).catch(() => {});
+    syncDeletedQuizIdsToCloud(trimmed).catch(() => { });
   } catch (err) {
     console.warn('Failed to record deleted quiz tombstone:', err);
   }
@@ -212,15 +212,123 @@ export function getPublishedQuizzes(): PublishedQuiz[] {
 
 const QUIZ_BY_CODE_KEY_PREFIX = 'quiz_by_code_';
 const CLOUD_QUIZZES_CACHE_TTL_MS = 15 * 1000;
+const CLOUD_QUIZ_FETCH_TIMEOUT_MS = 12 * 1000;
+const CLOUD_QUIZ_WRITE_TIMEOUT_MS = 20 * 1000;
+const CODE_INDEX_RECOVERY_BATCH_TIMEOUT_MS = 12 * 1000;
+
+interface CloudQuizzesFetchResult {
+  ok: boolean;
+  data: PublishedQuiz[];
+  error?: string;
+  recoveredFromCodeIndex?: boolean;
+}
+
+export interface QuizCloudSyncStatus {
+  quizId: string;
+  quizCode: string;
+  codeIndexSynced: boolean;
+  listSynced: boolean;
+  stage?: 'fetch_list' | 'sync_list' | 'sync_code_index' | 'done';
+  payloadBytes?: number;
+  error?: string;
+  timestamp: number;
+}
+
 let cloudQuizzesCache: { data: PublishedQuiz[]; timestamp: number } | null = null;
-let inFlightCloudQuizzes: Promise<PublishedQuiz[]> | null = null;
+let inFlightCloudQuizzes: Promise<CloudQuizzesFetchResult> | null = null;
+let suppressNextCacheClear = false;
+let lastQuizCloudSyncStatus: QuizCloudSyncStatus | null = null;
+let quizMutationQueue: Promise<unknown> = Promise.resolve();
+
+export function getLastQuizCloudSyncStatus(): QuizCloudSyncStatus | null {
+  return lastQuizCloudSyncStatus;
+}
+
+function enqueueQuizMutation<T>(fn: () => Promise<T>): Promise<T> {
+  const next = quizMutationQueue.then(fn, fn);
+  quizMutationQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 
 function clearCloudQuizzesCache(): void {
   cloudQuizzesCache = null;
 }
 
+function dispatchQuizzesUpdated(detail?: Record<string, unknown>, preserveCloudCache = false): void {
+  if (typeof window === 'undefined') return;
+  const event = detail ? new CustomEvent('quizzes_updated', { detail }) : new Event('quizzes_updated');
+  if (preserveCloudCache) {
+    suppressNextCacheClear = true;
+    try {
+      window.dispatchEvent(event);
+    } finally {
+      suppressNextCacheClear = false;
+    }
+  } else {
+    window.dispatchEvent(event);
+  }
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('quizzes_updated', clearCloudQuizzesCache);
+  window.addEventListener('quizzes_updated', () => {
+    if (suppressNextCacheClear) {
+      suppressNextCacheClear = false;
+      return;
+    }
+    clearCloudQuizzesCache();
+  });
+}
+
+function compactQuizOverrides(quiz: PublishedQuiz): PublishedQuiz {
+  const header = quiz.headerConfig;
+  const overrides = header?.questionOverrides;
+  if (!header || !overrides) return quiz;
+  const compacted: Record<string, Question> = {};
+  for (const [qid, q] of Object.entries(overrides)) {
+    if (!q) continue;
+    const copy: any = { ...q };
+    if (copy.svg_content && copy.diagram_url && String(copy.diagram_url).startsWith('data:image/svg')) {
+      delete copy.svg_content;
+    }
+    compacted[qid] = copy;
+  }
+  return {
+    ...quiz,
+    headerConfig: {
+      ...header,
+      questionOverrides: compacted,
+    },
+  };
+}
+
+function stripQuizOverrides(quiz: PublishedQuiz): PublishedQuiz {
+  if (!quiz.headerConfig || !('questionOverrides' in quiz.headerConfig)) return quiz;
+  const nextHeader = { ...quiz.headerConfig };
+  delete nextHeader.questionOverrides;
+  return {
+    ...quiz,
+    headerConfig: nextHeader,
+  };
+}
+
+function safeWritePublishedQuizzesToLocalStorage(quizzes: PublishedQuiz[]): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(quizzes));
+    return true;
+  } catch (err) {
+    try {
+      const stripped = quizzes.map(stripQuizOverrides);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+      return true;
+    } catch (retryErr) {
+      console.warn('Failed to cache published quizzes to localStorage (cloud sync will still continue):', retryErr || err);
+      return false;
+    }
+  }
 }
 
 async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallbackValue: T): Promise<T> {
@@ -237,7 +345,9 @@ async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallbackValue
   }
 }
 
-async function upsertQuizCodeIndexToCloud(quiz: PublishedQuiz): Promise<void> {
+async function upsertQuizCodeIndexToCloudDetailed(
+  quiz: PublishedQuiz
+): Promise<{ ok: boolean; error?: string }> {
   try {
     const codes = Array.from(
       new Set(
@@ -246,23 +356,32 @@ async function upsertQuizCodeIndexToCloud(quiz: PublishedQuiz): Promise<void> {
           .filter(Boolean)
       )
     );
-    if (codes.length === 0) return;
+    if (codes.length === 0) return { ok: true };
 
     const payload = JSON.stringify(quiz);
-    await Promise.all(
-      codes.map((code) =>
-        (supabase.from('app_config' as any) as any).upsert(
-          {
-            key: `${QUIZ_BY_CODE_KEY_PREFIX}${code}`,
-            value: payload,
-          },
-          { onConflict: 'key' }
-        )
-      )
+    const rows = codes.map((code) => ({
+      key: `${QUIZ_BY_CODE_KEY_PREFIX}${code}`,
+      value: payload,
+    }));
+
+    const { error } = await withTimeout<{ error?: any }>(
+      (supabase.from('app_config' as any) as any).upsert(rows, { onConflict: 'key' }),
+      15000,
+      { error: { message: 'Timeout updating quiz_by_code index' } }
     );
-  } catch (err) {
+    if (error) {
+      return { ok: false, error: error.message || String(error) };
+    }
+    return { ok: true };
+  } catch (err: any) {
     console.warn('Quiz code index sync notice:', err);
+    return { ok: false, error: err?.message || 'Quiz code index sync exception' };
   }
+}
+
+async function upsertQuizCodeIndexToCloud(quiz: PublishedQuiz): Promise<boolean> {
+  const res = await upsertQuizCodeIndexToCloudDetailed(quiz);
+  return res.ok;
 }
 
 async function deleteQuizCodeIndexFromCloud(codes: string[]): Promise<void> {
@@ -313,68 +432,228 @@ export async function fetchPublishedQuizByCodeFromSupabase(
   return null;
 }
 
-export async function fetchPublishedQuizzesFromSupabase(forceRefresh = false): Promise<PublishedQuiz[]> {
+async function reconstructPublishedQuizzesFromCodeIndex(): Promise<CloudQuizzesFetchResult> {
+  try {
+    const keysRes = await withTimeout<{ data: Array<{ key?: string }> | null; error: any }>(
+      (supabase.from('app_config' as any) as any)
+        .select('key')
+        .like('key', 'quiz_by_code_%'),
+      8000,
+      { data: null, error: { message: 'Timeout scanning quiz_by_code index keys' } }
+    );
+
+    if (keysRes.error || !Array.isArray(keysRes.data)) {
+      return {
+        ok: false,
+        data: cloudQuizzesCache ? cloudQuizzesCache.data : [],
+        error: keysRes.error?.message || 'Code index key scan failed',
+      };
+    }
+
+    const codeKeys = Array.from(
+      new Set(
+        keysRes.data
+          .map((row) => (typeof row?.key === 'string' ? row.key : ''))
+          .filter((k) => k.startsWith('quiz_by_code_') || k.startsWith('quiz_by_code:'))
+      )
+    );
+
+    if (codeKeys.length === 0) {
+      cloudQuizzesCache = { data: [], timestamp: Date.now() };
+      return { ok: true, data: [], recoveredFromCodeIndex: true };
+    }
+
+    const rawValues: Array<{ key: string; value: string }> = [];
+    let failedKeyCount = 0;
+
+    for (let i = 0; i < codeKeys.length; i += 2) {
+      const batch = codeKeys.slice(i, i + 2);
+      const batchRes = await withTimeout<{
+        data: Array<{ key?: string; value?: string }> | null;
+        error: any;
+      }>(
+        (supabase.from('app_config' as any) as any).select('key, value').in('key', batch),
+        CODE_INDEX_RECOVERY_BATCH_TIMEOUT_MS,
+        { data: null, error: { message: 'Timeout' } }
+      );
+
+      if (!batchRes.error && Array.isArray(batchRes.data)) {
+        for (const row of batchRes.data) {
+          if (typeof row?.key === 'string' && typeof row?.value === 'string') {
+            rawValues.push({ key: row.key, value: row.value });
+          }
+        }
+        continue;
+      }
+
+      // Batch failed or timed out — fall back to single-key reads for this small pair
+      for (const k of batch) {
+        const singleRes = await withTimeout<{ data: { value?: string } | null; error: any }>(
+          (supabase.from('app_config' as any) as any)
+            .select('value')
+            .eq('key', k)
+            .maybeSingle(),
+          CODE_INDEX_RECOVERY_BATCH_TIMEOUT_MS,
+          { data: null, error: { message: 'Timeout' } }
+        );
+        if (singleRes.error) {
+          failedKeyCount++;
+        } else if (typeof singleRes.data?.value === 'string') {
+          rawValues.push({ key: k, value: singleRes.data.value });
+        }
+      }
+    }
+
+    if (failedKeyCount > 0) {
+      return {
+        ok: false,
+        data: cloudQuizzesCache ? cloudQuizzesCache.data : [],
+        error: `Partial code-index recovery failed (${failedKeyCount}/${codeKeys.length} keys)`,
+      };
+    }
+
+    const deletedIds = getDeletedQuizIds();
+    const recovered: PublishedQuiz[] = [];
+    for (const row of rawValues) {
+      try {
+        const parsed = JSON.parse(row.value);
+        if (parsed && typeof parsed === 'object' && parsed.id && !deletedIds.has(String(parsed.id).trim())) {
+          recovered.push(parsed as PublishedQuiz);
+        }
+      } catch {
+        // Skip malformed non-JSON entry
+      }
+    }
+
+    const deduped = deduplicateQuizzes(recovered);
+    cloudQuizzesCache = { data: deduped, timestamp: Date.now() };
+    return { ok: true, data: deduped, recoveredFromCodeIndex: true };
+  } catch (err: any) {
+    return {
+      ok: false,
+      data: cloudQuizzesCache ? cloudQuizzesCache.data : [],
+      error: err?.message || 'Code index recovery exception',
+    };
+  }
+}
+
+async function fetchPublishedQuizzesFromSupabaseDetailed(
+  forceRefresh = false
+): Promise<CloudQuizzesFetchResult> {
   if (
     !forceRefresh &&
     cloudQuizzesCache &&
     Date.now() - cloudQuizzesCache.timestamp < CLOUD_QUIZZES_CACHE_TTL_MS
   ) {
-    return cloudQuizzesCache.data;
+    return { ok: true, data: cloudQuizzesCache.data };
   }
 
   if (!forceRefresh && inFlightCloudQuizzes) {
     return inFlightCloudQuizzes;
   }
 
-  const fetchPromise = (async () => {
+  const fetchPromise = (async (): Promise<CloudQuizzesFetchResult> => {
+    let primaryErr = '';
     try {
       const { data, error } = await withTimeout<{ data: { value: string } | null; error: any }>(
         (supabase.from('app_config' as any) as any)
           .select('value')
           .eq('key', 'published_quizzes')
           .maybeSingle(),
-        5000,
-        { data: null, error: { message: 'Timeout' } }
+        CLOUD_QUIZ_FETCH_TIMEOUT_MS,
+        { data: null, error: { message: 'Timeout reading published_quizzes' } }
       );
 
-      if (!error && data?.value) {
+      if (!error) {
+        if (!data?.value) {
+          cloudQuizzesCache = { data: [], timestamp: Date.now() };
+          return { ok: true, data: [] };
+        }
+
         const parsed = JSON.parse(data.value);
         if (Array.isArray(parsed)) {
           const deduped = deduplicateQuizzes(parsed);
           cloudQuizzesCache = { data: deduped, timestamp: Date.now() };
-          return deduped;
+          return { ok: true, data: deduped };
         }
+        primaryErr = 'Malformed published_quizzes payload';
+      } else {
+        primaryErr = error.message || 'Failed to fetch published quizzes';
       }
-    } catch (err) {
-      console.warn('Could not fetch published quizzes from Supabase cloud:', err);
-    } finally {
-      inFlightCloudQuizzes = null;
+    } catch (err: any) {
+      primaryErr = err?.message || 'Failed to fetch published quizzes';
     }
-    return cloudQuizzesCache ? cloudQuizzesCache.data : [];
+
+    console.warn(`Primary published_quizzes fetch failed (${primaryErr}); attempting per-code index recovery...`);
+    const recovered = await reconstructPublishedQuizzesFromCodeIndex();
+    if (recovered.ok) {
+      return recovered;
+    }
+
+    return {
+      ok: false,
+      data: cloudQuizzesCache ? cloudQuizzesCache.data : [],
+      error: `${primaryErr} (recovery failed: ${recovered.error || 'unknown'})`,
+    };
   })();
 
-  inFlightCloudQuizzes = fetchPromise;
+  if (!forceRefresh) {
+    inFlightCloudQuizzes = fetchPromise;
+    try {
+      return await fetchPromise;
+    } finally {
+      if (inFlightCloudQuizzes === fetchPromise) {
+        inFlightCloudQuizzes = null;
+      }
+    }
+  }
+
   return fetchPromise;
 }
 
-export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Promise<boolean> {
+export async function fetchPublishedQuizzesFromSupabase(forceRefresh = false): Promise<PublishedQuiz[]> {
+  const res = await fetchPublishedQuizzesFromSupabaseDetailed(forceRefresh);
+  return res.data;
+}
+
+async function syncPublishedQuizzesToCloudDetailed(
+  quizzes: PublishedQuiz[]
+): Promise<{ ok: boolean; error?: string; payloadBytes: number }> {
+  let payloadBytes = 0;
   try {
     const deduplicated = deduplicateQuizzes(quizzes);
-    cloudQuizzesCache = { data: deduplicated, timestamp: Date.now() };
-    const { error } = await (supabase.from('app_config' as any) as any)
-      .upsert({
-        key: 'published_quizzes',
-        value: JSON.stringify(deduplicated),
-      });
+    const payload = JSON.stringify(deduplicated);
+    payloadBytes = payload.length;
+
+    const { error } = await withTimeout<{ error: any }>(
+      (supabase.from('app_config' as any) as any).upsert(
+        {
+          key: 'published_quizzes',
+          value: payload,
+        },
+        { onConflict: 'key' }
+      ),
+      CLOUD_QUIZ_WRITE_TIMEOUT_MS,
+      { error: { message: `Timeout writing published_quizzes (${Math.round(payloadBytes / 1024)} KB)` } }
+    );
     if (error) {
-      console.warn('Supabase cloud sync notice:', error.message);
-      return false;
+      console.warn(
+        `Supabase published_quizzes sync failed (${Math.round(payloadBytes / 1024)} KB):`,
+        error.message || error
+      );
+      return { ok: false, error: error.message || 'Cloud list write failed', payloadBytes };
     }
-    return true;
-  } catch (err) {
+    cloudQuizzesCache = { data: deduplicated, timestamp: Date.now() };
+    return { ok: true, payloadBytes };
+  } catch (err: any) {
     console.warn('Cloud sync error:', err);
-    return false;
+    return { ok: false, error: err?.message || 'Cloud list sync exception', payloadBytes };
   }
+}
+
+export async function syncPublishedQuizzesToCloud(quizzes: PublishedQuiz[]): Promise<boolean> {
+  const res = await syncPublishedQuizzesToCloudDetailed(quizzes);
+  return res.ok;
 }
 
 /**
@@ -412,7 +691,12 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
   const deletedIds = getDeletedQuizIds(); // Refresh after potential update
 
   try {
-    const rawCloudList = await fetchPublishedQuizzesFromSupabase();
+    const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed();
+    if (!cloudRes.ok) {
+      return localList;
+    }
+
+    const rawCloudList = cloudRes.data;
     // Filter cloud list through tombstones to prevent resurrection of deleted quizzes
     const cloudList = rawCloudList.filter((q) => {
       if (!q) return false;
@@ -422,17 +706,49 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
 
     // Authoritatively merge and deduplicate both cloud and local lists
     const combined = [...localList, ...cloudList];
-    const merged = deduplicateQuizzes(combined);
+    const mergedRaw = deduplicateQuizzes(combined);
 
-    // Update localStorage with authoritative merged list
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    const backfillEntries = mergedRaw
+      .filter((q) => q.testId && q.headerConfig?.questionOverrides && Object.keys(q.headerConfig.questionOverrides).length > 0)
+      .map((q) => ({
+        testId: q.testId,
+        headerConfig: q.headerConfig,
+        questionIds: q.questionIds,
+        totalMarks: q.totalMarks,
+      }));
+    const backedInCloud = await ensureCloudTestHeadersExist(backfillEntries);
+    const localTestIds = new Set(getLocalTests().map((t) => t.id));
 
-    // If local and cloud had differences or duplicates (including deleted items pruned from cloud), sync back
-    if (rawCloudList.length !== merged.length || localList.length !== merged.length) {
-      await syncPublishedQuizzesToCloud(merged);
+    const cloudHadStrippedOverrides = cloudList.some(
+      (q) =>
+        q.testId &&
+        backedInCloud.has(q.testId) &&
+        Boolean(q.headerConfig?.questionOverrides)
+    );
+
+    const cloudMerged = mergedRaw.map((q) =>
+      q.testId && backedInCloud.has(q.testId) ? stripQuizOverrides(q) : compactQuizOverrides(q)
+    );
+    const localMerged = mergedRaw.map((q) =>
+      q.testId && (backedInCloud.has(q.testId) || localTestIds.has(q.testId))
+        ? stripQuizOverrides(q)
+        : compactQuizOverrides(q)
+    );
+
+    // Update localStorage with authoritative merged list safely
+    safeWritePublishedQuizzesToLocalStorage(localMerged);
+
+    // Heal cloud list if lengths differed, legacy blobs had questionOverrides stripped, or recovered from per-code index
+    if (
+      rawCloudList.length !== cloudMerged.length ||
+      localList.length !== cloudMerged.length ||
+      cloudHadStrippedOverrides ||
+      Boolean(cloudRes.recoveredFromCodeIndex)
+    ) {
+      await syncPublishedQuizzesToCloud(cloudMerged);
     }
 
-    return merged;
+    return localMerged;
   } catch (err) {
     console.warn('Could not sync published quizzes with cloud, using local cache:', err);
     return localList;
@@ -440,25 +756,26 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
 }
 
 export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: string): Promise<PublishedQuiz[]> {
-  try {
-    const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
-    const cleanSubject = quiz.subject || quiz.headerConfig?.subject || 'General';
-    const effectiveTeacherPin = quiz.teacherPin || quiz.headerConfig?.teacherPin || '1234';
-    const cleanQuizCode = quiz.quizCode.trim().toUpperCase();
+  return enqueueQuizMutation(async () => {
+    try {
+      const resolvedDuration = quiz.durationMinutes || quiz.headerConfig?.durationMinutes || 45;
+      const cleanSubject = quiz.subject || quiz.headerConfig?.subject || 'General';
+      const effectiveTeacherPin = quiz.teacherPin || quiz.headerConfig?.teacherPin || '1234';
+      const cleanQuizCode = quiz.quizCode.trim().toUpperCase();
 
-    // Track previous code aliases to avoid student lockouts
-    const prevCodesSet = new Set<string>(quiz.previousCodes || []);
-    if (oldQuizCode) {
-      const cleanOld = oldQuizCode.trim().toUpperCase();
-      if (cleanOld && cleanOld !== cleanQuizCode) {
-        prevCodesSet.add(cleanOld);
+      // Track previous code aliases to avoid student lockouts
+      const prevCodesSet = new Set<string>(quiz.previousCodes || []);
+      if (oldQuizCode) {
+        const cleanOld = oldQuizCode.trim().toUpperCase();
+        if (cleanOld && cleanOld !== cleanQuizCode) {
+          prevCodesSet.add(cleanOld);
+        }
       }
-    }
-    const updatedPrevCodes = Array.from(prevCodesSet).slice(-5);
+      const updatedPrevCodes = Array.from(prevCodesSet).slice(-5);
 
-    const mergedHeader = quiz.headerConfig
-      ? { ...quiz.headerConfig, durationMinutes: resolvedDuration, subject: cleanSubject, teacherPin: effectiveTeacherPin }
-      : {
+      const mergedHeader = quiz.headerConfig
+        ? { ...quiz.headerConfig, durationMinutes: resolvedDuration, subject: cleanSubject, teacherPin: effectiveTeacherPin }
+        : {
           title: quiz.title || 'Examination Assessment',
           schoolName: '',
           subject: cleanSubject,
@@ -468,209 +785,334 @@ export async function savePublishedQuiz(quiz: PublishedQuiz, oldQuizCode?: strin
           teacherPin: effectiveTeacherPin,
         };
 
-    const cleanQuiz: PublishedQuiz = {
-      ...quiz,
-      durationMinutes: resolvedDuration,
-      headerConfig: mergedHeader,
+      const cleanQuiz: PublishedQuiz = {
+        ...quiz,
+        durationMinutes: resolvedDuration,
+        headerConfig: mergedHeader,
 
-      subject: cleanSubject,
-      teacherPin: effectiveTeacherPin,
-      quizCode: cleanQuizCode,
-      previousCodes: updatedPrevCodes,
-      updatedAt: new Date().toISOString(),
-    };
+        subject: cleanSubject,
+        teacherPin: effectiveTeacherPin,
+        quizCode: cleanQuizCode,
+        previousCodes: updatedPrevCodes,
+        updatedAt: new Date().toISOString(),
+      };
 
-    // Invalidate resolution cache so changes take effect immediately
-    clearQuizMemoryCache(cleanQuiz.quizCode);
-    clearQuizMemoryCache(cleanQuiz.id);
-    clearQuizMemoryCache(cleanQuiz.testId);
-    updatedPrevCodes.forEach((code) => clearQuizMemoryCache(code));
-    if (oldQuizCode) {
-      clearQuizMemoryCache(oldQuizCode.trim().toUpperCase());
+      // Invalidate resolution cache so changes take effect immediately
+      clearQuizMemoryCache(cleanQuiz.quizCode);
+      clearQuizMemoryCache(cleanQuiz.id);
+      clearQuizMemoryCache(cleanQuiz.testId);
+      updatedPrevCodes.forEach((code) => clearQuizMemoryCache(code));
+      if (oldQuizCode) {
+        clearQuizMemoryCache(oldQuizCode.trim().toUpperCase());
+      }
+
+      // 1. Update local storage immediately for zero-lag UI (never aborts cloud sync on quota)
+      const existing = getPublishedQuizzes();
+      const localTestIds = new Set(getLocalTests().map((t) => t.id));
+      const localCleanQuiz =
+        cleanQuiz.testId && localTestIds.has(cleanQuiz.testId)
+          ? stripQuizOverrides(cleanQuiz)
+          : compactQuizOverrides(cleanQuiz);
+      const updatedLocal = deduplicateQuizzes([localCleanQuiz, ...existing]);
+      safeWritePublishedQuizzesToLocalStorage(updatedLocal);
+
+      // 2. Fetch current cloud state & backfill any missing custom_test_header_<testId> before slimming
+      clearCloudQuizzesCache();
+      const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
+
+      const backfillCandidates = [
+        cleanQuiz,
+        ...(cloudRes.ok ? cloudRes.data : []),
+        ...updatedLocal,
+      ]
+        .filter((q) => q.testId && q.headerConfig?.questionOverrides && Object.keys(q.headerConfig.questionOverrides).length > 0)
+        .map((q) => ({
+          testId: q.testId,
+          headerConfig: q.headerConfig,
+          questionIds: q.questionIds,
+          totalMarks: q.totalMarks,
+        }));
+
+      const backedInCloud = await ensureCloudTestHeadersExist(backfillCandidates);
+      const cloudCleanQuiz =
+        cleanQuiz.testId && backedInCloud.has(cleanQuiz.testId)
+          ? stripQuizOverrides(cleanQuiz)
+          : compactQuizOverrides(cleanQuiz);
+
+      let finalLocal = updatedLocal;
+      let listSynced = false;
+      let listError: string | undefined;
+      let payloadBytes: number | undefined;
+
+      // Write per-code index first so students can join immediately, sequentially before updating published_quizzes
+      const codeRes = await upsertQuizCodeIndexToCloudDetailed(cloudCleanQuiz);
+      const codeIndexSynced = codeRes.ok;
+
+      if (cloudRes.ok) {
+        const mergedRaw = deduplicateQuizzes([cloudCleanQuiz, ...updatedLocal, ...cloudRes.data]);
+        const cloudMerged = mergedRaw.map((q) =>
+          q.testId && backedInCloud.has(q.testId) ? stripQuizOverrides(q) : compactQuizOverrides(q)
+        );
+        finalLocal = mergedRaw.map((q) =>
+          q.testId && (backedInCloud.has(q.testId) || localTestIds.has(q.testId))
+            ? stripQuizOverrides(q)
+            : compactQuizOverrides(q)
+        );
+        safeWritePublishedQuizzesToLocalStorage(finalLocal);
+
+        const listRes = await syncPublishedQuizzesToCloudDetailed(cloudMerged);
+        listSynced = listRes.ok;
+        listError = listRes.error;
+        payloadBytes = listRes.payloadBytes;
+      } else {
+        // Cloud fetch timed out or errored (and recovery also failed): NEVER overwrite published_quizzes
+        if (cleanQuiz.testId && backedInCloud.has(cleanQuiz.testId)) {
+          finalLocal = deduplicateQuizzes([cloudCleanQuiz, ...updatedLocal]);
+          safeWritePublishedQuizzesToLocalStorage(finalLocal);
+        }
+      }
+
+      const stage: QuizCloudSyncStatus['stage'] = !cloudRes.ok
+        ? 'fetch_list'
+        : !listSynced
+          ? 'sync_list'
+          : !codeIndexSynced
+            ? 'sync_code_index'
+            : 'done';
+
+      const syncError = !cloudRes.ok
+        ? cloudRes.error
+        : !listSynced
+          ? listError
+          : !codeIndexSynced
+            ? codeRes.error
+            : undefined;
+
+      lastQuizCloudSyncStatus = {
+        quizId: cleanQuiz.id,
+        quizCode: cleanQuiz.quizCode,
+        codeIndexSynced,
+        listSynced,
+        stage,
+        payloadBytes,
+        error: syncError,
+        timestamp: Date.now(),
+      };
+
+      dispatchQuizzesUpdated(
+        { quizId: cleanQuiz.id, listSynced, codeIndexSynced },
+        listSynced
+      );
+      return finalLocal;
+    } catch (err: any) {
+      console.error('Failed to save published quiz:', err);
+      lastQuizCloudSyncStatus = {
+        quizId: quiz.id,
+        quizCode: quiz.quizCode,
+        codeIndexSynced: false,
+        listSynced: false,
+        stage: 'fetch_list',
+        error: err?.message || 'Unexpected save error',
+        timestamp: Date.now(),
+      };
+      return getPublishedQuizzes();
     }
-
-    // 1. Update local storage immediately for zero-lag UI
-    const existing = getPublishedQuizzes();
-    const updated = deduplicateQuizzes([cleanQuiz, ...existing]);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
-    // 2. Fetch current cloud state and merge to avoid overwriting quizzes from other devices
-    clearCloudQuizzesCache();
-    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-    const finalMerged = deduplicateQuizzes([cleanQuiz, ...updated, ...cloudList]);
-    
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(finalMerged));
-    await Promise.all([
-      syncPublishedQuizzesToCloud(finalMerged),
-      upsertQuizCodeIndexToCloud(cleanQuiz),
-    ]);
-
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('quizzes_updated'));
-    return finalMerged;
-  } catch (err) {
-    console.error('Failed to save published quiz:', err);
-    return getPublishedQuizzes();
-  }
+  });
 }
 
-export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> {
-  try {
-    const cleanId = id.trim();
-    const existing = getPublishedQuizzes();
-
-    // 1. Direct Quiz ID Deletion (standard from QuizManagerPage)
-    const directQuiz = existing.find((q) => q.id === cleanId);
-    if (directQuiz) {
-      const targetId = directQuiz.id;
-      const targetCode = directQuiz.quizCode?.trim().toUpperCase();
-
-      recordDeletedQuiz(targetId);
-      clearQuizMemoryCache(targetId);
-      if (targetCode) clearQuizMemoryCache(targetCode);
-
-      // Only delete this exact quiz ID - NEVER touch sibling quizzes from same test
-      const matchesTarget = (q: PublishedQuiz) => q.id === targetId;
-
-      const updated = existing.filter((q) => !matchesTarget(q));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
-      clearCloudQuizzesCache();
-      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      const codesToDelete = [
-        directQuiz.quizCode,
-        ...(directQuiz.previousCodes || []),
-      ];
-      await Promise.all([
-        syncPublishedQuizzesToCloud(updatedCloud),
-        deleteQuizCodeIndexFromCloud(codesToDelete),
-      ]);
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: targetId } }));
-      }
-      return updated;
-    }
-
-    // 2. Test ID Deletion (e.g. called from testBuilderService when an entire test paper is deleted)
-    const matchingByTest = existing.filter((q) => q.testId === cleanId);
-    if (matchingByTest.length > 0) {
-      const codesToDelete: string[] = [];
-      matchingByTest.forEach((q) => {
-        recordDeletedQuiz(q.id);
-        clearQuizMemoryCache(q.id);
-        if (q.quizCode) {
-          clearQuizMemoryCache(q.quizCode.trim().toUpperCase());
-          codesToDelete.push(q.quizCode);
-        }
-        if (q.previousCodes) codesToDelete.push(...q.previousCodes);
-      });
-
-      const matchesTarget = (q: PublishedQuiz) => q.testId === cleanId;
-
-      const updated = existing.filter((q) => !matchesTarget(q));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
-      clearCloudQuizzesCache();
-      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      await Promise.all([
-        syncPublishedQuizzesToCloud(updatedCloud),
-        deleteQuizCodeIndexFromCloud(codesToDelete),
-      ]);
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
-      }
-      return updated;
-    }
-
-    // 3. Fallback: match by Quiz Code
-    const cleanCodeUpper = cleanId.toUpperCase();
-    const matchingByCode = existing.filter((q) => q.quizCode.toUpperCase() === cleanCodeUpper);
-    if (matchingByCode.length > 0) {
-      const codesToDelete: string[] = [cleanCodeUpper];
-      matchingByCode.forEach((q) => {
-        recordDeletedQuiz(q.id);
-        clearQuizMemoryCache(q.id);
-        clearQuizMemoryCache(cleanCodeUpper);
-        if (q.quizCode) codesToDelete.push(q.quizCode);
-        if (q.previousCodes) codesToDelete.push(...q.previousCodes);
-      });
-
-      const matchesTarget = (q: PublishedQuiz) => q.quizCode.toUpperCase() === cleanCodeUpper;
-
-      const updated = existing.filter((q) => !matchesTarget(q));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
-      clearCloudQuizzesCache();
-      const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-      const updatedCloud = cloudList.filter((q) => !matchesTarget(q));
-      await Promise.all([
-        syncPublishedQuizzesToCloud(updatedCloud),
-        deleteQuizCodeIndexFromCloud(codesToDelete),
-      ]);
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('quizzes_updated', { detail: { deletedId: cleanId } }));
-      }
-      return updated;
-    }
-
-    // 4. If not found in local cache, record cleanId tombstone and prune cloud
-    recordDeletedQuiz(cleanId);
-    clearQuizMemoryCache(cleanId);
-
-    clearCloudQuizzesCache();
-    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-    const matchedCloud = cloudList.filter(
-      (q) => q.id === cleanId || q.testId === cleanId || q.quizCode.toUpperCase() === cleanCodeUpper
-    );
-    const codesToDelete = [
-      cleanCodeUpper,
-      ...matchedCloud.flatMap((q) => [q.quizCode, ...(q.previousCodes || [])]),
-    ];
-    const updatedCloud = cloudList.filter((q) => q.id !== cleanId && q.testId !== cleanId && q.quizCode.toUpperCase() !== cleanCodeUpper);
+async function syncQuizDeletionToCloud(
+  codesToDelete: string[],
+  matchesTarget: (q: PublishedQuiz) => boolean
+): Promise<boolean> {
+  clearCloudQuizzesCache();
+  const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
+  if (cloudRes.ok) {
+    const updatedCloud = cloudRes.data.filter((q) => !matchesTarget(q));
     await Promise.all([
       syncPublishedQuizzesToCloud(updatedCloud),
       deleteQuizCodeIndexFromCloud(codesToDelete),
     ]);
-
-    return existing;
-  } catch (err) {
-    console.error('Failed to delete published quiz:', err);
-    return getPublishedQuizzes();
+    return true;
   }
+  await deleteQuizCodeIndexFromCloud(codesToDelete);
+  return false;
+}
+
+export async function deletePublishedQuiz(id: string): Promise<PublishedQuiz[]> {
+  return enqueueQuizMutation(async () => {
+    try {
+      const cleanId = id.trim();
+      const existing = getPublishedQuizzes();
+
+      // 1. Direct Quiz ID Deletion (standard from QuizManagerPage)
+      const directQuiz = existing.find((q) => q.id === cleanId);
+      if (directQuiz) {
+        const targetId = directQuiz.id;
+        const targetCode = directQuiz.quizCode?.trim().toUpperCase();
+
+        recordDeletedQuiz(targetId);
+        clearQuizMemoryCache(targetId);
+        if (targetCode) clearQuizMemoryCache(targetCode);
+
+        // Only delete this exact quiz ID - NEVER touch sibling quizzes from same test
+        const matchesTarget = (q: PublishedQuiz) => q.id === targetId;
+        const updated = existing.filter((q) => !matchesTarget(q));
+        safeWritePublishedQuizzesToLocalStorage(updated);
+
+        const codesToDelete = [
+          directQuiz.quizCode,
+          ...(directQuiz.previousCodes || []),
+        ];
+        const listSynced = await syncQuizDeletionToCloud(codesToDelete, matchesTarget);
+        dispatchQuizzesUpdated({ deletedId: targetId }, listSynced);
+        return updated;
+      }
+
+      // 2. Test ID Deletion (e.g. called from testBuilderService when an entire test paper is deleted)
+      const matchingByTest = existing.filter((q) => q.testId === cleanId);
+      if (matchingByTest.length > 0) {
+        const codesToDelete: string[] = [];
+        matchingByTest.forEach((q) => {
+          recordDeletedQuiz(q.id);
+          clearQuizMemoryCache(q.id);
+          if (q.quizCode) {
+            clearQuizMemoryCache(q.quizCode.trim().toUpperCase());
+            codesToDelete.push(q.quizCode);
+          }
+          if (q.previousCodes) codesToDelete.push(...q.previousCodes);
+        });
+
+        const matchesTarget = (q: PublishedQuiz) => q.testId === cleanId;
+        const updated = existing.filter((q) => !matchesTarget(q));
+        safeWritePublishedQuizzesToLocalStorage(updated);
+
+        const listSynced = await syncQuizDeletionToCloud(codesToDelete, matchesTarget);
+        dispatchQuizzesUpdated({ deletedId: cleanId }, listSynced);
+        return updated;
+      }
+
+      // 3. Fallback: match by Quiz Code
+      const cleanCodeUpper = cleanId.toUpperCase();
+      const matchingByCode = existing.filter((q) => q.quizCode.toUpperCase() === cleanCodeUpper);
+      if (matchingByCode.length > 0) {
+        const codesToDelete: string[] = [cleanCodeUpper];
+        matchingByCode.forEach((q) => {
+          recordDeletedQuiz(q.id);
+          clearQuizMemoryCache(q.id);
+          clearQuizMemoryCache(cleanCodeUpper);
+          if (q.quizCode) codesToDelete.push(q.quizCode);
+          if (q.previousCodes) codesToDelete.push(...q.previousCodes);
+        });
+
+        const matchesTarget = (q: PublishedQuiz) => q.quizCode.toUpperCase() === cleanCodeUpper;
+        const updated = existing.filter((q) => !matchesTarget(q));
+        safeWritePublishedQuizzesToLocalStorage(updated);
+
+        const listSynced = await syncQuizDeletionToCloud(codesToDelete, matchesTarget);
+        dispatchQuizzesUpdated({ deletedId: cleanId }, listSynced);
+        return updated;
+      }
+
+      // 4. If not found in local cache, record cleanId tombstone and prune cloud safely
+      recordDeletedQuiz(cleanId);
+      clearQuizMemoryCache(cleanId);
+
+      clearCloudQuizzesCache();
+      const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
+      if (cloudRes.ok) {
+        const matchedCloud = cloudRes.data.filter(
+          (q) => q.id === cleanId || q.testId === cleanId || q.quizCode.toUpperCase() === cleanCodeUpper
+        );
+        const codesToDelete = [
+          cleanCodeUpper,
+          ...matchedCloud.flatMap((q) => [q.quizCode, ...(q.previousCodes || [])]),
+        ];
+        const updatedCloud = cloudRes.data.filter(
+          (q) => q.id !== cleanId && q.testId !== cleanId && q.quizCode.toUpperCase() !== cleanCodeUpper
+        );
+        await Promise.all([
+          syncPublishedQuizzesToCloud(updatedCloud),
+          deleteQuizCodeIndexFromCloud(codesToDelete),
+        ]);
+      } else {
+        await deleteQuizCodeIndexFromCloud([cleanCodeUpper]);
+      }
+
+      return existing;
+    } catch (err) {
+      console.error('Failed to delete published quiz:', err);
+      return getPublishedQuizzes();
+    }
+  });
 }
 
 export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz | null> {
-  try {
-    const existing = getPublishedQuizzes();
-    const target = existing.find((q) => q.id === id);
-    if (!target) return null;
-    target.isActive = !target.isActive;
-    target.updatedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+  return enqueueQuizMutation(async () => {
+    try {
+      const existing = getPublishedQuizzes();
+      const targetIdx = existing.findIndex((q) => q.id === id);
+      if (targetIdx === -1) return null;
 
-    clearCloudQuizzesCache();
-    const cloudList = await fetchPublishedQuizzesFromSupabase(true);
-    const cloudTarget = cloudList.find((q) => q.id === id);
-    if (cloudTarget) {
-      cloudTarget.isActive = target.isActive;
-      cloudTarget.updatedAt = target.updatedAt;
-    } else {
-      cloudList.push(target);
+      const updatedTarget: PublishedQuiz = {
+        ...existing[targetIdx],
+        isActive: !existing[targetIdx].isActive,
+        updatedAt: new Date().toISOString(),
+      };
+      const localTestIds = new Set(getLocalTests().map((t) => t.id));
+      const localTarget =
+        updatedTarget.testId && localTestIds.has(updatedTarget.testId)
+          ? stripQuizOverrides(updatedTarget)
+          : compactQuizOverrides(updatedTarget);
+
+      const nextExisting = existing.map((q, idx) => (idx === targetIdx ? localTarget : q));
+      safeWritePublishedQuizzesToLocalStorage(nextExisting);
+
+      clearCloudQuizzesCache();
+      const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
+
+      const backfillCandidates = [
+        updatedTarget,
+        ...(cloudRes.ok ? cloudRes.data : []),
+      ]
+        .filter((q) => q.testId && q.headerConfig?.questionOverrides && Object.keys(q.headerConfig.questionOverrides).length > 0)
+        .map((q) => ({
+          testId: q.testId,
+          headerConfig: q.headerConfig,
+          questionIds: q.questionIds,
+          totalMarks: q.totalMarks,
+        }));
+      const backedInCloud = await ensureCloudTestHeadersExist(backfillCandidates);
+      const slimTarget =
+        updatedTarget.testId && backedInCloud.has(updatedTarget.testId)
+          ? stripQuizOverrides(updatedTarget)
+          : compactQuizOverrides(updatedTarget);
+
+      if (cloudRes.ok) {
+        const cloudList = cloudRes.data.map((q) =>
+          q.id === id
+            ? slimTarget
+            : q.testId && backedInCloud.has(q.testId)
+              ? stripQuizOverrides(q)
+              : compactQuizOverrides(q)
+        );
+        if (!cloudList.some((q) => q.id === id)) {
+          cloudList.push(slimTarget);
+        }
+        await Promise.all([
+          syncPublishedQuizzesToCloud(cloudList),
+          upsertQuizCodeIndexToCloud(slimTarget),
+        ]);
+      } else {
+        // Cloud list fetch failed/timed out: only update per-code index so we don't wipe other quizzes
+        await upsertQuizCodeIndexToCloud(slimTarget);
+      }
+
+      return localTarget;
+    } catch (err) {
+      console.error('Failed to toggle quiz status:', err);
+      return null;
     }
-    await Promise.all([
-      syncPublishedQuizzesToCloud(cloudList),
-      upsertQuizCodeIndexToCloud(target),
-    ]);
-
-    return target;
-  } catch (err) {
-    console.error('Failed to toggle quiz status:', err);
-    return null;
-  }
+  });
 }
 
 /**
@@ -705,14 +1147,14 @@ export function createDraftFromTest(
   const mergedHeader = header
     ? { ...header, durationMinutes: dur, teacherPin: pin }
     : {
-        title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
-        schoolName: '',
-        subject: resolvedSubject,
-        subjectCode: '',
-        durationMinutes: dur,
-        instructions: '',
-        teacherPin: pin,
-      };
+      title: existing?.title || test.title || header?.title || `${resolvedSubject} Interactive Assessment`,
+      schoolName: '',
+      subject: resolvedSubject,
+      subjectCode: '',
+      durationMinutes: dur,
+      instructions: '',
+      teacherPin: pin,
+    };
 
   return {
     id: existing?.id || `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,

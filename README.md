@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.8`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.5.9`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.8-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.9-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -157,6 +157,15 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.5.9] — Simulation Part 2 Saved Test, Published Exam Scaling & Same-Browser Link Resolution (`035`)
+- **Published Exam Save Scaling & `pg_safeupdate` Fix (`035`)**:
+  - Added [`supabase/migrations/035_fix_exam_paper_cache_safeupdate.sql`](supabase/migrations/035_fix_exam_paper_cache_safeupdate.sql) and patched [`032_exam_paper_cache_and_fast_lobby.sql`](supabase/migrations/032_exam_paper_cache_and_fast_lobby.sql) to qualify `DELETE FROM public.exam_paper_cache` with `WHERE quiz_code IS NOT NULL`, unblocking `published_quizzes`, `custom_test_header_*`, `custom_tests`, and `questions` writes under Supabase `pg_safeupdate`.
+  - Added missing-only per-row `ensureCloudTestHeadersExist()` backfill in [`testBuilderService.ts`](src/services/testBuilderService.ts) and stripped redundant `questionOverrides` from backed `published_quizzes` and `quiz_by_code_*` entries in [`quizManagerService.ts`](src/services/quizManagerService.ts), with `reconstructPublishedQuizzesFromCodeIndex()` self-healing recovery, `enqueueQuizMutation()` serialization, `QuotaExceededError`-safe `localStorage` caching, and `isSavingConfig` / exact error surfacing in [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx).
+- **Same-Browser New Tab Quiz Link Resolution**:
+  - Updated `resolveStudentQuizUncached()` in [`quizCodeService.ts`](src/services/quizCodeService.ts) to call `get_student_exam_paper` RPC even when `localStorage` already has a slimmed quiz snapshot, with `getLocalTests()` offline fallback so new non-teacher tabs resolve all questions cleanly.
+- **12-Question Saved Test Variant**:
+  - Added **"ICM Exam Simulation Part 2"** (`pilot-sim-part2-12q`, `30` minutes, `30` marks) in [`pilotExamPart2Data.ts`](src/data/pilotExamPart2Data.ts) with dynamic `"0L1 my room"` Audio Library binding and verified via [`scripts/test-pilot-sim-part2.mjs`](scripts/test-pilot-sim-part2.mjs) and [`scripts/test-published-quiz-save-scale.mjs`](scripts/test-published-quiz-save-scale.mjs).
 
 ### [v.2.5.8] — Atomic Draft-Lock Upsert, Normalized Submission Index & Student Join PIN Rate-Limit Hardening (`034`)
 - **Database Scale & Security Hardening (`034`)**:
