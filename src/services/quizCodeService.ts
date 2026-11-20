@@ -9,8 +9,9 @@ import {
 import type { PublishedQuiz, ExamAttachment } from './quizManagerService';
 import { normalizeQuestionRecord, compareQuestionNumbers } from './questionBankService';
 import { hashTeacherPin, isMissingRpcError, sanitizeQuestionsForStudent } from '../lib/examSubmissionGuards';
-import { type SecurityViolationTier } from '../lib/securityTiers';
-import { getSecurityTiers, loadAndSyncSecurityTiers } from '../lib/settings';
+import { normalizeSecurityTiers, type SecurityViolationTier } from '../lib/securityTiers';
+import { getSecurityTiers, loadAndSyncSecurityTiers, seedStudentLobbySettingsFromPaper } from '../lib/settings';
+import { seedPublicRosterDirectoryCache } from './studentRosterService';
 import { resolveEffectiveQuizStatus, type EffectiveQuizStatus } from '../lib/examSessionSchedule';
 import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
 
@@ -383,7 +384,28 @@ async function resolveStudentQuizUncached(
           const rpcQuestions = Array.isArray(rpcPaper.questions)
             ? rpcPaper.questions.map((raw: any) => normalizeQuestionRecord(raw))
             : [];
-          const schoolSecurityTiers = await withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers());
+
+          if (Array.isArray(rpcPaper.publicRosterDirectory)) {
+            seedPublicRosterDirectoryCache(rpcPaper.publicRosterDirectory);
+          }
+          if (
+            rpcPaper.schoolClasses !== undefined ||
+            rpcPaper.securityTiers !== undefined ||
+            rpcPaper.hideEmergencyExamButton !== undefined
+          ) {
+            seedStudentLobbySettingsFromPaper({
+              schoolClasses: rpcPaper.schoolClasses,
+              securityTiers: rpcPaper.securityTiers,
+              hideEmergencyExamButton: rpcPaper.hideEmergencyExamButton,
+            });
+          }
+
+          const schoolSecurityTiers =
+            Array.isArray(rpcPaper.securityTiers) && rpcPaper.securityTiers.length > 0
+              ? normalizeSecurityTiers(rpcPaper.securityTiers)
+              : hasActiveTeacherSession()
+                ? await withTimeout(loadAndSyncSecurityTiers(), 2500, getSecurityTiers())
+                : getSecurityTiers();
 
           const result = buildStudentQuizData({
             published: rpcPublished,

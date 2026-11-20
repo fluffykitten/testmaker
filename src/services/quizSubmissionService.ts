@@ -1433,7 +1433,11 @@ export function mergeSubmissionsPreferNewest(
   localList: StudentSubmission[],
   deletedIds: Set<string>,
   scopeFilter?: (s: StudentSubmission) => boolean
-): { merged: StudentSubmission[]; hasLocalNewerOrExclusive: boolean } {
+): {
+  merged: StudentSubmission[];
+  hasLocalNewerOrExclusive: boolean;
+  localNewerOrExclusiveRows: StudentSubmission[];
+} {
   const map = new Map<string, StudentSubmission>();
   cloudList.forEach((s) => {
     if (!deletedIds.has(s.id)) map.set(s.id, s);
@@ -1475,11 +1479,13 @@ export function mergeSubmissionsPreferNewest(
   });
 
   let hasLocalNewerOrExclusive = false;
+  const localNewerOrExclusiveRows: StudentSubmission[] = [];
   localCandidateMap.forEach((localS, id) => {
     const cloudS = map.get(id);
     if (!cloudS) {
       map.set(id, localS);
       hasLocalNewerOrExclusive = true;
+      localNewerOrExclusiveRows.push(localS);
       return;
     }
     const isProtectedUnsynced = unsyncedOutboxMap.has(id) || activeInFlightMap.has(id);
@@ -1487,11 +1493,12 @@ export function mergeSubmissionsPreferNewest(
     map.set(id, winner);
     if (preferLocal) {
       hasLocalNewerOrExclusive = true;
+      localNewerOrExclusiveRows.push(winner);
     }
   });
 
   const merged = Array.from(map.values()).filter((s) => !deletedIds.has(s.id));
-  return { merged, hasLocalNewerOrExclusive };
+  return { merged, hasLocalNewerOrExclusive, localNewerOrExclusiveRows };
 }
 
 /**
@@ -1761,18 +1768,6 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
     console.warn('Error batch pushing submissions to quiz_submissions table:', err);
   }
 
-  // 3. Dual-tier cloud backup: Always sync to app_config to ensure results survive between localhost and Netlify
-  try {
-    const cloudAppConfigList = await fetchSubmissionsFromAppConfig();
-    const mergedMap = new Map<string, StudentSubmission>();
-    cloudAppConfigList.forEach((s) => mergedMap.set(s.id, s));
-    submissions.forEach((s) => mergedMap.set(s.id, s));
-    const mergedList = Array.from(mergedMap.values());
-    await syncSubmissionsToAppConfig(mergedList);
-  } catch (err) {
-    console.warn('Could not backup submissions to app_config:', err);
-  }
-
   return tableSuccess;
 }
 
@@ -1809,14 +1804,7 @@ export async function deleteSubmission(id: string): Promise<void> {
     console.warn('Cloud delete error:', err);
   }
 
-  // 5. Delete from app_config backup store
-  try {
-    const appConfigSubs = await fetchSubmissionsFromAppConfig();
-    const updatedAppConfig = appConfigSubs.filter((s) => s.id !== cleanId);
-    await syncSubmissionsToAppConfig(updatedAppConfig);
-  } catch {}
-
-  // 6. Asynchronously sync tombstones with cloud
+  // 5. Asynchronously sync tombstones with cloud
   syncDeletedSubmissionIdsWithCloud().catch(() => {});
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
@@ -1860,16 +1848,7 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
     console.warn('Cloud clear error:', err);
   }
 
-  // 4. Delete from app_config backup store
-  try {
-    const appConfigSubs = await fetchSubmissionsFromAppConfig();
-    const updatedAppConfig = appConfigSubs.filter(
-      (s) => s.quizId !== quizId && (!cleanCode || (s.quizCode || '').toUpperCase() !== cleanCode)
-    );
-    await syncSubmissionsToAppConfig(updatedAppConfig);
-  } catch {}
-
-  // 5. Asynchronously sync tombstones with cloud
+  // 4. Asynchronously sync tombstones with cloud
   syncDeletedSubmissionIdsWithCloud().catch(() => {});
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
@@ -1968,7 +1947,7 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
       });
     }
 
-    const { merged, hasLocalNewerOrExclusive } = mergeSubmissionsPreferNewest(
+    const { merged, hasLocalNewerOrExclusive, localNewerOrExclusiveRows } = mergeSubmissionsPreferNewest(
       cloudList,
       localList,
       deletedIds
@@ -1978,9 +1957,9 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
     safeSaveSubmissionsToLocalStorage(merged);
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
 
-    // 4. If local had items not yet in cloud (e.g. graded on localhost), sync to cloud
-    if ((hasLocalNewerOrExclusive || cloudList.length < merged.length) && inFlightSubmissionSaves.size === 0) {
-      await saveBatchQuizSubmissionsCloud(merged);
+    // 4. If local had items not yet in cloud (or newer than cloud), sync ONLY those rows to cloud
+    if (hasLocalNewerOrExclusive && localNewerOrExclusiveRows.length > 0 && inFlightSubmissionSaves.size === 0) {
+      await saveBatchQuizSubmissionsCloud(localNewerOrExclusiveRows);
     }
 
     return merged;
@@ -1988,6 +1967,88 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
     console.warn('Could not sync submissions with cloud, using local cache:', err);
     return localList;
   }
+}
+
+/**
+ * Lightweight, read-only submission backfill scoped strictly to the monitored quizzes in
+ * LiveInvigilatorModal (e.g. ICM-1..ICM-13). Avoids downloading all 5,000 historical rows
+ * across the school and never triggers batch re-upserts.
+ */
+export async function fetchProctorMonitoredSubmissions(
+  monitoredQuizzes: Array<{ id: string; quizCode?: string }>
+): Promise<StudentSubmission[]> {
+  if (!Array.isArray(monitoredQuizzes) || monitoredQuizzes.length === 0) return [];
+
+  const deletedIds = getDeletedSubmissionIds();
+  const codes = Array.from(
+    new Set(
+      monitoredQuizzes
+        .map((q) => (q.quizCode || '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  );
+  const quizIds = new Set(monitoredQuizzes.map((q) => q.id).filter(Boolean));
+  const codeSet = new Set(codes);
+
+  const localMatching = getAllSubmissions().filter(
+    (s) =>
+      !deletedIds.has(s.id) &&
+      (quizIds.has(s.quizId) || codeSet.has((s.quizCode || '').trim().toUpperCase()))
+  );
+
+  if (codes.length === 0) return localMatching;
+
+  try {
+    const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
+      .select(
+        'id, quiz_id, quiz_code, quiz_title, subject, student_name, student_class, candidate_number, submitted_at, duration_seconds, score, total_marks, percentage, violations_count, raw_answers, status, updated_at'
+      )
+      .in('quiz_code', codes)
+      .order('submitted_at', { ascending: false })
+      .limit(1000);
+
+    if (!error && Array.isArray(data)) {
+      const cloudSubs: StudentSubmission[] = data
+        .filter((row: any) => row && !deletedIds.has(row.id))
+        .map((row: any) => {
+          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
+          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
+          delete (rawAnswers as any)._forensics;
+          return {
+            id: row.id,
+            quizId: row.quiz_id,
+            quizCode: row.quiz_code,
+            quizTitle: row.quiz_title || '',
+            subject: row.subject || '',
+            studentName: row.student_name,
+            studentClass: row.student_class,
+            candidateNumber: row.candidate_number,
+            submittedAt: row.submitted_at,
+            durationSeconds: Number(row.duration_seconds) || 0,
+            score: Number(row.score) || 0,
+            totalMarks: Number(row.total_marks) || 0,
+            percentage: Number(row.percentage) || 0,
+            violationsCount: Number(row.violations_count) || 0,
+            proctoringLogs: [],
+            rawAnswers,
+            questionResults: [],
+            topicBreakdown: {},
+            status: (row.status as SubmissionStatus) || 'submitted',
+            updatedAt: row.updated_at || row.submitted_at,
+            forensics,
+          };
+        });
+
+      const mergedMap = new Map<string, StudentSubmission>();
+      localMatching.forEach((s) => mergedMap.set(s.id, s));
+      cloudSubs.forEach((s) => mergedMap.set(s.id, s));
+      return Array.from(mergedMap.values());
+    }
+  } catch (err) {
+    console.warn('Could not fetch proctor monitored submissions from cloud:', err);
+  }
+
+  return localMatching;
 }
 
 /**

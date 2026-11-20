@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
+import { hasActiveTeacherSession, isSupabaseConfigured } from '../lib/supabase';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from '../services/testBuilderService';
 import { resolveStudentQuiz, verifyTeacherUnlockPinDetailed, clearQuizMemoryCache, type StudentQuizData } from '../services/quizCodeService';
@@ -469,17 +470,34 @@ export function StudentQuizRunner({
   );
 
   useEffect(() => {
-    loadAndSyncSchoolClasses().then((classes) => {
-      if (classes && classes.length > 0) {
-        setConfiguredClasses(classes);
+    const handleClassesUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ classes?: string[] }>;
+      const nextClasses = custom.detail?.classes || getSchoolClasses();
+      if (nextClasses && nextClasses.length > 0) {
+        setConfiguredClasses(nextClasses);
       }
-    });
-    fetchPublicRosterDirectory().then((roster) => {
-      if (roster && roster.length > 0) {
-        setSchoolRoster(roster);
-      }
-    });
-  }, []);
+    };
+    window.addEventListener('school_classes_updated', handleClassesUpdated);
+
+    if (hasActiveTeacherSession()) {
+      loadAndSyncSchoolClasses().then((classes) => {
+        if (classes && classes.length > 0) {
+          setConfiguredClasses(classes);
+        }
+      });
+    }
+    if (initialQuestions && initialQuestions.length > 0) {
+      fetchPublicRosterDirectory().then((roster) => {
+        if (roster && roster.length > 0) {
+          setSchoolRoster(roster);
+        }
+      });
+    }
+
+    return () => {
+      window.removeEventListener('school_classes_updated', handleClassesUpdated);
+    };
+  }, [initialQuestions]);
 
   useEffect(() => {
     const explicitTargets = parseTargetClassList(examTargetClass);
@@ -897,6 +915,10 @@ export function StudentQuizRunner({
     }
 
     const hydrateQuizMeta = (data: StudentQuizData, resetTime: boolean) => {
+      const refreshedClasses = getSchoolClasses();
+      if (refreshedClasses.length > 0) {
+        setConfiguredClasses(refreshedClasses);
+      }
       if (data.quizCode) setResolvedQuizCode(data.quizCode.toUpperCase());
       if (data.testId) setResolvedTestId(data.testId);
       if (data.publishedId) setResolvedPublishedId(data.publishedId);
@@ -924,6 +946,12 @@ export function StudentQuizRunner({
     async function load() {
       setLoading(true);
       try {
+        if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
+          const bootJitterMs = Math.floor(Math.random() * 3400);
+          if (bootJitterMs > 50) {
+            await new Promise((r) => setTimeout(r, bootJitterMs));
+          }
+        }
         const data = await resolveStudentQuiz(testIdOrCode!);
         if (!data) {
           setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
@@ -954,6 +982,14 @@ export function StudentQuizRunner({
           setIsQuizPaused(false);
           setScheduleBlockStatus(null);
           hydrateQuizMeta(data, true);
+          const rosterJitterMs = 150 + Math.floor(Math.random() * 1000);
+          setTimeout(() => {
+            fetchPublicRosterDirectory().then((roster) => {
+              if (roster && roster.length > 0) {
+                setSchoolRoster(roster);
+              }
+            });
+          }, rosterJitterMs);
           setQuestions(data.questions);
           if (data.isExamMode !== undefined) {
             setIsExamMode(data.isExamMode);
@@ -1040,9 +1076,11 @@ export function StudentQuizRunner({
 
   // ─── Sync Admin Emergency Save Button Visibility from Cloud & Custom Events ──
   useEffect(() => {
-    loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
-      setHideEmergencyExamButton((prev) => prev || hide);
-    });
+    if (hasActiveTeacherSession()) {
+      loadAndSyncEmergencyExamButtonVisibility().then((hide) => {
+        setHideEmergencyExamButton((prev) => prev || hide);
+      });
+    }
 
     const handleVisibilityUpdate = (e: Event) => {
       const custom = e as CustomEvent<{ hideEmergencyExamButton?: boolean }>;
@@ -2735,6 +2773,14 @@ export function StudentQuizRunner({
 
         setCompletedSubmission(submission);
 
+        if (!timerExpiryAutoSubmitTriggeredRef.current) {
+          const uploadJitterMs = Math.floor(Math.random() * 4500);
+          if (uploadJitterMs > 100) {
+            setGradingProgressText('Sealing and queueing examination script for upload...');
+            await new Promise((r) => setTimeout(r, uploadJitterMs));
+          }
+        }
+
         const syncResult = await saveQuizSubmissionWithVerification(
           submission,
           3,
@@ -2751,7 +2797,8 @@ export function StudentQuizRunner({
               finalQuizCode,
               finalQuizId,
               buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
-              studentPinInput || undefined
+              studentPinInput || undefined,
+              { localOnly: true }
             ).catch(() => { });
           } catch { }
         } else {
@@ -3019,7 +3066,8 @@ export function StudentQuizRunner({
             finalQuizCode,
             finalQuizId,
             buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
-            studentPinInput || undefined
+            studentPinInput || undefined,
+            { localOnly: true }
           ).catch(() => { });
         } catch { }
       } else {
@@ -3087,7 +3135,8 @@ export function StudentQuizRunner({
             completedSubmission.quizCode,
             completedSubmission.quizId,
             buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
-            studentPinInput || undefined
+            studentPinInput || undefined,
+            { localOnly: true }
           ).catch(() => { });
         } catch { }
       } else {
@@ -3355,11 +3404,12 @@ export function StudentQuizRunner({
             localStorage.removeItem(sessionKey);
             sessionStorage.removeItem(sessionKey);
             clearExamDraft(
-            completedSubmission.quizCode,
-            completedSubmission.quizId,
-            buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
-            studentPinInput || undefined
-          ).catch(() => { });
+              completedSubmission.quizCode,
+              completedSubmission.quizId,
+              buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass),
+              studentPinInput || undefined,
+              { localOnly: true }
+            ).catch(() => { });
           } catch { }
           setTeacherActionSuccess(`✅ Delivery confirmed by examiner database at ${new Date().toLocaleTimeString()}!`);
         } else {
@@ -3677,9 +3727,10 @@ export function StudentQuizRunner({
     if (!latestCloudDraftRef.current) return;
 
     if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
+    const draftJitterMs = 12000 + Math.floor(Math.random() * 6000);
     cloudDraftDebounceRef.current = setTimeout(() => {
       flushCloudDraftRef.current(false);
-    }, 12000);
+    }, draftJitterMs);
 
     return () => {
       if (cloudDraftDebounceRef.current) clearTimeout(cloudDraftDebounceRef.current);
@@ -3803,7 +3854,15 @@ export function StudentQuizRunner({
 
   // Detect existing in-progress draft when candidate enters their info
   useEffect(() => {
-    if (hasStarted || isSubmitted || !candidateName.trim() || !resolvedQuizCode) return;
+    if (
+      hasStarted ||
+      isSubmitted ||
+      candidateName.trim().length < 2 ||
+      (candidateClass.trim().length === 0 && selectableExamClasses.length > 0) ||
+      !resolvedQuizCode
+    ) {
+      return;
+    }
 
     // If student PIN is enforced, require the 4-digit PIN before detecting and revealing candidate drafts
     if (requireStudentPin && (!studentPinInput.trim() || studentPinInput.trim().length !== 4)) {
@@ -3818,20 +3877,18 @@ export function StudentQuizRunner({
         studentPin: studentPinInput || undefined,
         expectedStudentName: candidateName,
         expectedStudentClass: candidateClass,
+        alternateQuizId: resolvedTestId && resolvedTestId !== finalId ? resolvedTestId : undefined,
       };
-      let draft = await fetchExamDraft(resolvedQuizCode, finalId, draftIdent, fetchOpts);
-      if (!draft && resolvedTestId && resolvedTestId !== finalId) {
-        draft = await fetchExamDraft(resolvedQuizCode, resolvedTestId, draftIdent, fetchOpts);
-      }
+      const draft = await fetchExamDraft(resolvedQuizCode, finalId, draftIdent, fetchOpts);
       if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
         setDetectedDraft(draft);
       } else {
         setDetectedDraft(null);
       }
-    }, 600);
+    }, 1200);
 
     return () => clearTimeout(timer);
-  }, [candidateName, candidateClass, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
+  }, [candidateName, candidateClass, selectableExamClasses.length, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
   const handleResumeDraft = async () => {
@@ -3841,7 +3898,7 @@ export function StudentQuizRunner({
 
     const exitFullscreenIfEntered = () => {
       if (typeof document !== 'undefined' && document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => {});
+        document.exitFullscreen?.().catch(() => { });
       }
     };
 
@@ -3988,7 +4045,7 @@ export function StudentQuizRunner({
 
     const exitFullscreenIfEntered = () => {
       if (typeof document !== 'undefined' && document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => {});
+        document.exitFullscreen?.().catch(() => { });
       }
     };
 
@@ -4116,8 +4173,16 @@ export function StudentQuizRunner({
     if (securityEnabled && containerRef.current && !document.fullscreenElement) {
       await requestSecureFullscreen();
     }
-    lastSyncedCloudFingerprintRef.current = '';
-    lastSyncedCloudAtRef.current = 0;
+    lastSyncedCloudFingerprintRef.current = computeCloudDraftFingerprint({
+      answers,
+      flaggedIndices: Array.from(flaggedIndices),
+      audioProgress,
+      violationsCount: violations.length,
+      strikeCount,
+      isLockedByProctor,
+      totalPenaltySeconds,
+    });
+    lastSyncedCloudAtRef.current = now;
     timerExpiryAutoSubmitTriggeredRef.current = false;
     setHasStarted(true);
 

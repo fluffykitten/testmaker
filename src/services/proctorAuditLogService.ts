@@ -97,7 +97,10 @@ function writeLocal(events: ProctorAuditEvent[]): void {
  * Records one audit event. Never throws and never blocks the caller.
  * Uses plain INSERT (never UPSERT) because student clients have insert-only RLS under 021.
  */
-export function recordProctorAuditEvent(event: ProctorAuditEvent): void {
+export function recordProctorAuditEvent(
+  event: ProctorAuditEvent,
+  options?: { localOnly?: boolean }
+): void {
   const clean = sanitizeAuditEvent(event);
 
   try {
@@ -107,6 +110,10 @@ export function recordProctorAuditEvent(event: ProctorAuditEvent): void {
     }
   } catch {
     // ignore local mirror failures
+  }
+
+  if (options?.localOnly) {
+    return;
   }
 
   try {

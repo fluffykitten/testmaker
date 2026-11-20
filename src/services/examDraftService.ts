@@ -206,7 +206,7 @@ export async function saveExamDraft(
   }
 
   // Engage per-key exponential backoff after transient cloud failures so 170 tabs don't amplify 544 storms
-  if (!options?.keepalive && !options?.force) {
+  if (!options?.force) {
     const backoff = draftCloudBackoffByKey.get(draftKey);
     if (backoff && Date.now() < backoff.nextAllowedAt) {
       return false;
@@ -303,11 +303,15 @@ function parseAndCacheCloudDraft(
   quizId: string,
   draftKey: string,
   expectedStudentName?: string,
-  expectedStudentClass?: string
+  expectedStudentClass?: string,
+  alternateQuizId?: string
 ): ExamDraftPayload | null {
   const parsed: ExamDraftPayload = JSON.parse(rawValue);
   if (parsed && parsed.status === 'in_progress') {
-    if (parsed.quizId !== quizId) {
+    const matchesQuizId =
+      parsed.quizId === quizId ||
+      (Boolean(alternateQuizId) && parsed.quizId === alternateQuizId);
+    if (!matchesQuizId) {
       console.warn(`Draft bleed prevented via cloud: old draft belongs to ${parsed.quizId}, current exam is ${quizId}`);
       return null;
     }
@@ -342,7 +346,12 @@ export async function fetchExamDraft(
   quizCode: string,
   quizId: string,
   studentIdentifier: string,
-  options?: { studentPin?: string; expectedStudentName?: string; expectedStudentClass?: string }
+  options?: {
+    studentPin?: string;
+    expectedStudentName?: string;
+    expectedStudentClass?: string;
+    alternateQuizId?: string;
+  }
 ): Promise<ExamDraftPayload | null> {
   if (!quizCode || !quizId || !studentIdentifier) return null;
 
@@ -359,7 +368,10 @@ export async function fetchExamDraft(
       const parsed: ExamDraftPayload = JSON.parse(local);
       if (parsed && parsed.status === 'in_progress') {
         const parsedClassNorm = normalizeClassIdentityPart(parsed.candidateClass);
-        if (parsed.quizId !== quizId) {
+        const matchesLocalQuizId =
+          parsed.quizId === quizId ||
+          (Boolean(options?.alternateQuizId) && parsed.quizId === options?.alternateQuizId);
+        if (!matchesLocalQuizId) {
           console.warn(
             `Local draft quiz id mismatch (${parsed.quizId} != ${quizId}); checking cloud copy instead.`
           );
@@ -401,7 +413,8 @@ export async function fetchExamDraft(
           quizId,
           draftKey,
           options?.expectedStudentName,
-          options?.expectedStudentClass
+          options?.expectedStudentClass,
+          options?.alternateQuizId
         );
       }
       return null;
@@ -422,7 +435,8 @@ export async function fetchExamDraft(
         quizId,
         draftKey,
         options?.expectedStudentName,
-        options?.expectedStudentClass
+        options?.expectedStudentClass,
+        options?.alternateQuizId
       );
     }
   } catch (err) {
@@ -439,7 +453,8 @@ export async function clearExamDraft(
   quizCode: string,
   quizId: string,
   studentIdentifier: string,
-  studentPin?: string
+  studentPin?: string,
+  options?: { localOnly?: boolean }
 ): Promise<void> {
   if (!quizCode || !quizId || !studentIdentifier) return;
 
@@ -452,6 +467,9 @@ export async function clearExamDraft(
   } catch {}
   inMemoryDraftSecrets.delete(draftKey);
   clearDraftCloudFailure(draftKey);
+
+  // Migration 036 deletes app_config + exam_draft_locks inline inside submit_student_exam_attempt
+  if (options?.localOnly) return;
 
   try {
     let rpcRes = await (supabase as any).rpc('delete_student_exam_draft', {

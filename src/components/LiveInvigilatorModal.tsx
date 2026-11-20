@@ -10,7 +10,7 @@ import {
 } from '../services/examProctorRealtimeService';
 import {
   getSubmissionsForQuiz,
-  loadAndSyncAllSubmissions,
+  fetchProctorMonitoredSubmissions,
   ingestEmergencySubmissionBatch,
   type BatchEmergencyIngestionSummary,
 } from '../services/quizSubmissionService';
@@ -46,7 +46,7 @@ import {
   type ProctorAlertToast,
 } from '../lib/proctorAlertEngine';
 import { exportProctorAuditLogExcelICM } from '../services/icmExcelExportService';
-import { supabase, hasActiveTeacherSession } from '../lib/supabase';
+import { supabase, hasActiveTeacherSession, isSupabaseConfigured } from '../lib/supabase';
 import { getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
 import {
   normalizeTargetClassKey,
@@ -369,8 +369,8 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       }
     } catch { }
 
-    // B. Cloud submissions sync
-    loadAndSyncAllSubmissions()
+    // B. Cloud submissions sync (scoped strictly to monitoredQuizzes, read-only)
+    fetchProctorMonitoredSubmissions(monitoredQuizzes)
       .then((allSubs) => {
         const cloudLoaded: Record<string, ProctorStudentState> = {};
         monitoredQuizzes.forEach((quiz) => {
@@ -678,20 +678,23 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         }
       }
 
-      // Persist discrete student events so a reload does not erase them (P1-C).
-      recordProctorAuditEvent({
-        id: enriched.id,
-        quizCode: qCode,
-        studentId: canonicalId,
-        studentName: enriched.studentName,
-        candidateNumber: enriched.candidateNumber,
-        candidateClass: enriched.candidateClass,
-        eventType: enriched.type,
-        severity: enriched.severity,
-        detail: enriched.detail,
-        actor: 'student',
-        createdAt: enriched.timestamp,
-      });
+      // Student clients persist their own audit events directly; mirror locally without duplicate DB inserts.
+      recordProctorAuditEvent(
+        {
+          id: enriched.id,
+          quizCode: qCode,
+          studentId: canonicalId,
+          studentName: enriched.studentName,
+          candidateNumber: enriched.candidateNumber,
+          candidateClass: enriched.candidateClass,
+          eventType: enriched.type,
+          severity: enriched.severity,
+          detail: enriched.detail,
+          actor: 'student',
+          createdAt: enriched.timestamp,
+        },
+        { localOnly: true }
+      );
     };
 
     subscribeMultiProctorDashboard(codes, {
@@ -730,7 +733,26 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       });
     });
 
+    // Pre-warm exam_paper_cache for monitored codes before the room opens (and refresh every 4 min
+    // before the 5-min TTL expires) so 200 simultaneous student logins never trigger cold rebuilds.
+    const warmTimeouts: ReturnType<typeof setTimeout>[] = [];
+    const warmMonitoredPapers = () => {
+      if (!isSupabaseConfigured()) return;
+      codes.slice(0, 20).forEach((code, idx) => {
+        const t = setTimeout(() => {
+          void Promise.resolve(
+            (supabase as any).rpc?.('get_student_exam_paper', { p_code: code })
+          ).catch(() => {});
+        }, idx * 80);
+        warmTimeouts.push(t);
+      });
+    };
+    warmMonitoredPapers();
+    const warmTimer = setInterval(warmMonitoredPapers, 240_000);
+
     return () => {
+      clearInterval(warmTimer);
+      warmTimeouts.forEach(clearTimeout);
       destroyProctorSession();
     };
   }, [monitoredCodesKey, monitoredQuizzes, quizByCode]);

@@ -738,10 +738,25 @@ export async function loadAndSyncPublishedQuizzes(): Promise<PublishedQuiz[]> {
     // Update localStorage with authoritative merged list safely
     safeWritePublishedQuizzesToLocalStorage(localMerged);
 
-    // Heal cloud list if lengths differed, legacy blobs had questionOverrides stripped, or recovered from per-code index
+    const cloudDeduped = deduplicateQuizzes(cloudList);
+    const cloudHadTombstonedOrDuplicateRows = rawCloudList.length !== cloudDeduped.length;
+    const cloudIdentitySet = new Set(
+      cloudDeduped.map((q) => `${q.id}::${(q.quizCode || '').trim().toUpperCase()}`)
+    );
+    const hasLocalExclusiveQuiz = localList.some(
+      (q) =>
+        q &&
+        q.id !== PILOT_EXAM_ID &&
+        (q.quizCode || '').trim().toUpperCase() !== PILOT_QUIZ_CODE &&
+        !deletedIds.has(String(q.id || '').trim()) &&
+        !cloudIdentitySet.has(`${q.id}::${(q.quizCode || '').trim().toUpperCase()}`)
+    );
+
+    // Heal cloud list only if tombstones/dups pruned cloud rows, local had an exclusive quiz not yet in cloud,
+    // legacy blobs had questionOverrides stripped, or recovered from per-code index
     if (
-      rawCloudList.length !== cloudMerged.length ||
-      localList.length !== cloudMerged.length ||
+      cloudHadTombstonedOrDuplicateRows ||
+      hasLocalExclusiveQuiz ||
       cloudHadStrippedOverrides ||
       Boolean(cloudRes.recoveredFromCodeIndex)
     ) {

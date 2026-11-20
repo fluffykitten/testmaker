@@ -231,9 +231,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           questionIds: customRes.test.question_ids || prev.questionIds,
           headerConfig: customRes.test.header_config
             ? {
-                ...(prev.headerConfig || {}),
-                ...customRes.test.header_config,
-              }
+              ...(prev.headerConfig || {}),
+              ...customRes.test.header_config,
+            }
             : prev.headerConfig,
         }));
         return customRes.questions;
@@ -354,7 +354,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           isAutoGradingRef.current = false;
         }
       } else if (masterQuestionsRef.current.length === 0) {
-        loadQuizQuestionsWithOverrides().catch(() => {});
+        loadQuizQuestionsWithOverrides().catch(() => { });
       }
     } catch (e) {
       console.warn('Failed to refresh submissions:', e);
@@ -374,9 +374,10 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
     };
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
 
-    // 2. Real-time Supabase Subscription for live submissions
+    // 2. Real-time Supabase Subscription for live submissions (debounced to coalesce 170+ submit bursts)
     const cleanCode = (quiz.quizCode || '').toUpperCase();
     const channelName = `quiz_results_${cleanCode || quiz.id}_${Date.now()}`;
+    let realtimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const channel = supabase
       .channel(channelName)
       .on(
@@ -399,7 +400,11 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               return;
             }
           }
-          refreshSubmissions();
+          if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
+          realtimeRefreshTimer = setTimeout(() => {
+            realtimeRefreshTimer = null;
+            refreshSubmissions();
+          }, 2500);
         }
       )
       .subscribe((status) => {
@@ -407,6 +412,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
       });
 
     return () => {
+      if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
       window.removeEventListener('submissions_updated', handleSubmissionsUpdated);
       supabase.removeChannel(channel);
     };
@@ -750,8 +756,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
           const isManualQuestion = Boolean(
             prevResult?.manualOverride ||
-              gradingMethod === 'teacher' ||
-              subResults.some((sr) => Boolean(sr.manualOverride))
+            gradingMethod === 'teacher' ||
+            subResults.some((sr) => Boolean(sr.manualOverride))
           );
 
           qResults.push({
@@ -1728,10 +1734,10 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                               background: isSelected
                                 ? 'var(--icm-blue)'
                                 : percent >= 70
-                                ? '#10b981'
-                                : percent >= 40
-                                ? '#f59e0b'
-                                : '#ef4444',
+                                  ? '#10b981'
+                                  : percent >= 40
+                                    ? '#f59e0b'
+                                    : '#ef4444',
                             }}
                           />
                           <strong className="qrm-sc-name" title={sub.studentName}>{sub.studentName}</strong>
@@ -1995,8 +2001,8 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                                   t.percentage >= 75
                                     ? '#10b981'
                                     : t.percentage >= 50
-                                    ? 'var(--icm-blue)'
-                                    : '#ef4444',
+                                      ? 'var(--icm-blue)'
+                                      : '#ef4444',
                               }}
                             />
                           </div>
@@ -2420,239 +2426,239 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
                               )}
                             </div>
 
-                          <div className="q-marks-tag" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            {editingQuestionId === qr.questionId ? (
-                              <div className="qrm-grade-action-bar" onClick={(e) => e.stopPropagation()}>
-                                {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
-                                  <span
-                                    className="qrm-auto-total-badge"
-                                    title="Total mark is automatically calculated from the sum of sub-questions below"
+                            <div className="q-marks-tag" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              {editingQuestionId === qr.questionId ? (
+                                <div className="qrm-grade-action-bar" onClick={(e) => e.stopPropagation()}>
+                                  {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
+                                    <span
+                                      className="qrm-auto-total-badge"
+                                      title="Total mark is automatically calculated from the sum of sub-questions below"
+                                    >
+                                      ∑ {editMarksInput} / {qr.maxMarks} Marks (from parts)
+                                    </span>
+                                  ) : (
+                                    <div className="qrm-mark-input-group">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={qr.maxMarks}
+                                        step="any"
+                                        value={editMarksInput}
+                                        onChange={(e) => setEditMarksInput(e.target.value !== '' ? Number(e.target.value) : ('' as any))}
+                                        className="qrm-mark-number-input"
+                                      />
+                                      <span className="qrm-mark-denom">/ {qr.maxMarks}</span>
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="qrm-grade-save-btn"
+                                    onClick={() => handleSaveMarkOverride(qr)}
+                                    title="Save marks and remark immediately"
                                   >
-                                    ∑ {editMarksInput} / {qr.maxMarks} Marks (from parts)
-                                  </span>
-                                ) : (
-                                  <div className="qrm-mark-input-group">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={qr.maxMarks}
-                                      step="any"
-                                      value={editMarksInput}
-                                      onChange={(e) => setEditMarksInput(e.target.value !== '' ? Number(e.target.value) : ('' as any))}
-                                      className="qrm-mark-number-input"
-                                    />
-                                    <span className="qrm-mark-denom">/ {qr.maxMarks}</span>
-                                  </div>
-                                )}
-                                <button
-                                  type="button"
-                                  className="qrm-grade-save-btn"
-                                  onClick={() => handleSaveMarkOverride(qr)}
-                                  title="Save marks and remark immediately"
-                                >
-                                  ✓ Save
-                                </button>
-                                <button
-                                  type="button"
-                                  className="qrm-grade-cancel-btn"
-                                  onClick={() => setEditingQuestionId(null)}
-                                  title="Cancel editing"
-                                >
-                                  ✕ Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <>
-                                {savedQuestionId === qr.questionId && (
-                                  <span className="qrm-saved-pill animate-fade-in">
-                                    ✓ Saved
-                                  </span>
-                                )}
-                                <span>
-                                  {qr.isCorrect ? '✓ ' : '✗ '}
-                                  {qr.subQuestionResults && qr.subQuestionResults.length > 0
-                                    ? Math.min(
+                                    ✓ Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="qrm-grade-cancel-btn"
+                                    onClick={() => setEditingQuestionId(null)}
+                                    title="Cancel editing"
+                                  >
+                                    ✕ Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  {savedQuestionId === qr.questionId && (
+                                    <span className="qrm-saved-pill animate-fade-in">
+                                      ✓ Saved
+                                    </span>
+                                  )}
+                                  <span>
+                                    {qr.isCorrect ? '✓ ' : '✗ '}
+                                    {qr.subQuestionResults && qr.subQuestionResults.length > 0
+                                      ? Math.min(
                                         qr.maxMarks,
                                         qr.subQuestionResults.reduce((acc, s) => acc + (Number(s.earnedMarks) || 0), 0)
                                       )
-                                    : qr.earnedMarks}{' '}
-                                  / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="qrm-grade-edit-btn"
-                                  onClick={() => handleStartEditing(qr)}
-                                  title={
-                                    qr.subQuestionResults && qr.subQuestionResults.length > 0
-                                      ? 'Grade individual sub-questions or add teacher remark'
-                                      : 'Adjust mark or add teacher remark'
-                                  }
-                                >
-                                  ✏️ {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? 'Grade Parts' : 'Edit Mark / Remark'}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Teacher Remark Input Form if editing */}
-                        {editingQuestionId === qr.questionId && (
-                          <div className="qrm-teacher-remark-box">
-                            <label className="qrm-teacher-remark-label">
-                              Teacher Remark / Feedback Annotation (optional):
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="e.g. Awarded +1 for valid alternative derivation of molar volume"
-                              value={editTeacherNote}
-                              onChange={(e) => setEditTeacherNote(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  handleSaveMarkOverride(qr);
-                                }
-                              }}
-                              className="qrm-teacher-remark-input"
-                            />
-                          </div>
-                        )}
-
-                        <div className="q-answer-details">
-                          {/* Sub-Questions Results if present */}
-                          {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' }}>
-                              {qr.subQuestionResults.map((sub, sIdx) => {
-                                const cleanSubId = String(sub.subId || sIdx + 1).replace(/^\(+|\)+$/g, '');
-                                const subMax = sub.maxMarks || 1;
-                                const isEditingThisQuestion = editingQuestionId === qr.questionId;
-                                const activeSubMark = isEditingThisQuestion
-                                  ? Number(editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0)
-                                  : Number(sub.earnedMarks ?? 0);
-                                const isSubFullMarks = activeSubMark >= subMax;
-
-                                return (
-                                  <div
-                                    key={sIdx}
-                                    className={`qrm-sub-item-card ${isEditingThisQuestion ? 'is-editing' : ''}`}
+                                      : qr.earnedMarks}{' '}
+                                    / {qr.maxMarks} Mark{qr.maxMarks !== 1 ? 's' : ''}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="qrm-grade-edit-btn"
+                                    onClick={() => handleStartEditing(qr)}
+                                    title={
+                                      qr.subQuestionResults && qr.subQuestionResults.length > 0
+                                        ? 'Grade individual sub-questions or add teacher remark'
+                                        : 'Adjust mark or add teacher remark'
+                                    }
                                   >
-                                    <div className="qrm-sub-item-header">
-                                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flex: 1 }}>
-                                        <strong className="qrm-sub-part-label">Part ({cleanSubId})</strong>
-                                        {sub.questionText && (
-                                          <span className="qrm-sub-prompt-snippet">
-                                            <ExamMathText content={sub.questionText} />
-                                          </span>
+                                    ✏️ {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? 'Grade Parts' : 'Edit Mark / Remark'}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Teacher Remark Input Form if editing */}
+                          {editingQuestionId === qr.questionId && (
+                            <div className="qrm-teacher-remark-box">
+                              <label className="qrm-teacher-remark-label">
+                                Teacher Remark / Feedback Annotation (optional):
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="e.g. Awarded +1 for valid alternative derivation of molar volume"
+                                value={editTeacherNote}
+                                onChange={(e) => setEditTeacherNote(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleSaveMarkOverride(qr);
+                                  }
+                                }}
+                                className="qrm-teacher-remark-input"
+                              />
+                            </div>
+                          )}
+
+                          <div className="q-answer-details">
+                            {/* Sub-Questions Results if present */}
+                            {qr.subQuestionResults && qr.subQuestionResults.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' }}>
+                                {qr.subQuestionResults.map((sub, sIdx) => {
+                                  const cleanSubId = String(sub.subId || sIdx + 1).replace(/^\(+|\)+$/g, '');
+                                  const subMax = sub.maxMarks || 1;
+                                  const isEditingThisQuestion = editingQuestionId === qr.questionId;
+                                  const activeSubMark = isEditingThisQuestion
+                                    ? Number(editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0)
+                                    : Number(sub.earnedMarks ?? 0);
+                                  const isSubFullMarks = activeSubMark >= subMax;
+
+                                  return (
+                                    <div
+                                      key={sIdx}
+                                      className={`qrm-sub-item-card ${isEditingThisQuestion ? 'is-editing' : ''}`}
+                                    >
+                                      <div className="qrm-sub-item-header">
+                                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flex: 1 }}>
+                                          <strong className="qrm-sub-part-label">Part ({cleanSubId})</strong>
+                                          {sub.questionText && (
+                                            <span className="qrm-sub-prompt-snippet">
+                                              <ExamMathText content={sub.questionText} />
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {isEditingThisQuestion ? (
+                                          <div className="qrm-sub-grade-controls" onClick={(e) => e.stopPropagation()}>
+                                            {subMax <= 5 && Number.isInteger(subMax) && (
+                                              <div className="qrm-sub-quick-pills" title="Quickly select mark for this part">
+                                                {Array.from({ length: subMax + 1 }, (_, m) => (
+                                                  <button
+                                                    key={m}
+                                                    type="button"
+                                                    className={`qrm-sub-quick-pill ${activeSubMark === m ? (m === subMax ? 'active-full' : m > 0 ? 'active-partial' : 'active-zero') : ''}`}
+                                                    onClick={() => handleSubMarkChange(qr, sIdx, m)}
+                                                  >
+                                                    {m}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            )}
+                                            <div className="qrm-sub-input-wrap">
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                max={subMax}
+                                                step="any"
+                                                value={editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0}
+                                                onChange={(e) =>
+                                                  handleSubMarkChange(
+                                                    qr,
+                                                    sIdx,
+                                                    e.target.value !== '' ? Number(e.target.value) : 0
+                                                  )
+                                                }
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    handleSaveMarkOverride(qr);
+                                                  }
+                                                }}
+                                                className="qrm-sub-mark-input"
+                                              />
+                                              <span className="qrm-sub-mark-max">
+                                                / {subMax} mark{subMax !== 1 ? 's' : ''}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className={`qrm-sub-mark-badge-btn ${isSubFullMarks ? 'is-correct' : activeSubMark > 0 ? 'is-partial' : 'is-zero'}`}
+                                            onClick={() => handleStartEditing(qr)}
+                                            title={`Click to edit mark for Part (${cleanSubId})`}
+                                          >
+                                            <span>
+                                              {activeSubMark} / {subMax} mark{subMax !== 1 ? 's' : ''}
+                                            </span>
+                                            <span className="qrm-sub-edit-hint">✏️</span>
+                                          </button>
                                         )}
                                       </div>
-
-                                      {isEditingThisQuestion ? (
-                                        <div className="qrm-sub-grade-controls" onClick={(e) => e.stopPropagation()}>
-                                          {subMax <= 5 && Number.isInteger(subMax) && (
-                                            <div className="qrm-sub-quick-pills" title="Quickly select mark for this part">
-                                              {Array.from({ length: subMax + 1 }, (_, m) => (
-                                                <button
-                                                  key={m}
-                                                  type="button"
-                                                  className={`qrm-sub-quick-pill ${activeSubMark === m ? (m === subMax ? 'active-full' : m > 0 ? 'active-partial' : 'active-zero') : ''}`}
-                                                  onClick={() => handleSubMarkChange(qr, sIdx, m)}
-                                                >
-                                                  {m}
-                                                </button>
-                                              ))}
-                                            </div>
-                                          )}
-                                          <div className="qrm-sub-input-wrap">
-                                            <input
-                                              type="number"
-                                              min={0}
-                                              max={subMax}
-                                              step="any"
-                                              value={editSubMarksInput[sIdx] ?? sub.earnedMarks ?? 0}
-                                              onChange={(e) =>
-                                                handleSubMarkChange(
-                                                  qr,
-                                                  sIdx,
-                                                  e.target.value !== '' ? Number(e.target.value) : 0
-                                                )
-                                              }
-                                              onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                  e.preventDefault();
-                                                  handleSaveMarkOverride(qr);
-                                                }
-                                              }}
-                                              className="qrm-sub-mark-input"
-                                            />
-                                            <span className="qrm-sub-mark-max">
-                                              / {subMax} mark{subMax !== 1 ? 's' : ''}
-                                            </span>
-                                          </div>
+                                      <div style={{ color: 'var(--color-text-secondary)' }}>
+                                        Candidate Answer:{' '}
+                                        <strong style={{ color: 'var(--color-text-primary)' }}>
+                                          <ExamMathText content={formatCandidateAnswer(sub.studentAnswer)} />
+                                        </strong>
+                                      </div>
+                                      {sub.feedback && (
+                                        <div style={{ fontSize: '0.75rem', color: isSubFullMarks ? '#16a34a' : 'var(--color-text-secondary)', marginTop: 3 }}>
+                                          <ExamMathText content={sub.feedback} />
                                         </div>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          className={`qrm-sub-mark-badge-btn ${isSubFullMarks ? 'is-correct' : activeSubMark > 0 ? 'is-partial' : 'is-zero'}`}
-                                          onClick={() => handleStartEditing(qr)}
-                                          title={`Click to edit mark for Part (${cleanSubId})`}
-                                        >
-                                          <span>
-                                            {activeSubMark} / {subMax} mark{subMax !== 1 ? 's' : ''}
-                                          </span>
-                                          <span className="qrm-sub-edit-hint">✏️</span>
-                                        </button>
                                       )}
                                     </div>
-                                    <div style={{ color: 'var(--color-text-secondary)' }}>
-                                      Candidate Answer:{' '}
-                                      <strong style={{ color: 'var(--color-text-primary)' }}>
-                                        <ExamMathText content={formatCandidateAnswer(sub.studentAnswer)} />
-                                      </strong>
-                                    </div>
-                                    {sub.feedback && (
-                                      <div style={{ fontSize: '0.75rem', color: isSubFullMarks ? '#16a34a' : 'var(--color-text-secondary)', marginTop: 3 }}>
-                                        <ExamMathText content={sub.feedback} />
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="ans-block">
-                              <span className="ans-lbl">Student Answer:</span>
-                              <span className={`ans-val ${qr.isCorrect ? 'correct-text' : 'wrong-text'}`}>
-                                <ExamMathText content={formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod)} />
-                              </span>
-                            </div>
-                          )}
-
-                          {qr.aiFeedback && (
-                            <div style={{ background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.3)', borderRadius: '6px', padding: '6px 10px', margin: '6px 0', fontSize: '0.8125rem' }}>
-                              <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 2 }}>💡 Examiner Feedback:</strong>
-                              <ExamMathText content={qr.aiFeedback} />
-                            </div>
-                          )}
-
-                          {displayCorrectAnswer && (
-                            <div className="ans-block">
-                              <span className="ans-lbl">Model Solution / Correct Answer:</span>
-                              <div className="ans-val model-text">
-                                <ExamMathText content={formatCandidateAnswer(displayCorrectAnswer, qr.options || masterQuestion?.options, qr.gradingMethod)} />
+                                  );
+                                })}
                               </div>
-                            </div>
-                          )}
+                            ) : (
+                              <div className="ans-block">
+                                <span className="ans-lbl">Student Answer:</span>
+                                <span className={`ans-val ${qr.isCorrect ? 'correct-text' : 'wrong-text'}`}>
+                                  <ExamMathText content={formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod)} />
+                                </span>
+                              </div>
+                            )}
 
-                          {qr.misconceptions && qr.misconceptions.length > 0 && (
-                            <div className="ans-misconceptions">
-                              <span className="misc-lbl">⚠️ Common Misconception:</span>
-                              <ul>
-                                {qr.misconceptions.map((m, mIdx) => (
-                                  <li key={mIdx}>{m}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
+                            {qr.aiFeedback && (
+                              <div style={{ background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.3)', borderRadius: '6px', padding: '6px 10px', margin: '6px 0', fontSize: '0.8125rem' }}>
+                                <strong style={{ color: '#a78bfa', display: 'block', marginBottom: 2 }}>💡 Examiner Feedback:</strong>
+                                <ExamMathText content={qr.aiFeedback} />
+                              </div>
+                            )}
+
+                            {displayCorrectAnswer && (
+                              <div className="ans-block">
+                                <span className="ans-lbl">Model Solution / Correct Answer:</span>
+                                <div className="ans-val model-text">
+                                  <ExamMathText content={formatCandidateAnswer(displayCorrectAnswer, qr.options || masterQuestion?.options, qr.gradingMethod)} />
+                                </div>
+                              </div>
+                            )}
+
+                            {qr.misconceptions && qr.misconceptions.length > 0 && (
+                              <div className="ans-misconceptions">
+                                <span className="misc-lbl">⚠️ Common Misconception:</span>
+                                <ul>
+                                  {qr.misconceptions.map((m, mIdx) => (
+                                    <li key={mIdx}>{m}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
                           {/* Forensic Answer Revision Timeline */}
                           {expandedRevisions[qr.questionId] && qRevisions.length > 0 && (
                             <div className="q-revision-timeline animate-fade-in">

@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.5.9`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.6.0`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.5.9-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.6.0-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `033`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `036`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -125,6 +125,9 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`031_class_scoped_identity_and_170_student_scale.sql`](supabase/migrations/031_class_scoped_identity_and_170_student_scale.sql) | Class-scoped homonym disambiguation (`normalize_roster_class_label`), Practice `'graded'` status + optional `result_pin` idempotency, `fillfactor = 70` HOT tuning, 10-min `exam_draft_locks` refresh guard, functional audit/attempt lookup indexes, and `cleanup_stale_exam_drafts` RPC |
 | [`032_exam_paper_cache_and_fast_lobby.sql`](supabase/migrations/032_exam_paper_cache_and_fast_lobby.sql) | Private RLS-locked `exam_paper_cache` with trigger-based invalidation (`app_config` / `questions` / `custom_tests`), live `scheduleStatus`/`serverNow` window enforcement, per-code advisory-lock single-flight builds, and indexed UUID/PK CTE question resolution |
 | [`033_resync_pin_verification_parity.sql`](supabase/migrations/033_resync_pin_verification_parity.sql) | Teacher unlock PIN RPC parity across `quiz_by_code_`, `quiz_by_code:`, `published_quizzes`, `previousCodes`, and default `'1234'` fallback |
+| [`034_atomic_draft_lock_index_and_pin_ratelimit.sql`](supabase/migrations/034_atomic_draft_lock_index_and_pin_ratelimit.sql) | Expression index `idx_quiz_submissions_code_norm_name_class`, atomic `exam_draft_locks` upsert, and normalized student PIN rate-limit scoping |
+| [`035_fix_exam_paper_cache_safeupdate.sql`](supabase/migrations/035_fix_exam_paper_cache_safeupdate.sql) | Qualified `DELETE FROM public.exam_paper_cache WHERE quiz_code IS NOT NULL` unblocking `app_config` / `questions` / `custom_tests` writes under `pg_safeupdate` |
+| [`036_icm_multi_exam_scale_and_roster_cache.sql`](supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql) | Trigger-synced `school_roster_entries`/`school_roster_meta` indexed cache, selective `exam_paper_cache` diff invalidation, bundled lobby metadata (`publicRosterDirectory`, `schoolClasses`, `securityTiers`, `hideEmergencyExamButton`), PK-guarded `clear_rate_limit`, and inline post-submit draft/lock cleanup |
 
 ---
 
@@ -152,11 +155,25 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Proctoring Hardening** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-hardening-023.mjs` | ECDSA P-256 command auth, UTF-8 byte clamping, `023` audit guards |
 | **Proctoring State Machine** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-p1-p2-p3.mjs` | Heartbeat throttling, command replay protection, strike/pardon guards |
 | **200-Student Live Load & Red-Team** | `npm run test:stress-200` | Concurrent 200-student Supabase stress simulation & exploit probes ([latest report](Plan/student_200_stress_test_report.md)) |
+| **Multi-Exam Sitting Stress Test** | `npm run test:stress-realistic` | Full-fidelity 200-student across `ICM-1`..`ICM-13` + 3 Invigilators + 2 Results Watchers + 2s health probe ([latest report](Plan/realistic_stress_test_report.md)) |
 | **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
 
 ---
 
 ## Changelog
+
+### [v.2.6.0] — Multi-Exam Scale Hardening, Indexed Roster Cache & 200-Student Live Sitting Verification (`036`)
+- **Indexed Roster Cache, Lobby Payload Bundling & Atomic Post-Submit Cleanup (`036`)**:
+  - Added [`supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql`](supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql):
+    - Replaced repeated `app_config('school_roster')` full JSON scans with RLS-locked, trigger-synced `school_roster_entries` and `school_roster_meta` cache tables powering indexed `get_public_roster_directory`, `verify_student_pin`, and `verify_roster_pin_if_enrolled`.
+    - Replaced bare full-table cache flushes on `published_quizzes` updates with selective diff invalidation, bypassed `pg_advisory_xact_lock` for non-active papers, dropped redundant `idx_quiz_submissions_attempt_class_lookup`, and guarded `clear_rate_limit` with a read-only `IF EXISTS` probe.
+    - Bundled `publicRosterDirectory`, `schoolClasses`, `securityTiers`, and `hideEmergencyExamButton` directly into `get_student_exam_paper`, and upgraded `submit_student_exam_attempt` to look up quiz metadata from `exam_paper_cache` and delete the student's cloud draft and lock inline in the same transaction.
+- **Student Boot, Autosave & Teacher Dashboard Storm Elimination**:
+  - Gated `TeacherProfileProvider` ([`App.tsx`](src/App.tsx)) and student boot settings ([`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), [`quizCodeService.ts`](src/services/quizCodeService.ts), [`settings.ts`](src/lib/settings.ts), [`studentRosterService.ts`](src/services/studentRosterService.ts)) behind `hasActiveTeacherSession()` with 5-minute in-memory caching and `0..3,400ms` boot smoothing jitter; added `12–18s` cloud draft debounce jitter, `0..4,500ms` upload smoothing jitter, `{ localOnly: true }` post-submit `clearExamDraft()` ([`examDraftService.ts`](src/services/examDraftService.ts)), and backoff enforcement on `keepalive` draft saves.
+  - Added `{ localOnly: true }` audit mirroring and staggered `exam_paper_cache` pre-warming on cockpit mount (`4m` refresh) in [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx), `2,500ms` `postgres_changes` debouncing in [`QuizResultsModal.tsx`](src/components/QuizResultsModal.tsx), surgical `upsert` diffing in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts), and fresh-browser protection in [`quizManagerService.ts`](src/services/quizManagerService.ts).
+- **Full-Fidelity 200-Student / 13-Exam Stress Harness & Verification**:
+  - Added [`scripts/stress-test-realistic-exam-sitting.mjs`](scripts/stress-test-realistic-exam-sitting.mjs) (`npm run test:stress-realistic`) and [`scripts/test-icm-multi-exam-scale-036.mjs`](scripts/test-icm-multi-exam-scale-036.mjs) (`npm run test:multi-exam-scale`).
+  - Verified live 200-student + 5-proctor simulation (`Run ID: mwoo886j`) passing all 6 SLOs (`0` HTTP errors, `200/200` 1st-try submissions, `get_student_exam_paper` `p95 = 393.2ms`, `submit_student_exam_attempt` `p95 = 406.1ms`, `0/24` degraded health ticks) alongside `npm run test:scale-170` (`18/18`), `npm run test:multi-exam-scale` (`10/10`), and `npm run build`.
 
 ### [v.2.5.9] — Simulation Part 2 Saved Test, Published Exam Scaling & Same-Browser Link Resolution (`035`)
 - **Published Exam Save Scaling & `pg_safeupdate` Fix (`035`)**:

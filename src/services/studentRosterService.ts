@@ -60,6 +60,28 @@ export interface RosterImportPlan {
 }
 
 const ROSTER_STORAGE_KEY = 'testmaker_school_student_roster';
+const PUBLIC_ROSTER_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedPublicRosterDirectory: { data: PublicRosterStudent[]; timestamp: number } | null = null;
+let inflightPublicRosterPromise: Promise<PublicRosterStudent[]> | null = null;
+
+/**
+ * Seeds the in-memory public roster directory cache (e.g. from bundled `get_student_exam_paper`).
+ */
+export function seedPublicRosterDirectoryCache(list: unknown): void {
+  if (!Array.isArray(list)) return;
+  const cleaned: PublicRosterStudent[] = list
+    .filter((item: any) => item && typeof item.name === 'string' && item.name.trim().length > 0)
+    .map((item: any) => ({
+      id: String(item.id || ''),
+      name: String(item.name || '').trim(),
+      class: String(item.class || '').trim(),
+      candidateNumber: item.candidateNumber ? String(item.candidateNumber).trim() : undefined,
+    }));
+  cachedPublicRosterDirectory = {
+    data: cleaned,
+    timestamp: Date.now(),
+  };
+}
 
 /**
  * Generates a random 4-digit PIN between 1000 and 9999
@@ -86,6 +108,7 @@ export function getSchoolRoster(): RosterStudent[] {
  * Saves student roster locally and syncs to Supabase app_config cloud store.
  */
 export async function saveSchoolRoster(roster: RosterStudent[]): Promise<boolean> {
+  cachedPublicRosterDirectory = null;
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(roster));
@@ -115,6 +138,7 @@ export async function saveSchoolRoster(roster: RosterStudent[]): Promise<boolean
  * Loads student roster from Supabase cloud if available, updating the local cache.
  */
 export async function loadAndSyncSchoolRoster(): Promise<RosterStudent[]> {
+  cachedPublicRosterDirectory = null;
   const localRoster = getSchoolRoster();
 
   try {
@@ -157,34 +181,52 @@ export async function loadAndSyncSchoolRoster(): Promise<RosterStudent[]> {
  * Used by the student lobby for autocomplete.
  */
 export async function fetchPublicRosterDirectory(): Promise<PublicRosterStudent[]> {
-  try {
-    // 1. Try Postgres RPC first (Direct, 0ms cold start, natively runs inside Supabase)
-    const { data: rpcData, error: rpcError } = await (supabase as any).rpc('get_public_roster_directory');
-    if (!rpcError && Array.isArray(rpcData)) {
-      return rpcData;
-    }
-
-    // 2. Try Supabase Edge Function fallback
-    const { data: edgeData, error: edgeError } = await supabase.functions.invoke('verify-student-pin', {
-      body: { action: 'get-roster-directory' },
-    });
-
-    if (!edgeError && edgeData?.students && Array.isArray(edgeData.students) && edgeData.students.length > 0 && !edgeData.unconfigured) {
-      return edgeData.students;
-    }
-  } catch (err) {
-    console.warn('Network error fetching public roster directory:', err);
+  if (
+    cachedPublicRosterDirectory &&
+    Date.now() - cachedPublicRosterDirectory.timestamp < PUBLIC_ROSTER_CACHE_TTL_MS
+  ) {
+    return cachedPublicRosterDirectory.data;
+  }
+  if (inflightPublicRosterPromise) {
+    return inflightPublicRosterPromise;
   }
 
-  // 3. Fallback to local cache (Offline / Dev mode fallback)
-  // Strip PINs locally just in case
-  const localRoster = getSchoolRoster();
-  return localRoster.map((s) => ({
-    id: s.id,
-    name: s.name,
-    class: s.class,
-    candidateNumber: s.candidateNumber,
-  }));
+  inflightPublicRosterPromise = (async () => {
+    try {
+      // 1. Try Postgres RPC first (Direct, 0ms cold start, natively runs inside Supabase)
+      const { data: rpcData, error: rpcError } = await (supabase as any).rpc('get_public_roster_directory');
+      if (!rpcError && Array.isArray(rpcData)) {
+        cachedPublicRosterDirectory = { data: rpcData, timestamp: Date.now() };
+        return rpcData;
+      }
+
+      // 2. Try Supabase Edge Function fallback
+      const { data: edgeData, error: edgeError } = await supabase.functions.invoke('verify-student-pin', {
+        body: { action: 'get-roster-directory' },
+      });
+
+      if (!edgeError && edgeData?.students && Array.isArray(edgeData.students) && edgeData.students.length > 0 && !edgeData.unconfigured) {
+        cachedPublicRosterDirectory = { data: edgeData.students, timestamp: Date.now() };
+        return edgeData.students;
+      }
+    } catch (err) {
+      console.warn('Network error fetching public roster directory:', err);
+    }
+
+    // 3. Fallback to local cache (Offline / Dev mode fallback)
+    // Strip PINs locally just in case
+    const localRoster = getSchoolRoster();
+    return localRoster.map((s) => ({
+      id: s.id,
+      name: s.name,
+      class: s.class,
+      candidateNumber: s.candidateNumber,
+    }));
+  })().finally(() => {
+    inflightPublicRosterPromise = null;
+  });
+
+  return inflightPublicRosterPromise;
 }
 
 /**

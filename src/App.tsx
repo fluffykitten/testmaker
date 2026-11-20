@@ -139,9 +139,14 @@ function App() {
   // Mobile lifecycle & hardware back-button integration
   useMobileLifecycle();
 
-  // Initialize and apply user appearance preferences & background backup scheduler
+  // Initialize and apply user appearance preferences immediately on boot
   useEffect(() => {
     applySettings(getSavedSettings());
+  }, []);
+
+  // Only sync educator workspace settings & start auto-backup scheduler after entering teacher mode
+  useEffect(() => {
+    if (appMode !== 'teacher') return;
     initAutoBackupPeriodicScheduler();
     loadAndSyncSchoolClasses().catch(() => {});
     loadAndSyncSchoolSubjects().catch(() => {});
@@ -150,7 +155,7 @@ function App() {
     loadAndSyncGeminiExtractionModel().catch(() => {});
     loadAndSyncGeminiApiKeyTier().catch(() => {});
     loadAndSyncSecurityTiers().catch(() => {});
-  }, []);
+  }, [appMode]);
 
   // Sync selected questions to sessionStorage
   useEffect(() => {

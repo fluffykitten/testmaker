@@ -291,39 +291,52 @@ export async function syncSchoolClassesToCloud(classes: string[]): Promise<boole
   }
 }
 
+let inflightSchoolClassesPromise: Promise<string[]> | null = null;
+
 /**
  * Loads school classes from local storage, fetches from Supabase cloud app_config if available,
  * and returns the authoritative class list.
  */
 export async function loadAndSyncSchoolClasses(): Promise<string[]> {
-  const localClasses = getSchoolClasses();
-
-  try {
-    const { data, error } = (await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', 'school_classes')
-      .maybeSingle()) as { data: { value: string } | null; error: any };
-
-    if (!error && data?.value) {
-      const parsed = JSON.parse(data.value);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const cleanCloud = parsed.map(String).filter(Boolean);
-        const current = getSavedSettings();
-        if (JSON.stringify(current.classes) !== JSON.stringify(cleanCloud)) {
-          const updated = { ...current, classes: cleanCloud };
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('school_classes_updated', { detail: { classes: cleanCloud } }));
-          }
-        }
-        return cleanCloud;
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch school classes from cloud, using local cache:', err);
+  if (lastStudentLobbySettingsSeededAt > 0 && Date.now() - lastStudentLobbySettingsSeededAt < 120_000) {
+    return getSchoolClasses();
   }
+  if (inflightSchoolClassesPromise) return inflightSchoolClassesPromise;
 
-  return localClasses;
+  inflightSchoolClassesPromise = (async () => {
+    const localClasses = getSchoolClasses();
+
+    try {
+      const { data, error } = (await (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', 'school_classes')
+        .maybeSingle()) as { data: { value: string } | null; error: any };
+
+      if (!error && data?.value) {
+        const parsed = JSON.parse(data.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const cleanCloud = parsed.map(String).filter(Boolean);
+          const current = getSavedSettings();
+          if (JSON.stringify(current.classes) !== JSON.stringify(cleanCloud)) {
+            const updated = { ...current, classes: cleanCloud };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('school_classes_updated', { detail: { classes: cleanCloud } }));
+            }
+          }
+          return cleanCloud;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch school classes from cloud, using local cache:', err);
+    }
+
+    return localClasses;
+  })().finally(() => {
+    inflightSchoolClassesPromise = null;
+  });
+
+  return inflightSchoolClassesPromise;
 }
 
 /**
@@ -517,41 +530,51 @@ export async function syncCreativeModeLandingVisibilityToCloud(hide: boolean): P
   }
 }
 
+let inflightCreativeModeVisibilityPromise: Promise<boolean> | null = null;
+
 /**
  * Loads Creative Mode landing page visibility from local storage, fetches from Supabase cloud app_config if available,
  * and updates local cache.
  */
 export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolean> {
-  const current = getSavedSettings();
-  const localVal = Boolean(current.hideCreativeModeOnLanding);
+  if (inflightCreativeModeVisibilityPromise) return inflightCreativeModeVisibilityPromise;
 
-  try {
-    const { data, error } = (await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', 'hide_creative_mode_landing')
-      .maybeSingle()) as { data: { value: string } | null; error: any };
+  inflightCreativeModeVisibilityPromise = (async () => {
+    const current = getSavedSettings();
+    const localVal = Boolean(current.hideCreativeModeOnLanding);
 
-    if (!error && data?.value !== undefined && data?.value !== null) {
-      const parsed = JSON.parse(data.value);
-      const cloudVal = Boolean(parsed);
-      if (current.hideCreativeModeOnLanding !== cloudVal) {
-        const updated = { ...current, hideCreativeModeOnLanding: cloudVal };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('creative_mode_landing_visibility_updated', {
-              detail: { hideCreativeModeOnLanding: cloudVal },
-            })
-          );
+    try {
+      const { data, error } = (await (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', 'hide_creative_mode_landing')
+        .maybeSingle()) as { data: { value: string } | null; error: any };
+
+      if (!error && data?.value !== undefined && data?.value !== null) {
+        const parsed = JSON.parse(data.value);
+        const cloudVal = Boolean(parsed);
+        if (current.hideCreativeModeOnLanding !== cloudVal) {
+          const updated = { ...current, hideCreativeModeOnLanding: cloudVal };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('creative_mode_landing_visibility_updated', {
+                detail: { hideCreativeModeOnLanding: cloudVal },
+              })
+            );
+          }
         }
+        return cloudVal;
       }
-      return cloudVal;
+    } catch (err) {
+      console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
     }
-  } catch (err) {
-    console.warn('Could not fetch Creative Mode landing visibility from cloud:', err);
-  }
 
-  return localVal;
+    return localVal;
+  })().finally(() => {
+    inflightCreativeModeVisibilityPromise = null;
+  });
+
+  return inflightCreativeModeVisibilityPromise;
 }
 
 /**
@@ -664,41 +687,131 @@ export async function syncEmergencyExamButtonVisibilityToCloud(hide: boolean): P
   }
 }
 
+let inflightEmergencyButtonPromise: Promise<boolean> | null = null;
+let lastStudentLobbySettingsSeededAt = 0;
+
+/**
+ * Seeds student-facing lobby configuration returned by `get_student_exam_paper`
+ * so student browsers skip redundant direct `app_config` queries.
+ */
+export function seedStudentLobbySettingsFromPaper(bundle: {
+  schoolClasses?: unknown;
+  securityTiers?: unknown;
+  hideEmergencyExamButton?: unknown;
+}): void {
+  if (!bundle || typeof bundle !== 'object') return;
+  const hasBundledField =
+    bundle.schoolClasses !== undefined ||
+    bundle.securityTiers !== undefined ||
+    bundle.hideEmergencyExamButton !== undefined;
+  if (!hasBundledField) return;
+
+  const current = getSavedSettings();
+  let changed = false;
+  const next: AppSettings = { ...current };
+  let classesUpdated = false;
+  let tiersUpdated = false;
+  let emergencyBtnUpdated = false;
+
+  if (Array.isArray(bundle.schoolClasses) && bundle.schoolClasses.length > 0) {
+    const cleanClasses = bundle.schoolClasses.map(String).filter(Boolean);
+    if (cleanClasses.length > 0 && JSON.stringify(current.classes) !== JSON.stringify(cleanClasses)) {
+      next.classes = cleanClasses;
+      changed = true;
+      classesUpdated = true;
+    }
+  }
+
+  if (Array.isArray(bundle.securityTiers) && bundle.securityTiers.length > 0) {
+    const normalizedTiers = normalizeSecurityTiers(bundle.securityTiers as SecurityViolationTier[]);
+    if (JSON.stringify(normalizeSecurityTiers(current.securityTiers)) !== JSON.stringify(normalizedTiers)) {
+      next.securityTiers = normalizedTiers;
+      changed = true;
+      tiersUpdated = true;
+    }
+  }
+
+  if (typeof bundle.hideEmergencyExamButton === 'boolean') {
+    if (Boolean(current.hideEmergencyExamButton) !== bundle.hideEmergencyExamButton) {
+      next.hideEmergencyExamButton = bundle.hideEmergencyExamButton;
+      changed = true;
+      emergencyBtnUpdated = true;
+    }
+  }
+
+  lastStudentLobbySettingsSeededAt = Date.now();
+  if (changed && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore storage access issues
+    }
+    if (typeof window !== 'undefined') {
+      if (classesUpdated) {
+        window.dispatchEvent(new CustomEvent('school_classes_updated', { detail: { classes: next.classes } }));
+      }
+      if (tiersUpdated) {
+        window.dispatchEvent(
+          new CustomEvent('security_tiers_updated', { detail: { securityTiers: next.securityTiers } })
+        );
+      }
+      if (emergencyBtnUpdated) {
+        window.dispatchEvent(
+          new CustomEvent('emergency_exam_button_visibility_updated', {
+            detail: { hideEmergencyExamButton: next.hideEmergencyExamButton },
+          })
+        );
+      }
+    }
+  }
+}
+
 /**
  * Loads Emergency Save Button visibility from local storage, fetches from Supabase cloud app_config if available,
  * and updates local cache.
  */
 export async function loadAndSyncEmergencyExamButtonVisibility(): Promise<boolean> {
-  const current = getSavedSettings();
-  const localVal = Boolean(current.hideEmergencyExamButton);
-
-  try {
-    const { data, error } = (await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', 'hide_emergency_exam_button')
-      .maybeSingle()) as { data: { value: string } | null; error: any };
-
-    if (!error && data?.value !== undefined && data?.value !== null) {
-      const parsed = JSON.parse(data.value);
-      const cloudVal = Boolean(parsed);
-      if (current.hideEmergencyExamButton !== cloudVal) {
-        const updated = { ...current, hideEmergencyExamButton: cloudVal };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('emergency_exam_button_visibility_updated', {
-              detail: { hideEmergencyExamButton: cloudVal },
-            })
-          );
-        }
-      }
-      return cloudVal;
-    }
-  } catch (err) {
-    console.warn('Could not fetch Emergency exam button visibility from cloud:', err);
+  if (lastStudentLobbySettingsSeededAt > 0 && Date.now() - lastStudentLobbySettingsSeededAt < 120_000) {
+    return Boolean(getSavedSettings().hideEmergencyExamButton);
   }
+  if (inflightEmergencyButtonPromise) return inflightEmergencyButtonPromise;
 
-  return localVal;
+  inflightEmergencyButtonPromise = (async () => {
+    const current = getSavedSettings();
+    const localVal = Boolean(current.hideEmergencyExamButton);
+
+    try {
+      const { data, error } = (await (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', 'hide_emergency_exam_button')
+        .maybeSingle()) as { data: { value: string } | null; error: any };
+
+      if (!error && data?.value !== undefined && data?.value !== null) {
+        const parsed = JSON.parse(data.value);
+        const cloudVal = Boolean(parsed);
+        if (current.hideEmergencyExamButton !== cloudVal) {
+          const updated = { ...current, hideEmergencyExamButton: cloudVal };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('emergency_exam_button_visibility_updated', {
+                detail: { hideEmergencyExamButton: cloudVal },
+              })
+            );
+          }
+        }
+        return cloudVal;
+      }
+    } catch (err) {
+      console.warn('Could not fetch Emergency exam button visibility from cloud:', err);
+    }
+
+    return localVal;
+  })().finally(() => {
+    inflightEmergencyButtonPromise = null;
+  });
+
+  return inflightEmergencyButtonPromise;
 }
 
 
@@ -940,44 +1053,57 @@ export async function syncSecurityTiersToCloud(tiers: SecurityViolationTier[]): 
   }
 }
 
+let inflightSecurityTiersPromise: Promise<SecurityViolationTier[]> | null = null;
+
 /**
  * Loads security escalation tiers from local storage, fetches from Supabase cloud app_config if available,
  * and updates local cache.
  */
 export async function loadAndSyncSecurityTiers(): Promise<SecurityViolationTier[]> {
-  const current = getSavedSettings();
-  const localVal = normalizeSecurityTiers(current.securityTiers);
-
-  try {
-    const { data, error } = (await (supabase.from('app_config' as any) as any)
-      .select('value')
-      .eq('key', 'exam_security_tiers')
-      .maybeSingle()) as { data: { value: string } | null; error: any };
-
-    if (!error && data?.value !== undefined && data?.value !== null) {
-      const parsed = JSON.parse(data.value);
-      const cloudVal = normalizeSecurityTiers(parsed);
-      const currentJson = JSON.stringify(localVal);
-      const cloudJson = JSON.stringify(cloudVal);
-
-      if (currentJson !== cloudJson) {
-        const updated = { ...current, securityTiers: cloudVal };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('security_tiers_updated', {
-              detail: { securityTiers: cloudVal },
-            })
-          );
-        }
-      }
-      return cloudVal;
-    }
-  } catch (err) {
-    console.warn('Could not fetch security escalation tiers from cloud:', err);
+  if (lastStudentLobbySettingsSeededAt > 0 && Date.now() - lastStudentLobbySettingsSeededAt < 120_000) {
+    return getSecurityTiers();
   }
+  if (inflightSecurityTiersPromise) return inflightSecurityTiersPromise;
 
-  return localVal;
+  inflightSecurityTiersPromise = (async () => {
+    const current = getSavedSettings();
+    const localVal = normalizeSecurityTiers(current.securityTiers);
+
+    try {
+      const { data, error } = (await (supabase.from('app_config' as any) as any)
+        .select('value')
+        .eq('key', 'exam_security_tiers')
+        .maybeSingle()) as { data: { value: string } | null; error: any };
+
+      if (!error && data?.value !== undefined && data?.value !== null) {
+        const parsed = JSON.parse(data.value);
+        const cloudVal = normalizeSecurityTiers(parsed);
+        const currentJson = JSON.stringify(localVal);
+        const cloudJson = JSON.stringify(cloudVal);
+
+        if (currentJson !== cloudJson) {
+          const updated = { ...current, securityTiers: cloudVal };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('security_tiers_updated', {
+                detail: { securityTiers: cloudVal },
+              })
+            );
+          }
+        }
+        return cloudVal;
+      }
+    } catch (err) {
+      console.warn('Could not fetch security escalation tiers from cloud:', err);
+    }
+
+    return localVal;
+  })().finally(() => {
+    inflightSecurityTiersPromise = null;
+  });
+
+  return inflightSecurityTiersPromise;
 }
 
 const CLOUD_TOPIC_MASTERY_KEY = 'topic_mastery_tiers';
