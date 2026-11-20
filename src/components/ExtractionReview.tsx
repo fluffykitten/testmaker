@@ -946,6 +946,7 @@ export function ExtractionReview({
                       <option value="Structured">Structured</option>
                       <option value="Multiple Choice">Multiple Choice</option>
                       <option value="Multiple Select">Multiple Select</option>
+                      <option value="Table Choice">Table Choice</option>
                       <option value="Calculation">Calculation</option>
                       <option value="Short Answer">Short Answer</option>
                       <option value="Fill in the Blank">Fill in the Blank</option>

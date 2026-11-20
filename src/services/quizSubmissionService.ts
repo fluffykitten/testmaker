@@ -1757,12 +1757,19 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
       updated_at: new Date().toISOString(),
     }));
 
-    const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(rows);
-
-    if (!error) {
+    const chunkSize = 100;
+    let allChunksSucceeded = true;
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const chunk = rows.slice(i, i + chunkSize);
+      const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(chunk);
+      if (error) {
+        allChunksSucceeded = false;
+        console.warn('Could not batch sync submissions to quiz_submissions table:', error.message);
+        break;
+      }
+    }
+    if (allChunksSucceeded) {
       tableSuccess = true;
-    } else {
-      console.warn('Could not batch sync submissions to quiz_submissions table:', error.message);
     }
   } catch (err) {
     console.warn('Error batch pushing submissions to quiz_submissions table:', err);
@@ -1861,13 +1868,14 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
 export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmission[]> {
   const deletedIds = getDeletedSubmissionIds();
   try {
-    // 1. Try dedicated table first with pagination beyond Supabase's 1000-row cap
-    const pageSize = 1000;
+    // 1. Try dedicated table first with smaller pages to stay well under PostgREST's statement timeout
+    const pageSize = 250;
     const allRows: any[] = [];
     for (let from = 0; from < 5000; from += pageSize) {
       const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
         .select('*')
         .order('submitted_at', { ascending: false })
+        .order('id', { ascending: false })
         .range(from, from + pageSize - 1);
 
       if (error) {

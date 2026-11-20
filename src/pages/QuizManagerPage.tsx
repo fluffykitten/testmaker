@@ -30,6 +30,7 @@ import { OfflineGradingModal } from '../components/OfflineGradingModal';
 import { LiveInvigilatorModal } from '../components/LiveInvigilatorModal';
 import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
+import { SemesterDayOrganizerModal } from '../components/SemesterDayOrganizerModal';
 import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
 import { getSavedSettings, getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
 import {
@@ -164,6 +165,7 @@ export function QuizManagerPage({
   const [selectedQuizForProctor, setSelectedQuizForProctor] = useState<PublishedQuiz | null>(null);
   const [isSchoolProctorOpen, setIsSchoolProctorOpen] = useState(false);
   const [isPrintDeskCardsOpen, setIsPrintDeskCardsOpen] = useState(false);
+  const [isDayOrganizerOpen, setIsDayOrganizerOpen] = useState(false);
   const [originalQuizCode, setOriginalQuizCode] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [schoolScheduleEntries, setSchoolScheduleEntries] = useState<ExamScheduleEntry[]>(() => {
@@ -282,6 +284,7 @@ export function QuizManagerPage({
         !selectedQuizForProctor &&
         !isSchoolProctorOpen &&
         !isPrintDeskCardsOpen &&
+        !isDayOrganizerOpen &&
         !deleteModalState.isOpen &&
         !offlineGradingData &&
         !isSelectOfflineTestOpen
@@ -291,7 +294,7 @@ export function QuizManagerPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, isPrintDeskCardsOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
+  }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, isPrintDeskCardsOpen, isDayOrganizerOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
 
   const activeExamQuizzes = useMemo(() => {
     return quizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'active' && q.quizMode !== 'game');
@@ -1084,6 +1087,16 @@ export function QuizManagerPage({
                 <button
                   type="button"
                   className="qm-btn qm-btn--secondary"
+                  onClick={() => setIsDayOrganizerOpen(true)}
+                  title="Organize exams by semester exam day to activate, warm cache, or pause per day"
+                >
+                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>📅</span>
+                  <span>Semester Days</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
                   onClick={handlePrewarmExamCache}
                   disabled={isPrewarmingCache}
                   title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
@@ -1306,6 +1319,15 @@ export function QuizManagerPage({
               </div>
 
               <div className="qm-breadcrumb-right">
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  onClick={() => setIsDayOrganizerOpen(true)}
+                  title="Organize exams by semester exam day to activate, warm cache, or pause per day"
+                >
+                  <span>📅 Semester Days</span>
+                </button>
+
                 <button
                   type="button"
                   className="qm-btn qm-btn--secondary qm-btn--sm"
@@ -3359,6 +3381,27 @@ export function QuizManagerPage({
       <CandidateCardPrintModal
         isOpen={isPrintDeskCardsOpen}
         onClose={() => setIsPrintDeskCardsOpen(false)}
+      />
+
+      {/* Semester Exam Day Organizer Modal */}
+      <SemesterDayOrganizerModal
+        isOpen={isDayOrganizerOpen}
+        onClose={() => setIsDayOrganizerOpen(false)}
+        quizzes={quizzes}
+        scheduleEntries={schoolScheduleEntries}
+        nowMs={nowMs}
+        onQuizzesChanged={(next) => setQuizzes(sanitizePublishedQuizList(next))}
+        onNotify={(type, message) => {
+          if (type === 'success') {
+            setSaveWarningMsg(null);
+            setSaveSuccessMsg(message);
+            setTimeout(() => setSaveSuccessMsg(null), 5500);
+          } else {
+            setSaveSuccessMsg(null);
+            setSaveWarningMsg(message);
+            setTimeout(() => setSaveWarningMsg(null), 8000);
+          }
+        }}
       />
     </div>
   );

@@ -104,9 +104,10 @@ export function extractStudentMcqLetter(
 export function deriveColumnReferenceAnswer(q: Question, sq?: SubQuestion): string {
   const targetOptions = sq?.options || q.options;
   const isMcq =
-    (targetOptions && targetOptions.length >= 2) ||
-    q.question_style === 'Multiple Choice' ||
-    q.question_style === 'Multiple Select';
+    q.question_style !== 'Table Choice' &&
+    ((targetOptions && targetOptions.length >= 2) ||
+      q.question_style === 'Multiple Choice' ||
+      q.question_style === 'Multiple Select');
 
   const candidates: string[] = [];
   if (sq && sq.mark_scheme) {
@@ -219,9 +220,10 @@ export function getOfflineGradingColumns(questions: Question[]): OfflineGradingC
         q.question_style === 'Multiple Select' ||
         extractMultiSelectTargetLetters(acceptable).length >= 2;
       const isMcq =
-        isMultiSelect ||
-        !!(q.options && q.options.length >= 2) ||
-        q.question_style === 'Multiple Choice';
+        q.question_style !== 'Table Choice' &&
+        (isMultiSelect ||
+          !!(q.options && q.options.length >= 2) ||
+          q.question_style === 'Multiple Choice');
       const style = isMultiSelect
         ? 'Multiple Select'
         : (q.question_style || (isMcq ? 'Multiple Choice' : 'Structured'));

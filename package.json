@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.6.1",
+  "version": "2.6.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -52,6 +52,8 @@
     "test:optional-result-pin": "node --import ./scripts/register-ts.mjs scripts/test-optional-result-pin.mjs",
     "test:multi-exam-scale": "node --import ./scripts/register-ts.mjs scripts/test-icm-multi-exam-scale-036.mjs",
     "test:prewarm-037": "node --import ./scripts/register-ts.mjs scripts/test-admin-prewarm-and-entry-037.mjs",
+    "test:semester-days": "node --import ./scripts/register-ts.mjs scripts/test-semester-day-organizer.mjs",
+    "test:table-choice": "node --import ./scripts/register-ts.mjs scripts/test-table-choice.mjs",
     "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "test:stress-realistic": "node scripts/stress-test-realistic-exam-sitting.mjs",
     "preview": "vite preview",

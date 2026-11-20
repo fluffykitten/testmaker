@@ -8,6 +8,12 @@ import { generateQuizCode, clearQuizMemoryCache } from './quizCodeService';
 import type { GradeThresholds } from '../utils/gradeThresholdUtils';
 import { getSavedSettings } from '../lib/settings';
 import { PILOT_EXAM_170_PUBLISHED_QUIZ, PILOT_EXAM_ID, PILOT_QUIZ_CODE } from '../data/pilotExam170Data';
+import {
+  normalizeExamDayKey,
+  resolveQuizExamDayKey,
+  recordWarmedQuizCodes,
+  clearWarmedQuizCodes,
+} from '../lib/semesterDayOrganizer';
 
 export interface ExamAttachment {
   id: string;
@@ -47,6 +53,7 @@ export interface PublishedQuiz {
   isActive: boolean;                     // Master Enabled / Armed switch for student entry
   scheduledStartAt?: string | null;      // Optional ISO UTC timestamp when Exam Mode auto-opens
   scheduledEndAt?: string | null;        // Optional ISO UTC timestamp when new student entry closes
+  examDay?: string | null;               // Optional manual YYYY-MM-DD Semester Day anchor
   createdAt: string;
   updatedAt: string;
 
@@ -382,6 +389,50 @@ async function upsertQuizCodeIndexToCloudDetailed(
 async function upsertQuizCodeIndexToCloud(quiz: PublishedQuiz): Promise<boolean> {
   const res = await upsertQuizCodeIndexToCloudDetailed(quiz);
   return res.ok;
+}
+
+async function batchUpsertQuizCodeIndicesToCloudDetailed(
+  quizzes: PublishedQuiz[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const rowsByKey = new Map<string, { key: string; value: string }>();
+    for (const quiz of quizzes || []) {
+      if (!quiz) continue;
+      const codes = Array.from(
+        new Set(
+          [quiz.quizCode, ...(quiz.previousCodes || [])]
+            .map((c) => (c || '').trim().toUpperCase())
+            .filter(Boolean)
+        )
+      );
+      if (codes.length === 0) continue;
+      const payload = JSON.stringify(quiz);
+      for (const code of codes) {
+        const key = `${QUIZ_BY_CODE_KEY_PREFIX}${code}`;
+        rowsByKey.set(key, { key, value: payload });
+      }
+    }
+
+    const rows = Array.from(rowsByKey.values());
+    if (rows.length === 0) return { ok: true };
+
+    const chunkSize = 50;
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const chunk = rows.slice(i, i + chunkSize);
+      const { error } = await withTimeout<{ error?: any }>(
+        (supabase.from('app_config' as any) as any).upsert(chunk, { onConflict: 'key' }),
+        15000,
+        { error: { message: 'Timeout batch updating quiz_by_code index' } }
+      );
+      if (error) {
+        return { ok: false, error: error.message || String(error) };
+      }
+    }
+    return { ok: true };
+  } catch (err: any) {
+    console.warn('Batch quiz code index sync notice:', err);
+    return { ok: false, error: err?.message || 'Batch quiz code index sync exception' };
+  }
 }
 
 async function deleteQuizCodeIndexFromCloud(codes: string[]): Promise<void> {
@@ -1120,6 +1171,10 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
         await syncPublishedQuizzesToCloud(cloudList);
       }
 
+      if (!slimTarget.isActive && slimTarget.quizCode) {
+        clearWarmedQuizCodes([slimTarget.quizCode]);
+      }
+
       return localTarget;
     } catch (err) {
       console.error('Failed to toggle quiz status:', err);
@@ -1196,6 +1251,7 @@ export function createDraftFromTest(
     isActive: existing?.isActive ?? true,
     scheduledStartAt: existing?.scheduledStartAt ?? null,
     scheduledEndAt: existing?.scheduledEndAt ?? null,
+    examDay: existing?.examDay ?? null,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     // Student Exam Reference Tools Suite (off by default)
@@ -1272,6 +1328,9 @@ export async function prewarmExamPaperCache(quizCodes: string[]): Promise<Prewar
     const warmedCodes = Array.isArray(data?.warmedCodes) ? data.warmedCodes.map(String) : [];
     const skippedCodes = Array.isArray(data?.skippedCodes) ? data.skippedCodes.map(String) : [];
     const missingCodes = Array.isArray(data?.missingCodes) ? data.missingCodes.map(String) : [];
+    if (warmedCodes.length > 0) {
+      recordWarmedQuizCodes(warmedCodes);
+    }
     return {
       ok: true,
       warmedCodes,
@@ -1292,4 +1351,216 @@ export async function prewarmExamPaperCache(quizCodes: string[]): Promise<Prewar
       error: err?.message || 'Unexpected error pre-warming exam cache',
     };
   }
+}
+
+export interface BatchQuizUpdateResult {
+  ok: boolean;
+  quizzes: PublishedQuiz[];
+  updatedQuizzes: PublishedQuiz[];
+  codeIndexSynced: boolean;
+  listSynced: boolean;
+  error?: string;
+}
+
+/**
+ * Updates multiple published quizzes atomically inside `enqueueQuizMutation`:
+ * updates localStorage immediately, performs ONE chunked `quiz_by_code_*` upsert
+ * sequentially followed by ONE `published_quizzes` upsert.
+ */
+export async function batchUpdatePublishedQuizzes(
+  quizIds: string[],
+  updater: (quiz: PublishedQuiz) => PublishedQuiz
+): Promise<BatchQuizUpdateResult> {
+  return enqueueQuizMutation(async () => {
+    const cleanIds = Array.from(
+      new Set((quizIds || []).map((id) => String(id || '').trim()).filter(Boolean))
+    );
+    const existing = getPublishedQuizzes();
+    if (cleanIds.length === 0) {
+      return {
+        ok: true,
+        quizzes: existing,
+        updatedQuizzes: [],
+        codeIndexSynced: true,
+        listSynced: true,
+      };
+    }
+
+    const targetIdSet = new Set(cleanIds);
+    const updatedTargets: PublishedQuiz[] = [];
+    const localTestIds = new Set(getLocalTests().map((t) => t.id));
+    const localUpdatedById = new Map<string, PublishedQuiz>();
+
+    for (const q of existing) {
+      if (!q || !targetIdSet.has(q.id)) continue;
+      const nextRaw = updater(q);
+      const nextClean: PublishedQuiz = {
+        ...nextRaw,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedTargets.push(nextClean);
+
+      clearQuizMemoryCache(q.quizCode);
+      clearQuizMemoryCache(nextClean.quizCode);
+      clearQuizMemoryCache(nextClean.id);
+      clearQuizMemoryCache(nextClean.testId);
+      (nextClean.previousCodes || []).forEach((c) => clearQuizMemoryCache(c));
+
+      const localEntry =
+        nextClean.testId && localTestIds.has(nextClean.testId)
+          ? stripQuizOverrides(nextClean)
+          : compactQuizOverrides(nextClean);
+      localUpdatedById.set(nextClean.id, localEntry);
+    }
+
+    if (updatedTargets.length === 0) {
+      return {
+        ok: true,
+        quizzes: existing,
+        updatedQuizzes: [],
+        codeIndexSynced: true,
+        listSynced: true,
+      };
+    }
+
+    const nextLocal = existing.map((q) => (q && localUpdatedById.get(q.id)) || q);
+    safeWritePublishedQuizzesToLocalStorage(nextLocal);
+
+    clearCloudQuizzesCache();
+    const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
+
+    const backfillCandidates = updatedTargets
+      .filter(
+        (q) =>
+          q.testId &&
+          q.headerConfig?.questionOverrides &&
+          Object.keys(q.headerConfig.questionOverrides).length > 0
+      )
+      .map((q) => ({
+        testId: q.testId,
+        headerConfig: q.headerConfig,
+        questionIds: q.questionIds,
+        totalMarks: q.totalMarks,
+      }));
+    const backedInCloud = await ensureCloudTestHeadersExist(backfillCandidates);
+
+    const slimUpdatedById = new Map<string, PublishedQuiz>();
+    const slimUpdatedTargets = updatedTargets.map((q) => {
+      const slim =
+        q.testId && backedInCloud.has(q.testId)
+          ? stripQuizOverrides(q)
+          : compactQuizOverrides(q);
+      slimUpdatedById.set(slim.id, slim);
+      return slim;
+    });
+
+    const codeRes = await batchUpsertQuizCodeIndicesToCloudDetailed(slimUpdatedTargets);
+    const codeIndexSynced = codeRes.ok;
+
+    let finalQuizzes = nextLocal;
+    let listSynced = false;
+    let listError: string | undefined;
+
+    if (cloudRes.ok) {
+      const mergedRaw = cloudRes.data.map((q) => slimUpdatedById.get(q.id) || q);
+      for (const updated of slimUpdatedTargets) {
+        if (!mergedRaw.some((q) => q.id === updated.id)) {
+          mergedRaw.push(updated);
+        }
+      }
+      const cloudMerged = mergedRaw.map((q) =>
+        q.testId && backedInCloud.has(q.testId)
+          ? stripQuizOverrides(q)
+          : compactQuizOverrides(q)
+      );
+      const localMerged = deduplicateQuizzes([
+        ...mergedRaw.map((q) =>
+          q.testId && (backedInCloud.has(q.testId) || localTestIds.has(q.testId))
+            ? stripQuizOverrides(q)
+            : compactQuizOverrides(q)
+        ),
+        ...nextLocal,
+      ]);
+      safeWritePublishedQuizzesToLocalStorage(localMerged);
+      finalQuizzes = localMerged;
+
+      const listRes = await syncPublishedQuizzesToCloudDetailed(cloudMerged);
+      listSynced = listRes.ok;
+      listError = listRes.error;
+    }
+
+    dispatchQuizzesUpdated(
+      { batchCount: slimUpdatedTargets.length, listSynced, codeIndexSynced },
+      listSynced
+    );
+
+    const errParts: string[] = [];
+    if (!codeIndexSynced && codeRes.error) errParts.push(codeRes.error);
+    if (!cloudRes.ok && cloudRes.error) errParts.push(cloudRes.error);
+    else if (cloudRes.ok && !listSynced && listError) errParts.push(listError);
+
+    return {
+      ok: codeIndexSynced && (cloudRes.ok ? listSynced : true),
+      quizzes: finalQuizzes,
+      updatedQuizzes: slimUpdatedTargets,
+      codeIndexSynced,
+      listSynced,
+      error: errParts.length > 0 ? errParts.join('; ') : undefined,
+    };
+  });
+}
+
+/**
+ * Assigns (or clears when `examDay` is null) the manual Exam Day bucket (`YYYY-MM-DD`)
+ * across all target quizzes in one batched write. Clearing to Unscheduled also clears
+ * any leftover `scheduledStartAt`/`scheduledEndAt` so the exam does not remain anchored by schedule date.
+ */
+export async function assignQuizzesToExamDay(
+  quizIds: string[],
+  examDay: string | null
+): Promise<BatchQuizUpdateResult> {
+  const normalizedDay = examDay ? normalizeExamDayKey(examDay) : null;
+  return batchUpdatePublishedQuizzes(quizIds, (q) => ({
+    ...q,
+    examDay: normalizedDay,
+    ...(normalizedDay === null ? { scheduledStartAt: null, scheduledEndAt: null } : {}),
+  }));
+}
+
+/**
+ * Immediately opens all selected exams (`isActive: true`, `scheduledStartAt: null`) while preserving
+ * or stamping `examDay` so they stay inside their Day card, then pre-warms their paper cache.
+ */
+export async function activateExamDayQuizzes(
+  quizIds: string[],
+  dayKey?: string | null
+): Promise<{ batch: BatchQuizUpdateResult; warm: PrewarmExamCacheResult }> {
+  const normalizedDay = dayKey ? normalizeExamDayKey(dayKey) : null;
+  const batch = await batchUpdatePublishedQuizzes(quizIds, (q) => ({
+    ...q,
+    isActive: true,
+    scheduledStartAt: null,
+    examDay: q.examDay || normalizedDay || resolveQuizExamDayKey(q),
+  }));
+
+  const codesToWarm = batch.updatedQuizzes.map((q) => q.quizCode).filter(Boolean);
+  const warm = await prewarmExamPaperCache(codesToWarm);
+  return { batch, warm };
+}
+
+/**
+ * Pauses all target exams (`isActive: false`) in one atomic batch write and clears their local warm markers.
+ */
+export async function pauseQuizzesBatch(
+  quizIds: string[]
+): Promise<BatchQuizUpdateResult> {
+  const batch = await batchUpdatePublishedQuizzes(quizIds, (q) => ({
+    ...q,
+    isActive: false,
+  }));
+  const pausedCodes = batch.updatedQuizzes.map((q) => q.quizCode).filter(Boolean);
+  if (pausedCodes.length > 0) {
+    clearWarmedQuizCodes(pausedCodes);
+  }
+  return batch;
 }

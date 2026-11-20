@@ -33,6 +33,12 @@ import {
 } from '../services/audioService';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
 import { ExamVisualRender } from './ExamVisualRender';
+import {
+  TABLE_CHOICE_PRESETS,
+  parseTableChoiceFromQuestion,
+  serializeTableChoiceToQuestion,
+  type ParsedTableChoice,
+} from '../lib/tableChoiceUtils';
 import { InlineGapText, hasInlineGaps } from './InlineGapText';
 import {
   PASSAGE_OPEN_TAG,
@@ -147,6 +153,11 @@ export function QuestionEditorModal({
 
   // Sub-Questions
   const [subQuestions, setSubQuestions] = useState<SubQuestion[]>([]);
+
+  // Table Choice Builder state
+  const [tableChoiceState, setTableChoiceState] = useState<ParsedTableChoice>(() =>
+    parseTableChoiceFromQuestion('', null)
+  );
 
   // Mark Scheme
   const [markingPoints, setMarkingPoints] = useState<string[]>(['']);
@@ -327,6 +338,7 @@ export function QuestionEditorModal({
 
       const resolvedStyle = normalizeQuestionStyle(question.question_style, initialOptions);
       setQuestionStyle(resolvedStyle);
+      setTableChoiceState(parseTableChoiceFromQuestion(question.question_text, question.mark_scheme));
 
       // Sanitize sub-questions to ensure all fields are safe strings/numbers
       const rawSubs = Array.isArray(question.sub_questions) ? question.sub_questions : [];
@@ -631,6 +643,15 @@ export function QuestionEditorModal({
     setSubQuestions((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const syncTableChoiceState = (next: ParsedTableChoice) => {
+    setTableChoiceState(next);
+    const serialized = serializeTableChoiceToQuestion(next);
+    setQuestionText(serialized.questionText);
+    if (serialized.markingPoints.length > 0) {
+      setMarkingPoints(serialized.markingPoints);
+    }
+  };
+
   const handleStyleChange = (newStyle: QuestionStyle) => {
     setQuestionStyle(newStyle);
     if (newStyle === 'Multiple Choice' || newStyle === 'Multiple Select') {
@@ -641,6 +662,11 @@ export function QuestionEditorModal({
       if (markingPoints.length === 0 || !markingPoints[0] || markingPoints[0].includes('sub-question')) {
         setMarkingPoints(['A']);
       }
+    } else if (newStyle === 'Table Choice') {
+      setSubQuestions([]);
+      setOptions([]);
+      const parsed = parseTableChoiceFromQuestion(questionText, { marking_points: markingPoints });
+      setTableChoiceState(parsed);
     } else if (newStyle === 'Calculation' || newStyle === 'Short Answer') {
       setSubQuestions([]);
       setOptions([]);
@@ -1010,7 +1036,9 @@ export function QuestionEditorModal({
     // If it's an MCQ style or we have choices, preserve cleanUserOptions.
     // If modal options became empty but original question had options AND user did not switch to Calculation or Short Answer, preserve original options!
     let cleanOptions: string[] = [];
-    if (isMcq || cleanUserOptions.length >= 2) {
+    if (effectiveStyle === 'Table Choice') {
+      cleanOptions = [];
+    } else if (isMcq || cleanUserOptions.length >= 2) {
       cleanOptions = cleanUserOptions;
     } else if (effectiveStyle === 'Calculation' || effectiveStyle === 'Short Answer') {
       cleanOptions = [];
@@ -1020,12 +1048,12 @@ export function QuestionEditorModal({
       cleanOptions = question.options.map((opt) => typeof opt === 'string' ? opt.trim() : '').filter(Boolean);
     }
 
-    // Determine final style to save: if 2+ options exist and style wasn't Multiple Select, ensure it's Multiple Choice
-    const finalQuestionStyle: QuestionStyle = (cleanOptions.length >= 2 && effectiveStyle !== 'Multiple Select')
+    // Determine final style to save: if 2+ options exist and style wasn't Multiple Select or Table Choice, ensure it's Multiple Choice
+    const finalQuestionStyle: QuestionStyle = (cleanOptions.length >= 2 && effectiveStyle !== 'Multiple Select' && effectiveStyle !== 'Table Choice')
       ? 'Multiple Choice'
       : effectiveStyle;
 
-    const finalSubQuestions = (finalQuestionStyle === 'Multiple Choice' || finalQuestionStyle === 'Multiple Select' || finalQuestionStyle === 'Calculation' || finalQuestionStyle === 'Short Answer')
+    const finalSubQuestions = (finalQuestionStyle === 'Multiple Choice' || finalQuestionStyle === 'Multiple Select' || finalQuestionStyle === 'Table Choice' || finalQuestionStyle === 'Calculation' || finalQuestionStyle === 'Short Answer')
       ? []
       : subQuestions;
 
@@ -1750,7 +1778,7 @@ export function QuestionEditorModal({
               <div className="q-editor-style-picker">
                 <label className="q-editor-label">Question Structure:</label>
                 <div className="q-editor-style-radios">
-                  {(['Structured', 'Multiple Choice', 'Multiple Select', 'Calculation', 'Short Answer', 'Fill in the Blank'] as QuestionStyle[]).map((style) => (
+                  {(['Structured', 'Multiple Choice', 'Multiple Select', 'Table Choice', 'Calculation', 'Short Answer', 'Fill in the Blank'] as QuestionStyle[]).map((style) => (
                     <label key={style} className={`q-style-radio ${questionStyle === style ? 'q-style-radio--active' : ''}`}>
                       <input
                         type="radio"
@@ -1765,8 +1793,216 @@ export function QuestionEditorModal({
                 </div>
               </div>
 
+              {/* Table Choice Visual Row Builder */}
+              {questionStyle === 'Table Choice' && (
+                <div className="q-editor-subs-section" style={{ marginTop: 12 }}>
+                  <div className="q-editor-subhead-row">
+                    <div>
+                      <h4 className="q-editor-subhead">Table Choice Matrix ({tableChoiceState.rows.length} rows)</h4>
+                      <p style={{ margin: '2px 0 0', fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
+                        Pick column labels, edit each statement row, and choose the correct column answer.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="q-editor-btn-secondary"
+                      onClick={() => {
+                        const validCount = tableChoiceState.rows.filter((r) => r.label.trim().length > 0).length;
+                        if (validCount > 0) setTotalMarks(validCount);
+                      }}
+                    >
+                      Sync Marks to Rows ({tableChoiceState.rows.filter((r) => r.label.trim().length > 0).length})
+                    </button>
+                  </div>
+
+                  {/* Quick Presets */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                    {TABLE_CHOICE_PRESETS.map((preset) => {
+                      const active =
+                        tableChoiceState.columns.length === preset.columns.length &&
+                        tableChoiceState.columns.every((c, ci) => c.trim().toLowerCase() === preset.columns[ci].toLowerCase());
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className={active ? 'q-editor-btn-add' : 'q-editor-btn-secondary'}
+                          style={{ fontSize: '0.78rem', padding: '4px 10px' }}
+                          onClick={() => {
+                            const nextRows = tableChoiceState.rows.map((r) => {
+                              const oldIdx = tableChoiceState.columns.indexOf(r.correctColumn);
+                              const mappedCol = preset.columns[oldIdx >= 0 && oldIdx < preset.columns.length ? oldIdx : 0];
+                              return { ...r, correctColumn: mappedCol };
+                            });
+                            syncTableChoiceState({
+                              ...tableChoiceState,
+                              itemHeader: tableChoiceState.itemHeader || preset.defaultItemHeader,
+                              columns: [...preset.columns],
+                              rows: nextRows,
+                            });
+                          }}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Item Header + Choice Column Headers */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ flex: '1 1 180px' }}>
+                      <label className="q-editor-label" style={{ fontSize: '0.75rem' }}>Statement Column Header</label>
+                      <input
+                        type="text"
+                        className="q-editor-input"
+                        value={tableChoiceState.itemHeader}
+                        onChange={(e) => syncTableChoiceState({ ...tableChoiceState, itemHeader: e.target.value })}
+                        placeholder="e.g. Pernyataan, Upaya, Statement"
+                      />
+                    </div>
+                    {tableChoiceState.columns.map((col, ci) => (
+                      <div key={ci} style={{ flex: '1 1 130px' }}>
+                        <label className="q-editor-label" style={{ fontSize: '0.75rem' }}>Choice {ci + 1}</label>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <input
+                            type="text"
+                            className="q-editor-input"
+                            value={col}
+                            onChange={(e) => {
+                              const nextCols = tableChoiceState.columns.map((c, idx) => (idx === ci ? e.target.value : c));
+                              const oldCol = tableChoiceState.columns[ci];
+                              const nextRows = tableChoiceState.rows.map((r) =>
+                                r.correctColumn === oldCol ? { ...r, correctColumn: e.target.value } : r
+                              );
+                              syncTableChoiceState({ ...tableChoiceState, columns: nextCols, rows: nextRows });
+                            }}
+                          />
+                          {tableChoiceState.columns.length > 2 && (
+                            <button
+                              type="button"
+                              className="q-editor-btn-delete-small"
+                              onClick={() => {
+                                const removed = tableChoiceState.columns[ci];
+                                const nextCols = tableChoiceState.columns.filter((_, idx) => idx !== ci);
+                                const nextRows = tableChoiceState.rows.map((r) =>
+                                  r.correctColumn === removed ? { ...r, correctColumn: nextCols[0] || '' } : r
+                                );
+                                syncTableChoiceState({ ...tableChoiceState, columns: nextCols, rows: nextRows });
+                              }}
+                              title="Remove column"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {tableChoiceState.columns.length < 4 && (
+                      <button
+                        type="button"
+                        className="q-editor-btn-secondary"
+                        style={{ alignSelf: 'flex-end', height: 36 }}
+                        onClick={() =>
+                          syncTableChoiceState({
+                            ...tableChoiceState,
+                            columns: [...tableChoiceState.columns, `Choice ${tableChoiceState.columns.length + 1}`],
+                          })
+                        }
+                      >
+                        + Col
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Statement Rows */}
+                  <div className="q-editor-options-list">
+                    {tableChoiceState.rows.map((row, rIdx) => (
+                      <div
+                        key={rIdx}
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                          alignItems: 'center',
+                          padding: 8,
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 8,
+                          background: 'var(--color-bg-secondary, #f8fafc)',
+                        }}
+                      >
+                        <span className="q-editor-option-letter">{rIdx + 1}</span>
+                        <input
+                          type="text"
+                          className="q-editor-input"
+                          style={{ flex: '2 1 260px' }}
+                          value={row.label}
+                          onChange={(e) => {
+                            const nextRows = tableChoiceState.rows.map((r, idx) =>
+                              idx === rIdx ? { ...r, label: e.target.value } : r
+                            );
+                            syncTableChoiceState({ ...tableChoiceState, rows: nextRows });
+                          }}
+                          placeholder={`Statement ${rIdx + 1}...`}
+                        />
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                          {tableChoiceState.columns.map((col, ci) => (
+                            <label
+                              key={ci}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.82rem', cursor: 'pointer', fontWeight: row.correctColumn === col ? 700 : 500 }}
+                            >
+                              <input
+                                type="radio"
+                                name={`tc-row-${rIdx}`}
+                                checked={row.correctColumn === col}
+                                onChange={() => {
+                                  const nextRows = tableChoiceState.rows.map((r, idx) =>
+                                    idx === rIdx ? { ...r, correctColumn: col } : r
+                                  );
+                                  syncTableChoiceState({ ...tableChoiceState, rows: nextRows });
+                                }}
+                              />
+                              <span>{col || `Choice ${ci + 1}`}</span>
+                            </label>
+                          ))}
+                        </div>
+                        {tableChoiceState.rows.length > 1 && (
+                          <button
+                            type="button"
+                            className="q-editor-btn-delete-small"
+                            onClick={() => {
+                              const nextRows = tableChoiceState.rows.filter((_, idx) => idx !== rIdx);
+                              syncTableChoiceState({ ...tableChoiceState, rows: nextRows });
+                            }}
+                            title="Delete row"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      type="button"
+                      className="q-editor-btn-add"
+                      onClick={() =>
+                        syncTableChoiceState({
+                          ...tableChoiceState,
+                          rows: [
+                            ...tableChoiceState.rows,
+                            { label: '', correctColumn: tableChoiceState.columns[0] || 'Tepat' },
+                          ],
+                        })
+                      }
+                    >
+                      + Add Row
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Multiple Choice / Multiple Select Options Editor */}
-              {(questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select' || options.length > 0) && (
+              {questionStyle !== 'Table Choice' && (questionStyle === 'Multiple Choice' || questionStyle === 'Multiple Select' || options.length > 0) && (
                 <div className="q-editor-options-section">
                   <div className="q-editor-subhead-row">
                     <h4 className="q-editor-subhead">Choices & Options ({options.length})</h4>
@@ -1810,7 +2046,7 @@ export function QuestionEditorModal({
               )}
 
               {/* Structured Sub-Questions Editor */}
-              {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && options.length === 0 && (
+              {questionStyle !== 'Multiple Choice' && questionStyle !== 'Multiple Select' && questionStyle !== 'Table Choice' && options.length === 0 && (
                 <div className="q-editor-subs-section">
                   <div className="q-editor-subhead-row">
                     <div className="q-editor-subhead-left">

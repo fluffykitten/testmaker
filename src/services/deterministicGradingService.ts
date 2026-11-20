@@ -343,7 +343,11 @@ export const AFFIRMATIVE_SYNONYMS = new Set([
 ]);
 
 export const NEGATIVE_SYNONYMS = new Set([
-  'salah', 'false', 's', 'f', 'tidak', 'no', 'tidak sesuai', 'tidak setuju', 'disagree', 'opini', 'tidak tepat',
+  'salah', 'false', 's', 'f', 'tidak', 'no',
+  'tidak sesuai', 'tidaksesuai',
+  'tidak setuju', 'tidaksetuju',
+  'disagree', 'opini',
+  'tidak tepat', 'tidaktepat',
   'خطأ', 'خطا', 'لا', 'غير صحيح', 'باطل'
 ]);
 
@@ -439,8 +443,13 @@ export function areValuesEquivalent(studentVal: string, expectedVal: string): bo
   const e = normE.trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
   if (!s || !e) return false;
   if (s === e) return true;
-  if (AFFIRMATIVE_SYNONYMS.has(s) && AFFIRMATIVE_SYNONYMS.has(e)) return true;
-  if (NEGATIVE_SYNONYMS.has(s) && NEGATIVE_SYNONYMS.has(e)) return true;
+  const sIsAff = AFFIRMATIVE_SYNONYMS.has(s);
+  const sIsNeg = NEGATIVE_SYNONYMS.has(s);
+  const eIsAff = AFFIRMATIVE_SYNONYMS.has(e);
+  const eIsNeg = NEGATIVE_SYNONYMS.has(e);
+  if (sIsAff && eIsAff) return true;
+  if (sIsNeg && eIsNeg) return true;
+  if ((sIsAff && eIsNeg) || (sIsNeg && eIsAff)) return false;
   if (s.includes(e) || e.includes(s)) return true;
   if (isChemicalEquivalent(studentVal, expectedVal)) return true;
   const numRes = isNumericEquivalent(studentVal, expectedVal);
@@ -524,11 +533,11 @@ export function parseMarkSchemeTargetPoints(msText: string): MarkSchemeTargetPoi
       // Auto-expand affirmative or negative binary equivalents
       const cleanLower = syn.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
       if (AFFIRMATIVE_SYNONYMS.has(cleanLower)) {
-        ['Benar', 'True', 'B', 'T', 'Ya', 'Sesuai', 'Setuju'].forEach((v) => {
+        ['Benar', 'True', 'B', 'T', 'Ya', 'Sesuai', 'Setuju', 'Tepat'].forEach((v) => {
           if (!synonyms.includes(v)) synonyms.push(v);
         });
       } else if (NEGATIVE_SYNONYMS.has(cleanLower)) {
-        ['Salah', 'False', 'S', 'F', 'Tidak', 'Tidak Sesuai', 'Tidak Setuju'].forEach((v) => {
+        ['Salah', 'False', 'S', 'F', 'Tidak', 'Tidak Sesuai', 'Tidak Setuju', 'Tidak Tepat'].forEach((v) => {
           if (!synonyms.includes(v)) synonyms.push(v);
         });
       }
@@ -1643,6 +1652,20 @@ export function gradeDeterministicAnswer(
   }
 
   if (bestMultiRes && (bestMultiRes.res.matchedCount > 0 || bestMultiRes.targetPoints.some((p) => p.label))) {
+    if (question.question_style === 'Table Choice' && bestMultiRes.res.totalPoints > 0) {
+      const partialMarks =
+        Math.round(((bestMultiRes.res.matchedCount / bestMultiRes.res.totalPoints) * maxMarks) * 100) / 100;
+      return {
+        isHandled: true,
+        earnedMarks: partialMarks,
+        maxMarks,
+        isCorrect: false,
+        matchType: 'keyword',
+        feedback: `Partial match (${bestMultiRes.res.matchedCount}/${bestMultiRes.res.totalPoints} rows correct). Expected: ${bestMultiRes.res.feedbackSummary}`,
+        matchedCriteria: bestMultiRes.res.matchedPoints,
+        acceptedAnswers: [bestMultiRes.res.feedbackSummary],
+      };
+    }
     return {
       isHandled: true,
       earnedMarks: 0,
@@ -1762,7 +1785,7 @@ export function gradeSubmissionDeterministically(
     const isMcq =
       q.question_style === 'Multiple Choice' ||
       q.question_style === 'Multiple Select' ||
-      Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured');
+      Boolean(q.options && q.options.length > 0 && q.question_style !== 'Structured' && q.question_style !== 'Table Choice');
 
     if (q.sub_questions && q.sub_questions.length > 0 && !isMcq) {
       let totalSubEarned = 0;

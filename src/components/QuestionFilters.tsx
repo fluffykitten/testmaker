@@ -569,6 +569,7 @@ export function QuestionFilters({
           <option value="Structured">Structured / Multi-part</option>
           <option value="Multiple Choice">Multiple Choice</option>
           <option value="Multiple Select">Multiple Select (Tick All That Apply)</option>
+          <option value="Table Choice">Table Choice (Tepat/Tidak Tepat, Benar/Salah)</option>
           <option value="Calculation">Calculation</option>
           <option value="Short Answer">Short Answer</option>
           <option value="Fill in the Blank">Fill in the Blank / Inline Gaps</option>

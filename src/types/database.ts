@@ -57,6 +57,7 @@ export type QuestionStyle =
   | 'Structured'
   | 'Multiple Choice'
   | 'Multiple Select'
+  | 'Table Choice'
   | 'Calculation'
   | 'Short Answer'
   | 'Fill in the Blank';
@@ -72,6 +73,15 @@ export function normalizeQuestionStyle(
 ): QuestionStyle {
   const s = (style || '').trim().toLowerCase().replace(/[_\-\s]+/g, ' ');
 
+  if (
+    s === 'table choice' ||
+    s === 'tablechoice' ||
+    s === 'table matrix' ||
+    s === 'true false table' ||
+    s === 'statement matrix'
+  ) {
+    return 'Table Choice';
+  }
   if (s === 'multiple select' || s === 'multi select' || s === 'multiselect') {
     return 'Multiple Select';
   }

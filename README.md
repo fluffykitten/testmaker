@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.6.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.6.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.6.1-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.6.2-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -129,6 +129,7 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`035_fix_exam_paper_cache_safeupdate.sql`](supabase/migrations/035_fix_exam_paper_cache_safeupdate.sql) | Qualified `DELETE FROM public.exam_paper_cache WHERE quiz_code IS NOT NULL` unblocking `app_config` / `questions` / `custom_tests` writes under `pg_safeupdate` |
 | [`036_icm_multi_exam_scale_and_roster_cache.sql`](supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql) | Trigger-synced `school_roster_entries`/`school_roster_meta` indexed cache, selective `exam_paper_cache` diff invalidation, bundled lobby metadata (`publicRosterDirectory`, `schoolClasses`, `securityTiers`, `hideEmergencyExamButton`), PK-guarded `clear_rate_limit`, and inline post-submit draft/lock cleanup |
 | [`037_admin_prewarm_and_unified_exam_entry.sql`](supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql) | 90-minute `exam_paper_cache` TTL with schedule-preserving wait state, authenticated-teacher `prewarm_exam_paper_cache` RPC, and atomic unified `enter_student_exam_session` entry RPC |
+| [`038_fix_submission_index_grant_and_pagination.sql`](supabase/migrations/038_fix_submission_index_grant_and_pagination.sql) | Restores `EXECUTE` on `normalize_roster_class_label(TEXT)` for `anon`/`authenticated` PostgREST writes on `quiz_submissions` (`42501` fix) and adds `idx_quiz_submissions_submitted_at_desc` (`submitted_at DESC, id DESC`) for fast pagination |
 
 ---
 
@@ -158,11 +159,28 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **200-Student Live Load & Red-Team** | `npm run test:stress-200` | Concurrent 200-student Supabase stress simulation & exploit probes ([latest report](Plan/student_200_stress_test_report.md)) |
 | **Multi-Exam Sitting Stress Test** | `npm run test:stress-realistic` | Full-fidelity 200-student across `ICM-1`..`ICM-13` + 3 Invigilators + 2 Results Watchers + 2s health probe ([latest report](Plan/realistic_stress_test_report.md)) |
 | **Pre-Warm & Unified Entry (`037`)** | `npm run test:prewarm-037` | 10-min landing boot cache, `prewarmExamPaperCache` guardrails, local lobby draft lookup, unified `enterStudentExamSession`, sequential toggles & `037` SQL contracts ([live report](Plan/stress_test_037_report.md)) |
+| **Semester Day Organizer** | `npm run test:semester-days` | Exam day grouping, chronological schedule presets, batched Open & Pre-Warm / Pause All Day toggles, 90-min warm-state tracking & Unscheduled cleanup |
+| **Table Choice Question Type** | `npm run test:table-choice` | `Table Choice` normalization, `Upaya`/`Tepat`/`Tidak Tepat` matrix parsing, PDF cleanup, full & partial per-row deterministic grading |
 | **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
 
 ---
 
 ## Changelog
+
+### [v.2.6.2] — Semester Exam Day Organizer, Dedicated `Table Choice` Question Type & Submission Sync Hardening (`038`)
+- **Semester Exam Day Organizer (`SemesterDayOrganizerModal`)**:
+  - Added [`src/lib/semesterDayOrganizer.ts`](src/lib/semesterDayOrganizer.ts) and [`src/components/SemesterDayOrganizerModal.tsx`](src/components/SemesterDayOrganizerModal.tsx) (wired into [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx)) to group quizzes chronologically by exam day (explicit `examDay` or scheduled start date) with schedule presets from the imported exam timetable.
+  - Added batched **Open All & Pre-Warm** and **Pause All** day actions (`activateExamDayQuizzes`, `pauseQuizzesBatch`, `assignQuizzesToExamDay`) in [`quizManagerService.ts`](src/services/quizManagerService.ts) without write storms, complete with live `90 min` warm/partial/cold indicators.
+- **Dedicated `Table Choice` Question Category**:
+  - Added `'Table Choice'` as a first-class `QuestionStyle` in [`src/types/database.ts`](src/types/database.ts) and shared matrix parser/serializer [`src/lib/tableChoiceUtils.ts`](src/lib/tableChoiceUtils.ts).
+  - Added a visual row-by-row **Table Choice Matrix Builder** in [`QuestionEditorModal.tsx`](src/components/QuestionEditorModal.tsx) with quick presets (*Tepat / Tidak Tepat*, *Benar / Salah*, *Sesuai / Tidak Sesuai*, *Setuju / Tidak Setuju*, *Fakta / Opini*, *True / False*, *Ya / Tidak*), editable item/choice columns, radio-button answer keys, and **Sync Marks to Rows**.
+  - Updated [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx), [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts), [`offlineGradingService.ts`](src/services/offlineGradingService.ts), [`pdfProcessor.ts`](src/lib/pdfProcessor.ts), [`gemini.ts`](src/lib/gemini.ts), [`ExtractionReview.tsx`](src/components/ExtractionReview.tsx), and [`QuestionFilters.tsx`](src/components/QuestionFilters.tsx) to extract `Tepat | Tidak Tepat` and `No. | Upaya | ...` tables cleanly, strip stale combo `options`, award proportional per-row partial marks, and fix affirmative/negative substring collisions (`Tidak Tepat` vs `Tepat`).
+- **Production Teacher Sync & Pagination Fix (`038`)**:
+  - Added [`supabase/migrations/038_fix_submission_index_grant_and_pagination.sql`](supabase/migrations/038_fix_submission_index_grant_and_pagination.sql) restoring `EXECUTE` on `normalize_roster_class_label(TEXT)` for `anon`/`authenticated` (fixing `42501` errors on direct teacher `quiz_submissions` writes) and adding `idx_quiz_submissions_submitted_at_desc`.
+  - Updated [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts) to paginate full `quiz_submissions` syncs in `250`-row pages with `(submitted_at DESC, id DESC)` ordering and chunk batch upserts into `100`-row batches, eliminating `57014` 3-second statement timeouts.
+- **Verification**:
+  - Added [`scripts/test-semester-day-organizer.mjs`](scripts/test-semester-day-organizer.mjs) (`npm run test:semester-days`, `11/11` passed) and [`scripts/test-table-choice.mjs`](scripts/test-table-choice.mjs) (`npm run test:table-choice`, `6/6` passed).
+  - Verified live production `EXPLAIN (ANALYZE, BUFFERS)` pagination index scan (`0.821 ms`), cleaned `1,770` synthetic stress-test submissions (`STRESS200`, `SEC-SIM-200`), and passed `npm run test:multi-select` + `npm run build`.
 
 ### [v.2.6.1] — Admin Pre-Warm Cache, Unified Exam Entry (`037`) & 170-Student Submission Smoothing
 - **90-Minute Pre-Warmed Exam Paper Cache & Atomic Start RPC (`037`)**:

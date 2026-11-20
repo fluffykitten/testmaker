@@ -4452,6 +4452,7 @@ export function StudentQuizRunner({
 
     // If regular MCQ with distinct choices and question_style is explicitly Multiple Choice/Select, don't hijack as table
     if (
+      currentQuestion.question_style !== 'Table Choice' &&
       !hasBinaryOptions &&
       currentQuestion.options &&
       currentQuestion.options.length > 0 &&
@@ -4495,12 +4496,20 @@ export function StudentQuizRunner({
         return { label: cells[0] || '', cells: cells.slice(1) };
       });
 
-      // If 4 columns: [No., Pernyataan, Benar, Salah] or [#, Statement, True, False]
-      // where col 0 is index / number, merge col 0 into col 1
+      // If 4+ columns: [No., <Statement/Upaya/etc.>, Benar, Salah]
+      // where col 0 is index / number and remaining columns are choices, merge col 0 into col 1
       if (
         headerCells.length >= 4 &&
         /^(?:no\.?|#|nomor)$/i.test(headerCells[0]) &&
-        /^(?:pernyataan|statement|aspek|kategori|pernyataan\/masalah)$/i.test(headerCells[1])
+        (
+          /^(?:pernyataan|statement|aspek|kategori|pernyataan\/masalah|upaya|kebijakan|masalah|kegiatan|tindakan|item)$/i.test(headerCells[1]) ||
+          currentQuestion.question_style === 'Table Choice' ||
+          headerCells.slice(2).some((h) =>
+            /^(?:benar|salah|true|false|ya|tidak|yes|no|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|agree|disagree|tepat|tidak\s*tepat|fakta|opini|b|s|t|f)$/i.test(
+              h.replace(/[\(\)\[\]]/g, ' ').trim()
+            )
+          )
+        )
       ) {
         headerCells = [headerCells[1], ...headerCells.slice(2)];
         rows = rawRows.slice(1).map((r) => {
@@ -4536,7 +4545,10 @@ export function StudentQuizRunner({
         /pilihlah\s*(?:salah\s*satu|kolom)/i.test(qText) ||
         /click\s+[a-z\s]+\s+for\s+each/i.test(qText);
 
-      const isInteractive = hasInteractiveHeaders || (hasStemKeywords && (hasInteractiveCells || colChoices.length >= 2));
+      const isInteractive =
+        currentQuestion.question_style === 'Table Choice' ||
+        hasInteractiveHeaders ||
+        (hasStemKeywords && (hasInteractiveCells || colChoices.length >= 2));
 
       return {
         startLineIdx: startIdx,
@@ -4652,6 +4664,7 @@ export function StudentQuizRunner({
 
   const isCurrentMcq = Boolean(
     currentQuestion &&
+    currentQuestion.question_style !== 'Table Choice' &&
     (currentQuestion.question_style === 'Multiple Choice' ||
       currentQuestion.question_style === 'Multiple Select' ||
       (currentQuestion.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) &&
@@ -7895,7 +7908,11 @@ export function StudentQuizRunner({
                     <div className="sq-table-hint-bar">
                       <span className="sq-table-hint-tag">
                         <span>📊</span>
-                        <span>Interactive Classification Table: Click your choice for each row</span>
+                        <span>
+                          {currentQuestion?.question_style === 'Table Choice'
+                            ? 'Table Choice: Click your choice for each row'
+                            : 'Interactive Classification Table: Click your choice for each row'}
+                        </span>
                       </span>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                         <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>

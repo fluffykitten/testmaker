@@ -526,29 +526,37 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
     const accAnswers = q.mark_scheme?.acceptable_answers || [];
     const hasMultiLetters = accAnswers.some((a) => (String(a).match(/[A-Za-z]/g) || []).length > 1);
 
-    // Safeguard for Classification / Matching / True-False matrix tables: ensure options are null and style is Structured
+    // Safeguard for Classification / Matching / True-False matrix tables: ensure options are null and style is Table Choice
     const isMatrixOrMatchingTable =
-      /\|\s*(?:Pernyataan|Statement|Aspek|Kategori|Nomor|No\.?|Item)\s*\|.*\|\s*(?:Benar|Salah|True|False|Sesuai|Tidak\s*Sesuai|Setuju|Tidak\s*Setuju|Ya|Tidak|Yes|No|B|S|T|F)\s*\|/i.test(
+      /\|\s*(?:Pernyataan|Statement|Aspek|Kategori|Nomor|No\.?|Item|Upaya|Kebijakan|Masalah|Kegiatan|Tindakan)\s*\|.*\|\s*(?:Benar|Salah|True|False|Sesuai|Tidak\s*Sesuai|Setuju|Tidak\s*Setuju|Tepat|Tidak\s*Tepat|Fakta|Opini|Ya|Tidak|Yes|No|B|S|T|F)\s*\|/i.test(
         text
       ) ||
-      /\|\s*(?:Benar\s*\|\s*Salah|True\s*\|\s*False|Sesuai\s*\|\s*Tidak\s*Sesuai|Setuju\s*\|\s*Tidak\s*Setuju|Ya\s*\|\s*Tidak|Yes\s*\|\s*No)\s*\|/i.test(
+      /\|\s*(?:Benar\s*\|\s*Salah|True\s*\|\s*False|Sesuai\s*\|\s*Tidak\s*Sesuai|Setuju\s*\|\s*Tidak\s*Setuju|Tepat\s*\|\s*Tidak\s*Tepat|Fakta\s*\|\s*Opini|Ya\s*\|\s*Tidak|Yes\s*\|\s*No)\s*\|/i.test(
         text
       ) ||
-      /tabel\s+(?:benar\s*[\/\-]?\s*salah|sesuai\s*[\/\-]?\s*tidak\s*sesuai|jawaban|menjodohkan)/i.test(
+      /tabel\s+(?:benar\s*[\/\-]?\s*salah|sesuai\s*[\/\-]?\s*tidak\s*sesuai|tepat\s*[\/\-]?\s*tidak\s*tepat|jawaban|menjodohkan)/i.test(
         text
       ) ||
       /(?:\[matching|\[menjodohkan|menjodohkan|tabel\s+benar\s*\/\s*salah)/i.test(text);
 
-    // Also check if options are merely binary column names (e.g. ['Benar', 'Salah'], ['True', 'False'], ['Sesuai', 'Tidak Sesuai'], etc.)
+    // Also check if options are merely binary column names (e.g. ['Benar', 'Salah'], ['Tepat', 'Tidak Tepat'])
+    // or comma-separated matrix tuple options (e.g. ['A. Tepat, Tepat, Tidak Tepat', ...]) when a pipe table is present
     const optionsAreBinaryHeaders = Boolean(
       q.options &&
-      q.options.length >= 2 &&
-      q.options.length <= 4 &&
-      q.options.every((opt) =>
-        /^(?:benar|salah|true|false|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|ya|tidak|yes|no|b|s|t|f)$/i.test(
-          opt.trim().replace(/^[A-E][.:\)\s]+/i, '').trim()
-        )
-      )
+      q.options.length >= 1 &&
+      q.options.length <= 5 &&
+      q.options.every((opt) => {
+        const clean = opt.trim().replace(/^[A-E][.:\)\s]+/i, '').trim();
+        const parts = clean.split(',').map((p) => p.trim()).filter(Boolean);
+        return (
+          parts.length > 0 &&
+          parts.every((part) =>
+            /^(?:benar|salah|true|false|sesuai|tidak\s*sesuai|setuju|tidak\s*setuju|tepat|tidak\s*tepat|fakta|opini|ya|tidak|yes|no|b|s|t|f)$/i.test(
+              part
+            )
+          )
+        );
+      })
     );
 
     if (isMatrixOrMatchingTable || (text.includes('|') && optionsAreBinaryHeaders)) {
@@ -559,7 +567,7 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
           q.sub_questions && q.sub_questions.length > 0 && text.includes('|') && /\|[-:\s|]{3,}\|/.test(text)
             ? []
             : q.sub_questions,
-        question_style: 'Structured',
+        question_style: 'Table Choice',
       };
     }
 

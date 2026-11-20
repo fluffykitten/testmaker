@@ -1172,14 +1172,14 @@ CRITICAL READING COMPREHENSION & PASSAGE CATALOG RULES:
    - Assign appropriate total_marks (e.g. 2 or 3 marks).
    - CRITICAL (ZERO DUPLICATION): NEVER duplicate choices inside "question_text". All choices must be extracted exclusively into the "options" array.
 
-5. MATCHING & CATEGORY TABLES ("Menjodohkan" / Matrix / Categorization):
-   - When a question presents a classification table (e.g. "[Matching/Table]" or "Menjodohkan"):
-   - Set "question_style": "Structured".
+5. TABLE CHOICE, MATCHING & CATEGORY TABLES ("Tepat/Tidak Tepat", "Benar/Salah", "Sesuai/Tidak Sesuai", "Menjodohkan" / Matrix):
+   - When a question presents a statement-choice or classification table (e.g. Tepat/Tidak Tepat, Benar/Salah, Sesuai/Tidak Sesuai, Setuju/Tidak Setuju, Fakta/Opini, "[Matching/Table]", or "Menjodohkan"):
+   - Set "question_style": "Table Choice" and "options": null (NEVER put A/B/C/D combo options like "A. Tepat, Tepat, Tidak Tepat" into "options").
    - Transcribe the complete table as a clean Markdown Table inside "question_text":
-     "| Place | Conservation | Natural Beauty |\\n|---|---|---|\\n| KNP Waters | [ ] | [ ] |\\n| Padar Island | [ ] | [ ] |\\n| Pink Beach | [ ] | [ ] |"
+     "| No. | Pernyataan | Tepat | Tidak Tepat |\\n|---|---|---|---|\\n| 1 | Statement one... | [ ] | [ ] |\\n| 2 | Statement two... | [ ] | [ ] |"
    - In "mark_scheme":
-     - Set "acceptable_answers": ["KNP Waters: Conservation; Padar Island: Natural Beauty; Pink Beach: Natural Beauty"].
-     - Set "marking_points": ["KNP Waters = Conservation [1]", "Padar Island = Natural Beauty [1]", "Pink Beach = Natural Beauty [1]"].
+     - Set "acceptable_answers": ["1. Statement one...: Tepat; 2. Statement two...: Tidak Tepat"].
+     - Set "marking_points": ["1. Statement one...: Tepat [1]", "2. Statement two...: Tidak Tepat [1]"].
 
 6. IN-PDF ANSWER KEYS & EXPLANATIONS ("Kunci Jawaban dan Pembahasan"):
    - Match each question number in the table (e.g. No. 1 to No. 30) with its question.
