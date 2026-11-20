@@ -340,19 +340,18 @@ function parseAndCacheCloudDraft(
 }
 
 /**
- * Fetches an existing in-progress exam draft from localStorage or Supabase.
+ * Synchronously checks localStorage for a valid non-stale in-progress exam draft.
  */
-export async function fetchExamDraft(
+export function findLocalExamDraft(
   quizCode: string,
   quizId: string,
   studentIdentifier: string,
   options?: {
-    studentPin?: string;
     expectedStudentName?: string;
     expectedStudentClass?: string;
     alternateQuizId?: string;
   }
-): Promise<ExamDraftPayload | null> {
+): ExamDraftPayload | null {
   if (!quizCode || !quizId || !studentIdentifier) return null;
 
   const draftKey = getDraftKey(quizCode, studentIdentifier);
@@ -361,7 +360,6 @@ export async function fetchExamDraft(
     : '';
   const expectedClassNorm = normalizeClassIdentityPart(options?.expectedStudentClass);
 
-  // 1. Try local storage first
   try {
     const local = localStorage.getItem(`${LOCAL_DRAFT_PREFIX}${draftKey}`);
     if (local) {
@@ -380,7 +378,6 @@ export async function fetchExamDraft(
         } else if (expectedClassNorm && parsedClassNorm && parsedClassNorm !== expectedClassNorm) {
           console.warn('Local draft student class mismatch ignored.');
         } else {
-          // Verify not stale (> 24 hours)
           const ageHours = (Date.now() - new Date(parsed.lastSavedAt).getTime()) / (1000 * 60 * 60);
           if (ageHours < 24) {
             return parsed;
@@ -390,6 +387,33 @@ export async function fetchExamDraft(
     }
   } catch (err) {
     console.warn('Local draft read error:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Fetches an existing in-progress exam draft from localStorage or Supabase.
+ */
+export async function fetchExamDraft(
+  quizCode: string,
+  quizId: string,
+  studentIdentifier: string,
+  options?: {
+    studentPin?: string;
+    expectedStudentName?: string;
+    expectedStudentClass?: string;
+    alternateQuizId?: string;
+  }
+): Promise<ExamDraftPayload | null> {
+  if (!quizCode || !quizId || !studentIdentifier) return null;
+
+  const draftKey = getDraftKey(quizCode, studentIdentifier);
+
+  // 1. Try local storage first
+  const localDraft = findLocalExamDraft(quizCode, quizId, studentIdentifier, options);
+  if (localDraft) {
+    return localDraft;
   }
 
   // 2. Fetch from Supabase cloud via SECURITY DEFINER RPC first (fallback to 1-arg or app_config only on 42883)
@@ -603,4 +627,126 @@ export async function checkStudentAttemptSubmitted(
   } catch {}
 
   return { submitted: false };
+}
+
+export interface EnterStudentExamSessionResult {
+  status:
+    | 'ready'
+    | 'draft_found'
+    | 'invalid_pin'
+    | 'pin_unconfigured'
+    | 'already_submitted'
+    | 'locked_other_device'
+    | 'invalid_input'
+    | 'rpc_unavailable';
+  valid: boolean;
+  submitted: boolean;
+  unconfigured?: boolean;
+  error?: string;
+  student?: {
+    id: string;
+    name: string;
+    class: string;
+    candidateNumber?: string;
+  };
+  submissionId?: string;
+  submittedAt?: string;
+  draft?: ExamDraftPayload | null;
+}
+
+/**
+ * Atomic single-RPC student exam entry (Migration 037): verifies Personal Exam PIN
+ * + brute-force rate limit, checks single-attempt submission lock, checks/acquires
+ * single-device draft lock, and returns any recoverable cloud draft in one round-trip.
+ */
+export async function enterStudentExamSession(params: {
+  quizCode: string;
+  quizId: string;
+  alternateQuizId?: string;
+  studentName: string;
+  studentClass?: string;
+  candidateNumber?: string;
+  studentPin?: string;
+  requireStudentPin: boolean;
+  limitOneAttempt: boolean;
+  acquireLock?: boolean;
+}): Promise<EnterStudentExamSessionResult> {
+  const cleanCode = (params.quizCode || '').trim().toUpperCase();
+  const cleanName = (params.studentName || '').trim();
+  const cleanClass = (params.studentClass || '').trim();
+  const cleanPin = (params.studentPin || '').trim();
+  const studentIdentifier = buildStudentDraftIdentifier(cleanName, cleanPin || undefined, cleanClass);
+  const draftKey = getDraftKey(cleanCode, studentIdentifier);
+  const ownerToken = resolveDraftOwnerToken(cleanCode, draftKey, cleanPin || undefined, studentIdentifier);
+
+  try {
+    const rpcPromise = (supabase as any).rpc('enter_student_exam_session', {
+      p_payload: {
+        quiz_code: cleanCode,
+        student_name: cleanName,
+        student_class: cleanClass,
+        candidate_number: (params.candidateNumber || '').trim(),
+        student_pin: cleanPin,
+        draft_key: draftKey,
+        draft_owner_token: ownerToken,
+        require_student_pin: params.requireStudentPin,
+        limit_one_attempt: params.limitOneAttempt,
+        acquire_lock: params.acquireLock !== false,
+      },
+    });
+    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 7000)
+    );
+    const { data, error } = (await Promise.race([rpcPromise, timeoutPromise])) as {
+      data: any;
+      error: any;
+    };
+
+    if (error) {
+      if (isMissingRpcError(error)) {
+        return { status: 'rpc_unavailable', valid: false, submitted: false };
+      }
+      return {
+        status: 'rpc_unavailable',
+        valid: false,
+        submitted: false,
+        error: String(error.message || 'Unable to verify exam entry on server.'),
+      };
+    }
+
+    if (!data || typeof data !== 'object') {
+      return { status: 'rpc_unavailable', valid: false, submitted: false };
+    }
+
+    let parsedDraft: ExamDraftPayload | null = null;
+    if (typeof data.draftJson === 'string' && data.draftJson.trim().length > 0) {
+      parsedDraft = parseAndCacheCloudDraft(
+        data.draftJson,
+        params.quizId,
+        draftKey,
+        cleanName,
+        cleanClass,
+        params.alternateQuizId
+      );
+    }
+
+    return {
+      status: data.status || (parsedDraft ? 'draft_found' : 'ready'),
+      valid: data.valid === true,
+      submitted: data.submitted === true,
+      unconfigured: data.unconfigured === true,
+      error: typeof data.error === 'string' ? data.error : undefined,
+      student: data.student && typeof data.student === 'object' ? data.student : undefined,
+      submissionId: typeof data.submissionId === 'string' ? data.submissionId : undefined,
+      submittedAt: typeof data.submittedAt === 'string' ? data.submittedAt : undefined,
+      draft: parsedDraft,
+    };
+  } catch (err: any) {
+    return {
+      status: 'rpc_unavailable',
+      valid: false,
+      submitted: false,
+      error: err?.message || 'Network error entering exam session.',
+    };
+  }
 }

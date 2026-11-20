@@ -1654,7 +1654,7 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
  */
 export async function saveQuizSubmissionWithVerification(
   submission: StudentSubmission,
-  maxRetries: number = 3,
+  maxRetries: number = 4,
   onAttempt?: (attempt: number, total: number) => void
 ): Promise<{ success: boolean; attempts: number; error?: string }> {
   if (isSubmissionDeleted(submission.id)) {
@@ -1691,9 +1691,9 @@ export async function saveQuizSubmissionWithVerification(
       lastErr = err?.message || 'Network error during cloud save';
     }
 
-    // Jittered exponential backoff (~1.2-1.8s, 2.2-2.8s, 3.9-4.5s) to prevent retry storms
+    // Jittered exponential backoff (~1.8-3.2s, 3.3-4.7s, 6.2-7.6s) to prevent retry storms
     if (attempt < maxRetries) {
-      const delayMs = Math.round(1200 * Math.pow(1.8, attempt - 1) + Math.random() * 600);
+      const delayMs = Math.round(1800 * Math.pow(1.85, attempt - 1) + Math.random() * 1400);
       await new Promise((res) => setTimeout(res, delayMs));
     }
   }

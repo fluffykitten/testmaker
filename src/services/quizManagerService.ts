@@ -1085,22 +1085,26 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
       clearCloudQuizzesCache();
       const cloudRes = await fetchPublishedQuizzesFromSupabaseDetailed(true);
 
-      const backfillCandidates = [
-        updatedTarget,
-        ...(cloudRes.ok ? cloudRes.data : []),
-      ]
-        .filter((q) => q.testId && q.headerConfig?.questionOverrides && Object.keys(q.headerConfig.questionOverrides).length > 0)
-        .map((q) => ({
-          testId: q.testId,
-          headerConfig: q.headerConfig,
-          questionIds: q.questionIds,
-          totalMarks: q.totalMarks,
-        }));
+      const backfillCandidates =
+        updatedTarget.testId &&
+        updatedTarget.headerConfig?.questionOverrides &&
+        Object.keys(updatedTarget.headerConfig.questionOverrides).length > 0
+          ? [
+              {
+                testId: updatedTarget.testId,
+                headerConfig: updatedTarget.headerConfig,
+                questionIds: updatedTarget.questionIds,
+                totalMarks: updatedTarget.totalMarks,
+              },
+            ]
+          : [];
       const backedInCloud = await ensureCloudTestHeadersExist(backfillCandidates);
       const slimTarget =
         updatedTarget.testId && backedInCloud.has(updatedTarget.testId)
           ? stripQuizOverrides(updatedTarget)
           : compactQuizOverrides(updatedTarget);
+
+      await upsertQuizCodeIndexToCloud(slimTarget);
 
       if (cloudRes.ok) {
         const cloudList = cloudRes.data.map((q) =>
@@ -1113,13 +1117,7 @@ export async function toggleQuizActiveStatus(id: string): Promise<PublishedQuiz 
         if (!cloudList.some((q) => q.id === id)) {
           cloudList.push(slimTarget);
         }
-        await Promise.all([
-          syncPublishedQuizzesToCloud(cloudList),
-          upsertQuizCodeIndexToCloud(slimTarget),
-        ]);
-      } else {
-        // Cloud list fetch failed/timed out: only update per-code index so we don't wipe other quizzes
-        await upsertQuizCodeIndexToCloud(slimTarget);
+        await syncPublishedQuizzesToCloud(cloudList);
       }
 
       return localTarget;
@@ -1218,4 +1216,80 @@ export function createDraftFromTest(
     shuffleQuestions: existing?.shuffleQuestions ?? true,
     shuffleOptions: existing?.shuffleOptions ?? true,
   };
+}
+
+export interface PrewarmExamCacheResult {
+  ok: boolean;
+  warmedCodes: string[];
+  skippedCodes: string[];
+  missingCodes: string[];
+  warmedCount: number;
+  ttlMinutes: number;
+  cachedAt?: string;
+  error?: string;
+}
+
+/**
+ * Pre-warms the server-side sanitized `exam_paper_cache` for active and scheduled quizzes
+ * (requires an active educator session; Migration 037).
+ */
+export async function prewarmExamPaperCache(quizCodes: string[]): Promise<PrewarmExamCacheResult> {
+  const cleanCodes = Array.from(
+    new Set(
+      (quizCodes || [])
+        .map((c) => String(c || '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  );
+  if (cleanCodes.length === 0) {
+    return {
+      ok: true,
+      warmedCodes: [],
+      skippedCodes: [],
+      missingCodes: [],
+      warmedCount: 0,
+      ttlMinutes: 90,
+    };
+  }
+
+  try {
+    const { data, error } = await withTimeout<{ data: any; error: any }>(
+      (supabase as any).rpc('prewarm_exam_paper_cache', { p_quiz_codes: cleanCodes }),
+      15000,
+      { data: null, error: { message: 'Pre-warm request timed out.' } }
+    );
+    if (error) {
+      return {
+        ok: false,
+        warmedCodes: [],
+        skippedCodes: [],
+        missingCodes: cleanCodes,
+        warmedCount: 0,
+        ttlMinutes: 90,
+        error: String(error.message || error.code || 'Unable to pre-warm cache'),
+      };
+    }
+    const warmedCodes = Array.isArray(data?.warmedCodes) ? data.warmedCodes.map(String) : [];
+    const skippedCodes = Array.isArray(data?.skippedCodes) ? data.skippedCodes.map(String) : [];
+    const missingCodes = Array.isArray(data?.missingCodes) ? data.missingCodes.map(String) : [];
+    return {
+      ok: true,
+      warmedCodes,
+      skippedCodes,
+      missingCodes,
+      warmedCount: typeof data?.warmedCount === 'number' ? data.warmedCount : warmedCodes.length,
+      ttlMinutes: typeof data?.ttlMinutes === 'number' ? data.ttlMinutes : 90,
+      cachedAt: typeof data?.cachedAt === 'string' ? data.cachedAt : undefined,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      warmedCodes: [],
+      skippedCodes: [],
+      missingCodes: cleanCodes,
+      warmedCount: 0,
+      ttlMinutes: 90,
+      error: err?.message || 'Unexpected error pre-warming exam cache',
+    };
+  }
 }

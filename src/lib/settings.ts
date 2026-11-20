@@ -500,6 +500,7 @@ export function saveCreativeModeLandingVisibility(hide: boolean): void {
     hideCreativeModeOnLanding: hide,
   };
   saveSettings(updated);
+  writeCreativeModeSyncedAt(Date.now());
   syncCreativeModeLandingVisibilityToCloud(hide).catch(() => {});
   if (typeof window !== 'undefined') {
     window.dispatchEvent(
@@ -530,25 +531,54 @@ export async function syncCreativeModeLandingVisibilityToCloud(hide: boolean): P
   }
 }
 
+const CREATIVE_MODE_SYNC_TS_KEY = 'testmaker_creative_mode_synced_at';
+const CREATIVE_MODE_SYNC_TTL_MS = 10 * 60 * 1000;
 let inflightCreativeModeVisibilityPromise: Promise<boolean> | null = null;
+
+function readCreativeModeSyncedAt(): number {
+  try {
+    if (typeof localStorage === 'undefined') return 0;
+    const raw = localStorage.getItem(CREATIVE_MODE_SYNC_TS_KEY);
+    const parsed = raw ? Number(raw) : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeCreativeModeSyncedAt(ts: number): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(CREATIVE_MODE_SYNC_TS_KEY, String(ts));
+    }
+  } catch {
+    // ignore storage access issues
+  }
+}
 
 /**
  * Loads Creative Mode landing page visibility from local storage, fetches from Supabase cloud app_config if available,
- * and updates local cache.
+ * and updates local cache (throttled to at most once every 10 minutes per device to prevent landing-page boot herds).
  */
 export async function loadAndSyncCreativeModeLandingVisibility(): Promise<boolean> {
+  const current = getSavedSettings();
+  const localVal = Boolean(current.hideCreativeModeOnLanding);
+  const lastSyncedAt = readCreativeModeSyncedAt();
+  if (lastSyncedAt > 0 && Date.now() - lastSyncedAt < CREATIVE_MODE_SYNC_TTL_MS) {
+    return localVal;
+  }
   if (inflightCreativeModeVisibilityPromise) return inflightCreativeModeVisibilityPromise;
 
   inflightCreativeModeVisibilityPromise = (async () => {
-    const current = getSavedSettings();
-    const localVal = Boolean(current.hideCreativeModeOnLanding);
-
     try {
       const { data, error } = (await (supabase.from('app_config' as any) as any)
         .select('value')
         .eq('key', 'hide_creative_mode_landing')
         .maybeSingle()) as { data: { value: string } | null; error: any };
 
+      if (!error) {
+        writeCreativeModeSyncedAt(Date.now());
+      }
       if (!error && data?.value !== undefined && data?.value !== null) {
         const parsed = JSON.parse(data.value);
         const cloudVal = Boolean(parsed);

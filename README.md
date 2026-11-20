@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.6.0`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.6.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.6.0-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.6.1-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `036`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `037`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -128,6 +128,7 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`034_atomic_draft_lock_index_and_pin_ratelimit.sql`](supabase/migrations/034_atomic_draft_lock_index_and_pin_ratelimit.sql) | Expression index `idx_quiz_submissions_code_norm_name_class`, atomic `exam_draft_locks` upsert, and normalized student PIN rate-limit scoping |
 | [`035_fix_exam_paper_cache_safeupdate.sql`](supabase/migrations/035_fix_exam_paper_cache_safeupdate.sql) | Qualified `DELETE FROM public.exam_paper_cache WHERE quiz_code IS NOT NULL` unblocking `app_config` / `questions` / `custom_tests` writes under `pg_safeupdate` |
 | [`036_icm_multi_exam_scale_and_roster_cache.sql`](supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql) | Trigger-synced `school_roster_entries`/`school_roster_meta` indexed cache, selective `exam_paper_cache` diff invalidation, bundled lobby metadata (`publicRosterDirectory`, `schoolClasses`, `securityTiers`, `hideEmergencyExamButton`), PK-guarded `clear_rate_limit`, and inline post-submit draft/lock cleanup |
+| [`037_admin_prewarm_and_unified_exam_entry.sql`](supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql) | 90-minute `exam_paper_cache` TTL with schedule-preserving wait state, authenticated-teacher `prewarm_exam_paper_cache` RPC, and atomic unified `enter_student_exam_session` entry RPC |
 
 ---
 
@@ -156,11 +157,27 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Proctoring State Machine** | `node --import ./scripts/register-ts.mjs scripts/test-proctor-p1-p2-p3.mjs` | Heartbeat throttling, command replay protection, strike/pardon guards |
 | **200-Student Live Load & Red-Team** | `npm run test:stress-200` | Concurrent 200-student Supabase stress simulation & exploit probes ([latest report](Plan/student_200_stress_test_report.md)) |
 | **Multi-Exam Sitting Stress Test** | `npm run test:stress-realistic` | Full-fidelity 200-student across `ICM-1`..`ICM-13` + 3 Invigilators + 2 Results Watchers + 2s health probe ([latest report](Plan/realistic_stress_test_report.md)) |
+| **Pre-Warm & Unified Entry (`037`)** | `npm run test:prewarm-037` | 10-min landing boot cache, `prewarmExamPaperCache` guardrails, local lobby draft lookup, unified `enterStudentExamSession`, sequential toggles & `037` SQL contracts ([live report](Plan/stress_test_037_report.md)) |
 | **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
 
 ---
 
 ## Changelog
+
+### [v.2.6.1] — Admin Pre-Warm Cache, Unified Exam Entry (`037`) & 170-Student Submission Smoothing
+- **90-Minute Pre-Warmed Exam Paper Cache & Atomic Start RPC (`037`)**:
+  - Added [`supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql`](supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql):
+    - Extended `exam_paper_cache` TTL from `5` to `90` minutes while preserving live `scheduled_start_at`/`scheduled_end_at` checks and instant trigger invalidation on edits or pauses.
+    - Preserved pre-warmed cache rows during `'scheduled'` waiting-room polls (`questions: []` withheld until `NOW() >= scheduled_start_at`) so unlocking at start time serves all students straight from warm cache without a cold build stampede.
+    - Added teacher-only `prewarm_exam_paper_cache(p_quiz_codes)` (gated via `is_authenticated_teacher()`, `42501`) sharing private `_compile_and_cache_exam_paper` sanitization.
+    - Added `enter_student_exam_session(p_payload)` combining authoritative server `verify_student_pin` + brute-force rate limit, single-attempt check (`check_student_attempt_submitted`), `exam_draft_locks` verification/acquisition, and recoverable cloud draft fetch in one atomic round-trip.
+- **Admin Pre-Warm Workflow & Student Burst Smoothing**:
+  - Added **⚡ Pre-Warm Cache** (`prewarmExamPaperCache`, auto-warm on save/open/unpause) in [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx) and serialized `toggleQuizActiveStatus` writes (`upsertQuizCodeIndexToCloud` before `syncPublishedQuizzesToCloud`) in [`quizManagerService.ts`](src/services/quizManagerService.ts).
+  - Throttled `loadAndSyncCreativeModeLandingVisibility` to a 10-minute `localStorage` cache in [`settings.ts`](src/lib/settings.ts), switched lobby draft detection to synchronous `findLocalExamDraft` and wired `enterStudentExamSession` (with pre-`037` fallback) + staggered initial draft sync in [`examDraftService.ts`](src/services/examDraftService.ts) & [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx).
+  - Widened jitter windows in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) (`0–6s` boot, `1–6s` waiting-room refresh, `0–7s` manual submit, `0–15s` timer-expiry auto-submit) and set default `maxRetries = 4` with wider transient backoff (`1.8–3.2s+`) in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts).
+- **Verification**:
+  - Added [`scripts/test-admin-prewarm-and-entry-037.mjs`](scripts/test-admin-prewarm-and-entry-037.mjs) (`npm run test:prewarm-037`, `15/15` passed) and [`scripts/stress-test-037-live.mjs`](scripts/stress-test-037-live.mjs).
+  - Verified live 170-student Migration `037` simulation against pre-warmed `ICM-1..ICM-13` (`Run ID: mwoxelw5`, [`Plan/stress_test_037_report.md`](Plan/stress_test_037_report.md)): `5/5` SLOs passed (`0` errors, `72` peak in-flight, `get_student_exam_paper` `p50=183.4ms` / `p95=616ms`, `enter_student_exam_session` `p50=220ms` / `p95=427.7ms`, `submit_student_exam_attempt` `p50=122ms` / `p95=204.5ms`, `0/22` degraded probe ticks).
 
 ### [v.2.6.0] — Multi-Exam Scale Hardening, Indexed Roster Cache & 200-Student Live Sitting Verification (`036`)
 - **Indexed Roster Cache, Lobby Payload Bundling & Atomic Post-Submit Cleanup (`036`)**:

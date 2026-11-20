@@ -149,7 +149,8 @@ import {
 } from '../lib/securityTiers';
 import {
   saveExamDraft,
-  fetchExamDraft,
+  findLocalExamDraft,
+  enterStudentExamSession,
   clearExamDraft,
   checkStudentAttemptSubmitted,
   getActiveStudentHeartbeatProof,
@@ -947,7 +948,7 @@ export function StudentQuizRunner({
       setLoading(true);
       try {
         if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
-          const bootJitterMs = Math.floor(Math.random() * 3400);
+          const bootJitterMs = Math.floor(Math.random() * 6000);
           if (bootJitterMs > 50) {
             await new Promise((r) => setTimeout(r, bootJitterMs));
           }
@@ -2774,7 +2775,7 @@ export function StudentQuizRunner({
         setCompletedSubmission(submission);
 
         if (!timerExpiryAutoSubmitTriggeredRef.current) {
-          const uploadJitterMs = Math.floor(Math.random() * 4500);
+          const uploadJitterMs = Math.floor(Math.random() * 7000);
           if (uploadJitterMs > 100) {
             setGradingProgressText('Sealing and queueing examination script for upload...');
             await new Promise((r) => setTimeout(r, uploadJitterMs));
@@ -3776,7 +3777,7 @@ export function StudentQuizRunner({
           if (!timerExpiryAutoSubmitTriggeredRef.current) {
             timerExpiryAutoSubmitTriggeredRef.current = true;
             setTimeWarning('⏱️ Time Expired! Finalizing and uploading your examination responses...');
-            const jitterMs = Math.floor(Math.random() * 6000);
+            const jitterMs = Math.floor(Math.random() * 15000);
             timerExpiryAutoSubmitTimerRef.current = setTimeout(() => {
               timerExpiryAutoSubmitTimerRef.current = null;
               if (submitExamRef.current) {
@@ -3870,133 +3871,60 @@ export function StudentQuizRunner({
       return;
     }
 
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       const finalId = resolvedPublishedId || resolvedTestId || testIdOrCode || 'direct_quiz';
       const draftIdent = buildStudentDraftIdentifier(candidateName, studentPinInput, candidateClass);
-      const fetchOpts = {
-        studentPin: studentPinInput || undefined,
+      const draft = findLocalExamDraft(resolvedQuizCode, finalId, draftIdent, {
         expectedStudentName: candidateName,
         expectedStudentClass: candidateClass,
         alternateQuizId: resolvedTestId && resolvedTestId !== finalId ? resolvedTestId : undefined,
-      };
-      const draft = await fetchExamDraft(resolvedQuizCode, finalId, draftIdent, fetchOpts);
+      });
       if (draft && draft.status === 'in_progress' && Object.keys(draft.answers || {}).length > 0) {
         setDetectedDraft(draft);
       } else {
         setDetectedDraft(null);
       }
-    }, 1200);
+    }, 250);
 
     return () => clearTimeout(timer);
   }, [candidateName, candidateClass, selectableExamClasses.length, studentPinInput, resolvedQuizCode, resolvedPublishedId, resolvedTestId, testIdOrCode, hasStarted, isSubmitted, requireStudentPin]);
 
   // ─── 6. Start Exam & Enter Fullscreen ──────────────────────────────────────
-  const handleResumeDraft = async () => {
-    if (!detectedDraft) return;
-    setLobbyError(null);
-    setStudentPinError(null);
-
-    const exitFullscreenIfEntered = () => {
-      if (typeof document !== 'undefined' && document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => { });
-      }
-    };
-
-    // Validate synchronous client inputs first, then enter fullscreen immediately inside the user gesture
-    if (requireStudentPin) {
-      const pin = studentPinInput.trim();
-      if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
-        setStudentPinError('Please enter your valid 4-digit numeric PIN to resume your session.');
-        return;
-      }
+  const applyRecoveredDraftState = async (draft: ExamDraftPayload) => {
+    setAnswers(draft.answers || {});
+    setCurrentIndex(draft.currentIndex || 0);
+    if (draft.candidateClass) setCandidateClass(draft.candidateClass);
+    if (draft.candidateNumber) setCandidateNumber(draft.candidateNumber);
+    if (draft.flaggedIndices) setFlaggedIndices(new Set(draft.flaggedIndices));
+    if (draft.audioProgress) setAudioProgress(draft.audioProgress);
+    if (draft.violations) setViolations(draft.violations);
+    if (draft.securityTiersSnapshot && draft.securityTiersSnapshot.length > 0) {
+      setSecurityTiers(normalizeSecurityTiers(draft.securityTiersSnapshot));
     }
-
-    if (securityEnabled && containerRef.current) {
-      await requestSecureFullscreen();
+    if (draft.strikeCount !== undefined) {
+      setStrikeCount(draft.strikeCount);
     }
-
-    // Verify PIN before allowing candidate to resume a draft
-    if (requireStudentPin) {
-      const pin = studentPinInput.trim();
-      setIsCheckingAttempt(true);
-      try {
-        const result = await verifyStudentPin(candidateName, candidateClass, pin);
-        if (!result.valid) {
-          setIsCheckingAttempt(false);
-          exitFullscreenIfEntered();
-          setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
-          return;
-        }
-        if (result.student?.candidateNumber && !candidateNumber && !detectedDraft?.candidateNumber) {
-          setCandidateNumber(result.student.candidateNumber);
-        }
-      } catch (err: any) {
-        setIsCheckingAttempt(false);
-        exitFullscreenIfEntered();
-        setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
-        return;
-      }
-      setIsCheckingAttempt(false);
+    if (draft.lastStrikeAt !== undefined) {
+      lastStrikeAtRef.current = draft.lastStrikeAt;
     }
-
-    // Enforce Single Attempt policy before resuming draft
-    if (limitOneAttempt && resolvedQuizCode) {
-      setIsCheckingAttempt(true);
-      try {
-        const alreadySubmitted = await checkStudentAttemptSubmitted(
-          resolvedQuizCode,
-          candidateName,
-          candidateClass,
-          requireStudentPin ? studentPinInput.trim() : undefined,
-          candidateNumber
-        );
-        if (didSubmitAttempt(alreadySubmitted)) {
-          setIsCheckingAttempt(false);
-          exitFullscreenIfEntered();
-          setDetectedDraft(null);
-          setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
-          return;
-        }
-      } catch (err) {
-        console.warn('Could not verify single attempt lock during draft resume:', err);
-      }
-      setIsCheckingAttempt(false);
+    if (draft.totalPenaltySeconds !== undefined) {
+      setTotalPenaltySeconds(draft.totalPenaltySeconds);
     }
-
-    setAnswers(detectedDraft.answers || {});
-    setCurrentIndex(detectedDraft.currentIndex || 0);
-    if (detectedDraft.candidateClass) setCandidateClass(detectedDraft.candidateClass);
-    if (detectedDraft.candidateNumber) setCandidateNumber(detectedDraft.candidateNumber);
-    if (detectedDraft.flaggedIndices) setFlaggedIndices(new Set(detectedDraft.flaggedIndices));
-    if (detectedDraft.audioProgress) setAudioProgress(detectedDraft.audioProgress);
-    if (detectedDraft.violations) setViolations(detectedDraft.violations);
-    if (detectedDraft.securityTiersSnapshot && detectedDraft.securityTiersSnapshot.length > 0) {
-      setSecurityTiers(normalizeSecurityTiers(detectedDraft.securityTiersSnapshot));
+    if (draft.tierHistory) {
+      setTierHistory(draft.tierHistory);
     }
-    if (detectedDraft.strikeCount !== undefined) {
-      setStrikeCount(detectedDraft.strikeCount);
-    }
-    if (detectedDraft.lastStrikeAt !== undefined) {
-      lastStrikeAtRef.current = detectedDraft.lastStrikeAt;
-    }
-    if (detectedDraft.totalPenaltySeconds !== undefined) {
-      setTotalPenaltySeconds(detectedDraft.totalPenaltySeconds);
-    }
-    if (detectedDraft.tierHistory) {
-      setTierHistory(detectedDraft.tierHistory);
-    }
-    if (detectedDraft.autoSubmittedBySecurity) {
+    if (draft.autoSubmittedBySecurity) {
       setIsFinalSecurityLock(true);
     }
-    if (detectedDraft.isLockedByProctor) {
-      setIsLockedByProctor(detectedDraft.isLockedByProctor);
-      setLockReason(detectedDraft.lockReason || '');
-      setLockTime(detectedDraft.lockTime || '');
+    if (draft.isLockedByProctor) {
+      setIsLockedByProctor(draft.isLockedByProctor);
+      setLockReason(draft.lockReason || '');
+      setLockTime(draft.lockTime || '');
     }
 
     const now = Date.now();
-    const resumeClock = resolveResumeClock(detectedDraft, now, examDurationSec);
-    setStartTime(detectedDraft.startTime || now);
+    const resumeClock = resolveResumeClock(draft, now, examDurationSec);
+    setStartTime(draft.startTime || now);
     setTargetEndTime(resumeClock.deadline);
     setTimeLeft(resumeClock.remainingSeconds);
 
@@ -4021,6 +3949,144 @@ export function StudentQuizRunner({
     timerExpiryAutoSubmitTriggeredRef.current = false;
     setHasStarted(true);
     setDetectedDraft(null);
+  };
+
+  const verifyEntryWithLegacyFallback = async (
+    exitFullscreenIfEntered: () => void,
+    isResume: boolean
+  ): Promise<boolean> => {
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
+      setIsCheckingAttempt(true);
+      try {
+        const result = await verifyStudentPin(candidateName, candidateClass, pin);
+        if (!result.valid) {
+          setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
+          setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
+          return false;
+        }
+        if (result.student?.candidateNumber && !candidateNumber && !(isResume && detectedDraft?.candidateNumber)) {
+          setCandidateNumber(result.student.candidateNumber);
+        }
+      } catch {
+        setIsCheckingAttempt(false);
+        exitFullscreenIfEntered();
+        setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
+        return false;
+      }
+      setIsCheckingAttempt(false);
+    }
+
+    if (limitOneAttempt && resolvedQuizCode && (isResume || isExamMode)) {
+      setIsCheckingAttempt(true);
+      try {
+        const attempt = await checkStudentAttemptSubmitted(
+          resolvedQuizCode,
+          candidateName,
+          candidateClass,
+          requireStudentPin ? studentPinInput.trim() : undefined,
+          candidateNumber
+        );
+        if (didSubmitAttempt(attempt)) {
+          setIsCheckingAttempt(false);
+          exitFullscreenIfEntered();
+          if (isResume) {
+            setDetectedDraft(null);
+            setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
+          } else {
+            const timeStr = attempt.submittedAt
+              ? new Date(attempt.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : 'earlier';
+            setAttemptBlockedMessage(
+              `⛔ Access Denied: You have already completed and submitted this examination (${timeStr}). Multiple attempts are not permitted.`
+            );
+          }
+          return false;
+        }
+      } catch (err) {
+        console.warn('Could not verify single attempt lock:', err);
+      } finally {
+        setIsCheckingAttempt(false);
+      }
+    }
+
+    return true;
+  };
+
+  const handleResumeDraft = async () => {
+    if (!detectedDraft) return;
+    setLobbyError(null);
+    setStudentPinError(null);
+
+    const exitFullscreenIfEntered = () => {
+      if (typeof document !== 'undefined' && document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => { });
+      }
+    };
+
+    if (requireStudentPin) {
+      const pin = studentPinInput.trim();
+      if (!pin || pin.length !== 4 || isNaN(Number(pin))) {
+        setStudentPinError('Please enter your valid 4-digit numeric PIN to resume your session.');
+        return;
+      }
+    }
+
+    if (securityEnabled && containerRef.current) {
+      await requestSecureFullscreen();
+    }
+
+    let usedUnifiedEntry = false;
+    if (isSupabaseConfigured() && !hasActiveTeacherSession() && resolvedQuizCode) {
+      setIsCheckingAttempt(true);
+      try {
+        const entryRes = await enterStudentExamSession({
+          quizCode: resolvedQuizCode,
+          quizId: effectiveDraftQuizId,
+          alternateQuizId: resolvedTestId && resolvedTestId !== effectiveDraftQuizId ? resolvedTestId : undefined,
+          studentName: candidateName,
+          studentClass: candidateClass,
+          candidateNumber,
+          studentPin: requireStudentPin ? studentPinInput.trim() : undefined,
+          requireStudentPin,
+          limitOneAttempt,
+          acquireLock: true,
+        });
+
+        if (entryRes.status !== 'rpc_unavailable') {
+          usedUnifiedEntry = true;
+          if (entryRes.status === 'invalid_pin' || entryRes.status === 'pin_unconfigured') {
+            exitFullscreenIfEntered();
+            setStudentPinError(entryRes.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
+            return;
+          }
+          if (entryRes.status === 'already_submitted') {
+            exitFullscreenIfEntered();
+            setDetectedDraft(null);
+            setLobbyError('🚫 Single Attempt Policy: Our records show you have already submitted this assessment.');
+            return;
+          }
+          if (entryRes.status === 'locked_other_device') {
+            exitFullscreenIfEntered();
+            setLobbyError(entryRes.error || 'Active exam session belongs to another device.');
+            return;
+          }
+          if (entryRes.student?.candidateNumber && !candidateNumber && !detectedDraft.candidateNumber) {
+            setCandidateNumber(entryRes.student.candidateNumber);
+          }
+        }
+      } finally {
+        setIsCheckingAttempt(false);
+      }
+    }
+
+    if (!usedUnifiedEntry) {
+      const ok = await verifyEntryWithLegacyFallback(exitFullscreenIfEntered, true);
+      if (!ok) return;
+    }
+
+    await applyRecoveredDraftState(detectedDraft);
   };
 
   const handleStartExam = async () => {
@@ -4054,58 +4120,66 @@ export function StudentQuizRunner({
       await requestSecureFullscreen();
     }
 
-    // 1. If student PIN verification is enabled, validate securely against server
-    if (requireStudentPin) {
-      const pin = studentPinInput.trim();
+    let usedUnifiedEntry = false;
+    let recoveredCloudDraft: ExamDraftPayload | null = null;
+    if (isSupabaseConfigured() && !hasActiveTeacherSession() && resolvedQuizCode) {
       setIsCheckingAttempt(true);
       try {
-        const result = await verifyStudentPin(candidateName, candidateClass, pin);
-        if (!result.valid) {
-          setIsCheckingAttempt(false);
-          exitFullscreenIfEntered();
-          setStudentPinError(result.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
-          return;
-        }
-        // Auto-fill candidate number if returned from server
-        if (result.student?.candidateNumber && !candidateNumber) {
-          setCandidateNumber(result.student.candidateNumber);
-        }
-      } catch (err: any) {
-        setIsCheckingAttempt(false);
-        exitFullscreenIfEntered();
-        setStudentPinError('❌ Network error verifying student PIN. Please check your connection or contact your teacher.');
-        return;
-      }
-      setIsCheckingAttempt(false);
-    }
+        const entryRes = await enterStudentExamSession({
+          quizCode: resolvedQuizCode,
+          quizId: effectiveDraftQuizId,
+          alternateQuizId: resolvedTestId && resolvedTestId !== effectiveDraftQuizId ? resolvedTestId : undefined,
+          studentName: candidateName,
+          studentClass: candidateClass,
+          candidateNumber,
+          studentPin: requireStudentPin ? studentPinInput.trim() : undefined,
+          requireStudentPin,
+          limitOneAttempt: limitOneAttempt && isExamMode,
+          acquireLock: true,
+        });
 
-    // 2. If single-attempt enforcement is active in formal exam mode
-    if (limitOneAttempt && isExamMode) {
-      setIsCheckingAttempt(true);
-      try {
-        const attempt = await checkStudentAttemptSubmitted(
-          resolvedQuizCode,
-          candidateName,
-          candidateClass,
-          studentPinInput,
-          candidateNumber
-        );
-        if (attempt.submitted) {
-          setIsCheckingAttempt(false);
-          exitFullscreenIfEntered();
-          const timeStr = attempt.submittedAt
-            ? new Date(attempt.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            : 'earlier';
-          setAttemptBlockedMessage(
-            `⛔ Access Denied: You have already completed and submitted this examination (${timeStr}). Multiple attempts are not permitted.`
-          );
-          return;
+        if (entryRes.status !== 'rpc_unavailable') {
+          usedUnifiedEntry = true;
+          if (entryRes.status === 'invalid_pin' || entryRes.status === 'pin_unconfigured') {
+            exitFullscreenIfEntered();
+            setStudentPinError(entryRes.error || '❌ Invalid candidate name or PIN. Please verify with your teacher.');
+            return;
+          }
+          if (entryRes.status === 'already_submitted') {
+            exitFullscreenIfEntered();
+            const timeStr = entryRes.submittedAt
+              ? new Date(entryRes.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : 'earlier';
+            setAttemptBlockedMessage(
+              `⛔ Access Denied: You have already completed and submitted this examination (${timeStr}). Multiple attempts are not permitted.`
+            );
+            return;
+          }
+          if (entryRes.status === 'locked_other_device') {
+            exitFullscreenIfEntered();
+            setLobbyError(entryRes.error || 'Active exam session belongs to another device.');
+            return;
+          }
+          if (entryRes.student?.candidateNumber && !candidateNumber) {
+            setCandidateNumber(entryRes.student.candidateNumber);
+          }
+          if (entryRes.draft && entryRes.draft.status === 'in_progress' && Object.keys(entryRes.draft.answers || {}).length > 0) {
+            recoveredCloudDraft = entryRes.draft;
+          }
         }
-      } catch (err) {
-        console.warn('Attempt check notice:', err);
       } finally {
         setIsCheckingAttempt(false);
       }
+    }
+
+    if (!usedUnifiedEntry) {
+      const ok = await verifyEntryWithLegacyFallback(exitFullscreenIfEntered, false);
+      if (!ok) return;
+    }
+
+    if (recoveredCloudDraft) {
+      await applyRecoveredDraftState(recoveredCloudDraft);
+      return;
     }
 
     // Shared school devices: if the saved sitting belongs to a different candidate,
@@ -4186,25 +4260,36 @@ export function StudentQuizRunner({
     timerExpiryAutoSubmitTriggeredRef.current = false;
     setHasStarted(true);
 
-    // Initial draft sync
-    saveExamDraft({
-      quizCode: resolvedQuizCode,
-      quizId: effectiveDraftQuizId,
-      studentName: candidateName,
-      candidateNumber,
-      candidateClass,
-      studentPin: studentPinInput || undefined,
-      answers,
-      currentIndex,
-      timeLeftSeconds: durationToUseSec,
-      startTime: now,
-      targetEndTime: end,
-      flaggedIndices: Array.from(flaggedIndices),
-      audioProgress,
-      violations,
-      lastSavedAt: new Date().toISOString(),
-      status: 'in_progress',
-    }).catch(() => { });
+    // Initial draft sync (jittered slightly because enter_student_exam_session already acquired exam_draft_locks)
+    const initialDraftJitterMs = isSupabaseConfigured() && !hasActiveTeacherSession()
+      ? 1500 + Math.floor(Math.random() * 3500)
+      : 0;
+    const triggerInitialDraftSync = () => {
+      if (isSubmittedRef.current || isSubmittingRef.current) return;
+      saveExamDraft({
+        quizCode: resolvedQuizCode,
+        quizId: effectiveDraftQuizId,
+        studentName: candidateName,
+        candidateNumber,
+        candidateClass,
+        studentPin: studentPinInput || undefined,
+        answers,
+        currentIndex,
+        timeLeftSeconds: durationToUseSec,
+        startTime: now,
+        targetEndTime: end,
+        flaggedIndices: Array.from(flaggedIndices),
+        audioProgress,
+        violations,
+        lastSavedAt: new Date().toISOString(),
+        status: 'in_progress',
+      }).catch(() => { });
+    };
+    if (initialDraftJitterMs > 0) {
+      setTimeout(triggerInitialDraftSync, initialDraftJitterMs);
+    } else {
+      triggerInitialDraftSync();
+    }
   };
 
   // ─── 7. Question Navigation & Answers ──────────────────────────────────────
@@ -4881,6 +4966,10 @@ export function StudentQuizRunner({
     if (!testIdOrCode) return;
     setLoading(true);
     try {
+      if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
+        const refreshJitterMs = 1000 + Math.floor(Math.random() * 5000);
+        await new Promise((r) => setTimeout(r, refreshJitterMs));
+      }
       clearQuizMemoryCache(testIdOrCode);
       if (resolvedQuizCode) clearQuizMemoryCache(resolvedQuizCode);
       const refreshed = await resolveStudentQuiz(testIdOrCode);

@@ -18,6 +18,7 @@ import {
   toggleQuizActiveStatus,
   createDraftFromTest,
   getLastQuizCloudSyncStatus,
+  prewarmExamPaperCache,
   type PublishedQuiz,
   type ExamAttachment,
 } from '../services/quizManagerService';
@@ -148,6 +149,7 @@ export function QuizManagerPage({
     title: '',
   });
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isPrewarmingCache, setIsPrewarmingCache] = useState(false);
   const [openMobileMenuId, setOpenMobileMenuId] = useState<string | null>(null);
 
   // Modal states
@@ -785,6 +787,9 @@ export function QuizManagerPage({
         setSaveWarningMsg(null);
         setSaveSuccessMsg(`✨ Quiz "${updated.title}" saved successfully with Code [${updated.quizCode}]!`);
         setTimeout(() => setSaveSuccessMsg(null), 4000);
+        if (updated.isActive) {
+          void prewarmExamPaperCache([updated.quizCode]);
+        }
       }
     } finally {
       isSavingConfigRef.current = false;
@@ -814,14 +819,55 @@ export function QuizManagerPage({
     if (busyQuizIds[id]) return;
     setBusyQuizIds((prev) => ({ ...prev, [id]: true }));
     try {
-      await toggleQuizActiveStatus(id);
+      const updated = await toggleQuizActiveStatus(id);
       setQuizzes(sanitizePublishedQuizList(getPublishedQuizzes()));
+      if (updated?.isActive && updated.quizCode) {
+        void prewarmExamPaperCache([updated.quizCode]);
+      }
     } finally {
       setBusyQuizIds((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
       });
+    }
+  };
+
+  const handlePrewarmExamCache = async () => {
+    if (isPrewarmingCache) return;
+    const warmableCodes = quizzes
+      .filter((q) => {
+        const eff = resolveEffectiveQuizStatus(q, nowMs);
+        return eff === 'active' || eff === 'scheduled';
+      })
+      .map((q) => q.quizCode)
+      .filter(Boolean);
+
+    if (warmableCodes.length === 0) {
+      setSaveSuccessMsg(null);
+      setSaveWarningMsg('No active or scheduled exams available to pre-warm right now.');
+      setTimeout(() => setSaveWarningMsg(null), 4500);
+      return;
+    }
+
+    setIsPrewarmingCache(true);
+    try {
+      const res = await prewarmExamPaperCache(warmableCodes);
+      if (res.ok) {
+        setSaveWarningMsg(null);
+        setSaveSuccessMsg(
+          `⚡ Pre-warmed ${res.warmedCount} exam paper${res.warmedCount === 1 ? '' : 's'} into cloud cache (${res.ttlMinutes} min TTL) — ready for simultaneous student entry.`
+        );
+        setTimeout(() => setSaveSuccessMsg(null), 6000);
+      } else {
+        setSaveSuccessMsg(null);
+        setSaveWarningMsg(
+          `Could not pre-warm exam cache (${res.error || 'ensure Migration 037 is applied'}).`
+        );
+        setTimeout(() => setSaveWarningMsg(null), 8000);
+      }
+    } finally {
+      setIsPrewarmingCache(false);
     }
   };
 
@@ -848,6 +894,9 @@ export function QuizManagerPage({
         setSaveWarningMsg(null);
         setSaveSuccessMsg(`🟢 "${quiz.title}" opened immediately for candidates.`);
         setTimeout(() => setSaveSuccessMsg(null), 3500);
+        if (updated.quizCode) {
+          void prewarmExamPaperCache([updated.quizCode]);
+        }
       }
     } finally {
       setBusyQuizIds((prev) => {
@@ -1032,6 +1081,17 @@ export function QuizManagerPage({
               </div>
 
               <div className="qm-hub-header-actions">
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary"
+                  onClick={handlePrewarmExamCache}
+                  disabled={isPrewarmingCache}
+                  title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
+                >
+                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>⚡</span>
+                  <span>{isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
+                </button>
+
                 <button
                   type="button"
                   className="qm-btn qm-btn--secondary"
@@ -1246,6 +1306,16 @@ export function QuizManagerPage({
               </div>
 
               <div className="qm-breadcrumb-right">
+                <button
+                  type="button"
+                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  onClick={handlePrewarmExamCache}
+                  disabled={isPrewarmingCache}
+                  title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
+                >
+                  <span>⚡ {isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
+                </button>
+
                 <button
                   type="button"
                   className="qm-btn qm-btn--secondary qm-btn--sm"
