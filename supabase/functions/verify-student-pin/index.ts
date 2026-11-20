@@ -111,6 +111,37 @@ serve(async (req: Request) => {
       );
     }
 
+    // Built-in universal Teacher Test Account (PIN 0000, valid in every class)
+    const DUMMY_ALIASES = new Set([
+      "teacher test account",
+      "teacher test student",
+      "teacher test",
+      "dummy student",
+    ]);
+    if (DUMMY_ALIASES.has(cleanName)) {
+      if (cleanPin !== "0000") {
+        return new Response(
+          JSON.stringify({
+            valid: false,
+            error: "Incorrect 4-digit PIN for Teacher Test Account. Use test PIN 0000.",
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          valid: true,
+          student: {
+            id: "dummy-teacher-test",
+            name: "Teacher Test Account",
+            class: String(studentClass || "").trim() || "X IPA 1",
+            candidateNumber: "TEST00",
+          },
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Match by exact name and normalized class (if class provided)
     const matched = rawRoster.find((s: any) => {
       const sName = String(s.name || "").trim().replace(/\s+/g, " ").toLowerCase();

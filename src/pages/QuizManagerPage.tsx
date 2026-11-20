@@ -1074,106 +1074,174 @@ export function QuizManagerPage({
         ═══════════════════════════════════════════════════════════════════════ */}
         {!loading && quizzes.length > 0 && activeSubjectView === null && (
           <div className="qm-hub-view animate-fade-in">
-            {/* Hub Header */}
+            {/* Hub Header: Two-Zone Command Layout */}
             <header className="qm-hub-header">
-              <div className="qm-hub-header-left">
-                <h1 className="qm-hub-title">Interactive Quizzes &amp; Live Assessments</h1>
-                <p className="qm-hub-subtitle">
-                  Manage {quizzes.length} live assessment{quizzes.length !== 1 ? 's' : ''} organized across {subjectSummaries.length} academic departments. Monitor real-time student submissions and launch proctoring cockpits.
-                </p>
-              </div>
+              <div className="qm-hub-header-top">
+                <div className="qm-hub-header-left">
+                  <h1 className="qm-hub-title">Interactive Quizzes &amp; Live Assessments</h1>
+                  <p className="qm-hub-subtitle">
+                    Manage {quizzes.length} live assessment{quizzes.length !== 1 ? 's' : ''} organized across {subjectSummaries.length} academic departments. Monitor real-time student submissions and launch proctoring cockpits.
+                  </p>
+                </div>
 
-              <div className="qm-hub-header-actions">
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary"
-                  onClick={() => setIsDayOrganizerOpen(true)}
-                  title="Organize exams by semester exam day to activate, warm cache, or pause per day"
-                >
-                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>📅</span>
-                  <span>Semester Days</span>
-                </button>
+                <div className="qm-hub-primary-actions">
+                  <div className="qm-view-segmented" role="tablist" aria-label="Assessment view mode">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeSubjectView === null}
+                      className={`qm-view-seg-btn ${activeSubjectView === null ? 'is-active' : ''}`}
+                      onClick={() => setActiveSubjectView(null)}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <span>Departments</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={false}
+                      className="qm-view-seg-btn"
+                      onClick={() => {
+                        setActiveSubjectView('all');
+                        setStatusFilter('all');
+                        setSearchQuery('');
+                      }}
+                      title="View all quizzes in a unified clean directory"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="7" height="7" />
+                        <rect x="14" y="3" width="7" height="7" />
+                        <rect x="14" y="14" width="7" height="7" />
+                        <rect x="3" y="14" width="7" height="7" />
+                      </svg>
+                      <span>All Quizzes</span>
+                      <span className="qm-view-seg-count">{quizzes.length}</span>
+                    </button>
+                  </div>
 
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary"
-                  onClick={handlePrewarmExamCache}
-                  disabled={isPrewarmingCache}
-                  title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
-                >
-                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>⚡</span>
-                  <span>{isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
-                </button>
+                  {isQuizizzAllowed && (
+                    <button
+                      type="button"
+                      className="qm-btn qm-btn--game"
+                      onClick={() => handleOpenCreateModal('game')}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="6" y1="12" x2="10" y2="12" />
+                        <line x1="8" y1="10" x2="8" y2="14" />
+                        <line x1="15" y1="13" x2="15.01" y2="13" />
+                        <line x1="18" y1="11" x2="18.01" y2="11" />
+                        <rect x="2" y="6" width="20" height="12" rx="4" />
+                      </svg>
+                      <span>Quizizz Game</span>
+                    </button>
+                  )}
 
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary"
-                  onClick={() => setIsSchoolProctorOpen(true)}
-                  title="Monitor all active examinations across all classes simultaneously"
-                >
-                  <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>📡</span>
-                  <span>School Live Proctor ({activeExamQuizzes.length})</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary"
-                  onClick={() => setIsPrintDeskCardsOpen(true)}
-                  title="Print 2x3 A4 Candidate Desk Cards (Profile + PIN + Schedule)"
-                >
-                  <span>🪪</span>
-                  <span>Desk Cards</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary qm-btn--grade-offline"
-                  onClick={handleOpenOfflineGrader}
-                  title="Grade offline physical papers using rapid Excel or visual grid"
-                >
-                  📊 Grade Offline Exam
-                </button>
-
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--secondary"
-                  onClick={() => {
-                    setActiveSubjectView('all');
-                    setStatusFilter('all');
-                    setSearchQuery('');
-                  }}
-                  title="View all quizzes in a unified clean directory"
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="3" width="7" height="7" />
-                    <rect x="14" y="3" width="7" height="7" />
-                    <rect x="14" y="14" width="7" height="7" />
-                    <rect x="3" y="14" width="7" height="7" />
-                  </svg>
-                  <span>All Quizzes ({quizzes.length})</span>
-                </button>
-
-                {isQuizizzAllowed && (
                   <button
                     type="button"
-                    className="qm-btn qm-btn--game"
-                    onClick={() => handleOpenCreateModal('game')}
+                    className="qm-btn qm-btn--primary"
+                    onClick={() => handleOpenCreateModal('exam')}
                   >
-                    🎮 Quizizz Game
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    <span>Publish Exam</span>
                   </button>
-                )}
+                </div>
+              </div>
 
-                <button
-                  type="button"
-                  className="qm-btn qm-btn--primary"
-                  onClick={() => handleOpenCreateModal('exam')}
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19" />
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                  <span>Publish Exam</span>
-                </button>
+              {/* Operational Command Dock */}
+              <div className="qm-ops-dock">
+                <div className="qm-ops-group">
+                  <span className="qm-ops-group-label">Exam Ops</span>
+
+                  <button
+                    type="button"
+                    className="qm-op-btn qm-op-btn--days"
+                    onClick={() => setIsDayOrganizerOpen(true)}
+                    title="Organize exams by semester exam day to activate, warm cache, or pause per day"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                      <line x1="16" y1="2" x2="16" y2="6" />
+                      <line x1="8" y1="2" x2="8" y2="6" />
+                      <line x1="3" y1="10" x2="21" y2="10" />
+                    </svg>
+                    <span>Semester Days</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="qm-op-btn qm-op-btn--warm"
+                    onClick={handlePrewarmExamCache}
+                    disabled={isPrewarmingCache}
+                    title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                    <span>{isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`qm-op-btn qm-op-btn--proctor ${activeExamQuizzes.length > 0 ? 'is-live' : ''}`}
+                    onClick={() => setIsSchoolProctorOpen(true)}
+                    title="Monitor all active examinations across all classes simultaneously"
+                  >
+                    {activeExamQuizzes.length > 0 ? (
+                      <span className="qm-live-dot" aria-hidden="true" />
+                    ) : (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+                        <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+                        <circle cx="12" cy="12" r="2" />
+                        <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+                        <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19" />
+                      </svg>
+                    )}
+                    <span>School Live Proctor</span>
+                    <span className="qm-op-count-pill">
+                      {activeExamQuizzes.length > 0 ? `${activeExamQuizzes.length} live` : '0'}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="qm-ops-group">
+                  <span className="qm-ops-divider" aria-hidden="true" />
+                  <span className="qm-ops-group-label">Tools</span>
+
+                  <button
+                    type="button"
+                    className="qm-op-btn"
+                    onClick={() => setIsPrintDeskCardsOpen(true)}
+                    title="Print 2x3 A4 Candidate Desk Cards (Profile + PIN + Schedule)"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="5" width="20" height="14" rx="2" />
+                      <circle cx="8" cy="12" r="2.2" />
+                      <line x1="13" y1="10" x2="18.5" y2="10" />
+                      <line x1="13" y1="14" x2="17" y2="14" />
+                    </svg>
+                    <span>Desk Cards</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="qm-op-btn"
+                    onClick={handleOpenOfflineGrader}
+                    title="Grade offline physical papers using rapid Excel or visual grid"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="20" x2="18" y2="10" />
+                      <line x1="12" y1="20" x2="12" y2="4" />
+                      <line x1="6" y1="20" x2="6" y2="14" />
+                    </svg>
+                    <span>Grade Offline Exam</span>
+                  </button>
+                </div>
               </div>
             </header>
 
@@ -1321,30 +1389,43 @@ export function QuizManagerPage({
               <div className="qm-breadcrumb-right">
                 <button
                   type="button"
-                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  className="qm-op-btn qm-op-btn--days"
                   onClick={() => setIsDayOrganizerOpen(true)}
                   title="Organize exams by semester exam day to activate, warm cache, or pause per day"
                 >
-                  <span>📅 Semester Days</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                    <line x1="16" y1="2" x2="16" y2="6" />
+                    <line x1="8" y1="2" x2="8" y2="6" />
+                    <line x1="3" y1="10" x2="21" y2="10" />
+                  </svg>
+                  <span>Semester Days</span>
                 </button>
 
                 <button
                   type="button"
-                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  className="qm-op-btn qm-op-btn--warm"
                   onClick={handlePrewarmExamCache}
                   disabled={isPrewarmingCache}
                   title="Compile and warm active & scheduled exam papers in Supabase cache (90 min) before students join"
                 >
-                  <span>⚡ {isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                  </svg>
+                  <span>{isPrewarmingCache ? 'Warming…' : 'Pre-Warm Cache'}</span>
                 </button>
 
                 <button
                   type="button"
-                  className="qm-btn qm-btn--secondary qm-btn--sm"
+                  className={`qm-op-btn qm-op-btn--proctor ${activeExamQuizzes.length > 0 ? 'is-live' : ''}`}
                   onClick={() => setIsSchoolProctorOpen(true)}
                   title="Monitor all active examinations across all classes simultaneously"
                 >
-                  <span>📡 School Live Proctor ({activeExamQuizzes.length})</span>
+                  {activeExamQuizzes.length > 0 && <span className="qm-live-dot" aria-hidden="true" />}
+                  <span>School Live Proctor</span>
+                  <span className="qm-op-count-pill">
+                    {activeExamQuizzes.length > 0 ? `${activeExamQuizzes.length} live` : '0'}
+                  </span>
                 </button>
 
                 {isQuizizzAllowed && (
@@ -1365,7 +1446,7 @@ export function QuizManagerPage({
                     <line x1="12" y1="5" x2="12" y2="19" />
                     <line x1="5" y1="12" x2="19" y2="12" />
                   </svg>
-                  <span>+ Publish Exam</span>
+                  <span>Publish Exam</span>
                 </button>
               </div>
             </div>

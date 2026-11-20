@@ -160,6 +160,8 @@ import {
 import {
   fetchPublicRosterDirectory,
   verifyStudentPin,
+  withTeacherDummyRosterEntries,
+  isTeacherDummyStudentName,
   type PublicRosterStudent,
 } from '../services/studentRosterService';
 import { CandidateNameAutocomplete } from '../components/CandidateNameAutocomplete';
@@ -466,8 +468,12 @@ export function StudentQuizRunner({
   );
 
   const selectableRoster = useMemo(
-    () => filterRosterByTargetClasses(schoolRoster, examTargetClass),
-    [schoolRoster, examTargetClass]
+    () =>
+      withTeacherDummyRosterEntries(
+        filterRosterByTargetClasses(schoolRoster, examTargetClass),
+        selectableExamClasses
+      ),
+    [schoolRoster, examTargetClass, selectableExamClasses]
   );
 
   useEffect(() => {
@@ -5408,7 +5414,7 @@ export function StudentQuizRunner({
                     (s) => s.name.trim().toLowerCase() === val.trim().toLowerCase()
                   );
                   if (matched) {
-                    if (matched.class) {
+                    if (matched.class && (!isTeacherDummyStudentName(matched.name) || !candidateClass)) {
                       setCandidateClass(matched.class);
                       setIsCustomClass(false);
                     }

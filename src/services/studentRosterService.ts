@@ -61,6 +61,70 @@ export interface RosterImportPlan {
 
 const ROSTER_STORAGE_KEY = 'testmaker_school_student_roster';
 const PUBLIC_ROSTER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+export const TEACHER_DUMMY_STUDENT_NAME = 'Teacher Test Account';
+export const TEACHER_DUMMY_STUDENT_PIN = '0000';
+export const TEACHER_DUMMY_CANDIDATE_NUMBER = 'TEST00';
+const TEACHER_DUMMY_STUDENT_ALIASES = new Set([
+  'teacher test account',
+  'teacher test student',
+  'teacher test',
+  'dummy student',
+]);
+
+export function isTeacherDummyStudentName(name?: string | null): boolean {
+  const clean = String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  return TEACHER_DUMMY_STUDENT_ALIASES.has(clean);
+}
+
+/**
+ * Ensures the universal Teacher Test Account is selectable in every configured/target exam class
+ * in the student lobby without polluting printed Desk Cards, PIN slips, or cloud roster storage.
+ */
+export function withTeacherDummyRosterEntries(
+  roster: PublicRosterStudent[],
+  availableClasses: string[]
+): PublicRosterStudent[] {
+  const base = Array.isArray(roster) ? roster : [];
+  const classList = (Array.isArray(availableClasses) ? availableClasses : [])
+    .map((c) => String(c || '').trim())
+    .filter(Boolean);
+
+  if (classList.length === 0) {
+    const alreadyHasDummy = base.some((s) => isTeacherDummyStudentName(s.name));
+    if (alreadyHasDummy) return base;
+    return [
+      ...base,
+      {
+        id: 'dummy-teacher-test-0',
+        name: TEACHER_DUMMY_STUDENT_NAME,
+        class: '',
+        candidateNumber: TEACHER_DUMMY_CANDIDATE_NUMBER,
+      },
+    ];
+  }
+
+  const existingClassKeys = new Set(
+    base
+      .filter((s) => isTeacherDummyStudentName(s.name))
+      .map((s) => normalizeClassLabel(s.class).trim().toLowerCase())
+  );
+
+  const additions: PublicRosterStudent[] = [];
+  classList.forEach((cls, idx) => {
+    const key = normalizeClassLabel(cls).trim().toLowerCase();
+    if (existingClassKeys.has(key)) return;
+    existingClassKeys.add(key);
+    additions.push({
+      id: `dummy-teacher-test-${idx}`,
+      name: TEACHER_DUMMY_STUDENT_NAME,
+      class: cls,
+      candidateNumber: TEACHER_DUMMY_CANDIDATE_NUMBER,
+    });
+  });
+
+  return additions.length > 0 ? [...base, ...additions] : base;
+}
 let cachedPublicRosterDirectory: { data: PublicRosterStudent[]; timestamp: number } | null = null;
 let inflightPublicRosterPromise: Promise<PublicRosterStudent[]> | null = null;
 
@@ -297,6 +361,24 @@ export async function verifyStudentPin(
 
   // 3. Fallback to local cache (Offline / Dev mode fallback)
   console.warn('⚠️ Falling back to local offline roster validation.');
+  if (isTeacherDummyStudentName(cleanName)) {
+    if (cleanPin !== TEACHER_DUMMY_STUDENT_PIN) {
+      return {
+        valid: false,
+        error: `❌ Incorrect 4-digit PIN for ${TEACHER_DUMMY_STUDENT_NAME}. Use test PIN ${TEACHER_DUMMY_STUDENT_PIN}.`,
+      };
+    }
+    return {
+      valid: true,
+      student: {
+        id: 'dummy-teacher-test',
+        name: TEACHER_DUMMY_STUDENT_NAME,
+        class: cleanClass || 'X IPA 1',
+        candidateNumber: TEACHER_DUMMY_CANDIDATE_NUMBER,
+      },
+    };
+  }
+
   const localRoster = getSchoolRoster();
   if (localRoster.length === 0) {
     return {

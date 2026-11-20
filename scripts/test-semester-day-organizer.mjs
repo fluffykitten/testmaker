@@ -317,7 +317,8 @@ check(
   'SDO-5: QuizManagerPage wires SemesterDayOrganizerModal & button while keeping Publish/Edit config modal unchanged',
   planExists &&
     qmSrc.includes('SemesterDayOrganizerModal') &&
-    qmSrc.includes('📅 Semester Days') &&
+    qmSrc.includes('Semester Days') &&
+    qmSrc.includes('setIsDayOrganizerOpen(true)') &&
     !configModalSlice.includes('examDay') &&
     modalSrc.includes('activateExamDayQuizzes') &&
     modalSrc.includes('pauseQuizzesBatch') &&
