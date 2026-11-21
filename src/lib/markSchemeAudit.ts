@@ -117,8 +117,28 @@ export function sumBracketedMarks(input: string | string[] | null | undefined): 
   return sum;
 }
 
+const ARABIC_TO_LATIN_OPTION: Record<string, string> = {
+  أ: 'A',
+  ا: 'A',
+  إ: 'A',
+  آ: 'A',
+  ب: 'B',
+  ج: 'C',
+  د: 'D',
+  هـ: 'E',
+  ه: 'E',
+  و: 'F',
+};
+
+function normalizeOptionTokenToLatin(token: string): string {
+  const cleaned = token.trim();
+  if (ARABIC_TO_LATIN_OPTION[cleaned]) return ARABIC_TO_LATIN_OPTION[cleaned];
+  return cleaned.toUpperCase();
+}
+
 /**
- * Extracts distinct valid uppercase MCQ/Multi-Select option letters (A..E)
+ * Extracts distinct valid uppercase MCQ/Multi-Select option letters (A..H, mapped cleanly from
+ * either Latin A–H or Arabic أ، ب، ج، د، هـ، و option labels)
  * from a MarkScheme object's acceptable_answers and marking_points.
  */
 export function extractOptionLettersFromMarkScheme(
@@ -135,44 +155,46 @@ export function extractOptionLettersFromMarkScheme(
   };
 
   const letters = new Set<string>();
+  const addTokenIfValid = (rawTok: string) => {
+    const ch = normalizeOptionTokenToLatin(rawTok);
+    if (ch.length === 1 && isValidLetter(ch)) letters.add(ch);
+  };
 
   const scanTokenString = (raw: string, allowLeadingRationale: boolean) => {
     const s = (raw || '').trim();
     if (!s || isPlaceholderMarkSchemeText(s)) return;
 
-    // Exact single letter: "B", "(B)", "B."
-    const singleMatch = /^\(?\s*([A-H])\s*\)?\.?$/i.exec(s);
+    // Exact single Latin or Arabic option letter: "B", "(B)", "B.", "أ", "(هـ)", "ج."
+    const singleMatch = /^\(?\s*(هـ|[A-Hأإآابجدهو])\s*\)?\.?$/iu.exec(s);
     if (singleMatch) {
-      const ch = singleMatch[1].toUpperCase();
-      if (isValidLetter(ch)) letters.add(ch);
+      addTokenIfValid(singleMatch[1]);
       return;
     }
 
-    // Comma / "and" / semicolon-separated letter list: "A, C", "B and D", "A, C, E"
+    // Comma / Arabic comma / "and" / semicolon-separated list: "A, C", "B and D", "أ، ج", "ب, هـ"
     const strippedTags = s.replace(/\[\d+\]/g, '').trim();
-    const listCheck = strippedTags.replace(/^(?:correct\s+options?|answers?|options?)\s*[:\-]\s*/i, '').trim();
-    if (/^[A-H](?:\s*(?:,|&|\band\b|;|\s)\s*[A-H])+$/i.test(listCheck)) {
-      const found = listCheck.match(/\b[A-H]\b/gi) || [];
+    const listCheck = strippedTags
+      .replace(/^(?:correct\s+options?|answers?|options?|الخيار(?:ات)?|الإجاب(?:ة|ات)|الجواب)\s*[:\-]?\s*/i, '')
+      .trim();
+    if (/^(?:هـ|[A-Hأإآابجدهو])(?:\s*(?:[,،;&]|\band\b|\bو\b|\s)\s*(?:هـ|[A-Hأإآابجدهو]))+$/iu.test(listCheck)) {
+      const found = listCheck.match(/(?:هـ|\b[A-H]\b|[أإآابجدهو])/giu) || [];
       for (const f of found) {
-        const ch = f.toUpperCase();
-        if (isValidLetter(ch)) letters.add(ch);
+        addTokenIfValid(f);
       }
       return;
     }
 
     if (allowLeadingRationale) {
-      // "Answer: D", "Option B", "Correct: A", "B — explanation", "B. text", "C: ..."
-      const prefixed = /^(?:(?:correct\s+)?answer|option|key)\s*[:\-]?\s*\(?([A-H])\)?(?:\b|$)/i.exec(s);
+      // "Answer: D", "Option B", "الخيار أ", "الجواب: ب", "الإجابة: هـ"
+      const prefixed = /^(?:(?:correct\s+)?answer|option|key|الخيار|الإجابة|الجواب)\s*[:\-]?\s*\(?(هـ|[A-Hأإآابجدهو])\)?(?:[\s\]\).,:;–—-]|$)/iu.exec(s);
       if (prefixed) {
-        const ch = prefixed[1].toUpperCase();
-        if (isValidLetter(ch)) letters.add(ch);
+        addTokenIfValid(prefixed[1]);
         return;
       }
 
-      const leading = /^\(?([A-H])\)?(?:\s*[.:—–-]\s+|\s+(?=[A-Z0-9\[]))/.exec(s);
+      const leading = /^\(?(هـ|[A-Hأإآابجدهو])\)?(?:\s*[.:—–-]\s+|\s+(?=[A-Z0-9\[\u0600-\u06FF]))/u.exec(s);
       if (leading) {
-        const ch = leading[1].toUpperCase();
-        if (isValidLetter(ch)) letters.add(ch);
+        addTokenIfValid(leading[1]);
       }
     }
   };

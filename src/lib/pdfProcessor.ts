@@ -21,6 +21,7 @@ import {
   detectAndSplitInDocumentAnswerKey,
   isSaveMyExamsDocument,
   splitSaveMyExamsPdfBySections,
+  readPdfPageTexts,
   detectArabicPagesInPdf,
   renderPdfPagesToImages,
   uint8ArrayToBase64,
@@ -29,6 +30,7 @@ import {
 } from './pdfChunker';
 import { trimMarkSchemePreamble } from './markSchemeTrim';
 import { chooseBetterMarkScheme, chooseBetterSubMarkScheme } from './markSchemeAudit';
+import { parseOfficialMcqAnswerKey, reconcileQuestionsWithOfficialMcqKey } from './mcqMarkSchemeExtractor';
 import { tryBuildPaperOutline } from './paperOutline';
 import { subjectForSyllabus, NEUTRAL_HUMANITIES_PROFILE } from './subjectClassifier';
 import type { PaperOutline } from './paperOutlineParse';
@@ -664,6 +666,223 @@ export function normalizeQuestionStyles(questions: ExtractedQuestion[]): Extract
   });
 }
 
+const EASTERN_ARABIC_DIGITS_MAP: Record<string, string> = {
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+  '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+};
+
+export function normalizeChunkQuestionNumber(num: string | number): string {
+  const ascii = String(num ?? '').replace(/[٠-٩]/g, (d) => EASTERN_ARABIC_DIGITS_MAP[d] || d);
+  let raw = ascii
+    .replace(/^(?:Question|Q|Soal|No\.?)\s*/i, '')
+    .replace(/[.:]+$/, '')
+    .trim();
+  const parenWrapped = /^\(([^()]+)\)$/.exec(raw);
+  if (parenWrapped) raw = parenWrapped[1].trim();
+  const parentMatch = raw.match(/^0*(\d+)\s*(?:\([a-zA-Z0-9]+\)|[a-zA-Z])$/);
+  if (parentMatch) {
+    return parentMatch[1];
+  }
+  return raw.replace(/^0+(?=\d)/, '');
+}
+
+function isPhantomEmptyQuestion(q: ExtractedQuestion): boolean {
+  const stem = (q.question_text || '').trim();
+  const hasOpts = Array.isArray(q.options) && q.options.length > 0;
+  const hasSubs = Array.isArray(q.sub_questions) && q.sub_questions.length > 0;
+  if (!stem && !hasOpts && !hasSubs && !q.has_diagram) return true;
+  if (!hasOpts && !hasSubs && !q.has_diagram && /^(?:\[?\s*turn\s+over\s*\]?|blank\s+page)$/i.test(stem)) {
+    return true;
+  }
+  return false;
+}
+
+export function mergeChunkQuestions(
+  chunkQuestions: ExtractedQuestion[][],
+  chunksMeta: Array<{ startPage: number; targetSection?: string }>,
+  options: { isIeltsFlow?: boolean; isSaveMyExams?: boolean } = {}
+): ExtractedQuestion[] {
+  const questionMap = new Map<string, ExtractedQuestion>();
+  const normSubKey = (id: string) => (id || '').replace(/[().\s]/g, '').toLowerCase();
+  const isIeltsFlow = Boolean(options.isIeltsFlow);
+  const isSaveMyExams = Boolean(options.isSaveMyExams);
+
+  const inferIeltsSkillPrefix = (qNum: string, topic?: string | null): 'L' | 'R' | 'W' | '' => {
+    const m = qNum.match(/^([LRW])\s*\d/i);
+    if (m) return m[1].toUpperCase() as 'L' | 'R' | 'W';
+    const t = (topic || '').toLowerCase();
+    if (t.includes('listening')) return 'L';
+    if (t.includes('reading')) return 'R';
+    if (t.includes('writing')) return 'W';
+    return '';
+  };
+
+  chunkQuestions.forEach((questionsInChunk, cIdx) => {
+    const chunkOffset = (chunksMeta[cIdx]?.startPage || 1) - 1;
+    questionsInChunk.forEach((q) => {
+      if (isPhantomEmptyQuestion(q)) return;
+
+      let qNumClean = normalizeChunkQuestionNumber(q.question_number) || String(q.question_number || '').trim();
+      const skillPrefix = isIeltsFlow ? inferIeltsSkillPrefix(qNumClean, q.topic) : '';
+      if (isIeltsFlow && skillPrefix && !/^[LRW]\s*\d/i.test(qNumClean)) {
+        qNumClean = `${skillPrefix}${qNumClean}`;
+      }
+      if (isSaveMyExams) {
+        const sec = chunksMeta[cIdx]?.targetSection || q.estimated_difficulty || 'Easy';
+        if (!/^(?:easy|medium|hard)\s*[-:]/i.test(qNumClean)) {
+          qNumClean = `${sec} - ${qNumClean}`;
+        }
+      }
+      const mergeKey = isIeltsFlow ? `${skillPrefix || 'Q'}::${qNumClean}` : qNumClean;
+      const adjustedQ: ExtractedQuestion = {
+        ...q,
+        question_number: qNumClean,
+        page_number: (q.page_number || 1) + chunkOffset,
+        sub_questions: (q.sub_questions || []).map((sq) => ({
+          ...sq,
+          page_number: sq.page_number ? sq.page_number + chunkOffset : (q.page_number || 1) + chunkOffset,
+        })),
+      };
+
+      if (!questionMap.has(mergeKey)) {
+        questionMap.set(mergeKey, adjustedQ);
+      } else {
+        const existing = questionMap.get(mergeKey)!;
+        const mergedSubMap = new Map<string, SubQuestion>();
+        (existing.sub_questions || []).forEach((sq) => {
+          const k = normSubKey(sq.sub_id) || sq.sub_id;
+          mergedSubMap.set(k, sq);
+        });
+
+        const anyAdjustedSubHasDiagram = (adjustedQ.sub_questions || []).some(
+          (s) => s.has_diagram || (Array.isArray(s.bounding_box) && s.bounding_box.length >= 4)
+        );
+        let assignedContinuationDiagram = false;
+
+        (adjustedQ.sub_questions || []).forEach((sq) => {
+          const k = normSubKey(sq.sub_id) || sq.sub_id;
+          const prev = mergedSubMap.get(k);
+          if (!prev) {
+            const promoteContinuationDiagram =
+              !assignedContinuationDiagram &&
+              !anyAdjustedSubHasDiagram &&
+              Boolean(adjustedQ.has_diagram && adjustedQ.bounding_box) &&
+              (adjustedQ.page_number || 1) > (existing.page_number || 1);
+
+            if (promoteContinuationDiagram) {
+              assignedContinuationDiagram = true;
+            }
+
+            mergedSubMap.set(k, {
+              ...sq,
+              page_number: sq.page_number || adjustedQ.page_number,
+              has_diagram: Boolean(sq.has_diagram || promoteContinuationDiagram),
+              diagram_source: sq.diagram_source || (promoteContinuationDiagram ? adjustedQ.diagram_source || 'qp' : null),
+              resource_ref: sq.resource_ref || (promoteContinuationDiagram ? adjustedQ.resource_ref : null),
+              bounding_box: sq.bounding_box || (promoteContinuationDiagram ? adjustedQ.bounding_box : null),
+            });
+          } else {
+            const sqHasNewDiagram = !prev.has_diagram && Boolean(sq.has_diagram);
+            mergedSubMap.set(k, {
+              ...prev,
+              page_number: sqHasNewDiagram ? (sq.page_number || prev.page_number) : (prev.page_number || sq.page_number),
+              question_text:
+                sq.question_text && sq.question_text.length > (prev.question_text?.length || 0)
+                  ? sq.question_text
+                  : prev.question_text,
+              marks: sq.marks || prev.marks,
+              mark_scheme: chooseBetterSubMarkScheme(
+                prev.mark_scheme,
+                sq.mark_scheme,
+                sq.marks || prev.marks
+              ),
+              options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
+              data_tables: prev.data_tables && prev.data_tables.length > 0 ? prev.data_tables : sq.data_tables,
+              has_diagram: prev.has_diagram || sq.has_diagram,
+              diagram_source: prev.diagram_source || sq.diagram_source,
+              resource_ref: prev.resource_ref || sq.resource_ref,
+              diagram_type: prev.diagram_type || sq.diagram_type,
+              bounding_box: prev.bounding_box || sq.bounding_box,
+            });
+          }
+        });
+
+        const mergedSubs = Array.from(mergedSubMap.values()).sort((a, b) => {
+          const ka = normSubKey(a.sub_id);
+          const kb = normSubKey(b.sub_id);
+          return ka.localeCompare(kb, undefined, { numeric: true });
+        });
+
+        const totalSubMarks = mergedSubs.reduce((sum, s) => sum + (Number(s.marks) || 0), 0);
+        const isAdjustedContinuation =
+          (adjustedQ.sub_questions && adjustedQ.sub_questions.length > 0) &&
+          !adjustedQ.sub_questions.some((s) => normSubKey(s.sub_id) === 'a' || normSubKey(s.sub_id).startsWith('a'));
+
+        const existingLen = (existing.question_text || '').trim().length;
+        const adjustedLen = (adjustedQ.question_text || '').trim().length;
+
+        let chosenQuestionText = existing.question_text || '';
+        if (adjustedLen > existingLen) {
+          if (
+            !isAdjustedContinuation ||
+            adjustedQ.question_text?.toLowerCase().includes('experiment') ||
+            adjustedLen > existingLen + 150
+          ) {
+            chosenQuestionText = adjustedQ.question_text || existing.question_text || '';
+          }
+        } else if (!chosenQuestionText && adjustedQ.question_text) {
+          chosenQuestionText = adjustedQ.question_text;
+        }
+
+        const combinedTables = [...(existing.data_tables || []), ...(adjustedQ.data_tables || [])];
+        const uniqueTablesMap = new Map<string, any>();
+        combinedTables.forEach((t, idx) => {
+          const key = (t?.id || t?.title || `tbl_${idx}`).toLowerCase().trim();
+          if (!uniqueTablesMap.has(key)) uniqueTablesMap.set(key, t);
+        });
+        const mergedDataTables = uniqueTablesMap.size > 0 ? Array.from(uniqueTablesMap.values()) : undefined;
+
+        const adoptAdjustedParentDiagram =
+          !existing.has_diagram &&
+          Boolean(adjustedQ.has_diagram) &&
+          !assignedContinuationDiagram &&
+          !anyAdjustedSubHasDiagram &&
+          (adjustedQ.page_number === existing.page_number || !existing.page_number);
+
+        questionMap.set(mergeKey, {
+          ...existing,
+          passage_ref: existing.passage_ref || adjustedQ.passage_ref || null,
+          page_number: adoptAdjustedParentDiagram ? (adjustedQ.page_number || existing.page_number) : existing.page_number,
+          question_text: chosenQuestionText,
+          options:
+            adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
+              ? adjustedQ.options
+              : existing.options,
+          data_tables: mergedDataTables,
+          mark_scheme:
+            chooseBetterMarkScheme(
+              existing.mark_scheme,
+              adjustedQ.mark_scheme,
+              totalSubMarks > 0
+                ? totalSubMarks
+                : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0)
+            ) ?? null,
+          total_marks: totalSubMarks > 0 ? totalSubMarks : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0),
+          sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
+          has_diagram: existing.has_diagram || adoptAdjustedParentDiagram,
+          diagram_source: existing.diagram_source || (adoptAdjustedParentDiagram ? adjustedQ.diagram_source : null),
+          resource_ref: existing.resource_ref || (adoptAdjustedParentDiagram ? adjustedQ.resource_ref : null),
+          bounding_box: existing.bounding_box || (adoptAdjustedParentDiagram ? adjustedQ.bounding_box : null),
+        });
+      }
+    });
+  });
+
+  const allQuestions = Array.from(questionMap.values());
+  allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
+  return allQuestions;
+}
+
 /**
  * Ensures Practical Exam Questions (Cambridge Paper 5 & 6) do not have Question 2
  * (Qualitative Analysis) mistakenly grouped into Question 1 (Calorimetry /
@@ -760,9 +979,13 @@ export async function runExtractionPipeline(
     // Scan Question Paper (and compact Mark Scheme) for Arabic script so affected chunks bypass
     // corrupted PDF ToUnicode text streams via lossless 2.8x PNG page images.
     const arabicPages = await detectArabicPagesInPdf(bytesToChunk);
+    const msPageTexts = msBytesForVisualScan
+      ? await readPdfPageTexts(msBytesForVisualScan)
+      : [];
     const msArabicPages = msBytesForVisualScan
-      ? await detectArabicPagesInPdf(msBytesForVisualScan)
+      ? await detectArabicPagesInPdf(msBytesForVisualScan, msPageTexts)
       : new Set<number>();
+    const officialMcqKey = msPageTexts.length > 0 ? parseOfficialMcqAnswerKey(msPageTexts) : new Map<string, string>();
     const msMaxArabicPage = msArabicPages.size > 0 ? Math.max(...Array.from(msArabicPages)) : 0;
     const msPageImages =
       msBytesForVisualScan && msMaxArabicPage > 0 && msMaxArabicPage <= 8
@@ -788,10 +1011,15 @@ export async function runExtractionPipeline(
         error: null,
       });
     } else {
-      // Dense Language / Reading Comprehension and Arabic-script papers use compact 4-page chunks
-      // so parallel calls never exceed token/image budgets or drop questions.
-      const maxPagesPerChunk = options.domain === 'languages' || arabicPages.size > 0 ? 4 : 8;
-      chunks = await splitPdfForParallelExtraction(bytesToChunk, maxPagesPerChunk);
+      // Dense Language / Reading Comprehension and Arabic-script papers use compact chunks.
+      // Arabic visual-PNG papers keep strict 3-page + 1-page overlap chunks (<= 4 PNGs per call).
+      const isArabicPdf = arabicPages.size > 0;
+      const maxPagesPerChunk = isArabicPdf ? 3 : options.domain === 'languages' ? 4 : 8;
+      chunks = await splitPdfForParallelExtraction(
+        bytesToChunk,
+        maxPagesPerChunk,
+        isArabicPdf ? { allowCompactChunks: true, overlapPages: 1 } : undefined
+      );
     }
 
     let result: ExtractionResult;
@@ -870,9 +1098,10 @@ export async function runExtractionPipeline(
           const chunkHasArabic =
             detectedSubject?.syllabusCode === 'PAI' ||
             detectedSubject?.syllabusCode === 'BAR' ||
+            detectedSubject?.syllabusCode === 'ARA' ||
             Array.from(arabicPages).some((p) => p >= chunk.startPage && p <= chunk.endPage);
           const chunkPageImages = chunkHasArabic
-            ? await renderPdfPagesToImages(bytesToChunk, chunk.startPage, chunk.endPage)
+            ? await renderPdfPagesToImages(bytesToChunk, chunk.startPage, chunk.endPage, 2.8, arabicPages)
             : undefined;
 
           return extractQuestionsFromPdf(
@@ -908,220 +1137,15 @@ export async function runExtractionPipeline(
         })
       );
 
-      // Merge questions from all parallel chunks with boundary stitching & deep merging
-      const questionMap = new Map<string, ExtractedQuestion>();
-      const normalizeQNum = (num: string | number) => {
-        const raw = String(num)
-          .replace(/^(?:Question|Q|Soal|No\.?)\s*/i, '')
-          .replace(/[.:]$/, '')
-          .trim();
-        // If question number is followed by a sub-id (e.g. "4(d)", "4 d", "4.d"), extract parent number "4"
-        const parentMatch = raw.match(/^(\d+)\s*(?:\([a-zA-Z0-9]+\)|[a-zA-Z])$/);
-        if (parentMatch) {
-          return parentMatch[1];
-        }
-        return raw;
-      };
-
-      const normSubKey = (id: string) => (id || '').replace(/[().\s]/g, '').toLowerCase();
-
-      const inferIeltsSkillPrefix = (qNum: string, topic?: string | null): 'L' | 'R' | 'W' | '' => {
-        const m = qNum.match(/^([LRW])\s*\d/i);
-        if (m) return m[1].toUpperCase() as 'L' | 'R' | 'W';
-        const t = (topic || '').toLowerCase();
-        if (t.includes('listening')) return 'L';
-        if (t.includes('reading')) return 'R';
-        if (t.includes('writing')) return 'W';
-        return '';
-      };
-
       const isIeltsFlow = options.domain === 'languages' && Boolean(options.isIeltsCefr);
 
       // Disambiguate overlapping/reused per-chunk passage IDs ("Text 1" in Chunk 0 vs Chunk 1)
       // BEFORE merging questions so passage_ref never points at a different chunk's reading text.
       const { passages: uniquePassages, chunkQuestions } = mergeChunkPassagesAndQuestions(chunkResults);
-
-      chunkQuestions.forEach((questionsInChunk, cIdx) => {
-        const chunkOffset = chunks[cIdx].startPage - 1;
-        questionsInChunk.forEach((q) => {
-          let qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
-          const skillPrefix = inferIeltsSkillPrefix(qNumClean, q.topic);
-          if (isIeltsFlow && skillPrefix && !/^[LRW]\s*\d/i.test(qNumClean)) {
-            qNumClean = `${skillPrefix}${qNumClean}`;
-          }
-          if (isSaveMyExams) {
-            const sec = chunks[cIdx].targetSection || q.estimated_difficulty || 'Easy';
-            if (!/^(?:easy|medium|hard)\s*[-:]/i.test(qNumClean)) {
-              qNumClean = `${sec} - ${qNumClean}`;
-            }
-          }
-          const mergeKey = (isIeltsFlow || skillPrefix) ? `${skillPrefix || 'Q'}::${qNumClean}` : qNumClean;
-          const adjustedQ: ExtractedQuestion = {
-            ...q,
-            question_number: qNumClean,
-            page_number: (q.page_number || 1) + chunkOffset,
-            sub_questions: (q.sub_questions || []).map((sq) => ({
-              ...sq,
-              page_number: sq.page_number ? sq.page_number + chunkOffset : (q.page_number || 1) + chunkOffset,
-            })),
-          };
-
-          if (!questionMap.has(mergeKey)) {
-            questionMap.set(mergeKey, adjustedQ);
-          } else {
-            // Straddling Question Boundary Stitching:
-            // If the same question was extracted across chunk boundaries,
-            // deep-merge sub-questions (union of all parts a, b, c, d) and keep the opening scenario setup!
-            const existing = questionMap.get(mergeKey)!;
-
-            // Deep-merge sub-questions by normalized sub_id key
-            const mergedSubMap = new Map<string, SubQuestion>();
-            (existing.sub_questions || []).forEach((sq) => {
-              const k = normSubKey(sq.sub_id) || sq.sub_id;
-              mergedSubMap.set(k, sq);
-            });
-
-            // Check if adjustedQ is a later-page continuation that placed a diagram at the parent level
-            // while none of its sub-questions claimed it yet:
-            const anyAdjustedSubHasDiagram = (adjustedQ.sub_questions || []).some(
-              (s) => s.has_diagram || (Array.isArray(s.bounding_box) && s.bounding_box.length >= 4)
-            );
-            let assignedContinuationDiagram = false;
-
-            (adjustedQ.sub_questions || []).forEach((sq) => {
-              const k = normSubKey(sq.sub_id) || sq.sub_id;
-              const prev = mergedSubMap.get(k);
-              if (!prev) {
-                // Only promote adjustedQ's parent diagram to the FIRST new sub-question if adjustedQ is on a later page
-                // and none of adjustedQ's sub-questions already claimed the diagram.
-                const promoteContinuationDiagram =
-                  !assignedContinuationDiagram &&
-                  !anyAdjustedSubHasDiagram &&
-                  Boolean(adjustedQ.has_diagram && adjustedQ.bounding_box) &&
-                  (adjustedQ.page_number || 1) > (existing.page_number || 1);
-
-                if (promoteContinuationDiagram) {
-                  assignedContinuationDiagram = true;
-                }
-
-                mergedSubMap.set(k, {
-                  ...sq,
-                  page_number: sq.page_number || adjustedQ.page_number,
-                  has_diagram: Boolean(sq.has_diagram || promoteContinuationDiagram),
-                  diagram_source: sq.diagram_source || (promoteContinuationDiagram ? adjustedQ.diagram_source || 'qp' : null),
-                  resource_ref: sq.resource_ref || (promoteContinuationDiagram ? adjustedQ.resource_ref : null),
-                  bounding_box: sq.bounding_box || (promoteContinuationDiagram ? adjustedQ.bounding_box : null),
-                });
-              } else {
-                // Keep the more complete version of the sub-question text and preserve exact diagram page_number
-                const sqHasNewDiagram = !prev.has_diagram && Boolean(sq.has_diagram);
-                mergedSubMap.set(k, {
-                  ...prev,
-                  page_number: sqHasNewDiagram ? (sq.page_number || prev.page_number) : (prev.page_number || sq.page_number),
-                  question_text:
-                    sq.question_text && sq.question_text.length > (prev.question_text?.length || 0)
-                      ? sq.question_text
-                      : prev.question_text,
-                  marks: sq.marks || prev.marks,
-                  mark_scheme: chooseBetterSubMarkScheme(
-                    prev.mark_scheme,
-                    sq.mark_scheme,
-                    sq.marks || prev.marks
-                  ),
-                  options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
-                  data_tables: prev.data_tables && prev.data_tables.length > 0 ? prev.data_tables : sq.data_tables,
-                  has_diagram: prev.has_diagram || sq.has_diagram,
-                  diagram_source: prev.diagram_source || sq.diagram_source,
-                  resource_ref: prev.resource_ref || sq.resource_ref,
-                  diagram_type: prev.diagram_type || sq.diagram_type,
-                  bounding_box: prev.bounding_box || sq.bounding_box,
-                });
-              }
-            });
-
-            // Naturally sort merged sub-questions: (a), (b), (c), (d), (a)(i), etc.
-            const mergedSubs = Array.from(mergedSubMap.values()).sort((a, b) => {
-              const ka = normSubKey(a.sub_id);
-              const kb = normSubKey(b.sub_id);
-              return ka.localeCompare(kb, undefined, { numeric: true });
-            });
-
-            const totalSubMarks = mergedSubs.reduce((sum, s) => sum + (Number(s.marks) || 0), 0);
-
-            // Determine parent question text:
-            // Do NOT let a continuation chunk's partial caption overwrite the opening scenario setup!
-            const isAdjustedContinuation =
-              (adjustedQ.sub_questions && adjustedQ.sub_questions.length > 0) &&
-              !adjustedQ.sub_questions.some((s) => normSubKey(s.sub_id) === 'a' || normSubKey(s.sub_id).startsWith('a'));
-
-            const existingLen = (existing.question_text || '').trim().length;
-            const adjustedLen = (adjustedQ.question_text || '').trim().length;
-
-            let chosenQuestionText = existing.question_text || '';
-            if (adjustedLen > existingLen) {
-              // If adjusted text contains experimental procedures, or is substantially more complete
-              if (
-                !isAdjustedContinuation ||
-                adjustedQ.question_text?.toLowerCase().includes('experiment') ||
-                adjustedLen > existingLen + 150
-              ) {
-                chosenQuestionText = adjustedQ.question_text || existing.question_text || '';
-              }
-            } else if (!chosenQuestionText && adjustedQ.question_text) {
-              chosenQuestionText = adjustedQ.question_text;
-            }
-
-            // Merge data_tables across chunks without duplicating by id
-            const combinedTables = [...(existing.data_tables || []), ...(adjustedQ.data_tables || [])];
-            const uniqueTablesMap = new Map<string, any>();
-            combinedTables.forEach((t, idx) => {
-              const key = (t?.id || t?.title || `tbl_${idx}`).toLowerCase().trim();
-              if (!uniqueTablesMap.has(key)) uniqueTablesMap.set(key, t);
-            });
-            const mergedDataTables = uniqueTablesMap.size > 0 ? Array.from(uniqueTablesMap.values()) : undefined;
-
-            // Only adopt adjustedQ's parent diagram onto existing if existing had no diagram, adjustedQ's diagram was NOT
-            // already promoted to a continuation sub-question, and adjustedQ is on the same page as existing:
-            const adoptAdjustedParentDiagram =
-              !existing.has_diagram &&
-              Boolean(adjustedQ.has_diagram) &&
-              !assignedContinuationDiagram &&
-              !anyAdjustedSubHasDiagram &&
-              (adjustedQ.page_number === existing.page_number || !existing.page_number);
-
-            questionMap.set(mergeKey, {
-              ...existing,
-              passage_ref: existing.passage_ref || adjustedQ.passage_ref || null,
-              page_number: adoptAdjustedParentDiagram ? (adjustedQ.page_number || existing.page_number) : existing.page_number,
-              question_text: chosenQuestionText,
-              options:
-                adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
-                  ? adjustedQ.options
-                  : existing.options,
-              data_tables: mergedDataTables,
-              mark_scheme:
-                chooseBetterMarkScheme(
-                  existing.mark_scheme,
-                  adjustedQ.mark_scheme,
-                  totalSubMarks > 0
-                    ? totalSubMarks
-                    : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0)
-                ) ?? null,
-              total_marks: totalSubMarks > 0 ? totalSubMarks : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0),
-              sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
-              has_diagram: existing.has_diagram || adoptAdjustedParentDiagram,
-              diagram_source: existing.diagram_source || (adoptAdjustedParentDiagram ? adjustedQ.diagram_source : null),
-              resource_ref: existing.resource_ref || (adoptAdjustedParentDiagram ? adjustedQ.resource_ref : null),
-              bounding_box: existing.bounding_box || (adoptAdjustedParentDiagram ? adjustedQ.bounding_box : null),
-            });
-          }
-        });
+      const allQuestions = mergeChunkQuestions(chunkQuestions, chunks, {
+        isIeltsFlow,
+        isSaveMyExams,
       });
-
-      const allQuestions = Array.from(questionMap.values());
-
-      // Sort naturally by question number (1, 2, 3 ... 40)
-      allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
 
       // Verify / repair passages from source PDF if in Language domain
       let verifiedPassages = uniquePassages;
@@ -1207,9 +1231,10 @@ export async function runExtractionPipeline(
       const singleChunkHasArabic =
         detectedSubject?.syllabusCode === 'PAI' ||
         detectedSubject?.syllabusCode === 'BAR' ||
+        detectedSubject?.syllabusCode === 'ARA' ||
         arabicPages.size > 0;
       const singlePageImages = singleChunkHasArabic
-        ? await renderPdfPagesToImages(bytesToChunk, chunks[0].startPage, chunks[0].endPage)
+        ? await renderPdfPagesToImages(bytesToChunk, chunks[0].startPage, chunks[0].endPage, 2.8, arabicPages)
         : undefined;
 
       result = await extractQuestionsFromPdf(
@@ -1270,6 +1295,12 @@ export async function runExtractionPipeline(
         })),
       }));
       result.passages = verifiedPassages.length > 0 ? verifiedPassages : undefined;
+    }
+
+    // Reconcile extracted MCQs with deterministic Official MCQ Mark Scheme key when present
+    // so valid MCQs are never mis-flagged [NOT IN MARK SCHEME — AI SOLVED] across script labels.
+    if (officialMcqKey.size > 0) {
+      result.questions = reconcileQuestionsWithOfficialMcqKey(result.questions, officialMcqKey);
     }
 
     // Optional-choice papers: record which questions are alternatives, so the test

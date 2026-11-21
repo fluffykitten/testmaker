@@ -18,7 +18,9 @@ if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
 const { parseQuestionRange, expandTargetQuestionTokens, mergeChunkPassagesAndQuestions } =
   await import('../src/lib/passageMerge.ts');
 const { stitchPassagesToQuestions } = await import('../src/lib/passageExtractor.ts');
-const { propagateReadingPassages, filterActiveDiagramDataForSave } = await import('../src/lib/pdfProcessor.ts');
+const { propagateReadingPassages, filterActiveDiagramDataForSave, mergeChunkQuestions } = await import(
+  '../src/lib/pdfProcessor.ts'
+);
 const { splitPassageAndPrompt } = await import('../src/lib/readingPassageUtils.ts');
 const { parseTableChoiceFromQuestion } = await import('../src/lib/tableChoiceUtils.ts');
 
@@ -27,8 +29,14 @@ const {
   getLanguageExtractionPrompt,
   getStemExtractionPrompt,
   buildGeminiMultimodalParts,
+  remapBoundingBoxFromCrop,
+  prioritizeModelsForVisualArabic,
   cleanExtAndLatexArtifacts,
+  normalizeOptions,
+  stripDuplicateOptionsFromStem,
 } = await import('../src/lib/gemini.ts');
+const { extractOptionLettersFromMarkScheme, auditQuestionMarkScheme } = await import('../src/lib/markSchemeAudit.ts');
+const { cleanMcqOptionContent } = await import('../src/services/quizSubmissionService.ts');
 const { getHumanitiesExtractionPrompt } = await import('../src/lib/humanitiesPrompt.ts');
 const { splitPdfForParallelExtraction, detectArabicPagesInPdf } = await import('../src/lib/pdfChunker.ts');
 const { normalizeExtractedArabicText, containsArabicScript } = await import('../src/lib/arabicTextUtils.ts');
@@ -348,6 +356,161 @@ function check(name, condition, detail = '') {
       `found=${Array.from(arabicPages).join(',')}`
     );
   }
+
+  // 9. Cambridge / School ARABIC 0620 cover detection (guards against Chemistry template collision)
+  const arabic0620Match = classifySubject(
+    ['Cambridge IGCSE™ CANDIDATE NAME ARABIC 0620 Multiple Choice & Theory 2026 Additional materials: Periodic Table'],
+    { fileName: '0620_arabic_p1.pdf' }
+  );
+  const chem0620Match = classifySubject(['Cambridge IGCSE CHEMISTRY 0620/21 Multiple Choice'], { fileName: '0620_s25_qp_21.pdf' });
+  check(
+    'ARABIC-6: classifySubject routes ARABIC 0620 (even with Chemistry template code) to languages without breaking real 0620 Chemistry',
+    arabic0620Match?.profile.domain === 'languages' &&
+      arabic0620Match?.syllabusCode === 'ARA' &&
+      chem0620Match?.profile.domain === 'stem' &&
+      chem0620Match?.syllabusCode === '0620'
+  );
+
+  // 10. Arabic option prefixes (أ، ب، ج، د، هـ / ه): normalizeOptions, stripDuplicateOptionsFromStem, cleanMcqOptionContent, QA audit
+  const rawArOpts = [
+    'أ. رَكْعَتَانِ بَعْدَهُ',
+    'ب. رَكْعَتَانِ قَبْلَ الْفَرْضِ',
+    'ج. صَلَاةُ الْعِشَاءِ',
+    'د. أَرْبَعُ رَكَعَاتٍ',
+    'ه. رَكْعَتَانِ قَبْلَ الْفَرْضِ وَ رَكْعَتَانِ بَعْدَهُ',
+  ];
+  const normOpts = normalizeOptions(rawArOpts);
+  const stemWithDupArOpts = 'كم ركعة سنة صلاة الظهر ؟\n' + rawArOpts.join('\n');
+  const cleanedStem = stripDuplicateOptionsFromStem(stemWithDupArOpts, normOpts);
+  const msLetters = extractOptionLettersFromMarkScheme({ acceptable_answers: ['هـ'], marking_points: ['ه [1]'] }, 5);
+  const msMulti = extractOptionLettersFromMarkScheme({ acceptable_answers: ['أ، ج'], marking_points: ['أ، ج [2]'] }, 5);
+  const qaAudit = auditQuestionMarkScheme({
+    question_text: 'كم ركعة سنة صلاة الظهر ؟',
+    question_style: 'Multiple Choice',
+    options: normOpts,
+    total_marks: 1,
+    mark_scheme: { marking_points: ['ه [1]'], acceptable_answers: ['ه'] },
+  });
+  check(
+    'ARABIC-7: normalizeOptions, stripDuplicateOptionsFromStem, cleanMcqOptionContent & markSchemeAudit handle أ–هـ option labels',
+    normOpts?.[0] === 'أ. رَكْعَتَانِ بَعْدَهُ' &&
+      !normOpts?.[0].startsWith('A.') &&
+      cleanedStem === 'كم ركعة سنة صلاة الظهر ؟' &&
+      cleanMcqOptionContent('A. أ. رَكْعَتَانِ بَعْدَهُ', 0) === 'رَكْعَتَانِ بَعْدَهُ' &&
+      cleanMcqOptionContent('ه. نص', 4) === 'نص' &&
+      cleanMcqOptionContent('هـ. نص', 4) === 'نص' &&
+      msLetters.join(',') === 'E' &&
+      msMulti.join(',') === 'A,C' &&
+      qaAudit.status === 'ok'
+  );
+
+  const sampleArabicExamPdf =
+    'C:\\Users\\orin\\.gemini\\antigravity\\brain\\c47873ec-764e-4639-9c60-2d8b6e73fc78\\.user_uploaded\\media_1795258578279_56e300dd.pdf';
+  if (fs.existsSync(sampleArabicExamPdf)) {
+    const arBytes = new Uint8Array(fs.readFileSync(sampleArabicExamPdf));
+    const arPages = await detectArabicPagesInPdf(arBytes);
+    const arChunks = await splitPdfForParallelExtraction(arBytes, 3, {
+      allowCompactChunks: true,
+      overlapPages: 1,
+    });
+    const maxArSpan = Math.max(...arChunks.map((c) => c.endPage - c.startPage + 1));
+    check(
+      'ARABIC-8: detectArabicPagesInPdf flags all question pages (2..16), trims p17, and compact chunks stay <= 4 pages',
+      arPages.size === 15 &&
+        !arPages.has(1) &&
+        !arPages.has(17) &&
+        arPages.has(2) &&
+        arPages.has(16) &&
+        arChunks[arChunks.length - 1]?.endPage === 16 &&
+        maxArSpan <= 4,
+      `pages=${Array.from(arPages).join(',')}, maxSpan=${maxArSpan}, lastChunkEnd=${arChunks[arChunks.length - 1]?.endPage}`
+    );
+  }
+
+  // 11. Regression test for duplicate R:: / W:: chunk merge bug (40 questions becoming 44 across overlapping chunks)
+  const chunk0Overlap = [
+    { question_number: '5', topic: 'Reading Comprehension', question_text: 'هَلْ عَلِيّ صَلَّى؟', total_marks: 1 },
+    { question_number: '06', topic: 'Grammar', question_text: '...', total_marks: 1 },
+  ];
+  const chunk1Overlap = [
+    { question_number: '٥', topic: 'Islamic Prayer', question_text: 'هَلْ عَلِيّ صَلَّى؟', options: ['أ. نَعَمْ', 'ب. لا'], total_marks: 1 },
+    { question_number: '6', topic: 'Arabic Reading', question_text: '...', options: ['أ. سَرِيرٌ', 'ب. ...'], total_marks: 1 },
+    { question_number: '17', topic: '', question_text: '[Turn over]', total_marks: 0 },
+  ];
+  const mergedNoDups = mergeChunkQuestions(
+    [chunk0Overlap, chunk1Overlap],
+    [{ startPage: 1 }, { startPage: 3 }],
+    { isIeltsFlow: false, isSaveMyExams: false }
+  );
+  check(
+    'MERGE-1: mergeChunkQuestions merges overlapping chunks strictly by Q# without R::/W:: topic splits or Eastern digit dupes',
+    mergedNoDups.length === 2 &&
+      mergedNoDups[0].question_number === '5' &&
+      mergedNoDups[0].options?.length === 2 &&
+      mergedNoDups[1].question_number === '6'
+  );
+
+  // 12. Q32 orthographic distractor preservation (سَكَنُ كَ with intentional space vs سَكَنُكِ vs سَكَنُكَ)
+  const q32Opts = [
+    'أ. سَكَنُ كَ',
+    'ب. سَكَنُ أَنْتَ',
+    'ج. سَكَنُكِ',
+    'د. سَكَنُكُمْ',
+    'ه. سَكَنُكَ',
+  ];
+  const q32Norm = normalizeOptions(q32Opts)?.map((o) => cleanExtAndLatexArtifacts(o)) || [];
+  const q32LangPrompt = getLanguageExtractionPrompt(true, true, true);
+  check(
+    'ARABIC-9: Q32 orthographic distractors (سَكَنُ كَ vs سَكَنُكِ vs سَكَنُكَ) stay distinct through normalization and prompt rules',
+    q32Norm.length === 5 &&
+      q32Norm[0] === 'أ. سَكَنُ كَ' &&
+      q32Norm[2] === 'ج. سَكَنُكِ' &&
+      q32Norm[4] === 'ه. سَكَنُكَ' &&
+      cleanMcqOptionContent(q32Norm[0], 0) !== cleanMcqOptionContent(q32Norm[4], 4) &&
+      cleanMcqOptionContent(q32Norm[2], 2) !== cleanMcqOptionContent(q32Norm[4], 4) &&
+      q32LangPrompt.includes('سَكَنُ كَ') &&
+      q32LangPrompt.includes('سَكَنُكَ') &&
+      q32LangPrompt.includes('margin-cropped PNG')
+  );
+
+  // 13. Single-image-per-page multimodal attachment + cropRegion inverse remapping + full-Flash model priority
+  const singleParts = buildGeminiMultimodalParts('PROMPT', 'RAW_PDF', undefined, undefined, [
+    {
+      pageNumber: 1,
+      mimeType: 'image/png',
+      data: 'PAGE_1',
+      cropRegion: { normYMin: 0.1, normXMin: 0.4, normYMax: 0.9, normXMax: 0.95 },
+    },
+    {
+      pageNumber: 2,
+      mimeType: 'image/png',
+      data: 'PAGE_2',
+    },
+  ]);
+  const remapped = remapBoundingBoxFromCrop([250, 500, 750, 1000], {
+    normYMin: 0.1,
+    normXMin: 0.4,
+    normYMax: 0.9,
+    normXMax: 0.95,
+  });
+  const prioritized = prioritizeModelsForVisualArabic([
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash-lite',
+  ]);
+  check(
+    'ARABIC-10: Single PNG/page, remapBoundingBoxFromCrop inverse mapping, and prioritizeModelsForVisualArabic ordering',
+    singleParts.filter((p) => p?.inlineData?.mimeType === 'image/png').length === 2 &&
+      Array.isArray(remapped) &&
+      remapped[0] === 300 &&
+      remapped[1] === 675 &&
+      remapped[2] === 700 &&
+      remapped[3] === 950 &&
+      prioritized[0] === 'gemini-2.5-flash' &&
+      prioritized.indexOf('gemini-2.5-flash') < prioritized.indexOf('gemini-3.1-flash-lite') &&
+      prioritized.indexOf('gemini-2.5-pro') < prioritized.indexOf('gemini-3.1-flash-lite')
+  );
 }
 
 console.log(`\nALL ${passed} LANGUAGES & ARABIC/INDONESIAN BIDI CHECKS PASSED`);

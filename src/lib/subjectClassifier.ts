@@ -90,12 +90,15 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   '0500': { syllabusCode: '0500', subjectName: 'First Language English', domain: 'languages', hasInsertByDefault: true, hasInPaperStimulus: false, isOptionalChoicePaper: false },
   '0510': { syllabusCode: '0510', subjectName: 'English as a Second Language', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   '0511': { syllabusCode: '0511', subjectName: 'English as a Second Language', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
+  '0544': { syllabusCode: '0544', subjectName: 'Arabic', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
+  '3180': { syllabusCode: '3180', subjectName: 'Arabic', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   '1123': { syllabusCode: '1123', subjectName: 'English Language', domain: 'languages', hasInsertByDefault: true, hasInPaperStimulus: false, isOptionalChoicePaper: false },
   '9093': { syllabusCode: '9093', subjectName: 'English Language (AS/A Level)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
   'BI': { syllabusCode: 'BI', subjectName: 'Bahasa Indonesia', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
   'PAI': { syllabusCode: 'PAI', subjectName: 'Pendidikan Agama Islam', domain: 'humanities', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
   'BAR': { syllabusCode: 'BAR', subjectName: 'Bahasa Arab', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
+  'ARA': { syllabusCode: 'ARA', subjectName: 'Arabic', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
 };
 
 /** Neutral profile for a humanities paper whose syllabus could not be identified. */
@@ -127,14 +130,20 @@ const CODE_IN_NAME_RE = /(\d{4})[^\n\r]{0,60}?(?:_|\s|paper\s*|p)(\d{2})(?:\D|$)
  * Returns null when nothing matches — callers must treat that as "unknown", not as a default.
  */
 export function classifySubject(pageTexts: string[], hint?: { fileName?: string }): SubjectMatch | null {
-  const haystack = [hint?.fileName ?? '', ...pageTexts.slice(0, 2)].join(' ').replace(/\s+/g, ' ');
+  const coverText = pageTexts.slice(0, 2).join(' ').replace(/\s+/g, ' ');
+  const haystack = [hint?.fileName ?? '', coverText].join(' ').replace(/\s+/g, ' ');
 
   const fromText = haystack.match(CODE_IN_TEXT_RE);
   const fromName = (hint?.fileName ?? '').match(CODE_IN_NAME_RE);
   const syllabusCode = fromText?.[1] ?? fromName?.[1] ?? '';
   const paperCode = fromText?.[2] ?? fromName?.[2] ?? '';
 
-  if (syllabusCode && SYLLABUS_REGISTRY[syllabusCode]) {
+  // Guard against custom school/Cambridge exams built by editing a 0620 Chemistry template cover
+  // whose printed title explicitly says ARABIC (without mentioning CHEMISTRY).
+  const isArabicCoverOverChemistryTemplate =
+    syllabusCode === '0620' && /\bARABIC\b/i.test(coverText) && !/\bCHEMISTRY\b/i.test(coverText);
+
+  if (syllabusCode && SYLLABUS_REGISTRY[syllabusCode] && !isArabicCoverOverChemistryTemplate) {
     return {
       profile: SYLLABUS_REGISTRY[syllabusCode],
       syllabusCode,
@@ -181,6 +190,17 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'title',
       evidence: 'Bahasa Arab',
+    };
+  }
+
+  // Detect English-cover Arabic papers (e.g. "Cambridge IGCSE ARABIC" even when reusing 0620 cover template)
+  if (/\bARABIC\b/i.test(haystack)) {
+    return {
+      profile: SYLLABUS_REGISTRY['ARA'],
+      syllabusCode: 'ARA',
+      paperCode,
+      method: 'title',
+      evidence: 'Arabic',
     };
   }
 

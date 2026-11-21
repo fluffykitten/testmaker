@@ -14,7 +14,9 @@ import { detectMarkSchemeTableStart, shouldTrimMarkScheme } from './markSchemeDe
 let workerConfigured = false;
 function ensureWorker() {
   if (!workerConfigured) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+    if (pdfjsWorker) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+    }
     workerConfigured = true;
   }
 }

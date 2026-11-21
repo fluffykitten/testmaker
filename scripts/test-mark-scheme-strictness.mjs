@@ -1,4 +1,14 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const pdfjsLib = await import('pdfjs-dist');
+if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(
+    path.resolve('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')
+  ).href;
+}
 
 const {
   detectMarkSchemeTableStart,
@@ -26,6 +36,13 @@ const {
 const {
   getCambridgePracticalExtractionPrompt,
 } = await import('../src/lib/practicalPrompt.ts');
+
+const {
+  parseOfficialMcqAnswerKey,
+  reconcileQuestionsWithOfficialMcqKey,
+} = await import('../src/lib/mcqMarkSchemeExtractor.ts');
+
+const { readPdfPageTexts } = await import('../src/lib/pdfChunker.ts');
 
 let passed = 0;
 function check(name, condition, detail = '') {
@@ -357,5 +374,85 @@ check(
   extractOptionLettersFromMarkScheme({ marking_points: ['Answer: D [1]'], acceptable_answers: [] }, 4).join(',') === 'D' &&
     extractOptionLettersFromMarkScheme({ marking_points: ['B and E [2]'], acceptable_answers: ['B, E'] }, 5).join(',') === 'B,E'
 );
+
+// 7. Deterministic MCQ Answer Key parsing & Arabic cross-script reconciliation
+{
+  const twoPageMcqMs = [
+    'Subject Name (Syllabus Code) 1 st Semester Exam Grade X/XI/XII AY. 2026/2027 Multiple Choice Mark Scheme Maximum Mark: 20==6 Question Answer 1 E 2 B 3 C 4 C 5 A 6 D 7 E 8 E 9 B 10 C',
+    'Subject Name (Syllabus Code) Multiple Choice Mark Scheme Question Answer 11 E 12 E 13 A 14 D 15 C 16 C 17 D 18 E 19 C 20 A',
+  ];
+  const parsedKey = parseOfficialMcqAnswerKey(twoPageMcqMs);
+  check(
+    'MS-7a: parseOfficialMcqAnswerKey parses multi-page Question|Answer tables (ignoring 20==6 header) & rejects structured MS',
+    parsedKey.size === 20 &&
+      parsedKey.get('1') === 'E' &&
+      parsedKey.get('5') === 'A' &&
+      parsedKey.get('11') === 'E' &&
+      parsedKey.get('20') === 'A' &&
+      parseOfficialMcqAnswerKey(['Question Answer Marks 1(a) copper(II) oxide [1] 1(b) filtration [1]']).size === 0
+  );
+
+  const cambridgeMcqMs = parseOfficialMcqAnswerKey([
+    'Cambridge IGCSE 0620 Question Answer Marks 1 B 1 2 A 1 3 C 1 4 D 1 5 B 1',
+  ]);
+  check(
+    'MS-7b: parseOfficialMcqAnswerKey parses 3-column Cambridge Question|Answer|Marks tables cleanly',
+    cambridgeMcqMs.size === 5 &&
+      cambridgeMcqMs.get('1') === 'B' &&
+      cambridgeMcqMs.get('3') === 'C' &&
+      cambridgeMcqMs.get('5') === 'B'
+  );
+
+  const extractedArQs = [
+    {
+      question_number: '1',
+      question_style: 'Multiple Choice',
+      options: ['أ. ...', 'ب. ...', 'ج. ...', 'د. ...', 'ه. ...'],
+      total_marks: 1,
+      mark_scheme: {
+        marking_points: ['[NOT IN MARK SCHEME — AI SOLVED] أ [1]'],
+        acceptable_answers: ['أ'],
+        guidance: ['Not found in MS'],
+        _option_group: 'Core',
+      },
+    },
+    {
+      question_number: '3',
+      question_style: 'Multiple Choice',
+      options: ['أ. ...', 'ب. ...', 'ج. ...', 'د. ...', 'ه. ...'],
+      total_marks: 1,
+      mark_scheme: {
+        marking_points: ['D [1]'],
+        acceptable_answers: ['D'],
+      },
+    },
+  ];
+  const reconciled = reconcileQuestionsWithOfficialMcqKey(extractedArQs, parsedKey);
+  check(
+    'MS-7c: reconcileQuestionsWithOfficialMcqKey removes false [NOT IN MARK SCHEME] & aligns Q1/Q3 to official E/C while preserving metadata',
+    reconciled[0].mark_scheme.acceptable_answers?.[0] === 'E' &&
+      reconciled[0].mark_scheme.marking_points?.[0] === 'E [1]' &&
+      !JSON.stringify(reconciled[0].mark_scheme).includes('NOT IN MARK SCHEME') &&
+      reconciled[0].mark_scheme._option_group === 'Core' &&
+      reconciled[1].mark_scheme.acceptable_answers?.[0] === 'C' &&
+      getExtractionPrompt(true, 'languages', false, true, true, false, undefined, undefined, undefined, undefined, false, true).includes('A = أ')
+  );
+
+  const sampleMsPdf =
+    'C:\\Users\\orin\\.gemini\\antigravity\\brain\\c47873ec-764e-4639-9c60-2d8b6e73fc78\\.user_uploaded\\media_1795260152757_d0e6d2de.pdf';
+  if (fs.existsSync(sampleMsPdf)) {
+    const msTexts = await readPdfPageTexts(new Uint8Array(fs.readFileSync(sampleMsPdf)));
+    const fullKey = parseOfficialMcqAnswerKey(msTexts);
+    check(
+      'MS-7d: parseOfficialMcqAnswerKey extracts all 40 Q1–Q40 answers deterministically from uploaded MS PDF',
+      fullKey.size === 40 &&
+        fullKey.get('1') === 'E' &&
+        fullKey.get('20') === 'A' &&
+        fullKey.get('21') === 'B' &&
+        fullKey.get('40') === 'E',
+      `size=${fullKey.size}`
+    );
+  }
+}
 
 console.log(`\nALL ${passed} MARK SCHEME STRICTNESS & GENERATION CHECKS PASSED`);

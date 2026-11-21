@@ -1180,12 +1180,13 @@ CRITICAL READING COMPREHENSION, INFOGRAPHIC & PASSAGE CATALOG RULES:
        - "bounding_box": [ymin, xmin, ymax, xmax] (0–1000 scale) tightly enclosing the infographic/poster graphic itself.
      * NEVER skip a page simply because the top half is an infographic — always extract the questions below or on the next page and link them to the infographic!
 
-3. 5-OPTION MULTIPLE CHOICE QUESTIONS (A, B, C, D, E or a, b, c, d, e):
-   - When a question has 5 options (A–E or a–e) and exactly 1 correct answer:
+3. 5-OPTION MULTIPLE CHOICE QUESTIONS (A–E, a–e, OR ARABIC أ، ب، ج، د، هـ / ه):
+   - When a question has 4 or 5 options (Latin A–E / a–e OR Arabic أ، ب، ج، د، هـ / ه) and exactly 1 correct answer:
    - Set "question_style": "Multiple Choice".
-   - Extract ALL 5 options in "options": ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."].
-   - Set "total_marks": 1.
-   - CRITICAL (ZERO DUPLICATION): NEVER write or duplicate the choices (A., B., C., D., E.) inside "question_text"! The "question_text" field must contain ONLY the question stem / prompt (e.g. "The word \\"enduring\\" in the last paragraph is closest in meaning to..."). All choices MUST reside exclusively in the "options" array. Placing choices in both fields causes ugly duplicates in the user interface!
+   - Extract ALL options into "options" preserving their printed labels (e.g. ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."] OR ["أ. ...", "ب. ...", "ج. ...", "د. ...", "ه. ..."]). NEVER add a redundant "A. " prefix before an option that already starts with "أ." / "ب." / "ج." / "د." / "ه.".
+   - Set "total_marks": 1 (or the printed bracketed [Total: X] mark).
+   - Ignore bare template figure labels like "Fig. 18.1" when no actual picture/diagram is drawn; DO set "has_diagram": true when an actual photo or illustration accompanies the question.
+   - CRITICAL (ZERO DUPLICATION): NEVER write or duplicate the choices (A–E or أ–هـ) inside "question_text"! The "question_text" field must contain ONLY the question stem / prompt and any dialogue/reading text. Placing choices in both fields causes ugly duplicates in the user interface!
 
 4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "MCC" / "[Multiple Select]" / "Choose more than one"):
    - When a question header specifies "[Multiple Select]", "(Choose more than one)", "(There is more than one correct answer)", or is classified as "MCC" / "Pilihan Ganda Kompleks" in the answer key:
@@ -1219,7 +1220,7 @@ ${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
    - ${buildArabicExtractionGuidance()}
 
 8. STRICT PROHIBITION ON DUPLICATING OPTIONS IN QUESTION TEXT:
-   - ABSOLUTELY NEVER copy, duplicate, or include the multiple choice options (A, B, C, D, E or a, b, c, d, e) inside "question_text".
+   - ABSOLUTELY NEVER copy, duplicate, or include the multiple choice options (A–E, a–e, or Arabic أ، ب، ج، د، هـ/ه) inside "question_text".
    - The "question_text" field must contain ONLY the question stem / prompt (and markdown table if structured).
    - All options MUST be extracted exclusively into the "options" array.
 
@@ -1716,19 +1717,26 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
   }
 
   const lines = stem.split('\n');
-  const cleanOpt0 = options[0]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
+  const stripOptionPrefix = (s?: string) =>
+    (s || '')
+      .replace(/^[([]?(?:[A-Ea-e\d]|هـ|[أإآابجدهو])[)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '')
+      .trim();
+  const cleanOpt0 = stripOptionPrefix(options[0]);
 
-  // 1. Multiline option block check: find candidate line where Option A starts
-  const optAIdx = lines.findIndex((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s])/.test(l));
+  // 1. Multiline option block check: find candidate line where Option A / Arabic أ starts
+  const optARegex = /^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s]|\(?[أإآا][\.\)\:\-\s])/;
+  const optBRegex = /^\s*(?:[-*•]\s*)?(?:\(?[Bb][\.\)\:\-\s]|Option\s+[Bb][\:\.\s]|\(?ب[\.\)\:\-\s])/;
+  const optCRegex = /^\s*(?:[-*•]\s*)?(?:\(?[Cc][\.\)\:\-\s]|Option\s+[Cc][\:\.\s]|\(?ج[\.\)\:\-\s])/;
+  const optAIdx = lines.findIndex((l) => optARegex.test(l));
 
   if (optAIdx >= 0) {
     const trailingLines = lines.slice(optAIdx).filter((l) => l.trim().length > 0);
-    // Check if subsequent non-empty lines contain B and C
-    const hasB = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Bb][\.\)\:\-\s]|Option\s+[Bb][\:\.\s])/.test(l));
-    const hasC = trailingLines.some((l) => /^\s*(?:[-*•]\s*)?(?:\(?[Cc][\.\)\:\-\s]|Option\s+[Cc][\:\.\s])/.test(l));
+    // Check if subsequent non-empty lines contain B/ب and C/ج
+    const hasB = trailingLines.some((l) => optBRegex.test(l));
+    const hasC = trailingLines.some((l) => optCRegex.test(l));
 
     // Verify candidate text correlates with options[0] so stimulus items (e.g. "• A: ...") are not stripped
-    const candidateTextA = lines[optAIdx].replace(/^\s*(?:[-*•]\s*)?(?:\(?[Aa][\.\)\:\-\s]|Option\s+[Aa][\:\.\s])/, '').trim();
+    const candidateTextA = lines[optAIdx].replace(optARegex, '').trim();
     const matchesOpt0 = !cleanOpt0 || !candidateTextA || (
       cleanOpt0.toLowerCase().startsWith(candidateTextA.toLowerCase().slice(0, 15)) ||
       candidateTextA.toLowerCase().startsWith(cleanOpt0.toLowerCase().slice(0, 15))
@@ -1763,7 +1771,7 @@ export function stripDuplicateOptionsFromStem(stem: string, options?: string[] |
     });
 
     if (opt0LineIdx > 0) {
-      const cleanOpt1 = options[1]?.replace(/^[([]?[A-Ea-e\d][)\]\.:\s-]+|^Option\s+[A-Ea-e\d][\.:\s-]*/i, '').trim();
+      const cleanOpt1 = stripOptionPrefix(options[1]);
       const trailing = lines.slice(opt0LineIdx);
       const hasOpt1 = trailing.some((l) => {
         const cleanL = l.replace(/^[\s-*•\d.)\]:]+/, '').trim();
@@ -1953,7 +1961,7 @@ export function normalizeOptions(rawOptions: any): string[] | null {
     candidateList = rawOptions;
   } else if (typeof rawOptions === 'object') {
     const keys = Object.keys(rawOptions);
-    if (keys.length > 0 && keys.every((k) => /^[A-Ea-e\d]$/.test(k))) {
+    if (keys.length > 0 && keys.every((k) => /^(?:[A-Ha-h\d]|هـ|[أإآابجدهو])$/.test(k))) {
       candidateList = keys.sort().map((k) => ({ letter: k, text: rawOptions[k] }));
     } else {
       return null;
@@ -1971,7 +1979,7 @@ export function normalizeOptions(rawOptions: any): string[] | null {
 
     if (typeof item === 'string') {
       const trimmed = item.trim();
-      if (/^[([]?[A-Ha-h\d][)\]\.:\s-]/i.test(trimmed)) {
+      if (/^[([]?(?:[A-Ha-h\d]|هـ|[أإآابجدهو])[)\]\.:\s-]/iu.test(trimmed)) {
         return trimmed;
       }
       return `${fallbackLetter}. ${trimmed}`;
@@ -2260,12 +2268,55 @@ export async function testGeminiModelConnectivity(
   }
 }
 
+export interface CropRegion {
+  normYMin: number;
+  normXMin: number;
+  normYMax: number;
+  normXMax: number;
+}
+
 export interface GeminiPageImage {
   /** 1-indexed page number within the attached PDF slice / chunk */
   pageNumber: number;
   mimeType: 'image/png' | 'image/jpeg';
   /** Base64 image payload (without data URL prefix) */
   data: string;
+  /** Optional normalized ink-crop bounds [0..1] on the source page for inverse-mapping bounding_box coordinates */
+  cropRegion?: CropRegion;
+}
+
+/**
+ * Inverse-maps a [ymin, xmin, ymax, xmax] normalized box (0..1000) returned against
+ * a margin-cropped page image back into full-page [0..1000] PDF coordinates.
+ */
+export function remapBoundingBoxFromCrop(
+  box: number[] | null | undefined,
+  cropRegion?: CropRegion
+): number[] | null | undefined {
+  if (!Array.isArray(box) || box.length < 4 || !cropRegion) {
+    return box;
+  }
+  const ySpan = Math.max(0.01, cropRegion.normYMax - cropRegion.normYMin);
+  const xSpan = Math.max(0.01, cropRegion.normXMax - cropRegion.normXMin);
+  const clamp = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));
+  return [
+    clamp(cropRegion.normYMin * 1000 + box[0] * ySpan),
+    clamp(cropRegion.normXMin * 1000 + box[1] * xSpan),
+    clamp(cropRegion.normYMin * 1000 + box[2] * ySpan),
+    clamp(cropRegion.normXMin * 1000 + box[3] * xSpan),
+  ];
+}
+
+/**
+ * Reorders discovered Gemini models so visual multi-page Arabic extraction prioritizes
+ * full Flash (and Pro fallbacks) ahead of lightweight Flash-Lite models, reducing
+ * attention/hallucination errors on fine harakat without changing global defaults.
+ */
+export function prioritizeModelsForVisualArabic(models: string[]): string[] {
+  const fullFlash = models.filter((m) => m.includes('flash') && !m.includes('flash-lite'));
+  const flashLite = models.filter((m) => m.includes('flash-lite'));
+  const others = models.filter((m) => !m.includes('flash'));
+  return Array.from(new Set([...fullFlash, ...others, ...flashLite]));
 }
 
 /**
@@ -2287,11 +2338,13 @@ export function buildGeminiMultimodalParts(
 
   if (pageImages && pageImages.length > 0) {
     parts.push({
-      text: '\n=== DOCUMENT 1: QUESTION PAPER (High-resolution lossless page images, 1-indexed within this chunk — PDF text layer intentionally omitted to eliminate Arabic encoding corruption. Read ALL text, options, and Arabic letters + harakat strictly from the visual images below!) ===',
+      text: '\n=== DOCUMENT 1: QUESTION PAPER (1 high-resolution margin-cropped PNG per page, 1-indexed within this chunk — PDF text layer intentionally omitted to eliminate Arabic encoding corruption. Read ALL questions, numbered prompts, and ALL 4/5 options verbatim from each corresponding page image below.) ===',
     });
     for (const img of pageImages) {
       parts.push(
-        { text: `\n--- Question Paper Page ${img.pageNumber} (1-indexed within this chunk) ---` },
+        {
+          text: `\n--- Question Paper Page ${img.pageNumber} (1-indexed within this chunk) ---`,
+        },
         {
           inlineData: {
             mimeType: img.mimeType,
@@ -2619,8 +2672,12 @@ export async function extractQuestionsFromPdf(
 
   // If user configured a specific model, try it first
   const userConfiguredModel = getConfiguredGeminiModel();
-  // Prioritize configured model
-  const discoveredModels = await discoverAvailableModels(activeKey);
+  // Prioritize configured model; for visual Arabic page-image chunks, prefer full Flash ahead of Flash-Lite
+  const rawDiscovered = await discoverAvailableModels(activeKey);
+  const discoveredModels =
+    !userConfiguredModel && options.pageImages && options.pageImages.length > 0
+      ? prioritizeModelsForVisualArabic(rawDiscovered)
+      : rawDiscovered;
 
   const candidateModels = Array.from(
     new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])
@@ -2733,10 +2790,34 @@ export async function extractQuestionsFromPdf(
     if (/^(?:periodic|notes|appendix|blank)/i.test(qNum)) {
       return true;
     }
+    if (
+      !text &&
+      (!q.options || q.options.length === 0) &&
+      (!q.sub_questions || q.sub_questions.length === 0) &&
+      !q.has_diagram
+    ) {
+      return true;
+    }
+    if (
+      /^(?:\[\s*Turn\s+over\s*\]|Turn\s+over)$/i.test(text) &&
+      (!q.options || q.options.length === 0) &&
+      (!q.sub_questions || q.sub_questions.length === 0)
+    ) {
+      return true;
+    }
     return false;
   };
 
   parsed.questions = parsed.questions.filter((q) => !isReferenceAppendixItem(q));
+
+  const pageCropMap = new Map<number, CropRegion>();
+  if (options.pageImages) {
+    for (const img of options.pageImages) {
+      if (img.cropRegion) {
+        pageCropMap.set(img.pageNumber, img.cropRegion);
+      }
+    }
+  }
 
   // Normalize all questions to clean ext artifacts, normalize options, preserve data_tables, and ensure bare LaTeX formulas outside $ are wrapped in $...$
   parsed.questions = parsed.questions.map((q) => {
@@ -2749,6 +2830,12 @@ export async function extractQuestionsFromPdf(
     );
     const normalizedStyle = normalizeQuestionStyle(q.question_style, rawOptions);
 
+    const parentSource = q.diagram_source || (hasInsert && q.resource_ref ? 'insert' : null);
+    const remappedParentBox =
+      parentSource !== 'insert' && q.page_number
+        ? remapBoundingBoxFromCrop(q.bounding_box, pageCropMap.get(q.page_number))
+        : q.bounding_box;
+
     const normalizedSubs = Array.isArray(q.sub_questions)
       ? q.sub_questions.map((sq) => {
           const sqOptions = normalizeOptions((sq as any).options)?.map((opt) =>
@@ -2756,12 +2843,19 @@ export async function extractQuestionsFromPdf(
           ) || null;
           const hasValidSqBox = Array.isArray(sq.bounding_box) && sq.bounding_box.length >= 4;
           const sqHasDiagram = Boolean(sq.has_diagram || hasValidSqBox || sq.diagram_url);
+          const sqDiagramSource =
+            sq.diagram_source ||
+            (hasInsert && sq.resource_ref ? 'insert' : sqHasDiagram ? 'qp' : null);
+          const sqPageNum = sq.page_number || q.page_number;
+          const remappedSqBox =
+            sqDiagramSource !== 'insert' && sqPageNum
+              ? remapBoundingBoxFromCrop(sq.bounding_box, pageCropMap.get(sqPageNum))
+              : sq.bounding_box;
           return {
             ...sq,
             has_diagram: sqHasDiagram,
-            diagram_source:
-              sq.diagram_source ||
-              (hasInsert && sq.resource_ref ? 'insert' : sqHasDiagram ? 'qp' : null),
+            bounding_box: remappedSqBox,
+            diagram_source: sqDiagramSource,
             question_text: stripDuplicateSubIdPrefix(
               sq.sub_id,
               stripDuplicateOptionsFromStem(
@@ -2778,8 +2872,8 @@ export async function extractQuestionsFromPdf(
 
     // Prevent wrong-page parent diagram crops when a multi-page question starts on Page N (e.g. Page 3 instructions/text)
     // and its diagram (e.g. Fig. 1.1 or Fig. 2.1) actually belongs to a sub-question on Page N+1 (Page 4):
-    let parentHasDiagram = Boolean(q.has_diagram || (Array.isArray(q.bounding_box) && q.bounding_box.length >= 4));
-    let parentBoundingBox = q.bounding_box;
+    let parentHasDiagram = Boolean(q.has_diagram || (Array.isArray(remappedParentBox) && remappedParentBox.length >= 4));
+    let parentBoundingBox = remappedParentBox;
     if (parentHasDiagram && Array.isArray(normalizedSubs) && normalizedSubs.length > 0) {
       const subWithLaterPageDiagram = normalizedSubs.find(
         (sq) =>
@@ -2787,7 +2881,7 @@ export async function extractQuestionsFromPdf(
           sq.page_number &&
           q.page_number &&
           sq.page_number > q.page_number &&
-          (!q.resource_ref || !sq.resource_ref || q.resource_ref === sq.resource_ref || JSON.stringify(q.bounding_box) === JSON.stringify(sq.bounding_box))
+          (!q.resource_ref || !sq.resource_ref || q.resource_ref === sq.resource_ref || JSON.stringify(remappedParentBox) === JSON.stringify(sq.bounding_box))
       );
       if (subWithLaterPageDiagram && !/fig\.|figure|diagram|apparatus|shown/i.test(cleanedText)) {
         parentHasDiagram = false;

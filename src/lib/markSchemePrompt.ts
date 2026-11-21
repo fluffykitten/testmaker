@@ -15,9 +15,11 @@ export function buildMarkSchemeStrictnessBlock(
 - MARK-TAG SUM PARITY: Preserve bracketed mark tags ("[1]", "[2]") so their sum matches the printed marks of each question or sub-question (respecting any stated "(max N)" cap).
 - STYLE-SPECIFIC OFFICIAL TRANSCRIPTION:
   * Multiple Choice: set "acceptable_answers" to the exact official letter (e.g. ["B"]) and include the letter in "marking_points" (e.g. ["B [1]"]).
+  * CROSS-SCRIPT OPTION EQUIVALENCE (CRITICAL FOR ARABIC / NON-LATIN EXAMS): When DOCUMENT 1 uses Arabic option labels ("أ", "ب", "ج", "د", "هـ"/"ه") while DOCUMENT 3 prints Latin letters ("A", "B", "C", "D", "E"), map them strictly by position (A = أ, B = ب, C = ج, D = د, E = هـ/ه) and transcribe the official key cleanly (e.g. "acceptable_answers": ["E"], "marking_points": ["E [1]"]). NEVER mark a cross-script question "[NOT IN MARK SCHEME — AI SOLVED]"!
   * Multiple Select: set "acceptable_answers" to the comma-separated official letters (e.g. ["A, C"]) and "marking_points": ["A, C [2]"].
   * Table Choice: output one marking point per statement row in exact table order matching the official key.
-- HONEST MISSING-PART FALLBACK ONLY: ONLY if a question or sub-question is genuinely absent or unreadable in DOCUMENT 3, solve it to examiner standard and MUST prepend "[NOT IN MARK SCHEME — AI SOLVED] " to the first marking point (or sub-question "mark_scheme") and record this in "guidance".`;
+- MULTI-PAGE MS VERIFICATION: Inspect ALL pages of DOCUMENT 3 (for example Page 1 covering Q1–20 AND Page 2 covering Q21–40) before concluding any question number is absent.
+- HONEST MISSING-PART FALLBACK ONLY: ONLY if a question or sub-question is genuinely absent or unreadable across ALL pages of DOCUMENT 3, solve it to examiner standard and MUST prepend "[NOT IN MARK SCHEME — AI SOLVED] " to the first marking point (or sub-question "mark_scheme") and record this in "guidance".`;
   }
 
   const standardLabel = isIgcse

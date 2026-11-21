@@ -873,13 +873,13 @@ export function cleanMcqOptionContent(text: string, oIdx?: number): string {
     const letter = String.fromCharCode(65 + oIdx);
     clean = clean.replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[.)\\s:-]+)\\s*`, 'i'), '');
     if (oIdx < arLetters.length) {
-      const arL = arLetters[oIdx];
-      clean = clean.replace(new RegExp(`^\\s*(\\(${arL}\\)|${arL}[.)\\s:-]+)\\s*`), '');
+      const arAliases = oIdx === 4 ? '(?:هـ|ه)' : oIdx === 0 ? '[أإآا]' : arLetters[oIdx];
+      clean = clean.replace(new RegExp(`^\\s*(?:\\(${arAliases}\\)|${arAliases}[.)\\s:-]+)\\s*`), '');
     }
   } else {
-    // Strip standalone leading "A ", "A. ", "A) ", "(A) ", "A: "
+    // Strip standalone leading Latin or Arabic option prefixes (including "A. أ. ...")
     clean = clean.replace(/^[([]?[A-Fa-f][)\]\.:\s-]+\s*/, '');
-    clean = clean.replace(/^[([]?[أإآابجددهـ][.)\]:\s-]+\s*/, '');
+    clean = clean.replace(/^[([]?(?:هـ|[أإآابجدهو])[)\]\.:\s-]+\s*/, '');
   }
   return clean.trim();
 }

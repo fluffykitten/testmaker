@@ -5,7 +5,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { tryBuildPaperOutline } from './paperOutline';
 import { isAnswerKeyStartPageText } from './markSchemeDetect';
 import { containsArabicScript } from './arabicTextUtils';
-import type { GeminiPageImage } from './gemini';
+import type { GeminiPageImage, CropRegion } from './gemini';
 
 // Configure pdf.js worker in browser
 if (typeof window !== 'undefined' && pdfjsWorker) {
@@ -216,6 +216,7 @@ async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number
         (/\bTests\s+for\s+anions\b/i.test(text) && /\bTests\s+for\s+aqueous\s+cations\b/i.test(text)) ||
         (/\bTests\s+for\s+gases\b/i.test(text) && /\bFlame\s+tests\s+for\s+metal\s+ions\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text));
       const isAdditionalBlank = /\bAdditional\s+Page\b/i.test(text) && !/\[\s*\d+\s*\]/.test(text);
+      const isBareTurnOverPage = /^(?:\d{1,3}\s+)?(?:\[\s*Turn\s+over\s*\]|Turn\s+over)(?:\s+\d{1,3})?$/i.test(text);
       const hasQuestionHeader = /\bQuestions?\s+\d+/i.test(text) || /\[\s*\d+\s*\]/.test(text);
       const isIeltsRubricAppendix =
         !hasQuestionHeader &&
@@ -237,7 +238,7 @@ async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number
       if (isIeltsRubricAppendix) {
         trimmedScoringRubrics = true;
         effectiveEnd = p - 1;
-      } else if (isBlankPage || isPeriodicTable || isQualAnalysisNotes || isAdditionalBlank || isTrailingSpeakingPage) {
+      } else if (isBlankPage || isPeriodicTable || isQualAnalysisNotes || isAdditionalBlank || isBareTurnOverPage || isTrailingSpeakingPage) {
         effectiveEnd = p - 1;
       } else {
         // Reached the last actual question page
@@ -260,7 +261,8 @@ async function countEffectiveQuestionPages(rawBytes: Uint8Array): Promise<number
  */
 export async function splitPdfForParallelExtraction(
   fileOrBytes: File | Uint8Array | ArrayBuffer,
-  maxPagesPerChunk: number = 8
+  maxPagesPerChunk: number = 8,
+  options?: { allowCompactChunks?: boolean; overlapPages?: number }
 ): Promise<PdfChunk[]> {
   try {
     const rawBytes = await toUint8Array(fileOrBytes);
@@ -316,7 +318,9 @@ export async function splitPdfForParallelExtraction(
     // 1-4 pages: single chunk
     // 5+ pages: respect maxPagesPerChunk (e.g., dense Languages papers pass maxPagesPerChunk=4
     // so chunks stay ~4-6 pages with ~10-14 questions instead of hitting 10 pages / 20+ questions).
-    const effectiveMax = Math.max(4, maxPagesPerChunk || 8);
+    const effectiveMax = options?.allowCompactChunks
+      ? Math.max(1, maxPagesPerChunk || 8)
+      : Math.max(4, maxPagesPerChunk || 8);
     const minChunksForBudget = Math.ceil(totalPages / effectiveMax);
     const baseChunks =
       totalPages <= 4 ? 1 :
@@ -327,8 +331,8 @@ export async function splitPdfForParallelExtraction(
 
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
     // Overlap for straddling questions / multi-page reading stimuli.
-    // Keep overlap at 2 pages when maxPagesPerChunk <= 5 so overlapping chunks stay compact.
-    const overlapPages = effectiveMax <= 5 ? 2 : (totalPages >= 9 ? 3 : 2);
+    // Callers can override with a tighter overlap (e.g. 1 page for dense visual Arabic chunks).
+    const overlapPages = options?.overlapPages ?? (effectiveMax <= 5 ? 2 : (totalPages >= 9 ? 3 : 2));
 
     const chunks: PdfChunk[] = [];
 
@@ -642,47 +646,132 @@ export async function splitSaveMyExamsPdfBySections(
 }
 
 /**
- * Scans a PDF's page text streams using pdf.js and returns the 1-indexed page numbers
- * that contain Arabic characters (standard Arabic or Presentation Forms).
- * Used to route Arabic-containing chunks through lossless high-resolution page images
- * so corrupted PDF ToUnicode CMaps cannot poison Gemini extraction.
+ * Reads plain page text for each 1-indexed page of a PDF using pdf.js.
  */
-export async function detectArabicPagesInPdf(
+export async function readPdfPageTexts(
   fileOrBytes: File | Uint8Array | ArrayBuffer
-): Promise<Set<number>> {
-  const arabicPages = new Set<number>();
+): Promise<string[]> {
   try {
     const rawBytes = await toUint8Array(fileOrBytes);
     const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
     const pdfDoc: PDFDocumentProxy = await loadingTask.promise;
+    const texts: string[] = [];
     try {
       for (let p = 1; p <= pdfDoc.numPages; p++) {
         const page = await pdfDoc.getPage(p);
         const content = await page.getTextContent();
-        const pageText = content.items.map((item: any) => item.str || '').join(' ');
-        if (containsArabicScript(pageText)) {
-          arabicPages.add(p);
-        }
+        texts.push(content.items.map((item: any) => item.str || '').join(' '));
       }
     } finally {
       await loadingTask.destroy();
     }
+    return texts;
+  } catch (err) {
+    console.warn('[pdfChunker] Failed to read PDF page texts:', err);
+    return [];
+  }
+}
+
+/**
+ * Scans a PDF's page text streams (or pre-extracted pageTexts) and returns the 1-indexed
+ * page numbers that contain Arabic characters (standard Arabic or Presentation Forms).
+ * Used to route Arabic-containing chunks through lossless high-resolution page images
+ * so corrupted PDF ToUnicode CMaps cannot poison Gemini extraction.
+ */
+export async function detectArabicPagesInPdf(
+  fileOrBytes: File | Uint8Array | ArrayBuffer,
+  preloadedPageTexts?: string[]
+): Promise<Set<number>> {
+  const arabicPages = new Set<number>();
+  try {
+    const pageTexts = preloadedPageTexts ?? (await readPdfPageTexts(fileOrBytes));
+    pageTexts.forEach((pageText, idx) => {
+      if (containsArabicScript(pageText)) {
+        arabicPages.add(idx + 1);
+      }
+    });
   } catch (err) {
     console.warn('[pdfChunker] Arabic page scan failed, falling back to default PDF mode:', err);
   }
   return arabicPages;
 }
 
+function canvasToBase64Png(canvas: HTMLCanvasElement): string {
+  const dataUrl = canvas.toDataURL('image/png');
+  const commaIdx = dataUrl.indexOf(',');
+  return commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+}
+
+function findInkBounds(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const imgData = ctx.getImageData(0, 0, width, height).data;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  const step = 3;
+  for (let y = 0; y < height; y += step) {
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x += step) {
+      const idx = rowOffset + x * 4;
+      if (imgData[idx] < 236 || imgData[idx + 1] < 236 || imgData[idx + 2] < 236) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const pad = 42;
+  return {
+    minX: Math.max(0, minX - pad),
+    minY: Math.max(0, minY - pad),
+    maxX: Math.min(width, maxX + pad),
+    maxY: Math.min(height, maxY + pad),
+  };
+}
+
+function cropCanvasBandToPng(
+  src: HTMLCanvasElement,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number
+): string {
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, sw);
+  out.height = Math.max(1, sh);
+  const oCtx = out.getContext('2d');
+  if (oCtx) {
+    oCtx.fillStyle = '#ffffff';
+    oCtx.fillRect(0, 0, out.width, out.height);
+    oCtx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+  }
+  const b64 = canvasToBase64Png(out);
+  out.width = 0;
+  out.height = 0;
+  return b64;
+}
+
 /**
- * Renders PDF pages [startPage..endPage] onto an offscreen canvas at high DPI (default 2.8x)
- * and encodes each page as a lossless PNG image (1-indexed within the returned slice).
+ * Renders PDF pages [startPage..endPage] onto an offscreen canvas at high DPI
+ * and encodes strictly 1 lossless PNG per page (1-indexed within the returned slice).
+ * For pages listed in `marginCropPages`, trims dead outer white margins to the ink bounding
+ * box (`findInkBounds`) so tiny Arabic harakat (َ vs ِ) and detached spacing (e.g. سَكَنُ كَ)
+ * occupy ~50-60% more pixels within a single image, and attaches `cropRegion` so
+ * `bounding_box` coordinates inverse-map cleanly back to full-page PDF space.
  * Returns [] cleanly in headless/Node environments where `document` is unavailable.
  */
 export async function renderPdfPagesToImages(
   fileOrBytes: File | Uint8Array | ArrayBuffer,
   startPage: number,
   endPage: number,
-  scale: number = 2.8
+  scale: number = 2.8,
+  marginCropPages?: Set<number>
 ): Promise<GeminiPageImage[]> {
   if (typeof document === 'undefined') {
     return [];
@@ -696,6 +785,7 @@ export async function renderPdfPagesToImages(
       const clampedStart = Math.max(1, startPage);
       const clampedEnd = Math.min(pdfDoc.numPages, endPage);
       for (let p = clampedStart; p <= clampedEnd; p++) {
+        const relPage = p - clampedStart + 1;
         const page = await pdfDoc.getPage(p);
         const viewport = page.getViewport({ scale });
         const canvas = document.createElement('canvas');
@@ -706,14 +796,32 @@ export async function renderPdfPagesToImages(
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
           await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
-          const dataUrl = canvas.toDataURL('image/png');
-          const commaIdx = dataUrl.indexOf(',');
-          const base64Data = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-          images.push({
-            pageNumber: p - clampedStart + 1,
-            mimeType: 'image/png',
-            data: base64Data,
-          });
+
+          const bounds = marginCropPages?.has(p)
+            ? findInkBounds(ctx, canvas.width, canvas.height)
+            : null;
+          if (bounds && bounds.maxX > bounds.minX && bounds.maxY > bounds.minY) {
+            const cropW = bounds.maxX - bounds.minX;
+            const cropH = bounds.maxY - bounds.minY;
+            const cropRegion: CropRegion = {
+              normYMin: bounds.minY / canvas.height,
+              normXMin: bounds.minX / canvas.width,
+              normYMax: bounds.maxY / canvas.height,
+              normXMax: bounds.maxX / canvas.width,
+            };
+            images.push({
+              pageNumber: relPage,
+              mimeType: 'image/png',
+              data: cropCanvasBandToPng(canvas, bounds.minX, bounds.minY, cropW, cropH),
+              cropRegion,
+            });
+          } else {
+            images.push({
+              pageNumber: relPage,
+              mimeType: 'image/png',
+              data: canvasToBase64Png(canvas),
+            });
+          }
         }
         canvas.width = 0;
         canvas.height = 0;

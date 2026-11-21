@@ -54,5 +54,10 @@ export function buildArabicExtractionGuidance(): string {
 - PAY SPECIAL ATTENTION TO SHORT INLINE ARABIC SNIPPETS INSIDE INDONESIAN/ENGLISH SENTENCES (e.g. tajwid/nahwu questions like "menemukan bacaan الْأَلْبَابِ ... hukum bacaan pada bagian الْأَ dalam kata tersebut"):
   * Carefully inspect every single letter (especially أ, إ, آ, ء, ع, غ, ه, و, ي) and every harakat/diacritic (َ, ِ, ُ, ْ, ّ, ٰ, ً, ٍ, ٌ) visually on the page image.
   * When an inline excerpt refers to a word or phrase inside the verse/quote printed directly above it, cross-check that the extracted inline word and sub-part characters strictly match that printed verse/word visually.
+- PRESERVE EXACT DISTRACTOR DIFFERENCES ACROSS ARABIC MCQ OPTIONS (CRITICAL — DO NOT "AUTO-CORRECT"):
+  * Arabic grammar/orthography MCQs intentionally test subtle visual differences between choices. NEVER auto-correct, normalize away, or fix typos/spacing in MCQ options!
+  * Each Arabic page is sent as a high-resolution margin-cropped PNG image — inspect every Arabic word, space, and harakat directly from that page image rather than guessing or translating.
+  * Keep detached vs. joined word/pronoun spacing literally as visually printed (for example, keep the visible space in "أ. سَكَنُ كَ" vs connected "ه. سَكَنُكَ", or "غُرْفَتُكُمْ" vs "غُرْفَتُ كُمْ").
+  * Keep every single-harakat or spelling variant distinct—verify carefully whether the mark on the final letter is a fatha (َ above), kasra (ِ below — Note: even in Traditional Arabic fonts where kasra sits right beneath the stroke/loop of ك/ن), damma (ُ), or sukun (ْ) (for example, "ج. سَكَنُكِ" with kasra below vs "ه. سَكَنُكَ" with fatha above; "طَلَابٌ" vs "طِلَابٌ" vs "طُلَّابٌ"). Before finalizing any MCQ, verify visually that every choice is faithful and distinct.
 - Output ALL Arabic in canonical logical Unicode reading order (standard U+0600–U+06FF letters with harakat immediately after each letter). NEVER output visually reversed Arabic, NEVER use Arabic Presentation Forms (U+FB50–U+FEFF), and NEVER wrap Arabic text inside LaTeX ($...$) or Markdown (*...* / **...**).`;
 }
