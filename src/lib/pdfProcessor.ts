@@ -21,6 +21,8 @@ import {
   detectAndSplitInDocumentAnswerKey,
   isSaveMyExamsDocument,
   splitSaveMyExamsPdfBySections,
+  detectArabicPagesInPdf,
+  renderPdfPagesToImages,
   uint8ArrayToBase64,
   type SaveMyExamsMeta,
   type PdfChunk,
@@ -703,14 +705,17 @@ export async function runExtractionPipeline(
     });
 
     let msBase64 = markSchemeFile ? await fileToBase64(markSchemeFile) : undefined;
+    let msBytesForVisualScan: Uint8Array | undefined;
 
     // Cambridge mark schemes open with 4–6 pages of generic marking principles that are
     // identical across papers; send only the answer-table pages (Phase 4).
     if (markSchemeFile) {
       try {
         const msBytes = new Uint8Array(await markSchemeFile.arrayBuffer());
+        msBytesForVisualScan = msBytes;
         const trimmedMs = await trimMarkSchemePreamble(msBytes, { domain: options.domain });
         if (trimmedMs.trimmed) {
+          msBytesForVisualScan = trimmedMs.bytes;
           msBase64 = uint8ArrayToBase64(trimmedMs.bytes);
           onStateChange({
             stage: 'extracting',
@@ -734,6 +739,14 @@ export async function runExtractionPipeline(
       if (splitInfo.hasAnswerKey && splitInfo.msBase64) {
         bytesToChunk = splitInfo.qpDocBytes;
         msBase64 = splitInfo.msBase64;
+        try {
+          const bin = atob(splitInfo.msBase64);
+          const decoded = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) decoded[i] = bin.charCodeAt(i);
+          msBytesForVisualScan = decoded;
+        } catch {
+          // Non-fatal: fall back to raw msBase64
+        }
         onStateChange({
           stage: 'extracting',
           message: `Detected embedded Answer Key (Pages ${splitInfo.msStartPage}–${splitInfo.msEndPage}) — matching with Question Paper (Pages 1–${splitInfo.qpEndPage})…`,
@@ -743,6 +756,18 @@ export async function runExtractionPipeline(
         });
       }
     }
+
+    // Scan Question Paper (and compact Mark Scheme) for Arabic script so affected chunks bypass
+    // corrupted PDF ToUnicode text streams via lossless 2.8x PNG page images.
+    const arabicPages = await detectArabicPagesInPdf(bytesToChunk);
+    const msArabicPages = msBytesForVisualScan
+      ? await detectArabicPagesInPdf(msBytesForVisualScan)
+      : new Set<number>();
+    const msMaxArabicPage = msArabicPages.size > 0 ? Math.max(...Array.from(msArabicPages)) : 0;
+    const msPageImages =
+      msBytesForVisualScan && msMaxArabicPage > 0 && msMaxArabicPage <= 8
+        ? await renderPdfPagesToImages(msBytesForVisualScan, 1, msMaxArabicPage)
+        : undefined;
 
     const isSaveMyExams =
       Boolean(options.isSaveMyExams) ||
@@ -763,9 +788,9 @@ export async function runExtractionPipeline(
         error: null,
       });
     } else {
-      // Dense Language / Reading Comprehension papers use smaller chunks (~4-5 active pages)
-      // so parallel calls never exceed JSON output-token limits or drop questions.
-      const maxPagesPerChunk = options.domain === 'languages' ? 4 : 8;
+      // Dense Language / Reading Comprehension and Arabic-script papers use compact 4-page chunks
+      // so parallel calls never exceed token/image budgets or drop questions.
+      const maxPagesPerChunk = options.domain === 'languages' || arabicPages.size > 0 ? 4 : 8;
       chunks = await splitPdfForParallelExtraction(bytesToChunk, maxPagesPerChunk);
     }
 
@@ -837,10 +862,18 @@ export async function runExtractionPipeline(
       });
 
       const chunkResults = await Promise.all(
-        chunks.map((chunk, idx) => {
+        chunks.map(async (chunk, idx) => {
           const assignedKey = getApiKeyForChunk(idx);
           const keyLabel = isMultiKey ? `Key ${(idx % apiKeys.length) + 1}` : `Part ${idx + 1}/${chunks.length}`;
           const sectionLabel = chunk.targetSection ? `[${chunk.targetSection} Questions • Pages ${chunk.startPage}–${chunk.endPage}]` : `[Pages ${chunk.startPage}–${chunk.endPage}]`;
+
+          const chunkHasArabic =
+            detectedSubject?.syllabusCode === 'PAI' ||
+            detectedSubject?.syllabusCode === 'BAR' ||
+            Array.from(arabicPages).some((p) => p >= chunk.startPage && p <= chunk.endPage);
+          const chunkPageImages = chunkHasArabic
+            ? await renderPdfPagesToImages(bytesToChunk, chunk.startPage, chunk.endPage)
+            : undefined;
 
           return extractQuestionsFromPdf(
             chunk.pdfBase64,
@@ -868,6 +901,8 @@ export async function runExtractionPipeline(
               targetSection: chunk.targetSection,
               topicHint: chunk.topicHint || smeMeta?.topic,
               subjectProfile: detectedSubject ?? undefined,
+              pageImages: chunkPageImages && chunkPageImages.length > 0 ? chunkPageImages : undefined,
+              msPageImages: msPageImages && msPageImages.length > 0 ? msPageImages : undefined,
             }
           );
         })
@@ -1169,6 +1204,14 @@ export async function runExtractionPipeline(
       };
     } else {
       // Single chunk for short documents
+      const singleChunkHasArabic =
+        detectedSubject?.syllabusCode === 'PAI' ||
+        detectedSubject?.syllabusCode === 'BAR' ||
+        arabicPages.size > 0;
+      const singlePageImages = singleChunkHasArabic
+        ? await renderPdfPagesToImages(bytesToChunk, chunks[0].startPage, chunks[0].endPage)
+        : undefined;
+
       result = await extractQuestionsFromPdf(
         chunks[0].pdfBase64,
         msBase64,
@@ -1194,6 +1237,8 @@ export async function runExtractionPipeline(
           topicHint: chunks[0]?.topicHint || smeMeta?.topic,
           paperOutline: chunks.length === 1 ? paperOutline ?? undefined : undefined,
           subjectProfile: detectedSubject ?? undefined,
+          pageImages: singlePageImages && singlePageImages.length > 0 ? singlePageImages : undefined,
+          msPageImages: msPageImages && msPageImages.length > 0 ? msPageImages : undefined,
         }
       );
       let verifiedPassages = result.passages || [];

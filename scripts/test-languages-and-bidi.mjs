@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { PDFDocument } from 'pdf-lib';
 
 if (typeof globalThis.DOMMatrix === 'undefined') {
   globalThis.DOMMatrix = class DOMMatrix {};
+}
+
+const pdfjsLib = await import('pdfjs-dist');
+if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(
+    path.resolve('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')
+  ).href;
 }
 
 const { parseQuestionRange, expandTargetQuestionTokens, mergeChunkPassagesAndQuestions } =
@@ -13,8 +23,15 @@ const { splitPassageAndPrompt } = await import('../src/lib/readingPassageUtils.t
 const { parseTableChoiceFromQuestion } = await import('../src/lib/tableChoiceUtils.ts');
 
 const { classifySubject } = await import('../src/lib/subjectClassifier.ts');
-const { getLanguageExtractionPrompt } = await import('../src/lib/gemini.ts');
-const { splitPdfForParallelExtraction } = await import('../src/lib/pdfChunker.ts');
+const {
+  getLanguageExtractionPrompt,
+  getStemExtractionPrompt,
+  buildGeminiMultimodalParts,
+  cleanExtAndLatexArtifacts,
+} = await import('../src/lib/gemini.ts');
+const { getHumanitiesExtractionPrompt } = await import('../src/lib/humanitiesPrompt.ts');
+const { splitPdfForParallelExtraction, detectArabicPagesInPdf } = await import('../src/lib/pdfChunker.ts');
+const { normalizeExtractedArabicText, containsArabicScript } = await import('../src/lib/arabicTextUtils.ts');
 const {
   isArabicText,
   hasArabicCharacters,
@@ -263,6 +280,74 @@ function check(name, condition, detail = '') {
       !filtered.has('3') &&
       filtered.has('4b')
   );
+}
+
+// 8. Arabic / Islamic Studies classifier + Arabic normalization + visual page image bypass
+{
+  const paiMatch = classifySubject(['SOAL PILIHAN GANDA PAI KELAS XI Tahun Pelajaran 2026/2027']);
+  const arabMatch = classifySubject(['UJIAN AKHIR SEMESTER BAHASA ARAB KELAS X']);
+  check(
+    'ARABIC-1: classifySubject detects PAI (Humanities) and Bahasa Arab (Languages) as non-Cambridge',
+    paiMatch?.syllabusCode === 'PAI' &&
+      paiMatch?.profile.domain === 'humanities' &&
+      paiMatch?.profile.isNonCambridge === true &&
+      arabMatch?.syllabusCode === 'BAR' &&
+      arabMatch?.profile.domain === 'languages' &&
+      arabMatch?.profile.isNonCambridge === true
+  );
+
+  // Presentation Forms (\uFEF7 = LAM WITH ALEF WITH HAMZA ABOVE ISOLATED) + detached harakat + math safety
+  const corrupted = 'Menemukan bacaan \u202Aال\uFEF7لبَاب ِ\u202C dan rumus x² + H₂O, خَلْق ِ السَّمَاوَات ِ';
+  const normalized = normalizeExtractedArabicText(cleanExtAndLatexArtifacts(corrupted));
+  check(
+    'ARABIC-2: normalizeExtractedArabicText converts Arabic Presentation Forms to logical Unicode, reattaches harakat, and keeps x² intact',
+    !normalized.includes('\uFEF7') &&
+      !normalized.includes('\u202A') &&
+      normalized.includes('لألبَابِ') &&
+      normalized.includes('خَلْقِ السَّمَاوَاتِ') &&
+      normalized.includes('x²') &&
+      containsArabicScript('الْأَ')
+  );
+
+  const visualParts = buildGeminiMultimodalParts(
+    'PROMPT',
+    'RAW_PDF_BASE64',
+    'MS_PDF_BASE64',
+    undefined,
+    [
+      { pageNumber: 1, mimeType: 'image/png', data: 'IMG_P1' },
+      { pageNumber: 2, mimeType: 'image/png', data: 'IMG_P2' },
+    ]
+  );
+  const hasRawQpPdf = visualParts.some((p) => p?.inlineData?.mimeType === 'application/pdf' && p?.inlineData?.data === 'RAW_PDF_BASE64');
+  const pngParts = visualParts.filter((p) => p?.inlineData?.mimeType === 'image/png');
+  check(
+    'ARABIC-3: buildGeminiMultimodalParts omits corrupted QP PDF binary when visual pageImages are supplied',
+    !hasRawQpPdf && pngParts.length === 2 && pngParts[0].inlineData.data === 'IMG_P1'
+  );
+
+  const stemPrompt = getStemExtractionPrompt(true, false, false);
+  const humPrompt = getHumanitiesExtractionPrompt(false, true, false, false);
+  const langPrompt = getLanguageExtractionPrompt(true, false, false);
+  check(
+    'ARABIC-4: Arabic visual extraction guidance is injected across STEM, Humanities, and Languages prompts',
+    [stemPrompt, humPrompt, langPrompt].every(
+      (p) => p.includes('ARABIC SCRIPT & MIXED ARABIC') && p.includes('الْأَلْبَابِ') && p.includes('الْأَ')
+    )
+  );
+
+  const samplePaiPdf =
+    'C:\\Users\\orin\\.gemini\\antigravity\\brain\\c47873ec-764e-4639-9c60-2d8b6e73fc78\\.user_uploaded\\media_1795252322315_7c11710b.pdf';
+  if (fs.existsSync(samplePaiPdf)) {
+    const paiBytes = new Uint8Array(fs.readFileSync(samplePaiPdf));
+    const arabicPages = await detectArabicPagesInPdf(paiBytes);
+    const expectedPages = [3, 6, 8, 9, 11, 13, 14, 15, 16];
+    check(
+      'ARABIC-5: detectArabicPagesInPdf identifies every Arabic page (including Q5 on Page 3) in PAI sample paper',
+      expectedPages.every((p) => arabicPages.has(p)) && arabicPages.size === expectedPages.length,
+      `found=${Array.from(arabicPages).join(',')}`
+    );
+  }
 }
 
 console.log(`\nALL ${passed} LANGUAGES & ARABIC/INDONESIAN BIDI CHECKS PASSED`);

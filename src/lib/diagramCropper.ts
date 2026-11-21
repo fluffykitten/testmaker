@@ -8,7 +8,9 @@ import { uploadDiagramImage } from '../services/storageService';
 import { locateFigureBox, type Box4 } from './figureLocator';
 
 // Configure pdf.js worker using Vite's ?url loader for 100% reliable bundling
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+if (pdfjsWorker) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+}
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 

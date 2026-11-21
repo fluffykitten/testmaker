@@ -94,6 +94,8 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   '9093': { syllabusCode: '9093', subjectName: 'English Language (AS/A Level)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
   'BI': { syllabusCode: 'BI', subjectName: 'Bahasa Indonesia', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
+  'PAI': { syllabusCode: 'PAI', subjectName: 'Pendidikan Agama Islam', domain: 'humanities', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
+  'BAR': { syllabusCode: 'BAR', subjectName: 'Bahasa Arab', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
 };
 
 /** Neutral profile for a humanities paper whose syllabus could not be identified. */
@@ -153,6 +155,32 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'title',
       evidence: 'Bahasa Indonesia',
+    };
+  }
+
+  // Detect Indonesian Islamic Studies (PAI, Al-Qur'an Hadis, Fiqih, Aqidah Akhlak, SKI)
+  if (
+    /\b(?:PAI|PENDIDIKAN\s+AGAMA\s+ISLAM|AL-?QUR['’`]?AN\s+(?:DAN\s+)?HADIS|FI[QK]IH|AQIDAH\s+AKHLAK|SEJARAH\s+KEBUDAYAAN\s+ISLAM)\b/i.test(
+      haystack
+    )
+  ) {
+    return {
+      profile: SYLLABUS_REGISTRY['PAI'],
+      syllabusCode: 'PAI',
+      paperCode,
+      method: 'title',
+      evidence: 'Pendidikan Agama Islam (PAI)',
+    };
+  }
+
+  // Detect Bahasa Arab (Arabic Language) covers
+  if (/\bBAHASA\s+ARAB\b/i.test(haystack)) {
+    return {
+      profile: SYLLABUS_REGISTRY['BAR'],
+      syllabusCode: 'BAR',
+      paperCode,
+      method: 'title',
+      evidence: 'Bahasa Arab',
     };
   }
 

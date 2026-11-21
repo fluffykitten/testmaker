@@ -2,6 +2,7 @@ import React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { stripPassageControlTags } from '../lib/readingPassageUtils';
+import { normalizeExtractedArabicText } from '../lib/arabicTextUtils';
 import { hasArabicCharacters, isDominantlyArabicText } from '../services/deterministicGradingService';
 import './ExamMathText.css';
 
@@ -333,7 +334,7 @@ export function normalizeLatexString(raw: string): string {
 }
 
 const ARABIC_ISOLATION_RUN_RE =
-  /([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+(?:\s+[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+)*)/g;
+  /([\u0600-\u06FF\u0750-\u077F\u0870-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+(?:\s+[\u0600-\u06FF\u0750-\u077F\u0870-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+)*)/g;
 
 function isolateArabicInlineSegments(text: string): React.ReactNode {
   if (!text || !hasArabicCharacters(text)) return text;
@@ -573,8 +574,10 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
 
   if (!strContent.trim()) return null;
 
-  // Normalize string: convert literal '\n' string to actual newline and strip passage directives
-  const normalized = stripPassageControlTags(strContent.replace(/\\n/g, '\n'), true);
+  // Normalize string: convert literal '\n' string to actual newline, strip passage directives, and repair Arabic glyphs
+  const normalized = normalizeExtractedArabicText(
+    stripPassageControlTags(strContent.replace(/\\n/g, '\n'), true)
+  );
 
   // Split by markdown table patterns
   const lines = normalized.split('\n');

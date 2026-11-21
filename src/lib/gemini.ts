@@ -7,6 +7,7 @@ import type { PaperOutline } from './paperOutlineParse';
 import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import { getIeltsCefrExtractionPrompt } from './ieltsPrompt';
 import { buildMarkSchemeStrictnessBlock } from './markSchemePrompt';
+import { buildArabicExtractionGuidance, normalizeExtractedArabicText } from './arabicTextUtils';
 import { normalizeSubIdKey } from './markSchemeAudit';
 import type { SubjectProfile } from './subjectClassifier';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
@@ -686,6 +687,7 @@ ${!isIgcse ? `13. NON-IGCSE & INDONESIAN TKA / UTBK / AKM / NATIONAL STEM EXAMS 
       - If a question stem, statement, or option quotes a phrase or statement (e.g. "Karena ketiga molekul..."), transcribe standard single or double quotes without redundant nested quotes or literal escaped quotes (e.g. write "Karena..." NOT "\"Karena...\"").
       - NEVER wrap the entire "question_text" string in redundant outer quotation marks.
 ` : ''}
+14. ${buildArabicExtractionGuidance()}
 `;
 }
 
@@ -1213,8 +1215,8 @@ ${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
 7. STRICT VERBATIM LANGUAGE & MIXED ARABIC / INDONESIAN BIDI PRESERVATION:
    - ABSOLUTELY NEVER translate English reading texts or questions into Indonesian.
    - ABSOLUTELY NEVER translate Indonesian instructions, headers, or "Pembahasan" into English.
-   - Preserve mixed Arabic + Indonesian/Latin text (e.g. PAI, Hadis, Qur'an verses, Arabic terms inside Indonesian sentences) in natural logical Unicode reading order, keeping Arabic diacritics/harakat intact; NEVER reverse Arabic characters or wrap Arabic words in LaTeX $...$ math delimiters.
    - Preserve the exact verbatim text and original language of all passages, questions, options, table rows, and explanations.
+   - ${buildArabicExtractionGuidance()}
 
 8. STRICT PROHIBITION ON DUPLICATING OPTIONS IN QUESTION TEXT:
    - ABSOLUTELY NEVER copy, duplicate, or include the multiple choice options (A, B, C, D, E or a, b, c, d, e) inside "question_text".
@@ -1678,7 +1680,7 @@ export function cleanQuotesAndTemperatures(text: string): string {
 export function cleanExtAndLatexArtifacts(text: string): string {
   if (!text || typeof text !== 'string') return text || '';
 
-  const cleaned = cleanQuotesAndTemperatures(text);
+  const cleaned = normalizeExtractedArabicText(cleanQuotesAndTemperatures(text));
 
   return cleaned
     // Replace tab-corrupted \text, \times, \theta, \rightarrow, \frac
@@ -2258,28 +2260,59 @@ export async function testGeminiModelConnectivity(
   }
 }
 
+export interface GeminiPageImage {
+  /** 1-indexed page number within the attached PDF slice / chunk */
+  pageNumber: number;
+  mimeType: 'image/png' | 'image/jpeg';
+  /** Base64 image payload (without data URL prefix) */
+  data: string;
+}
+
 /**
  * Builds explicitly labeled Gemini multimodal content parts so the model keeps Question Paper,
  * Insert Booklet, and Official Mark Scheme boundaries strictly separated.
+ * When `pageImages` (or `msPageImages`) are supplied (e.g. for Arabic-containing pages whose
+ * embedded PDF ToUnicode CMap is corrupted), high-resolution rendered page images replace the
+ * raw PDF binary so Gemini transcribes glyphs visually without CMap poisoning.
  */
 export function buildGeminiMultimodalParts(
   promptText: string,
   pdfBase64: string,
   markSchemeBase64?: string,
-  insertBase64?: string
+  insertBase64?: string,
+  pageImages?: GeminiPageImage[],
+  msPageImages?: GeminiPageImage[]
 ): any[] {
-  const parts: any[] = [
-    { text: promptText },
-    {
-      text: '\n=== DOCUMENT 1: QUESTION PAPER (Extract questions, options, sub-parts, and printed marks strictly from this document) ===',
-    },
-    {
-      inlineData: {
-        mimeType: 'application/pdf',
-        data: pdfBase64,
+  const parts: any[] = [{ text: promptText }];
+
+  if (pageImages && pageImages.length > 0) {
+    parts.push({
+      text: '\n=== DOCUMENT 1: QUESTION PAPER (High-resolution lossless page images, 1-indexed within this chunk — PDF text layer intentionally omitted to eliminate Arabic encoding corruption. Read ALL text, options, and Arabic letters + harakat strictly from the visual images below!) ===',
+    });
+    for (const img of pageImages) {
+      parts.push(
+        { text: `\n--- Question Paper Page ${img.pageNumber} (1-indexed within this chunk) ---` },
+        {
+          inlineData: {
+            mimeType: img.mimeType,
+            data: img.data,
+          },
+        }
+      );
+    }
+  } else {
+    parts.push(
+      {
+        text: '\n=== DOCUMENT 1: QUESTION PAPER (Extract questions, options, sub-parts, and printed marks strictly from this document) ===',
       },
-    },
-  ];
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: pdfBase64,
+        },
+      }
+    );
+  }
 
   if (insertBase64) {
     parts.push(
@@ -2295,7 +2328,22 @@ export function buildGeminiMultimodalParts(
     );
   }
 
-  if (markSchemeBase64) {
+  if (msPageImages && msPageImages.length > 0) {
+    parts.push({
+      text: '\n=== DOCUMENT 3: OFFICIAL MARK SCHEME / ANSWER KEY (AUTHORITATIVE SOURCE OF TRUTH rendered visually to preserve Arabic/script fidelity — transcribe strictly without overriding) ===',
+    });
+    for (const img of msPageImages) {
+      parts.push(
+        { text: `\n--- Mark Scheme Page ${img.pageNumber} ---` },
+        {
+          inlineData: {
+            mimeType: img.mimeType,
+            data: img.data,
+          },
+        }
+      );
+    }
+  } else if (markSchemeBase64) {
     parts.push(
       {
         text: '\n=== DOCUMENT 3: OFFICIAL MARK SCHEME / ANSWER KEY (AUTHORITATIVE SOURCE OF TRUTH — Transcribe answers, marking points, and acceptable alternatives strictly from this document without overriding them) ===',
@@ -2323,7 +2371,9 @@ async function callGeminiModel(
   markSchemeBase64?: string,
   insertBase64?: string,
   promptText: string = getStemExtractionPrompt(true),
-  targetApiKey?: string
+  targetApiKey?: string,
+  pageImages?: GeminiPageImage[],
+  msPageImages?: GeminiPageImage[]
 ): Promise<Response> {
   const keyPool = getGeminiApiKeys();
   const primaryKey = targetApiKey || keyPool[0] || getApiKeyForChunk(0);
@@ -2336,12 +2386,24 @@ async function callGeminiModel(
 
   for (const currentKey of candidateKeys) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${currentKey}`;
-    const parts = buildGeminiMultimodalParts(promptText, pdfBase64, markSchemeBase64, insertBase64);
+    const parts = buildGeminiMultimodalParts(
+      promptText,
+      pdfBase64,
+      markSchemeBase64,
+      insertBase64,
+      pageImages,
+      msPageImages
+    );
 
     const controller = new AbortController();
-    // Multi-document payloads (Question Paper + Insert Booklet + Mark Scheme) and heavier models
-    // (e.g. gemini-3.8-flash) require 60–90 seconds to process multimodal PDFs and stream full rubrics.
-    const isMultiDoc = Boolean(insertBase64 || markSchemeBase64);
+    // Multi-document payloads (Question Paper + Insert Booklet + Mark Scheme), visual image
+    // slices, and heavier models require generous timeouts to stream full structured JSON.
+    const isMultiDoc = Boolean(
+      insertBase64 ||
+      markSchemeBase64 ||
+      (pageImages && pageImages.length > 0) ||
+      (msPageImages && msPageImages.length > 0)
+    );
     const timeoutMs = isMultiDoc ? 150000 : 90000;
     const timeoutId = setTimeout(() => {
       controller.abort(new Error(`Timeout of ${timeoutMs / 1000}s exceeded while waiting for ${modelName}`));
@@ -2497,6 +2559,10 @@ export interface ExtractionOptions {
   paperOutline?: PaperOutline;
   /** Detected syllabus profile (see subjectClassifier.ts) — selects subject-specific rules. */
   subjectProfile?: SubjectProfile;
+  /** High-resolution lossless page images for chunks containing Arabic script (bypasses corrupted CMap). */
+  pageImages?: GeminiPageImage[];
+  /** High-resolution lossless page images for an Arabic-containing mark scheme. */
+  msPageImages?: GeminiPageImage[];
 }
 
 /**
@@ -2567,7 +2633,16 @@ export async function extractQuestionsFromPdf(
   for (const model of candidateModels) {
     onProgress?.(`Contacting Gemini AI (${model})…`);
     try {
-      const response = await callGeminiModel(model, pdfBase64, markSchemeBase64, insertBase64, promptText, activeKey);
+      const response = await callGeminiModel(
+        model,
+        pdfBase64,
+        markSchemeBase64,
+        insertBase64,
+        promptText,
+        activeKey,
+        options.pageImages,
+        options.msPageImages
+      );
 
       if (!response.ok) {
         const errorBody = await response.text();

@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.0`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.0-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.1-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -163,12 +163,19 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Semester Day Organizer** | `npm run test:semester-days` | Exam day grouping, chronological schedule presets, batched Open & Pre-Warm / Pause All Day toggles, 90-min warm-state tracking & Unscheduled cleanup |
 | **Table Choice Question Type** | `npm run test:table-choice` | `Table Choice` normalization, `Upaya`/`Tepat`/`Tidak Tepat` matrix parsing, PDF cleanup, full & partial per-row deterministic grading |
 | **Mark Scheme Strictness & QA** | `npm run test:mark-scheme` | Official MS preamble/chunking boundaries, cross-chunk MS quality merge, deterministic MS QA audits (marks & option-letter parity) |
-| **Languages, BiDi & Passages** | `npm run test:languages-bidi` | `Bahasa Indonesia` non-Cambridge detection, range-scoped passage merging, `[passage]...[/passage]` stitching, dominant-script BiDi isolation (`<bdi dir="rtl">`) |
+| **Languages, Arabic & BiDi** | `npm run test:languages-bidi` | `Bahasa Indonesia` / `PAI` / `Bahasa Arab` non-Cambridge detection, Arabic visual PNG routing, Presentation Form/harakat normalization, range-scoped passage merging, `[passage]...[/passage]` stitching, `<bdi dir="rtl">` isolation |
 | **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
 
 ---
 
 ## Changelog
+
+### [v.2.7.1] — Visual Arabic PDF Extraction, CMap Corruption Bypass & PAI/Arabic Auto-Detection
+- **Lossless High-DPI Visual Page Routing for Arabic-Containing PDFs:**
+  - Added [`detectArabicPagesInPdf`](src/lib/pdfChunker.ts) and [`renderPdfPagesToImages`](src/lib/pdfChunker.ts) (`2.8x` lossless PNG) and wired them through [`pdfProcessor.ts`](src/lib/pdfProcessor.ts) and [`buildGeminiMultimodalParts`](src/lib/gemini.ts) so chunks containing Arabic bypass corrupted PDF `ToUnicode` CMaps (which drop hamza letters such as `أ` in `الْأَ` / `الْأَلْبَابِ` or scramble ligatures across lines) while keeping 4-page chunk bounds.
+- **Shared Arabic Script Normalization, Extraction Prompt Rules & Auto-Detection:**
+  - Created [`src/lib/arabicTextUtils.ts`](src/lib/arabicTextUtils.ts) with selective Arabic Presentation Form normalization (`U+FB50–U+FEFF` → canonical `U+0600–U+06FF` without mutating math superscripts), stray BiDi control stripping, detached harakat reattachment (`خَلْق ِ` → `خَلْقِ`), and unified visual Arabic / inline tajwid snippet rules injected across STEM, Humanities, and Languages prompts (`gemini.ts`, `humanitiesPrompt.ts`) as well as defense-in-depth rendering in [`ExamMathText.tsx`](src/components/ExamMathText.tsx).
+  - Updated [`subjectClassifier.ts`](src/lib/subjectClassifier.ts) to auto-detect `PAI` (`Pendidikan Agama Islam`, `Al-Qur'an Hadis`, `Fiqih`, `Aqidah Akhlak`, `SKI`) and `Bahasa Arab` (`BAR`) papers as non-Cambridge exams.
 
 ### [v.2.7.0] — Official Mark Scheme Strictness, Languages & Mixed-Script BiDi Extraction, Passage Tag Stitching, Edit Persistence & Teacher Test Account (`039`)
 - **Official Mark Scheme Strictness, Vision-Aware Generation & QA Audit:**

@@ -4,6 +4,8 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { tryBuildPaperOutline } from './paperOutline';
 import { isAnswerKeyStartPageText } from './markSchemeDetect';
+import { containsArabicScript } from './arabicTextUtils';
+import type { GeminiPageImage } from './gemini';
 
 // Configure pdf.js worker in browser
 if (typeof window !== 'undefined' && pdfjsWorker) {
@@ -637,4 +639,91 @@ export async function splitSaveMyExamsPdfBySections(
   }
 
   return { chunks, meta };
+}
+
+/**
+ * Scans a PDF's page text streams using pdf.js and returns the 1-indexed page numbers
+ * that contain Arabic characters (standard Arabic or Presentation Forms).
+ * Used to route Arabic-containing chunks through lossless high-resolution page images
+ * so corrupted PDF ToUnicode CMaps cannot poison Gemini extraction.
+ */
+export async function detectArabicPagesInPdf(
+  fileOrBytes: File | Uint8Array | ArrayBuffer
+): Promise<Set<number>> {
+  const arabicPages = new Set<number>();
+  try {
+    const rawBytes = await toUint8Array(fileOrBytes);
+    const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
+    const pdfDoc: PDFDocumentProxy = await loadingTask.promise;
+    try {
+      for (let p = 1; p <= pdfDoc.numPages; p++) {
+        const page = await pdfDoc.getPage(p);
+        const content = await page.getTextContent();
+        const pageText = content.items.map((item: any) => item.str || '').join(' ');
+        if (containsArabicScript(pageText)) {
+          arabicPages.add(p);
+        }
+      }
+    } finally {
+      await loadingTask.destroy();
+    }
+  } catch (err) {
+    console.warn('[pdfChunker] Arabic page scan failed, falling back to default PDF mode:', err);
+  }
+  return arabicPages;
+}
+
+/**
+ * Renders PDF pages [startPage..endPage] onto an offscreen canvas at high DPI (default 2.8x)
+ * and encodes each page as a lossless PNG image (1-indexed within the returned slice).
+ * Returns [] cleanly in headless/Node environments where `document` is unavailable.
+ */
+export async function renderPdfPagesToImages(
+  fileOrBytes: File | Uint8Array | ArrayBuffer,
+  startPage: number,
+  endPage: number,
+  scale: number = 2.8
+): Promise<GeminiPageImage[]> {
+  if (typeof document === 'undefined') {
+    return [];
+  }
+  try {
+    const rawBytes = await toUint8Array(fileOrBytes);
+    const loadingTask = pdfjsLib.getDocument({ data: rawBytes.slice() });
+    const pdfDoc: PDFDocumentProxy = await loadingTask.promise;
+    const images: GeminiPageImage[] = [];
+    try {
+      const clampedStart = Math.max(1, startPage);
+      const clampedEnd = Math.min(pdfDoc.numPages, endPage);
+      for (let p = clampedStart; p <= clampedEnd; p++) {
+        const page = await pdfDoc.getPage(p);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
+          const dataUrl = canvas.toDataURL('image/png');
+          const commaIdx = dataUrl.indexOf(',');
+          const base64Data = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+          images.push({
+            pageNumber: p - clampedStart + 1,
+            mimeType: 'image/png',
+            data: base64Data,
+          });
+        }
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+    } finally {
+      await loadingTask.destroy();
+    }
+    return images;
+  } catch (err) {
+    console.warn('[pdfChunker] Visual page rendering failed, falling back to raw PDF:', err);
+    return [];
+  }
 }

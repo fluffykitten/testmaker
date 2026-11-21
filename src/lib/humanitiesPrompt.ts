@@ -9,6 +9,7 @@
 
 import type { SubjectProfile } from './subjectClassifier.ts';
 import { buildMarkSchemeStrictnessBlock } from './markSchemePrompt.ts';
+import { buildArabicExtractionGuidance } from './arabicTextUtils.ts';
 
 export function getHumanitiesExtractionPrompt(
   hasInsert: boolean = true,
@@ -525,5 +526,6 @@ CRITICAL FORMATTING RULES:
 ${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
 9. CURRENCY & PRICES: When transcribing prices or costs (e.g. $50, $12.50), write them as regular text without LaTeX math delimiters.
 10. MULTIPLE CHOICE OPTIONS: When a question has multiple choice options, extract them exclusively into the "options" array. NEVER duplicate or include the choices (A, B, C, D, E) inside "question_text".
+11. ${buildArabicExtractionGuidance()}
 `;
 }

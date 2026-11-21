@@ -17,6 +17,9 @@ export async function load(url, context, next) {
 }
 
 export async function resolve(specifier, context, next) {
+  if (specifier === 'pdfjs-dist') {
+    return next('pdfjs-dist/legacy/build/pdf.mjs', context);
+  }
   const isRelative = specifier.startsWith('./') || specifier.startsWith('../');
   const hasExtension = /\.[a-z0-9]+$/i.test(specifier);
   if (isRelative && !hasExtension) {
