@@ -1465,6 +1465,108 @@
   color: #b45309;
 }
 
+/* ─── Mark Scheme Audit & Action Controls ────────────────────────────────── */
+
+.badge--ms-warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-weight: 700;
+}
+
+.badge--ms-error {
+  background: rgba(244, 63, 94, 0.12);
+  color: #be123c;
+  border: 1px solid rgba(244, 63, 94, 0.32);
+  font-weight: 700;
+}
+
+.review-markscheme-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-right: 14px;
+  flex-wrap: wrap;
+}
+
+.review-markscheme-header-row .review-markscheme-toggle {
+  flex: 1;
+  width: auto;
+  min-width: 180px;
+}
+
+.review-ms-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+
+.review-ms-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(99, 102, 241, 0.32);
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--color-primary-600);
+  transition: all var(--transition-fast);
+}
+
+.review-ms-action-btn:hover:not(:disabled) {
+  background: var(--color-primary-600);
+  color: #fff;
+  border-color: var(--color-primary-600);
+}
+
+.review-ms-action-btn--realign {
+  border-color: rgba(16, 185, 129, 0.38);
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+}
+
+.review-ms-action-btn--realign:hover:not(:disabled) {
+  background: #059669;
+  color: #fff;
+  border-color: #059669;
+}
+
+.review-ms-action-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.review-ms-audit-alert {
+  margin: 2px 0 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #b45309;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.review-ms-audit-alert--error {
+  background: rgba(244, 63, 94, 0.09);
+  border-color: rgba(244, 63, 94, 0.28);
+  color: #be123c;
+}
+
+.review-ms-error-msg {
+  padding: 6px 20px 10px;
+  font-size: 0.78rem;
+  color: #be123c;
+  font-weight: 600;
+}
+
 /* ─── Responsive ────────────────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {

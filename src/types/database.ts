@@ -361,6 +361,7 @@ export interface ExtractedQuestion {
   has_diagram: boolean;
   diagram_url?: string | null;
   svg_content?: string | null;
+  ai_diagram_prompt?: string | null;
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
   has_embedded_values?: boolean;
   diagram_source?: 'qp' | 'insert' | null;

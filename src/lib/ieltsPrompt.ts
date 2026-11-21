@@ -6,7 +6,12 @@
  * Leaves STEM, Humanities, and standard Languages (TKA / AKM / Bahasa) prompts untouched.
  */
 
-export function getIeltsCefrExtractionPrompt(includeGuidance: boolean = true): string {
+import { buildMarkSchemeStrictnessBlock } from './markSchemePrompt.ts';
+
+export function getIeltsCefrExtractionPrompt(
+  includeGuidance: boolean = true,
+  hasMarkScheme: boolean = false
+): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -88,6 +93,9 @@ CRITICAL EXTRACTION RULES (READ CAREFULLY):
    - Set "total_marks": 40 and populate "mark_scheme":
      * "marking_points": ["Task Achievement / Response (25%) [10]", "Coherence and Cohesion (25%) [10]", "Lexical Resource (25%) [10]", "Grammatical Range and Accuracy (25%) [10]"]
      * "acceptable_answers": ["Structured academic response meeting the minimum word count and addressing all parts of the prompt."].
+
+10. MARK SCHEME & ANSWER KEY STRICTNESS:
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, false)}
 
 Output strictly valid JSON matching this schema — no markdown fences, no commentary:
 

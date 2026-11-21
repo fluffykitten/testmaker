@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.6.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.0`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.6.2-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.0-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `037`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `039`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -130,6 +130,7 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`036_icm_multi_exam_scale_and_roster_cache.sql`](supabase/migrations/036_icm_multi_exam_scale_and_roster_cache.sql) | Trigger-synced `school_roster_entries`/`school_roster_meta` indexed cache, selective `exam_paper_cache` diff invalidation, bundled lobby metadata (`publicRosterDirectory`, `schoolClasses`, `securityTiers`, `hideEmergencyExamButton`), PK-guarded `clear_rate_limit`, and inline post-submit draft/lock cleanup |
 | [`037_admin_prewarm_and_unified_exam_entry.sql`](supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql) | 90-minute `exam_paper_cache` TTL with schedule-preserving wait state, authenticated-teacher `prewarm_exam_paper_cache` RPC, and atomic unified `enter_student_exam_session` entry RPC |
 | [`038_fix_submission_index_grant_and_pagination.sql`](supabase/migrations/038_fix_submission_index_grant_and_pagination.sql) | Restores `EXECUTE` on `normalize_roster_class_label(TEXT)` for `anon`/`authenticated` PostgREST writes on `quiz_submissions` (`42501` fix) and adds `idx_quiz_submissions_submitted_at_desc` (`submitted_at DESC, id DESC`) for fast pagination |
+| [`039_teacher_dummy_test_student.sql`](supabase/migrations/039_teacher_dummy_test_student.sql) | Adds the universal **Teacher Test Account** (`PIN: 0000`, valid across all school and custom classes) directly inside `verify_student_pin` while keeping `app_config('school_roster')`, Desk Cards, and printed PIN sheets clean |
 
 ---
 
@@ -161,11 +162,30 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | **Pre-Warm & Unified Entry (`037`)** | `npm run test:prewarm-037` | 10-min landing boot cache, `prewarmExamPaperCache` guardrails, local lobby draft lookup, unified `enterStudentExamSession`, sequential toggles & `037` SQL contracts ([live report](Plan/stress_test_037_report.md)) |
 | **Semester Day Organizer** | `npm run test:semester-days` | Exam day grouping, chronological schedule presets, batched Open & Pre-Warm / Pause All Day toggles, 90-min warm-state tracking & Unscheduled cleanup |
 | **Table Choice Question Type** | `npm run test:table-choice` | `Table Choice` normalization, `Upaya`/`Tepat`/`Tidak Tepat` matrix parsing, PDF cleanup, full & partial per-row deterministic grading |
+| **Mark Scheme Strictness & QA** | `npm run test:mark-scheme` | Official MS preamble/chunking boundaries, cross-chunk MS quality merge, deterministic MS QA audits (marks & option-letter parity) |
+| **Languages, BiDi & Passages** | `npm run test:languages-bidi` | `Bahasa Indonesia` non-Cambridge detection, range-scoped passage merging, `[passage]...[/passage]` stitching, dominant-script BiDi isolation (`<bdi dir="rtl">`) |
 | **Live Diagnostics** | `node scripts/diagnose-proctoring-system.mjs` | Live RLS, PIN parity, audit guard, and Realtime fan-out checks |
 
 ---
 
 ## Changelog
+
+### [v.2.7.0] — Official Mark Scheme Strictness, Languages & Mixed-Script BiDi Extraction, Passage Tag Stitching, Edit Persistence & Teacher Test Account (`039`)
+- **Official Mark Scheme Strictness, Vision-Aware Generation & QA Audit:**
+  - Added strict verbatim official mark scheme fidelity prompts (`src/lib/markSchemePrompt.ts`), labeled QP/Insert/Official MS multimodal parts in `buildGeminiMultimodalParts`, and threaded `hasMarkScheme` across all extraction pipelines (`gemini.ts`, `humanitiesPrompt.ts`, `ieltsPrompt.ts`, `practicalPrompt.ts`).
+  - Added `src/lib/markSchemeAudit.ts` (`auditQuestionMarkScheme`, `auditExtractionMarkSchemes`, `chooseBetterMarkScheme`, `chooseBetterSubMarkScheme`) to detect mark/option mismatches deterministically, rank stronger cross-chunk MS matches in `pdfProcessor.ts`, and surface inline QA alerts and bulk audit filters in `ExtractionReview`, `QuestionEditorModal`, and `QuestionDetailModal`.
+  - Upgraded `generateQuestionMarkScheme` and `enrichQuestionWithGuidance` with dual-mode **Official MS Verification / Sync** vs. **AI Mark Scheme Generation** backed by question diagram/SVG visual context, plus guarded `part-label` preamble trimming and standalone answer-key chunk boundaries (`markSchemeDetect.ts`, `pdfChunker.ts`).
+- **Languages Extraction, Bahasa Indonesia Auto-Detect & Mixed Arabic/Indonesian BiDi Rendering:**
+  - Extended `subjectClassifier.ts` and `PdfUpload.tsx` to auto-detect `Bahasa Indonesia` (`BI`) papers as non-Cambridge (`isIgcse = false`), tightened chunk budgets for dense reading exams, and added `src/lib/passageMerge.ts` (`mergeChunkPassagesAndQuestions`) so cross-chunk `"Text 1"` / `"Teks 1"` passage keys never collide.
+  - Upgraded `getLanguageExtractionPrompt` with range-scoped passage IDs, full question-number coverage (including 40+ item exams), infographic stimulus transcription rules, and verbatim Arabic/harakat preservation.
+  - Fixed mixed Arabic + Latin/Indonesian BiDi layout in `ExamMathText.tsx`, `deterministicGradingService.ts` (`hasArabicCharacters`, `isDominantlyArabicText`), and `StudentQuizRunner.tsx` using dominant-script direction detection and inline `<bdi dir="rtl" lang="ar">` isolation.
+- **Explicit `[passage]...[/passage]` Stitching During PDF Extraction:**
+  - Updated `stitchPassagesToQuestions` (`src/lib/passageExtractor.ts`), `propagateReadingPassages` (`src/lib/readingPassageUtils.ts`), and `pdfProcessor.ts` to emit and preserve `[passage]...[/passage]` tags idempotently for extracted reading passages (including Indonesian `Teks` stimuli), with `[no_passage]` suppression respected if a teacher removes a passage during review.
+- **Extraction Review Edit Persistence Across Save & Page Refresh:**
+  - Synchronized inline edits, tag updates, split sub-question diagram migrations, and diagram deletions from `ExtractionReview` back into `UploadPage` state and debounced `IndexedDB` draft storage (`uploadDraftStorage.ts`, including `msBase64` restoration) with `pagehide` / `visibilitychange` flush before reload.
+  - Added `filterActiveDiagramDataForSave` in `pdfProcessor.ts` so Question Bank saves honor `has_diagram === false`, preserve non-`blob:` `diagram_url` edits, and persist `_svg_content` and `_ai_diagram_prompt` in `mark_scheme` JSONB.
+- **Two-Zone Quiz Manager Header & Universal Teacher Test Account (`039`):**
+  - Reorganized `QuizManagerPage` header into two structured zones and added migration `039_teacher_dummy_test_student.sql` (plus `verify-student-pin` edge function and `studentRosterService.ts` integration) enabling teachers to test any quiz end-to-end with the reserved `Teacher Test Account` (`PIN: 0000`) across every class without polluting rosters or printed PIN sheets.
 
 ### [v.2.6.2] — Semester Exam Day Organizer, Dedicated `Table Choice` Question Type & Submission Sync Hardening (`038`)
 - **Semester Exam Day Organizer (`SemesterDayOrganizerModal`)**:

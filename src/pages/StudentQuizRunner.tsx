@@ -32,7 +32,7 @@ import {
   gradeDeterministicAnswer,
   resolveQuestionModelAnswer,
   extractMultiSelectTargetLetters,
-  isArabicText,
+  isDominantlyArabicText,
   ARABIC_OPTION_LETTERS,
 } from '../services/deterministicGradingService';
 import { evaluateAnswerWithGemini } from '../services/aiGradingService';
@@ -339,9 +339,12 @@ function getMcqChoiceDisplayState(
   isMultiSelect: boolean
 ): McqChoiceDisplayState {
   const canonicalLetter = String.fromCharCode(65 + optionIndex);
-  const isArabicQ =
-    isArabicText(question.question_text || '') ||
-    Boolean(question.options?.some((o) => isArabicText(o)));
+  const opts = question.options || [];
+  const hasArabicPrefixedOptions = opts.some((o) => /^[\s(]*[أإآابجدهـ][\s).:-]/u.test(o.trim()));
+  const hasAnyOptions = opts.length > 0;
+  const isArabicQ = hasAnyOptions
+    ? hasArabicPrefixedOptions || isDominantlyArabicText(opts.join(' '))
+    : isDominantlyArabicText(question.question_text || '');
   const displayLetter =
     isArabicQ && optionIndex < ARABIC_OPTION_LETTERS.length
       ? ARABIC_OPTION_LETTERS[optionIndex]
@@ -7474,11 +7477,11 @@ export function StudentQuizRunner({
                 {/* Question Stem & Interactive Target Area */}
                 <div ref={questionTargetRef} className="sq-question-interactive-target">
                   {(() => {
-                    const isStemArabic = isArabicText(promptText || '') || isArabicText(currentQuestion?.question_text || '');
+                    const isStemArabic = isDominantlyArabicText(promptText || currentQuestion?.question_text || '');
                     return (
                       <div
                         className={`sq-q-stem ${isStemArabic ? 'sq-q-stem--arabic' : ''}`}
-                        dir={isStemArabic ? 'rtl' : 'auto'}
+                        dir={isStemArabic ? 'rtl' : 'ltr'}
                       >
                         {isCurrentInlineGap ? (
                           <InlineGapText

@@ -51,12 +51,44 @@ export const ARABIC_OPTION_TO_INDEX: Record<string, number> = {
 
 export const ARABIC_OPTION_LETTERS = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];
 
+const ARABIC_SCRIPT_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+const ARABIC_BASE_LETTERS_G_RE = /[\u0621-\u064A\u066E-\u066F\u0671-\u06D3\u06FA-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g;
+const LATIN_LETTERS_G_RE = /[A-Za-z\u00C0-\u024F]/g;
+
 /**
- * Checks if a string contains Arabic Unicode characters
+ * Checks if a string contains any Arabic Unicode characters (used for grading normalization).
  */
 export function isArabicText(str: string): boolean {
   if (!str) return false;
-  return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str);
+  return ARABIC_SCRIPT_RE.test(str);
+}
+
+/**
+ * Alias for checking presence of any Arabic-script character in a text fragment.
+ */
+export function hasArabicCharacters(str: string): boolean {
+  return isArabicText(str);
+}
+
+/**
+ * Determines whether a string / paragraph is *dominantly* written in Arabic
+ * (so RTL base direction + Arabic display typography should apply to the whole container).
+ * Mixed Indonesian/English text that embeds a quoted Arabic word, phrase, or short verse
+ * returns `false`, preserving LTR base order while letting `<bdi dir="rtl">` isolate Arabic runs.
+ */
+export function isDominantlyArabicText(str: string): boolean {
+  if (!str) return false;
+  const cleaned = str
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\|[-:\s|]+\|/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ');
+  const arabicMatches = cleaned.match(ARABIC_BASE_LETTERS_G_RE);
+  if (!arabicMatches || arabicMatches.length === 0) return false;
+  const latinMatches = cleaned.match(LATIN_LETTERS_G_RE);
+  const arabicCount = arabicMatches.length;
+  const latinCount = latinMatches ? latinMatches.length : 0;
+  if (latinCount === 0) return true;
+  return arabicCount / (arabicCount + latinCount) >= 0.6;
 }
 
 /**

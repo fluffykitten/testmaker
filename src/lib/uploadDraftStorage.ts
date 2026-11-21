@@ -30,6 +30,7 @@ export interface RawUploadDraft {
   qpName?: string | null;
   insertBlob?: Blob | null;
   insertName?: string | null;
+  msBase64?: string | null;
   tags?: string | null;
 }
 
@@ -41,6 +42,7 @@ export interface ReconstitutedDraft {
   previewUrls: Map<string, string>;
   qpFile: File | null;
   insertFile: File | null;
+  msBase64?: string | null;
   tags?: string;
 }
 
@@ -81,7 +83,8 @@ export async function saveUploadDraft(
   diagramData: Map<string, DiagramCropItem>,
   qpFile?: File | null,
   insertFile?: File | null,
-  tags?: string
+  tags?: string,
+  msBase64?: string | null
 ): Promise<void> {
   try {
     const db = await openDatabase();
@@ -108,6 +111,7 @@ export async function saveUploadDraft(
       qpName: qpFile?.name || null,
       insertBlob: insertFile || null,
       insertName: insertFile?.name || null,
+      msBase64: msBase64 || null,
       tags: tags || null,
     };
 
@@ -222,6 +226,7 @@ export async function loadUploadDraft(): Promise<ReconstitutedDraft | null> {
       previewUrls,
       qpFile,
       insertFile,
+      msBase64: raw.msBase64 || null,
       tags: raw.tags || '',
     };
   } catch (err) {

@@ -8,13 +8,15 @@
  */
 
 import type { SubjectProfile } from './subjectClassifier.ts';
+import { buildMarkSchemeStrictnessBlock } from './markSchemePrompt.ts';
 
 export function getHumanitiesExtractionPrompt(
   hasInsert: boolean = true,
   includeGuidance: boolean = true,
   extractResourceCatalog: boolean = true,
   isIgcse: boolean = true,
-  profile?: SubjectProfile
+  profile?: SubjectProfile,
+  hasMarkScheme: boolean = false
 ): string {
   const subjectName = profile?.subjectName ?? 'Geography';
   const syllabusCode = profile?.syllabusCode ?? (isIgcse ? '0460' : 'GEO');
@@ -519,7 +521,8 @@ CRITICAL FORMATTING RULES:
 7. SHARED READING PASSAGES & STIMULUS (English, Literature, History, Economics):
    - When multiple questions refer to a shared passage, poem, article, or case study (e.g. 'Read the text below and answer Questions 1 to 5'): preserve the full text.
    - Either place the stimulus text in the parent question stem with questions as sub_questions, OR attach the relevant excerpt/context to each linked question's 'question_text' so each question is fully comprehensible.
-8. ANSWER KEYS & SOLUTIONS: If an answer key or solutions table appears on the final page (e.g., '1: B, 2: C, 3: A...'), use it to assign correct options and populate 'acceptable_answers' and 'marking_points'.
+8. ANSWER KEYS & MARK SCHEME STRICTNESS:
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
 9. CURRENCY & PRICES: When transcribing prices or costs (e.g. $50, $12.50), write them as regular text without LaTeX math delimiters.
 10. MULTIPLE CHOICE OPTIONS: When a question has multiple choice options, extract them exclusively into the "options" array. NEVER duplicate or include the choices (A, B, C, D, E) inside "question_text".
 `;

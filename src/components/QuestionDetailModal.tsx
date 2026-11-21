@@ -4,7 +4,8 @@ import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import type { Question } from '../types/database';
 import { ExamMathText } from './ExamMathText';
 import { ExamAudioPlayer } from './ExamAudioPlayer';
-import { enrichQuestionWithGuidance } from '../lib/gemini';
+import { enrichQuestionWithGuidance, generateQuestionMarkScheme } from '../lib/gemini';
+import { auditQuestionMarkScheme, isPlaceholderMarkSchemeText } from '../lib/markSchemeAudit';
 import { updateQuestionMarkScheme } from '../services/questionBankService';
 import { formatPaperBadge } from '../utils/paperUtils';
 import './QuestionDetailModal.css';
@@ -33,11 +34,16 @@ export function QuestionDetailModal({
   const [activeQuestion, setActiveQuestion] = useState<Question | null>(initialQuestion);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [isGeneratingMs, setIsGeneratingMs] = useState(false);
+  const [confirmOverwriteMs, setConfirmOverwriteMs] = useState(false);
+  const [msGenStatus, setMsGenStatus] = useState<string | null>(null);
   const backdropDismiss = useBackdropDismiss(onClose);
 
   useEffect(() => {
     setActiveQuestion(initialQuestion);
     setEnrichError(null);
+    setConfirmOverwriteMs(false);
+    setMsGenStatus(null);
   }, [initialQuestion]);
 
   if (!activeQuestion) return null;
@@ -102,6 +108,46 @@ export function QuestionDetailModal({
     question.mark_scheme?.common_misconceptions?.length ||
     question.sub_questions?.some((sq: any) => sq.guidance || sq.common_misconceptions?.length)
   );
+
+  const hasValidExistingMs = Boolean(
+    question.mark_scheme?.marking_points?.some((p) => !isPlaceholderMarkSchemeText(p)) ||
+    question.sub_questions?.some((sq: any) => sq.mark_scheme && !isPlaceholderMarkSchemeText(String(sq.mark_scheme)))
+  );
+  const msAudit = auditQuestionMarkScheme(question);
+
+  const handleGenerateFullMarkScheme = async () => {
+    if (hasValidExistingMs && !confirmOverwriteMs) {
+      setConfirmOverwriteMs(true);
+      setMsGenStatus(null);
+      return;
+    }
+
+    setConfirmOverwriteMs(false);
+    setIsGeneratingMs(true);
+    setEnrichError(null);
+    setMsGenStatus(null);
+    try {
+      const res = await generateQuestionMarkScheme(question, { includeGuidance: true });
+      const updatedSubQuestions = res.sub_questions || question.sub_questions;
+      const updatedQuestion: Question = {
+        ...question,
+        mark_scheme: res.mark_scheme,
+        sub_questions: updatedSubQuestions,
+      };
+
+      if (question.id) {
+        await updateQuestionMarkScheme(question.id, res.mark_scheme, updatedSubQuestions);
+      }
+
+      setActiveQuestion(updatedQuestion);
+      onQuestionUpdated?.(updatedQuestion);
+      setMsGenStatus('Mark scheme generated with vision + mark parity.');
+    } catch (err: any) {
+      setEnrichError(err?.message || 'Failed to generate mark scheme');
+    } finally {
+      setIsGeneratingMs(false);
+    }
+  };
 
   return createPortal(
     <div className="modal-backdrop animate-fade-in" {...backdropDismiss}>
@@ -373,95 +419,191 @@ export function QuestionDetailModal({
             </div>
           )}
 
-          {question.mark_scheme && (
-            <div className="modal-section">
-              <div className="modal-section-header-flex">
-                <h4 className="modal-section-title">Mark Scheme & Criteria</h4>
-                <div className="modal-header-actions-row">
-                  {!hasInsights && (
-                    <button
-                      type="button"
-                      className="modal-enrich-btn"
-                      onClick={handleGenerateGuidance}
-                      disabled={isEnriching}
-                      title="Generate examiner guidance and misconceptions with Gemini AI"
-                    >
-                      {isEnriching ? (
-                        <>
-                          <span className="modal-enrich-spinner" />
-                          Generating Insights…
-                        </>
-                      ) : (
-                        <>✨ Generate AI Guidance</>
-                      )}
-                    </button>
+          <div className="modal-section">
+            <div className="modal-section-header-flex">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <h4 className="modal-section-title" style={{ margin: 0 }}>Mark Scheme & Criteria</h4>
+                {msAudit.status !== 'ok' && (
+                  <span
+                    className="q-badge"
+                    style={{
+                      background: msAudit.status === 'error' ? 'rgba(244, 63, 94, 0.12)' : 'rgba(245, 158, 11, 0.14)',
+                      color: msAudit.status === 'error' ? '#be123c' : '#b45309',
+                      border: `1px solid ${msAudit.status === 'error' ? 'rgba(244, 63, 94, 0.3)' : 'rgba(245, 158, 11, 0.35)'}`,
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                    }}
+                    title={msAudit.issues.map((i) => i.message).join('\n')}
+                  >
+                    {msAudit.status === 'error' ? '⚠️ MS Incomplete' : '⚠️ MS Check'}
+                  </span>
+                )}
+              </div>
+              <div className="modal-header-actions-row" style={{ flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="modal-enrich-btn"
+                  onClick={handleGenerateFullMarkScheme}
+                  disabled={isGeneratingMs || isEnriching}
+                  style={
+                    confirmOverwriteMs
+                      ? {
+                          background: 'rgba(245, 158, 11, 0.16)',
+                          borderColor: 'rgba(245, 158, 11, 0.5)',
+                          color: '#b45309',
+                        }
+                      : undefined
+                  }
+                  title="Generate or regenerate full marking points, acceptable answers, and tips (uses attached diagram images)"
+                >
+                  {isGeneratingMs ? (
+                    <>
+                      <span className="modal-enrich-spinner" />
+                      Generating MS…
+                    </>
+                  ) : confirmOverwriteMs ? (
+                    <>⚠️ Click again to overwrite MS</>
+                  ) : hasValidExistingMs ? (
+                    <>🔄 Regenerate Mark Scheme</>
+                  ) : (
+                    <>✨ Generate Mark Scheme</>
                   )}
+                </button>
+                {confirmOverwriteMs && !isGeneratingMs && (
                   <button
                     type="button"
                     className="modal-toggle-ms-btn"
-                    onClick={() => setShowMarkScheme(!showMarkScheme)}
+                    onClick={() => setConfirmOverwriteMs(false)}
                   >
-                    {showMarkScheme ? 'Hide' : 'Show'}
+                    Cancel
                   </button>
-                </div>
+                )}
+                {!hasInsights && question.mark_scheme && (
+                  <button
+                    type="button"
+                    className="modal-enrich-btn"
+                    onClick={handleGenerateGuidance}
+                    disabled={isEnriching || isGeneratingMs}
+                    title="Generate examiner guidance and misconceptions with Gemini AI"
+                  >
+                    {isEnriching ? (
+                      <>
+                        <span className="modal-enrich-spinner" />
+                        Generating Insights…
+                      </>
+                    ) : (
+                      <>✨ Generate AI Guidance</>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="modal-toggle-ms-btn"
+                  onClick={() => setShowMarkScheme(!showMarkScheme)}
+                >
+                  {showMarkScheme ? 'Hide' : 'Show'}
+                </button>
               </div>
-
-              {enrichError && (
-                <div className="modal-enrich-error animate-fade-in">
-                  <span>⚠</span> {enrichError}
-                </div>
-              )}
-
-              {showMarkScheme && (
-                <div className="modal-ms-box animate-fade-in">
-                  {question.mark_scheme.marking_points?.map((pt, pi) => (
-                    <div key={pi} className="modal-ms-point">
-                      <span className="modal-ms-bullet">•</span>
-                      <ExamMathText content={pt} />
-                    </div>
-                  ))}
-                  {question.mark_scheme.acceptable_answers && question.mark_scheme.acceptable_answers.length > 0 && (
-                    <div className="modal-ms-answers">
-                      <span className="modal-ms-answers-label">Acceptable answers:</span>
-                      {question.mark_scheme.acceptable_answers.map((ans, ai) => (
-                        <span key={ai} className="q-ms-answer-pill">
-                          <ExamMathText content={ans} />
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {question.mark_scheme.guidance && question.mark_scheme.guidance.length > 0 && (
-                    <div className="modal-guidance-container animate-fade-in">
-                      <div className="modal-guidance-title">
-                        <span>💡</span> Examiner Marking Guidance & Tips
-                      </div>
-                      {question.mark_scheme.guidance.map((g, gi) => (
-                        <div key={gi} className="modal-guidance-item">
-                          <span className="modal-guidance-bullet">•</span>
-                          <ExamMathText content={g} />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {question.mark_scheme.common_misconceptions && question.mark_scheme.common_misconceptions.length > 0 && (
-                    <div className="modal-misconceptions-container animate-fade-in">
-                      <div className="modal-misconceptions-title">
-                        <span>⚠️</span> Common Student Misconceptions & Pitfalls
-                      </div>
-                      {question.mark_scheme.common_misconceptions.map((m, mi) => (
-                        <div key={mi} className="modal-misconception-item">
-                          <span className="modal-misconception-bullet">•</span>
-                          <ExamMathText content={m} />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
-          )}
+
+            {msGenStatus && (
+              <div
+                className="animate-fade-in"
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '8px',
+                  background: 'rgba(16, 185, 129, 0.1)',
+                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                  color: '#047857',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                }}
+              >
+                ✓ {msGenStatus}
+              </div>
+            )}
+
+            {enrichError && (
+              <div className="modal-enrich-error animate-fade-in">
+                <span>⚠</span> {enrichError}
+              </div>
+            )}
+
+            {showMarkScheme && (
+              <div className="modal-ms-box animate-fade-in">
+                {msAudit.status !== 'ok' && (
+                  <div
+                    style={{
+                      marginBottom: 8,
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      background: 'rgba(245, 158, 11, 0.08)',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      fontSize: '0.78rem',
+                      color: '#b45309',
+                    }}
+                  >
+                    {msAudit.issues.map((iss, ii) => (
+                      <div key={ii}>• {iss.message}</div>
+                    ))}
+                  </div>
+                )}
+
+                {(!question.mark_scheme ||
+                  (!question.mark_scheme.marking_points?.length &&
+                    !question.mark_scheme.acceptable_answers?.length)) && (
+                  <div style={{ fontSize: '0.82rem', color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>
+                    No mark scheme recorded yet. Click “✨ Generate Mark Scheme” above to synthesize one.
+                  </div>
+                )}
+
+                {question.mark_scheme?.marking_points?.map((pt, pi) => (
+                  <div key={pi} className="modal-ms-point">
+                    <span className="modal-ms-bullet">•</span>
+                    <ExamMathText content={pt} />
+                  </div>
+                ))}
+                {question.mark_scheme?.acceptable_answers && question.mark_scheme.acceptable_answers.length > 0 && (
+                  <div className="modal-ms-answers">
+                    <span className="modal-ms-answers-label">Acceptable answers:</span>
+                    {question.mark_scheme.acceptable_answers.map((ans, ai) => (
+                      <span key={ai} className="q-ms-answer-pill">
+                        <ExamMathText content={ans} />
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {question.mark_scheme?.guidance && question.mark_scheme.guidance.length > 0 && (
+                  <div className="modal-guidance-container animate-fade-in">
+                    <div className="modal-guidance-title">
+                      <span>💡</span> Examiner Marking Guidance & Tips
+                    </div>
+                    {question.mark_scheme.guidance.map((g, gi) => (
+                      <div key={gi} className="modal-guidance-item">
+                        <span className="modal-guidance-bullet">•</span>
+                        <ExamMathText content={g} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {question.mark_scheme?.common_misconceptions && question.mark_scheme.common_misconceptions.length > 0 && (
+                  <div className="modal-misconceptions-container animate-fade-in">
+                    <div className="modal-misconceptions-title">
+                      <span>⚠️</span> Common Student Misconceptions & Pitfalls
+                    </div>
+                    {question.mark_scheme.common_misconceptions.map((m, mi) => (
+                      <div key={mi} className="modal-misconception-item">
+                        <span className="modal-misconception-bullet">•</span>
+                        <ExamMathText content={m} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="modal-footer">

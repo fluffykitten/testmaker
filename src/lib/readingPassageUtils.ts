@@ -123,12 +123,12 @@ const EXPLICIT_PASSAGE_BLOCK_REGEX = /\[passage\]([\s\S]*?)\[\/passage\]/i;
 const NO_PASSAGE_DIRECTIVE_REGEX = /\[no_passage\]/i;
 
 const LANGUAGE_HEADER_LINE_REGEX =
-  /^###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)(?:\s+[A-Za-z0-9]+)?\b[^\n]*/i;
+  /^###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Teks)(?:\s+[A-Za-z0-9]+)?\b[^\n]*/i;
 const GENERAL_HEADER_LINE_REGEX =
-  /^###\s*(?:Reading\s+Passage|Wacana|Bacaan)(?:\s+[A-Za-z0-9]+)?\b[^\n]*/i;
+  /^###\s*(?:Reading\s+Passage|Wacana|Bacaan|Teks)(?:\s+[A-Za-z0-9]+)?\b[^\n]*/i;
 
 const QUESTION_PROMPT_START_REGEX =
-  /^(?:(?:\*{1,2})?(?:Question\s*\d+|No\.?\s*\d+|\d+\.)\b|which|what|how|why|where|when|who|whom|whose|according\s+to|based\s+on|from\s+the\s+(?:text|passage|article|dialogue)|explain|state|describe|determine|identify|suggest|compare|evaluate|discuss|summarize|infer|berdasarkan|mengapa|apakah|bagaimana|jelaskan)\b/i;
+  /^(?:(?:\*{1,2})?(?:Question\s*\d+|No\.?\s*\d+|\d+\.)\b|which|what|how|why|where|when|who|whom|whose|according\s+to|based\s+on|from\s+the\s+(?:text|passage|article|dialogue)|explain|state|describe|determine|identify|suggest|compare|evaluate|discuss|summarize|infer|berdasarkan|mengapa|apakah|bagaimana|jelaskan|tentukan|perbaikan|makna|peribahasa|topik|pesan|pendapat|sikap|interpretasi|ulasan|hubungan|masalah|manakah)\b/i;
 
 const NON_PASSAGE_TASK_OPENER_REGEX =
   /^(?:write\s+(?:an?|your)\s+(?:email|letter|essay|article|report|review|story|note|message|paragraph)|you\s+(?:have\s+received|recently|are\s+going\s+to\s+write)|complete\s+the\s+(?:sentences?|gaps?|table|notes?|form)|choose\s+the\s+(?:correct|best)\s+(?:word|phrase|option|answer)|fill\s+in\s+the\s+(?:blanks?|gaps?)|listen\s+to)\b/i;
@@ -392,7 +392,7 @@ export function resolveInheritedStimulusPassage<T extends { question_text?: stri
   if (
     hasNoPassageDirective(currentRaw) ||
     hasExplicitPassageMarkers(currentRaw) ||
-    /###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)(?:\s+[A-Za-z0-9]+)?\b/i.test(currentRaw)
+    /###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Teks)(?:\s+[A-Za-z0-9]+)?\b/i.test(currentRaw)
   ) {
     return null;
   }
@@ -410,17 +410,17 @@ export function resolveInheritedStimulusPassage<T extends { question_text?: stri
       return stripPassageControlTags(explicitPrev[1]);
     }
 
-    // 2. Otherwise check `### Text / Passage / Reading / Stimulus / Wacana / Bacaan` headers
+    // 2. Otherwise check `### Text / Passage / Reading / Stimulus / Wacana / Bacaan / Teks` headers
     const cleanedPrev = opts.cleanStem ? opts.cleanStem(prevRaw, prevQ) : prevRaw;
     const strippedPrev = stripPassageControlTags(cleanedPrev);
-    if (/###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)(?:\s+[A-Za-z0-9]+)?\b/i.test(strippedPrev)) {
+    if (/###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Teks)(?:\s+[A-Za-z0-9]+)?\b/i.test(strippedPrev)) {
       const splitPrev = splitExplicitMarkdownHeader(strippedPrev, true);
       if (splitPrev?.passageText) {
         return splitPrev.passageText;
       }
       // Fallback: header + body without a separated prompt paragraph
       const match = strippedPrev.match(
-        /(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan)(?:\s+[A-Za-z0-9]+)?\b[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i
+        /(###\s*(?:Text|Passage|Reading|Stimulus|Wacana|Bacaan|Teks)(?:\s+[A-Za-z0-9]+)?\b[\s\S]*?)(?=(?:\n\s*\d+\.|\n\s*\*\*Question|\n\s*Question\s*\d+|$))/i
       );
       if (match && match[1]) {
         return match[1].trim();

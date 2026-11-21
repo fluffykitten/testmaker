@@ -69,10 +69,10 @@ ${hasQ3 ? '6. Question 3 has no sub-parts: set "sub_questions": [] and "total_ma
 
 ${
   hasMarkScheme
-    ? '- This request includes the official mark scheme PDF (preamble pages removed). Where it covers a sub-part, copy its marking points into that sub-question\'s "mark_scheme" and into the question\'s "mark_scheme.marking_points" — do not paraphrase accepted answers.\n- Only where the mark scheme is silent, solve the sub-part yourself to Cambridge standard.\n- Never let the mark scheme change the question text or the marks from the structure list.'
+    ? '- OFFICIAL MARK SCHEME STRICT ALIGNMENT PROTOCOL: This request includes DOCUMENT 3 (the official mark scheme PDF, preamble pages removed). It is the SINGLE AUTHORITATIVE SOURCE OF TRUTH.\n- Transcribe its marking points, values, units, tolerances, and acceptable alternatives verbatim into each sub-question\'s "mark_scheme" and into the question\'s "mark_scheme.marking_points" — NEVER paraphrase, override, or replace official answers with your own.\n- Only if a sub-part is genuinely absent or unreadable in DOCUMENT 3, solve it to Cambridge standard and MUST prepend "[NOT IN MARK SCHEME — AI SOLVED] " to that sub-question\'s "mark_scheme".\n- Never let the mark scheme change the question text or the marks from the structure list.'
     : includeGuidance
-      ? '- Solve each sub-part yourself to Cambridge standard and put every marking point in that sub-question\'s "marks" and in the question\'s "mark_scheme.marking_points" (one string per mark, abbreviated to the essential answer).'
-      : '- Provide "mark_scheme.marking_points" with one concise string per mark.'
+      ? '- Solve each sub-part yourself to Cambridge standard and put every marking point in that sub-question\'s "mark_scheme" and in the question\'s "mark_scheme.marking_points" (one string per mark with "[1]" tags summing to the printed marks).'
+      : '- Provide "mark_scheme.marking_points" with one concise string per mark with "[1]" tags summing to the printed marks.'
 }
 - For Question 3 (the 6-mark plan) give exactly six marking points covering apparatus, method, measurement, and the calculation of percentage by mass.
 

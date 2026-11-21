@@ -2,6 +2,7 @@ import React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { stripPassageControlTags } from '../lib/readingPassageUtils';
+import { hasArabicCharacters, isDominantlyArabicText } from '../services/deterministicGradingService';
 import './ExamMathText.css';
 
 interface ExamMathTextProps {
@@ -331,6 +332,27 @@ export function normalizeLatexString(raw: string): string {
     .replace(/\\qquad/g, ' \\qquad ');
 }
 
+const ARABIC_ISOLATION_RUN_RE =
+  /([\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+(?:\s+[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+)*)/g;
+
+function isolateArabicInlineSegments(text: string): React.ReactNode {
+  if (!text || !hasArabicCharacters(text)) return text;
+  const segments = text.split(ARABIC_ISOLATION_RUN_RE);
+  if (segments.length <= 1) return text;
+
+  return segments.map((seg, idx) => {
+    if (!seg) return null;
+    if (hasArabicCharacters(seg)) {
+      return (
+        <bdi key={idx} dir="rtl" lang="ar" className="exam-arabic-inline">
+          {seg}
+        </bdi>
+      );
+    }
+    return <React.Fragment key={idx}>{seg}</React.Fragment>;
+  });
+}
+
 function renderTextWithSubSuper(text: string): React.ReactNode {
   if (!text) return null;
   const clean = restoreCurrencySymbols(text)
@@ -339,7 +361,7 @@ function renderTextWithSubSuper(text: string): React.ReactNode {
 
   // Check for subscript/superscript patterns like Fe_3O_4, H_2SO_4, Fe^2+, or 10^5
   if (!/([a-zA-Z0-9)\]])(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d*[+-]|\^[+-]\d*|\^\d+|\^[a-zA-Z])/.test(clean)) {
-    return clean;
+    return isolateArabicInlineSegments(clean);
   }
 
   const parts = clean.split(/(_\{[^{}]+\}|_\d+|_[a-zA-Z]|\^\{[^{}]+\}|\^\d*[+-]|\^[+-]\d*|\^\d+|\^[a-zA-Z])/g);
@@ -352,7 +374,7 @@ function renderTextWithSubSuper(text: string): React.ReactNode {
       const val = part.startsWith('^{') && part.endsWith('}') ? part.slice(2, -1) : part.slice(1);
       return <sup key={pIdx}>{val}</sup>;
     }
-    return part;
+    return <React.Fragment key={pIdx}>{isolateArabicInlineSegments(part)}</React.Fragment>;
   });
 }
 
@@ -602,12 +624,13 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
     }
   }
   if (currentBlock) blocks.push(currentBlock);
-  const isArabic = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(normalized);
+  const containsArabic = hasArabicCharacters(normalized);
+  const isArabic = containsArabic && isDominantlyArabicText(normalized);
 
   return (
     <div
       className={`exam-math-wrapper ${isArabic ? 'exam-math-arabic' : ''} ${className || ''}`}
-      dir={isArabic ? 'rtl' : 'auto'}
+      dir={isArabic ? 'rtl' : containsArabic ? 'ltr' : 'auto'}
     >
       {blocks.map((block, bIdx) => {
         if (block.type === 'table') {
@@ -617,7 +640,11 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
           if (!hasSep && (!allPipeStart || block.lines.length < 2)) {
             // Not a real table (e.g. math with absolute values |x| or conditional probability P(A|B)), render as text
             return (
-              <div key={bIdx} className={`exam-text-block ${isArabic ? 'exam-text-arabic' : ''}`} dir={isArabic ? 'rtl' : 'auto'}>
+              <div
+                key={bIdx}
+                className={`exam-text-block ${isArabic ? 'exam-text-arabic' : ''}`}
+                dir={isArabic ? 'rtl' : containsArabic ? 'ltr' : 'auto'}
+              >
                 {block.lines.map((line, li) => (
                   <React.Fragment key={li}>
                     {renderMathSnippet(line)}
@@ -664,7 +691,11 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
 
         // Text Block with linebreaks, flowcharts, tickboxes, and math
         return (
-          <div key={bIdx} className="exam-text-block">
+          <div
+            key={bIdx}
+            className={`exam-text-block ${isArabic ? 'exam-text-arabic' : ''}`}
+            dir={isArabic ? 'rtl' : containsArabic ? 'ltr' : 'auto'}
+          >
             {block.lines.map((line, li) => {
               // 1. Process Flowcharts & Sequence Boxes
               if (isFlowchartLine(line)) {
@@ -701,9 +732,11 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
               if (headingMatch) {
                 const level = headingMatch[1].length;
                 const headingText = headingMatch[2];
+                const isHeadingArabic = isDominantlyArabicText(headingText);
                 return (
                   <div
                     key={li}
+                    dir={isHeadingArabic ? 'rtl' : hasArabicCharacters(headingText) ? 'ltr' : undefined}
                     className={`exam-heading exam-heading-${level}`}
                     style={{
                       margin: '12px 0 6px 0',
@@ -718,7 +751,27 @@ export const ExamMathText: React.FC<ExamMathTextProps> = React.memo(({ content, 
                 );
               }
 
-              // 4. Regular Text & Math
+              // 4. Per-line BiDi handling when Arabic and Latin/Indonesian are mixed in a multi-line block
+              if (containsArabic) {
+                if (!line.trim()) {
+                  return li < block.lines.length - 1 ? <br key={li} /> : null;
+                }
+                const isLineArabic = isDominantlyArabicText(line);
+                if (isLineArabic !== isArabic) {
+                  return (
+                    <div
+                      key={li}
+                      dir={isLineArabic ? 'rtl' : 'ltr'}
+                      lang={isLineArabic ? 'ar' : undefined}
+                      className={`exam-text-line ${isLineArabic ? 'exam-text-arabic' : 'exam-text-ltr'}`}
+                    >
+                      {renderMathSnippet(line)}
+                    </div>
+                  );
+                }
+              }
+
+              // 5. Regular Text & Math
               return (
                 <React.Fragment key={li}>
                   {renderMathSnippet(line)}

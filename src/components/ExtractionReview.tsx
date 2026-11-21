@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type SubQuestion, type PaperMetadata, type ExtractedPassage } from '../types/database';
 import { type DiagramCropItem } from '../lib/diagramCropper';
@@ -7,8 +7,18 @@ import { QuestionEditorModal } from './QuestionEditorModal';
 import { DiagramCropModal } from './DiagramCropModal';
 import { ResourceBookletDrawer } from './ResourceBookletDrawer';
 import { supabase } from '../lib/supabase';
-import { stripDuplicateOptionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
+import {
+  generateQuestionMarkScheme,
+  stripDuplicateOptionsFromStem,
+  stripDuplicateSubIdPrefix,
+} from '../lib/gemini';
+import { auditExtractionMarkSchemes } from '../lib/markSchemeAudit';
 import { propagateReadingPassages, stitchPassagesToQuestions } from '../lib/pdfProcessor';
+import {
+  NO_PASSAGE_TAG,
+  hasExplicitPassageMarkers,
+  hasNoPassageDirective,
+} from '../lib/readingPassageUtils';
 import { formatPaperLabel } from '../utils/paperUtils';
 import { validateCambridgeHubUrl } from '../services/questionBankService';
 import './ExtractionReview.css';
@@ -18,7 +28,12 @@ interface ExtractionReviewProps {
   diagramUrls: Map<string, string>;
   pdfFile?: File | null;
   insertFile?: File | null;
+  markSchemeBase64?: string | null;
+  hasOfficialMarkScheme?: boolean;
   onUpdateDiagram?: (qNum: string, item: DiagramCropItem) => void;
+  onRemoveDiagram?: (key: string) => void;
+  onRenameDiagramKey?: (oldKey: string, newKey: string) => void;
+  onUpdateQuestions?: (questions: ExtractedQuestion[]) => void;
   onConfirmSave: (customResult?: ExtractionResult, tags?: string) => void;
   onCancel: () => void;
   isSaving: boolean;
@@ -71,7 +86,12 @@ export function ExtractionReview({
   diagramUrls,
   pdfFile,
   insertFile,
+  markSchemeBase64 = null,
+  hasOfficialMarkScheme = false,
   onUpdateDiagram,
+  onRemoveDiagram,
+  onRenameDiagramKey,
+  onUpdateQuestions,
   onConfirmSave,
   onCancel,
   isSaving,
@@ -105,6 +125,17 @@ export function ExtractionReview({
   const [cropTarget, setCropTarget] = useState<CropTarget | null>(null);
   const [showBookletDrawer, setShowBookletDrawer] = useState<boolean>(false);
   const [removedDiagramKeys, setRemovedDiagramKeys] = useState<Set<string>>(new Set());
+  const [msActionLoadingIdx, setMsActionLoadingIdx] = useState<number | null>(null);
+  const [msActionError, setMsActionError] = useState<{ idx: number; message: string } | null>(null);
+
+  const hasAttachedOfficialMs = Boolean(hasOfficialMarkScheme || markSchemeBase64);
+  const msAudit = useMemo(
+    () =>
+      auditExtractionMarkSchemes(questions, {
+        hasOfficialMarkScheme: hasAttachedOfficialMs,
+      }),
+    [questions, hasAttachedOfficialMs]
+  );
 
   const getDiagramUrl = useCallback(
     (key: string, fallback?: string | null) => {
@@ -112,6 +143,56 @@ export function ExtractionReview({
       return diagramUrls.get(key) || fallback || null;
     },
     [diagramUrls, removedDiagramKeys]
+  );
+
+  const handleRebuildMarkScheme = useCallback(
+    async (idx: number, mode: 'realign' | 'generate') => {
+      const targetQ = questions[idx];
+      if (!targetQ) return;
+
+      setMsActionLoadingIdx(idx);
+      setMsActionError(null);
+      try {
+        const parentUrl = getDiagramUrl(targetQ.question_number, (targetQ as any).diagram_url);
+        const subDiagramUrls: Record<string, string | null> = {};
+        (targetQ.sub_questions || []).forEach((sq, si) => {
+          const subKey = `${targetQ.question_number}_sub_${si}`;
+          subDiagramUrls[sq.sub_id] = getDiagramUrl(subKey, sq.diagram_url);
+        });
+
+        const res = await generateQuestionMarkScheme(targetQ as any, {
+          markSchemePdfBase64: mode === 'realign' ? markSchemeBase64 : null,
+          includeGuidance: true,
+          diagramUrlOverride: parentUrl,
+          subDiagramUrls,
+        });
+
+        setQuestions((prev) => {
+          const next = [...prev];
+          if (!next[idx]) return prev;
+          next[idx] = {
+            ...next[idx],
+            mark_scheme: res.mark_scheme,
+            sub_questions: res.sub_questions || next[idx].sub_questions,
+          };
+          result.questions = next;
+          return next;
+        });
+        setExpandedMark((prev) => {
+          const next = new Set(prev);
+          next.add(idx);
+          return next;
+        });
+      } catch (err: any) {
+        setMsActionError({
+          idx,
+          message: err?.message || 'Failed to update mark scheme',
+        });
+      } finally {
+        setMsActionLoadingIdx(null);
+      }
+    },
+    [questions, getDiagramUrl, markSchemeBase64, result]
   );
 
   // Duplicate paper check states
@@ -125,11 +206,42 @@ export function ExtractionReview({
     ? validateCambridgeHubUrl(paperMetadata.cambridge_ms_hub_url)
     : null;
 
-  // Sync questions & metadata if external result changes
+  const lastEmittedQuestionsRef = useRef<ExtractedQuestion[] | null>(null);
+  const lastSyncedInputQuestionsRef = useRef<ExtractedQuestion[] | null>(result?.questions ?? null);
+  const syncedInitialQuestionsRef = useRef<ExtractedQuestion[]>(questions);
+  const initialPassageQNumsRef = useRef<Set<string>>(
+    new Set(
+      questions
+        .filter((q) => Boolean(q.passage_ref) || hasExplicitPassageMarkers(q.question_text))
+        .map((q) => String(q.question_number).trim().toLowerCase())
+    )
+  );
+
+  // Persist every local question/mark-scheme/diagram edit back to UploadPage & IndexedDB draft recovery
   useEffect(() => {
-    if (result?.questions) {
-      setQuestions(cleanExtractedQuestions(result.questions, result.passages));
-      setSelectedIndices(new Set(result.questions.map((_, i) => i)));
+    if (questions === syncedInitialQuestionsRef.current) return;
+    lastEmittedQuestionsRef.current = questions;
+    result.questions = questions;
+    onUpdateQuestions?.(questions);
+  }, [questions, onUpdateQuestions, result]);
+
+  // Sync questions & metadata ONLY when a genuinely new external result/draft arrives
+  useEffect(() => {
+    if (
+      result?.questions &&
+      result.questions !== lastSyncedInputQuestionsRef.current &&
+      result.questions !== lastEmittedQuestionsRef.current
+    ) {
+      const cleaned = cleanExtractedQuestions(result.questions, result.passages);
+      lastSyncedInputQuestionsRef.current = result.questions;
+      syncedInitialQuestionsRef.current = cleaned;
+      initialPassageQNumsRef.current = new Set(
+        cleaned
+          .filter((q) => Boolean(q.passage_ref) || hasExplicitPassageMarkers(q.question_text))
+          .map((q) => String(q.question_number).trim().toLowerCase())
+      );
+      setQuestions(cleaned);
+      setSelectedIndices(new Set(cleaned.map((_, i) => i)));
     }
     if (result?.paper_metadata) {
       setPaperMetadata(result.paper_metadata);
@@ -365,12 +477,26 @@ export function ExtractionReview({
         : null,
     };
 
+    const oldSubCount = parentQ.sub_questions.length;
+    const oldSubDiagramKey = `${parentQ.question_number}_sub_${subIdx}`;
+    const targetNewQNum = newQuestion.question_number;
+    if (diagramUrls.has(oldSubDiagramKey)) {
+      onRenameDiagramKey?.(oldSubDiagramKey, targetNewQNum);
+    }
+    for (let k = subIdx + 1; k < oldSubCount; k++) {
+      const prevKey = `${parentQ.question_number}_sub_${k}`;
+      const shiftedKey = `${parentQ.question_number}_sub_${k - 1}`;
+      if (diagramUrls.has(prevKey)) {
+        onRenameDiagramKey?.(prevKey, shiftedKey);
+      }
+    }
+
     const updatedList = [...questions];
     updatedList.splice(qIdx, 1, updatedParent, newQuestion);
     result.questions = updatedList;
     setQuestions(updatedList);
     setSelectedIndices(new Set(updatedList.map((_, i) => i)));
-  }, [questions, paperMetadata, result]);
+  }, [questions, paperMetadata, result, diagramUrls, onRenameDiagramKey]);
 
   // ─── 1-Click Merge: Merge Question into Preceding Question ─────────────────
   const handleMergeWithPrevious = useCallback((qIdx: number) => {
@@ -478,7 +604,24 @@ export function ExtractionReview({
 
   // ─── Save Confirmation (Filters Selected Questions) ────────────────────────
   const handleSaveClick = () => {
-    const questionsToSave = cleanExtractedQuestions(questions.filter((_, i) => selectedIndices.has(i)));
+    const selectedRaw = questions.filter((_, i) => selectedIndices.has(i));
+    const preparedSelected = selectedRaw.map((q) => {
+      const key = String(q.question_number).trim().toLowerCase();
+      const hadInitialPassage = initialPassageQNumsRef.current.has(key);
+      if (
+        hadInitialPassage &&
+        !hasExplicitPassageMarkers(q.question_text) &&
+        !hasNoPassageDirective(q.question_text)
+      ) {
+        return {
+          ...q,
+          passage_ref: null,
+          question_text: `${NO_PASSAGE_TAG}\n${q.question_text || ''}`,
+        };
+      }
+      return q;
+    });
+    const questionsToSave = cleanExtractedQuestions(preparedSelected);
     onConfirmSave(
       {
         ...result,
@@ -680,6 +823,35 @@ export function ExtractionReview({
             <span className="meta-badge-label">Selected to Save</span>
             <span className="meta-badge-value">{selectedIndices.size} of {questions.length} ({totalSelectedMarks} marks)</span>
           </div>
+
+          <div
+            className={`meta-badge ${
+              msAudit.errorCount > 0 || msAudit.warningCount > 0
+                ? 'meta-badge--warning meta-badge--clickable'
+                : 'meta-badge--success'
+            }`}
+            onClick={() => {
+              if (msAudit.flaggedIndices.length > 0) {
+                setExpandedMark((prev) => new Set([...prev, ...msAudit.flaggedIndices]));
+                const firstCard = document.getElementById(`review-card-${msAudit.flaggedIndices[0]}`);
+                firstCard?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }}
+            title={
+              msAudit.flaggedIndices.length > 0
+                ? 'Click to expand and jump to the first question with a Mark Scheme QA flag'
+                : 'All extracted mark schemes passed structural & mark-sum checks'
+            }
+          >
+            <span className="meta-badge-label">
+              Mark Scheme QA {hasAttachedOfficialMs ? '(Official MS)' : '(AI)'}
+            </span>
+            <span className="meta-badge-value">
+              {msAudit.errorCount + msAudit.warningCount === 0
+                ? '✓ Verified'
+                : `⚠️ ${msAudit.errorCount + msAudit.warningCount} Flagged`}
+            </span>
+          </div>
         </div>
 
         {/* ─── Cambridge Support Hub Links Card (for ToS Citations) ─────────────── */}
@@ -830,10 +1002,14 @@ export function ExtractionReview({
         {questions.map((q: ExtractedQuestion, idx: number) => {
           const isSelected = selectedIndices.has(idx);
           const isExistingDup = existingDuplicates.has(String(q.question_number).trim().toLowerCase());
+          const qMsAudit = msAudit.byIndex[idx] || { status: 'ok', issues: [] };
+          const isMsExpanded = showAllMarkSchemes || expandedMark.has(idx);
+          const isRebuildingThis = msActionLoadingIdx === idx;
 
           return (
             <div
               key={idx}
+              id={`review-card-${idx}`}
               className={`review-card animate-fade-in ${!isSelected ? 'review-card--unselected' : ''} ${isExistingDup ? 'review-card--duplicate' : ''}`}
               style={{ animationDelay: `${Math.min(idx * 30, 300)}ms` }}
             >
@@ -866,6 +1042,19 @@ export function ExtractionReview({
                   {isExistingDup && (
                     <span className="review-badge badge--duplicate" title="Already in Question Bank">
                       ⚠️ Existing in Bank
+                    </span>
+                  )}
+
+                  {qMsAudit.status !== 'ok' && (
+                    <span
+                      className={`review-badge ${
+                        qMsAudit.status === 'error' ? 'badge--ms-error' : 'badge--ms-warning'
+                      }`}
+                      title={qMsAudit.issues.map((i) => i.message).join('\n')}
+                    >
+                      {qMsAudit.status === 'error'
+                        ? `⚠️ MS Issue (${qMsAudit.issues.length})`
+                        : `⚠️ MS Check (${qMsAudit.issues.length})`}
                     </span>
                   )}
 
@@ -1112,10 +1301,24 @@ export function ExtractionReview({
                           className="review-crop-btn review-crop-btn--remove"
                           onClick={() => {
                             setRemovedDiagramKeys((prev) => new Set(prev).add(q.question_number));
-                            handleUpdateQuestionField(idx, 'has_diagram', false);
-                            handleUpdateQuestionField(idx, 'diagram_source', null);
-                            handleUpdateQuestionField(idx, 'resource_ref', null);
-                            handleUpdateQuestionField(idx, 'bounding_box', null);
+                            onRemoveDiagram?.(q.question_number);
+                            setQuestions((prev) => {
+                              const next = [...prev];
+                              if (next[idx]) {
+                                next[idx] = {
+                                  ...next[idx],
+                                  has_diagram: false,
+                                  diagram_url: null,
+                                  svg_content: null,
+                                  ai_diagram_prompt: null,
+                                  diagram_source: null,
+                                  resource_ref: null,
+                                  bounding_box: null,
+                                };
+                              }
+                              result.questions = next;
+                              return next;
+                            });
                           }}
                           title="Remove diagram"
                         >
@@ -1263,11 +1466,26 @@ export function ExtractionReview({
                                 className="review-sub-crop-btn review-sub-crop-btn--remove"
                                 onClick={() => {
                                   setRemovedDiagramKeys((prev) => new Set(prev).add(subDiagramKey));
-                                  handleUpdateSubQuestion(idx, si, 'diagram_url', null);
-                                  handleUpdateSubQuestion(idx, si, 'has_diagram', false);
-                                  handleUpdateSubQuestion(idx, si, 'diagram_source', null);
-                                  handleUpdateSubQuestion(idx, si, 'resource_ref', null);
-                                  handleUpdateSubQuestion(idx, si, 'bounding_box', null);
+                                  onRemoveDiagram?.(subDiagramKey);
+                                  setQuestions((prev) => {
+                                    const next = [...prev];
+                                    const subs = [...(next[idx]?.sub_questions || [])];
+                                    if (subs[si]) {
+                                      subs[si] = {
+                                        ...subs[si],
+                                        diagram_url: null,
+                                        has_diagram: false,
+                                        svg_content: null,
+                                        ai_diagram_prompt: null,
+                                        diagram_source: null,
+                                        resource_ref: null,
+                                        bounding_box: null,
+                                      };
+                                      next[idx] = { ...next[idx], sub_questions: subs };
+                                    }
+                                    result.questions = next;
+                                    return next;
+                                  });
                                 }}
                               >
                                 🗑️ Remove
@@ -1388,83 +1606,128 @@ export function ExtractionReview({
               )}
 
               {/* ─── Mark Scheme (Collapsible) ────────────────────────────── */}
-              {q.mark_scheme && (
-                <div className="review-markscheme">
+              <div className="review-markscheme">
+                <div className="review-markscheme-header-row">
                   <button
+                    type="button"
                     className="review-markscheme-toggle"
                     onClick={() => toggleMarkScheme(idx)}
                     id={`toggle-ms-${idx}`}
                   >
-                    <span className={`review-chevron ${(showAllMarkSchemes || expandedMark.has(idx)) ? 'review-chevron--open' : ''}`}>
+                    <span className={`review-chevron ${isMsExpanded ? 'review-chevron--open' : ''}`}>
                       ›
                     </span>
-                    Mark Scheme {(showAllMarkSchemes || expandedMark.has(idx)) ? '(Expanded)' : ''}
-                    {(q.mark_scheme.guidance?.length || q.mark_scheme.common_misconceptions?.length) ? (
+                    Mark Scheme {isMsExpanded ? '(Expanded)' : ''}
+                    {!q.mark_scheme && (
+                      <span className="review-badge badge--ms-error" style={{ fontSize: '0.68rem' }}>
+                        Missing
+                      </span>
+                    )}
+                    {(q.mark_scheme?.guidance?.length || q.mark_scheme?.common_misconceptions?.length) ? (
                       <span className="review-insights-pill">✨ Insights Available</span>
                     ) : null}
                   </button>
 
-                  {(showAllMarkSchemes || expandedMark.has(idx)) && (
-                    <div className="review-markscheme-body animate-fade-in">
-                      {Array.isArray(q.mark_scheme.marking_points) &&
-                        q.mark_scheme.marking_points.map((point, pi) => (
-                          <div key={pi} className="review-ms-point">
-                            <span className="review-ms-bullet">•</span>
-                            <ExamMathText content={point} />
-                          </div>
-                        ))}
-
-                      {Array.isArray(q.mark_scheme.acceptable_answers) &&
-                        q.mark_scheme.acceptable_answers.length > 0 && (
-                          <div className="review-ms-section">
-                            <span className="review-ms-label">Acceptable answers:</span>
-                            {q.mark_scheme.acceptable_answers.map((ans, ai) => (
-                              <span key={ai} className="review-ms-answer">
-                                <ExamMathText content={ans} />
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                      {/* Teacher Guidance Notes */}
-                      {showAllGuidance && Array.isArray(q.mark_scheme.guidance) && q.mark_scheme.guidance.length > 0 && (
-                        <div className="review-guidance-box">
-                          <div className="review-guidance-header">
-                            <span className="review-guidance-icon">💡</span>
-                            <span className="review-guidance-title">Examiner Marking Guidance</span>
-                          </div>
-                          <div className="review-guidance-list">
-                            {q.mark_scheme.guidance.map((g, gi) => (
-                              <div key={gi} className="review-guidance-item">
-                                <span className="review-guidance-dot">•</span>
-                                <ExamMathText content={g} />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Common Student Misconceptions */}
-                      {showAllGuidance && Array.isArray(q.mark_scheme.common_misconceptions) && q.mark_scheme.common_misconceptions.length > 0 && (
-                        <div className="review-misconceptions-box">
-                          <div className="review-misconceptions-header">
-                            <span className="review-misconceptions-icon">⚠️</span>
-                            <span className="review-misconceptions-title">Common Student Misconceptions</span>
-                          </div>
-                          <div className="review-misconceptions-list">
-                            {q.mark_scheme.common_misconceptions.map((m, mi) => (
-                              <div key={mi} className="review-misconception-item">
-                                <span className="review-misconception-dot">•</span>
-                                <ExamMathText content={m} />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <div className="review-ms-actions">
+                    {markSchemeBase64 && (
+                      <button
+                        type="button"
+                        className="review-ms-action-btn review-ms-action-btn--realign"
+                        disabled={isRebuildingThis || msActionLoadingIdx !== null}
+                        onClick={() => handleRebuildMarkScheme(idx, 'realign')}
+                        title="Re-match and copy official marking criteria strictly from the uploaded Mark Scheme PDF"
+                      >
+                        {isRebuildingThis ? 'Re-aligning…' : '🔄 Re-align from MS'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="review-ms-action-btn"
+                      disabled={isRebuildingThis || msActionLoadingIdx !== null}
+                      onClick={() => handleRebuildMarkScheme(idx, 'generate')}
+                      title="Generate or regenerate full mark scheme using question stem, tables, and cropped diagrams"
+                    >
+                      {isRebuildingThis ? 'Generating…' : '✨ Generate MS'}
+                    </button>
+                  </div>
                 </div>
-              )}
+
+                {msActionError?.idx === idx && (
+                  <div className="review-ms-error-msg">⚠ {msActionError.message}</div>
+                )}
+
+                {isMsExpanded && (
+                  <div className="review-markscheme-body animate-fade-in">
+                    {qMsAudit.issues.length > 0 && (
+                      <div
+                        className={`review-ms-audit-alert ${
+                          qMsAudit.status === 'error' ? 'review-ms-audit-alert--error' : ''
+                        }`}
+                      >
+                        {qMsAudit.issues.map((iss, ii) => (
+                          <div key={ii}>• {iss.message}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {Array.isArray(q.mark_scheme?.marking_points) &&
+                      q.mark_scheme.marking_points.map((point, pi) => (
+                        <div key={pi} className="review-ms-point">
+                          <span className="review-ms-bullet">•</span>
+                          <ExamMathText content={point} />
+                        </div>
+                      ))}
+
+                    {Array.isArray(q.mark_scheme?.acceptable_answers) &&
+                      q.mark_scheme.acceptable_answers.length > 0 && (
+                        <div className="review-ms-section">
+                          <span className="review-ms-label">Acceptable answers:</span>
+                          {q.mark_scheme.acceptable_answers.map((ans, ai) => (
+                            <span key={ai} className="review-ms-answer">
+                              <ExamMathText content={ans} />
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                    {/* Teacher Guidance Notes */}
+                    {showAllGuidance && Array.isArray(q.mark_scheme?.guidance) && q.mark_scheme.guidance.length > 0 && (
+                      <div className="review-guidance-box">
+                        <div className="review-guidance-header">
+                          <span className="review-guidance-icon">💡</span>
+                          <span className="review-guidance-title">Examiner Marking Guidance</span>
+                        </div>
+                        <div className="review-guidance-list">
+                          {q.mark_scheme.guidance.map((g, gi) => (
+                            <div key={gi} className="review-guidance-item">
+                              <span className="review-guidance-dot">•</span>
+                              <ExamMathText content={g} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Common Student Misconceptions */}
+                    {showAllGuidance && Array.isArray(q.mark_scheme?.common_misconceptions) && q.mark_scheme.common_misconceptions.length > 0 && (
+                      <div className="review-misconceptions-box">
+                        <div className="review-misconceptions-header">
+                          <span className="review-misconceptions-icon">⚠️</span>
+                          <span className="review-misconceptions-title">Common Student Misconceptions</span>
+                        </div>
+                        <div className="review-misconceptions-list">
+                          {q.mark_scheme.common_misconceptions.map((m, mi) => (
+                            <div key={mi} className="review-misconception-item">
+                              <span className="review-misconception-dot">•</span>
+                              <ExamMathText content={m} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}
@@ -1512,6 +1775,7 @@ export function ExtractionReview({
         return (
           <QuestionEditorModal
             isOpen={true}
+            markSchemePdfBase64={markSchemeBase64}
             question={{
               id: `temp-extracted-${editingIdx}`,
               created_at: new Date().toISOString(),
@@ -1532,7 +1796,9 @@ export function ExtractionReview({
               cambridge_ms_hub_url: curQ.cambridge_ms_hub_url || null,
               page_number: curQ.page_number ?? null,
               marks: Number(curQ.total_marks) || 1,
-              diagram_url: diagramUrl,
+              diagram_url: diagramUrl || curQ.diagram_url || null,
+              svg_content: curQ.svg_content || null,
+              ai_diagram_prompt: curQ.ai_diagram_prompt || null,
               options: curQ.options && curQ.options.length > 0 ? curQ.options : null,
               sub_questions: curQ.sub_questions || [],
               mark_scheme: curQ.mark_scheme || null,
@@ -1554,10 +1820,28 @@ export function ExtractionReview({
 
                 const resolvedSavedStyle = normalizeQuestionStyle(saved.question_style, preservedOptions);
 
+                const originalHadPassage =
+                  Boolean(originalQ.passage_ref) || hasExplicitPassageMarkers(originalQ.question_text);
+                const editedRemovedPassage =
+                  originalHadPassage &&
+                  !hasExplicitPassageMarkers(saved.question_text) &&
+                  !hasNoPassageDirective(saved.question_text);
+
+                const finalQuestionText = editedRemovedPassage
+                  ? `${NO_PASSAGE_TAG}\n${saved.question_text || ''}`
+                  : saved.question_text;
+
+                const hasEditedDiagram = Boolean(saved.diagram_url || saved.svg_content);
+                if (!hasEditedDiagram && originalQ.has_diagram) {
+                  setRemovedDiagramKeys((prev) => new Set(prev).add(originalQ.question_number));
+                  onRemoveDiagram?.(originalQ.question_number);
+                }
+
                 updatedList[editingIdx] = {
                   ...originalQ,
-                  question_text: saved.question_text,
+                  question_text: finalQuestionText,
                   question_number: saved.question_number,
+                  passage_ref: editedRemovedPassage ? null : originalQ.passage_ref,
                   topic: saved.topic,
                   sub_topic: saved.sub_topic,
                   estimated_difficulty: saved.difficulty || 'Medium',
@@ -1568,6 +1852,11 @@ export function ExtractionReview({
                   page_number: saved.page_number !== undefined ? (saved.page_number ?? undefined) : originalQ.page_number,
                   total_marks: saved.marks,
                   question_style: resolvedSavedStyle,
+                  has_diagram: hasEditedDiagram,
+                  diagram_url: saved.diagram_url ?? null,
+                  svg_content: saved.svg_content ?? null,
+                  ai_diagram_prompt: saved.ai_diagram_prompt ?? null,
+                  ...(hasEditedDiagram ? {} : { diagram_source: null, resource_ref: null, bounding_box: null }),
                   options: preservedOptions,
                   sub_questions: saved.sub_questions && saved.sub_questions.length > 0 ? saved.sub_questions : undefined,
                   mark_scheme: saved.mark_scheme as any,

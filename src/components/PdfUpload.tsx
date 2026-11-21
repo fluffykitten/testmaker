@@ -85,6 +85,11 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
       if (match) {
         setDomain((current) => (current === match.profile.domain ? current : match.profile.domain));
         setIsIeltsCefr(Boolean(match.profile.isIeltsCefr));
+        if (match.profile.isNonCambridge) {
+          setIsIgcse(false);
+        } else if (/^\d{4}$/.test(match.syllabusCode)) {
+          setIsIgcse(true);
+        }
       } else {
         setIsIeltsCefr(false);
       }

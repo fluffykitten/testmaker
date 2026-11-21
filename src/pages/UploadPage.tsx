@@ -19,7 +19,7 @@ import {
 } from '../lib/uploadDraftStorage';
 import { triggerAutoBackupIfEligible } from '../services/autoBackupService';
 import type { SubjectDomain } from '../lib/gemini';
-import type { ExtractionResult } from '../types/database';
+import type { ExtractionResult, ExtractedQuestion } from '../types/database';
 import './UploadPage.css';
 
 function formatRelativeTime(timestamp: number): string {
@@ -60,6 +60,7 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
   const [isSaving, setIsSaving] = useState(false);
   const [uploadedQpFile, setUploadedQpFile] = useState<File | null>(null);
   const [uploadedInsertFile, setUploadedInsertFile] = useState<File | null>(null);
+  const [effectiveMsBase64, setEffectiveMsBase64] = useState<string | null>(null);
   const [pendingTags, setPendingTags] = useState<string>('');
   const [extractedIds, setExtractedIds] = useState<string[]>([]);
 
@@ -81,6 +82,71 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
     msFile: null,
     insertFile: null,
   });
+
+  const latestDraftRef = useRef<{
+    result: ExtractionResult | null;
+    diagramData: Map<string, DiagramCropItem>;
+    qpFile: File | null;
+    insertFile: File | null;
+    tags: string;
+    msBase64: string | null;
+  }>({
+    result: null,
+    diagramData: new Map(),
+    qpFile: null,
+    insertFile: null,
+    tags: '',
+    msBase64: null,
+  });
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleDraftPersist = useCallback((immediate: boolean = false) => {
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
+
+    const flushNow = () => {
+      const snap = latestDraftRef.current;
+      if (!snap.result) return;
+      saveUploadDraft(
+        snap.qpFile?.name || snap.result.paper_metadata?.subject || 'Exam Paper',
+        snap.result,
+        snap.diagramData,
+        snap.qpFile,
+        snap.insertFile,
+        snap.tags,
+        snap.msBase64
+      );
+    };
+
+    if (immediate) {
+      flushNow();
+    } else {
+      draftSaveTimerRef.current = setTimeout(() => {
+        draftSaveTimerRef.current = null;
+        flushNow();
+      }, 350);
+    }
+  }, []);
+
+  useEffect(() => {
+    const flushPendingOnHide = () => {
+      if (draftSaveTimerRef.current && latestDraftRef.current.result) {
+        scheduleDraftPersist(true);
+      }
+    };
+    window.addEventListener('pagehide', flushPendingOnHide);
+    document.addEventListener('visibilitychange', flushPendingOnHide);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingOnHide);
+      document.removeEventListener('visibilitychange', flushPendingOnHide);
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+    };
+  }, [scheduleDraftPersist]);
 
   const isProcessing = ['uploading', 'extracting', 'cropping-diagrams'].includes(pipelineState.stage);
 
@@ -105,7 +171,16 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
         setPreviewUrls(draft.previewUrls);
         setUploadedQpFile(draft.qpFile);
         setUploadedInsertFile(draft.insertFile);
+        setEffectiveMsBase64(draft.msBase64 || null);
         setPendingTags(draft.tags || '');
+        latestDraftRef.current = {
+          result: draft.result,
+          diagramData: draft.diagramData,
+          qpFile: draft.qpFile,
+          insertFile: draft.insertFile,
+          tags: draft.tags || '',
+          msBase64: draft.msBase64 || null,
+        };
         selectedFilesRef.current = {
           qpFile: draft.qpFile,
           msFile: null,
@@ -161,10 +236,11 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
       setExtractionResult(null);
       setUploadedQpFile(qpFile);
       setUploadedInsertFile(insertFile);
+      setEffectiveMsBase64(null);
       selectedFilesRef.current = { qpFile, msFile, insertFile };
 
       try {
-        const { result, diagramData: data, previewUrls: urls } = await runExtractionPipeline(
+        const { result, diagramData: data, previewUrls: urls, msBase64 } = await runExtractionPipeline(
           qpFile,
           msFile,
           insertFile,
@@ -174,9 +250,26 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
         setExtractionResult(result);
         setDiagramData(data);
         setPreviewUrls(urls);
+        setEffectiveMsBase64(msBase64 || null);
+        latestDraftRef.current = {
+          result,
+          diagramData: data,
+          qpFile,
+          insertFile,
+          tags: options.tags || '',
+          msBase64: msBase64 || null,
+        };
 
         // Auto-save draft to IndexedDB to protect teacher against accidental refresh
-        await saveUploadDraft(qpFile.name, result, data, qpFile, insertFile, options.tags || '');
+        await saveUploadDraft(
+          qpFile.name,
+          result,
+          data,
+          qpFile,
+          insertFile,
+          options.tags || '',
+          msBase64 || null
+        );
       } catch {
         // Error state is already set by the pipeline
       }
@@ -241,6 +334,10 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
   // ─── Handle Discard (Leaves Supabase Storage 100% Clean) ─────────────────
 
   const handleCancel = useCallback(() => {
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
     // Revoke any created browser memory Object URLs
     revokeLocalDiagramUrls(diagramData);
     deleteUploadDraft();
@@ -259,6 +356,15 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
     setSavedCount(null);
     setUploadedQpFile(null);
     setUploadedInsertFile(null);
+    setEffectiveMsBase64(null);
+    latestDraftRef.current = {
+      result: null,
+      diagramData: new Map(),
+      qpFile: null,
+      insertFile: null,
+      tags: '',
+      msBase64: null,
+    };
     selectedFilesRef.current = { qpFile: null, msFile: null, insertFile: null };
   }, [diagramData]);
 
@@ -358,20 +464,17 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
             diagramUrls={previewUrls}
             pdfFile={uploadedQpFile || selectedFilesRef.current.qpFile}
             insertFile={uploadedInsertFile || selectedFilesRef.current.insertFile}
+            markSchemeBase64={effectiveMsBase64}
+            hasOfficialMarkScheme={Boolean(effectiveMsBase64)}
             onUpdateDiagram={(qNum, item) => {
               setDiagramData((prev) => {
                 const next = new Map(prev);
                 next.set(qNum, item);
-                if (extractionResult) {
-                  saveUploadDraft(
-                    uploadedQpFile?.name || 'Exam Paper',
-                    extractionResult,
-                    next,
-                    uploadedQpFile,
-                    uploadedInsertFile,
-                    pendingTags
-                  );
-                }
+                latestDraftRef.current = {
+                  ...latestDraftRef.current,
+                  diagramData: next,
+                };
+                scheduleDraftPersist(true);
                 return next;
               });
               setPreviewUrls((prev) => {
@@ -380,25 +483,84 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
                 return next;
               });
             }}
+            onRemoveDiagram={(key) => {
+              setDiagramData((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Map(prev);
+                next.delete(key);
+                latestDraftRef.current = {
+                  ...latestDraftRef.current,
+                  diagramData: next,
+                };
+                scheduleDraftPersist(true);
+                return next;
+              });
+              setPreviewUrls((prev) => {
+                if (!prev.has(key)) return prev;
+                const next = new Map(prev);
+                next.delete(key);
+                return next;
+              });
+            }}
+            onRenameDiagramKey={(oldKey, newKey) => {
+              if (!oldKey || !newKey || oldKey === newKey) return;
+              setDiagramData((prev) => {
+                const existingItem = prev.get(oldKey);
+                if (!existingItem) return prev;
+                const next = new Map(prev);
+                next.delete(oldKey);
+                next.set(newKey, existingItem);
+                latestDraftRef.current = {
+                  ...latestDraftRef.current,
+                  diagramData: next,
+                };
+                scheduleDraftPersist(true);
+                return next;
+              });
+              setPreviewUrls((prev) => {
+                const existingUrl = prev.get(oldKey);
+                if (!existingUrl) return prev;
+                const next = new Map(prev);
+                next.delete(oldKey);
+                next.set(newKey, existingUrl);
+                return next;
+              });
+            }}
+            onUpdateQuestions={(updatedQuestions: ExtractedQuestion[]) => {
+              setExtractionResult((prev) => {
+                if (!prev) return prev;
+                const next = { ...prev, questions: updatedQuestions };
+                latestDraftRef.current = {
+                  ...latestDraftRef.current,
+                  result: next,
+                };
+                return next;
+              });
+              scheduleDraftPersist(false);
+            }}
             onConfirmSave={handleConfirmSave}
             onCancel={handleCancel}
             isSaving={isSaving}
             initialTags={pendingTags}
-            onUpdateTags={(newTags) => setPendingTags(newTags)}
+            onUpdateTags={(newTags) => {
+              setPendingTags(newTags);
+              latestDraftRef.current = {
+                ...latestDraftRef.current,
+                tags: newTags,
+              };
+              scheduleDraftPersist(true);
+            }}
             onUpdateMetadata={(newMeta) => {
               setExtractionResult((prev) => {
                 if (!prev) return prev;
                 const next = { ...prev, paper_metadata: newMeta };
-                saveUploadDraft(
-                  uploadedQpFile?.name || 'Exam Paper',
-                  next,
-                  diagramData,
-                  uploadedQpFile,
-                  uploadedInsertFile,
-                  pendingTags
-                );
+                latestDraftRef.current = {
+                  ...latestDraftRef.current,
+                  result: next,
+                };
                 return next;
               });
+              scheduleDraftPersist(true);
             }}
           />
         )}

@@ -60,7 +60,9 @@ import {
 import {
   generateParametricSvg,
   extractSvgFromDiagramUrl,
+  generateQuestionMarkScheme,
 } from '../lib/gemini';
+import { auditQuestionMarkScheme } from '../lib/markSchemeAudit';
 import './QuestionEditorModal.css';
 
 interface QuestionEditorModalProps {
@@ -68,6 +70,7 @@ interface QuestionEditorModalProps {
   question: Question | null;
   syllabuses?: Syllabus[];
   targetContext?: 'bank' | 'test' | 'extraction';
+  markSchemePdfBase64?: string | null;
   onClose: () => void;
   onSave: (saved: Question) => void;
 }
@@ -98,6 +101,7 @@ export function QuestionEditorModal({
   question,
   syllabuses: propSyllabuses,
   targetContext = 'bank',
+  markSchemePdfBase64 = null,
   onClose,
   onSave,
 }: QuestionEditorModalProps) {
@@ -164,6 +168,8 @@ export function QuestionEditorModal({
   const [acceptableAnswers, setAcceptableAnswers] = useState<string[]>([]);
   const [guidanceList, setGuidanceList] = useState<string[]>([]);
   const [misconceptionsList, setMisconceptionsList] = useState<string[]>([]);
+  const [isGeneratingMs, setIsGeneratingMs] = useState(false);
+  const [msGenError, setMsGenError] = useState<string | null>(null);
 
   // Diagram Crop Modal state
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
@@ -431,6 +437,8 @@ export function QuestionEditorModal({
       setAcceptableAnswers(rawAnswers.map((a: any) => typeof a === 'string' ? a : String(a || '')));
       setGuidanceList(rawGuidance.map((g: any) => typeof g === 'string' ? g : String(g || '')));
       setMisconceptionsList(rawMisconceptions.map((m: any) => typeof m === 'string' ? m : String(m || '')));
+      setMsGenError(null);
+      setIsGeneratingMs(false);
 
       // Audio initialization
       setAudioUrl(question.audio_url || '');
@@ -2364,8 +2372,163 @@ export function QuestionEditorModal({
           )}
 
           {/* TAB 3: Mark Scheme & Insights */}
-          {activeTab === 'markscheme' && (
+          {activeTab === 'markscheme' && (() => {
+            const draftMarks =
+              subQuestions.length > 0 && questionStyle === 'Structured'
+                ? subQuestions.reduce((acc, sq) => acc + (Number(sq.marks) || 0), 0) || totalMarks
+                : totalMarks;
+            const liveAudit = auditQuestionMarkScheme(
+              {
+                question_text: questionText,
+                question_style: questionStyle,
+                options,
+                sub_questions: subQuestions,
+                marks: draftMarks,
+                mark_scheme: {
+                  marking_points: markingPoints.filter((p) => p.trim().length > 0),
+                  acceptable_answers: acceptableAnswers.filter((a) => a.trim().length > 0),
+                  guidance: guidanceList.filter((g) => g.trim().length > 0),
+                  common_misconceptions: misconceptionsList.filter((m) => m.trim().length > 0),
+                },
+              },
+              { hasOfficialMarkScheme: Boolean(markSchemePdfBase64) }
+            );
+
+            const handleGenerateMarkSchemeInEditor = async (mode: 'realign' | 'generate') => {
+              setIsGeneratingMs(true);
+              setMsGenError(null);
+              try {
+                const res = await generateQuestionMarkScheme(
+                  {
+                    ...(question || {}),
+                    question_number: questionNumber || '1',
+                    question_text: questionText,
+                    question_style: questionStyle,
+                    topic,
+                    sub_topic: subTopic || null,
+                    marks: draftMarks,
+                    options: options.length > 0 ? options : null,
+                    sub_questions: subQuestions,
+                    diagram_url: diagramUrl || null,
+                    svg_content: svgContent,
+                    mark_scheme: {
+                      ...(question?.mark_scheme && typeof question.mark_scheme === 'object' ? question.mark_scheme : {}),
+                      marking_points: markingPoints.filter((p) => p.trim().length > 0),
+                      acceptable_answers: acceptableAnswers.filter((a) => a.trim().length > 0),
+                      guidance: guidanceList.filter((g) => g.trim().length > 0),
+                      common_misconceptions: misconceptionsList.filter((m) => m.trim().length > 0),
+                    },
+                  },
+                  {
+                    markSchemePdfBase64: mode === 'realign' ? markSchemePdfBase64 : null,
+                    includeGuidance: true,
+                    diagramUrlOverride: diagramUrl || null,
+                  }
+                );
+
+                setMarkingPoints(res.mark_scheme.marking_points?.length ? res.mark_scheme.marking_points : ['']);
+                setAcceptableAnswers(res.mark_scheme.acceptable_answers || []);
+                setGuidanceList(res.mark_scheme.guidance || []);
+                setMisconceptionsList(res.mark_scheme.common_misconceptions || []);
+                if (res.sub_questions) {
+                  setSubQuestions(res.sub_questions);
+                }
+              } catch (err: any) {
+                setMsGenError(err?.message || 'Failed to generate mark scheme');
+              } finally {
+                setIsGeneratingMs(false);
+              }
+            };
+
+            return (
             <div className="q-editor-tab-content animate-fade-in">
+              {/* Live QA Audit & AI Generation / Re-Align Bar */}
+              <div
+                className="q-editor-section"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  background: liveAudit.status === 'ok' ? 'rgba(16, 185, 129, 0.06)' : 'rgba(245, 158, 11, 0.08)',
+                  border: `1px solid ${liveAudit.status === 'ok' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.35)'}`,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span
+                      style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        padding: '3px 9px',
+                        borderRadius: '999px',
+                        background:
+                          liveAudit.status === 'ok'
+                            ? 'rgba(16, 185, 129, 0.16)'
+                            : liveAudit.status === 'error'
+                              ? 'rgba(244, 63, 94, 0.14)'
+                              : 'rgba(245, 158, 11, 0.18)',
+                        color:
+                          liveAudit.status === 'ok'
+                            ? '#047857'
+                            : liveAudit.status === 'error'
+                              ? '#be123c'
+                              : '#b45309',
+                      }}
+                    >
+                      {liveAudit.status === 'ok'
+                        ? '✓ MS Verified'
+                        : liveAudit.status === 'error'
+                          ? `⚠️ MS Incomplete (${liveAudit.issues.length})`
+                          : `⚠️ MS Check (${liveAudit.issues.length})`}
+                    </span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
+                      {liveAudit.issues.length > 0
+                        ? liveAudit.issues[0].message
+                        : `Marks aligned (${draftMarks} mark${draftMarks !== 1 ? 's' : ''})`}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {markSchemePdfBase64 && (
+                      <button
+                        type="button"
+                        className="q-editor-btn-add"
+                        disabled={isGeneratingMs}
+                        onClick={() => handleGenerateMarkSchemeInEditor('realign')}
+                        title="Match and transcribe verbatim from the attached Official Mark Scheme PDF"
+                      >
+                        {isGeneratingMs ? 'Working…' : '🔄 Re-align from Official MS'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="q-editor-btn-add"
+                      disabled={isGeneratingMs}
+                      onClick={() => handleGenerateMarkSchemeInEditor('generate')}
+                      title="Synthesize mark scheme using question text, tables, and diagram vision"
+                    >
+                      {isGeneratingMs ? 'Generating…' : '✨ Generate Mark Scheme (AI)'}
+                    </button>
+                  </div>
+                </div>
+
+                {liveAudit.issues.length > 1 && (
+                  <div style={{ fontSize: '0.75rem', color: '#b45309', paddingLeft: 4 }}>
+                    {liveAudit.issues.slice(1).map((iss, idx) => (
+                      <div key={idx}>• {iss.message}</div>
+                    ))}
+                  </div>
+                )}
+
+                {msGenError && (
+                  <div style={{ fontSize: '0.78rem', color: '#be123c', fontWeight: 600 }}>
+                    ⚠ {msGenError}
+                  </div>
+                )}
+              </div>
+
               {/* Marking Points */}
               <div className="q-editor-section">
                 <div className="q-editor-subhead-row">
@@ -2499,7 +2662,8 @@ export function QuestionEditorModal({
                 </div>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* TAB 3: Audio & Listening Comprehension */}
           {activeTab === 'audio' && (

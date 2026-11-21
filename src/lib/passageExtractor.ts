@@ -1,9 +1,24 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import type { ExtractedPassage, ExtractedQuestion } from '../types/database';
+import {
+  expandTargetQuestionTokens,
+  mergeChunkPassagesAndQuestions,
+  parseQuestionRange,
+} from './passageMerge';
+import {
+  PASSAGE_OPEN_TAG,
+  PASSAGE_CLOSE_TAG,
+  hasExplicitPassageMarkers,
+  hasNoPassageDirective,
+} from './readingPassageUtils';
+
+export { expandTargetQuestionTokens, mergeChunkPassagesAndQuestions, parseQuestionRange };
 
 // Configure pdf.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+if (typeof window !== 'undefined' && pdfjsWorker) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+}
 
 export interface PageTextResult {
   page: number;
@@ -246,6 +261,9 @@ export function stitchPassagesToQuestions(
 
   return questions.map((q) => {
     const text = q.question_text || '';
+    if (hasNoPassageDirective(text)) {
+      return q;
+    }
     const qNumRaw = String(q.question_number || '').trim();
     const qNum = qNumRaw.replace(/\D/g, '');
     const isNonReadingSkill =
@@ -262,16 +280,11 @@ export function stitchPassagesToQuestions(
 
     // 2. Fallback: Check if target_questions of any passage includes this question
     if (!targetPassage && !isNonReadingSkill && qNum) {
+      const qNumNorm = qNumRaw.replace(/\s+/g, '').toUpperCase();
       for (const p of passages || []) {
         if (Array.isArray(p.target_questions)) {
-          const matches = p.target_questions.some((tq) => {
-            const tqRaw = String(tq).trim();
-            if (/^R\s*\d/i.test(qNumRaw) && /^[LRW]\s*\d/i.test(tqRaw)) {
-              return tqRaw.toUpperCase() === qNumRaw.toUpperCase();
-            }
-            return tqRaw.replace(/\D/g, '') === qNum;
-          });
-          if (matches) {
+          const expanded = expandTargetQuestionTokens(p.target_questions);
+          if (expanded.has(qNumNorm) || expanded.has(qNum)) {
             targetPassage = p;
             break;
           }
@@ -296,7 +309,7 @@ export function stitchPassagesToQuestions(
 
     // 4. Check if question_text already contains the passage body (avoid double injection)
     const bodySample = targetPassage.body.slice(0, 80).trim();
-    if (bodySample && text.includes(bodySample)) {
+    if (hasExplicitPassageMarkers(text) || (bodySample && text.includes(bodySample))) {
       return {
         ...q,
         passage_ref: q.passage_ref || targetPassage.id,
@@ -315,7 +328,8 @@ export function stitchPassagesToQuestions(
       ? (targetPassage.heading.startsWith('#') ? targetPassage.heading : `### ${targetPassage.heading}`)
       : `### ${targetPassage.id}`;
 
-    const stitchedText = `${formattedHeader}\n\n${targetPassage.body}\n\n${cleanStem}`.trim();
+    const explicitPassageBlock = `${PASSAGE_OPEN_TAG}${formattedHeader}\n\n${targetPassage.body}${PASSAGE_CLOSE_TAG}`;
+    const stitchedText = cleanStem ? `${explicitPassageBlock}\n\n${cleanStem}` : explicitPassageBlock;
 
     return {
       ...q,

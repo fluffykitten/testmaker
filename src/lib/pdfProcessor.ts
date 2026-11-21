@@ -26,6 +26,7 @@ import {
   type PdfChunk,
 } from './pdfChunker';
 import { trimMarkSchemePreamble } from './markSchemeTrim';
+import { chooseBetterMarkScheme, chooseBetterSubMarkScheme } from './markSchemeAudit';
 import { tryBuildPaperOutline } from './paperOutline';
 import { subjectForSyllabus, NEUTRAL_HUMANITIES_PROFILE } from './subjectClassifier';
 import type { PaperOutline } from './paperOutlineParse';
@@ -45,6 +46,14 @@ import {
   verifyAndRepairPassages,
   stitchPassagesToQuestions,
 } from './passageExtractor';
+import { mergeChunkPassagesAndQuestions, parseQuestionRange } from './passageMerge';
+import {
+  PASSAGE_OPEN_TAG,
+  PASSAGE_CLOSE_TAG,
+  hasExplicitPassageMarkers,
+  hasNoPassageDirective,
+  stripPassageControlTags,
+} from './readingPassageUtils';
 import { addTagsToQuestions } from '../services/questionTagService';
 import { uploadPastPaperPdf, uploadInsertBookletPdf } from '../services/storageService';
 
@@ -113,6 +122,44 @@ async function resolveSyllabus(
 
 // ─── Step 3: Save questions to database (Uploads storage files on confirm) ─────
 
+export function filterActiveDiagramDataForSave(
+  questions: ExtractedQuestion[],
+  diagramData: Map<string, DiagramCropItem>
+): Map<string, DiagramCropItem> {
+  const filtered = new Map<string, DiagramCropItem>();
+  if (!diagramData || diagramData.size === 0) return filtered;
+
+  const activeKeys = new Set<string>();
+  const removedKeys = new Set<string>();
+
+  for (const q of questions) {
+    if (q.has_diagram === false) {
+      removedKeys.add(q.question_number);
+    } else {
+      activeKeys.add(q.question_number);
+      if (q.parent_question_id) activeKeys.add(q.parent_question_id);
+    }
+
+    (q.sub_questions || []).forEach((sub, sIdx) => {
+      const subKey = `${q.question_number}_sub_${sIdx}`;
+      if (sub.has_diagram === false) {
+        removedKeys.add(subKey);
+      } else {
+        activeKeys.add(subKey);
+      }
+    });
+  }
+
+  for (const [key, item] of diagramData.entries()) {
+    if (removedKeys.has(key)) continue;
+    if (activeKeys.has(key)) {
+      filtered.set(key, item);
+    }
+  }
+
+  return filtered;
+}
+
 export async function saveExtractedQuestions(
   result: ExtractionResult,
   diagramData: Map<string, DiagramCropItem>,
@@ -124,11 +171,12 @@ export async function saveExtractedQuestions(
 ): Promise<{ count: number; insertedIds: string[] }> {
   const { paper_metadata, questions, insert_resources, passages } = result;
 
-  // 1. Upload cropped diagram blobs to Supabase Storage (WebP compressed)
+  // 1. Upload only active (non-deleted, selected) cropped diagram blobs to Supabase Storage
+  const activeDiagramData = filterActiveDiagramDataForSave(questions, diagramData);
   let permanentDiagramUrls = new Map<string, string>();
-  if (diagramData.size > 0) {
+  if (activeDiagramData.size > 0) {
     permanentDiagramUrls = await uploadDiagramsToStorage(
-      diagramData,
+      activeDiagramData,
       {
         subject_code: paper_metadata.subject_code,
         year: paper_metadata.year,
@@ -194,6 +242,13 @@ export async function saveExtractedQuestions(
     if (passages && passages.length > 0) {
       (ms as any)._passages = passages;
     }
+    if (q.has_diagram === false) {
+      delete (ms as any)._svg_content;
+      delete (ms as any)._ai_diagram_prompt;
+    } else {
+      if (q.svg_content) (ms as any)._svg_content = q.svg_content;
+      if (q.ai_diagram_prompt) (ms as any)._ai_diagram_prompt = q.ai_diagram_prompt;
+    }
 
     const effectivePdfUrl = q.source_pdf_url || sourcePdfUrl || null;
     const effectiveHubUrl =
@@ -217,6 +272,9 @@ export async function saveExtractedQuestions(
     if (effectiveCognitiveLevel) (ms as any)._cognitive_level = effectiveCognitiveLevel;
     if (effectivePageNumber) (ms as any)._page_number = effectivePageNumber;
 
+    const fallbackParentDiagramUrl =
+      q.diagram_url && !q.diagram_url.startsWith('blob:') ? q.diagram_url : null;
+
     return {
       syllabus_id: syllabusId,
       year: q.year || paper_metadata.year,
@@ -233,23 +291,27 @@ export async function saveExtractedQuestions(
       source_pdf_url: effectivePdfUrl,
       page_number: effectivePageNumber,
       marks: q.total_marks,
-      diagram_url: permanentDiagramUrls.get(q.question_number) || null,
-      diagram_source: q.diagram_source || null,
-      resource_ref: q.resource_ref || null,
-      insert_page_number: q.insert_page_number || null,
+      diagram_url:
+        q.has_diagram === false
+          ? null
+          : permanentDiagramUrls.get(q.question_number) || fallbackParentDiagramUrl,
+      diagram_source: q.has_diagram === false ? null : q.diagram_source || null,
+      resource_ref: q.has_diagram === false ? null : q.resource_ref || null,
+      insert_page_number: q.has_diagram === false ? null : q.insert_page_number || null,
       options: (q.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
       sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
         ...sub,
         cognitive_level: sub.cognitive_level || null,
         question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
         options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
-        diagram_source: sub.diagram_source || null,
-        resource_ref: sub.resource_ref || null,
-        insert_page_number: sub.insert_page_number || null,
+        diagram_source: sub.has_diagram === false ? null : sub.diagram_source || null,
+        resource_ref: sub.has_diagram === false ? null : sub.resource_ref || null,
+        insert_page_number: sub.has_diagram === false ? null : sub.insert_page_number || null,
         diagram_url:
-          permanentDiagramUrls.get(`${q.question_number}_sub_${sIdx}`) ||
-          sub.diagram_url ||
-          null,
+          sub.has_diagram === false
+            ? null
+            : permanentDiagramUrls.get(`${q.question_number}_sub_${sIdx}`) ||
+              (sub.diagram_url && !sub.diagram_url.startsWith('blob:') ? sub.diagram_url : null),
       })),
       mark_scheme: ms,
     };
@@ -323,12 +385,12 @@ export async function saveExtractedQuestions(
 
   const insertedCount = data?.length ?? 0;
   const insertedIds = data?.map((d) => d.id) || [];
-  
+
   if (tags && insertedIds.length > 0) {
     onProgress?.('Applying question tags…');
     addTagsToQuestions(insertedIds, tags);
   }
-  
+
   onProgress?.(`Successfully saved ${insertedCount} questions.`);
   return { count: insertedCount, insertedIds };
 }
@@ -338,50 +400,25 @@ function escapeRegex(str: string): string {
 }
 
 /**
- * Extracts declared question ranges from passage headings/intros.
- * Examples:
- * - "questions 1 to 5" -> { start: 1, end: 5 }
- * - "questions 1–5", "soal no 6-10" -> { start: 6, end: 10 }
- * - "(Descriptive Text, 5 Questions)" with qNum 1 -> { start: 1, end: 5 }
- */
-function parseQuestionRange(text: string, currentQNum?: string | number): { start: number; end: number } | null {
-  if (!text) return null;
-
-  // Pattern 1: Explicit question range ("questions 1 to 5", "questions 1–5", "no 6-10", "soal no 1 s.d. 5")
-  const rangeMatch = text.match(/(?:questions?|soal|no\.?)\s*(\d+)\s*(?:to|–|-|s\.?d\.?)\s*(\d+)/i);
-  if (rangeMatch) {
-    return {
-      start: parseInt(rangeMatch[1], 10),
-      end: parseInt(rangeMatch[2], 10),
-    };
-  }
-
-  // Pattern 2: Question count in parentheses ("(Descriptive Text, 5 Questions)", "(4 Questions)")
-  const countMatch = text.match(/(\d+)\s+questions?/i);
-  if (countMatch && currentQNum) {
-    const count = parseInt(countMatch[1], 10);
-    const start = parseInt(String(currentQNum).replace(/\D/g, ''), 10) || 1;
-    return {
-      start,
-      end: start + count - 1,
-    };
-  }
-
-  return null;
-}
-
-/**
  * Robust passage detector that distinguishes:
  * 1. A question that INCLUDES a full reading passage body (Header + Body Prose + Prompt) -> returns full passage (Header + Body)
  * 2. A question that only REFERENCES a passage (Header + Prompt, or just Prompt) -> returns null (allowing body propagation)
  */
 function detectPassageContent(text: string): string | null {
-  if (!text || text.trim().length < 150) return null;
+  if (!text || hasNoPassageDirective(text)) return null;
+
+  const explicitBlock = text.match(/\[passage\]([\s\S]*?)\[\/passage\]/i);
+  if (explicitBlock && explicitBlock[1] && explicitBlock[1].trim().length > 0) {
+    return explicitBlock[0].trim();
+  }
+
+  if (text.trim().length < 150) return null;
 
   const trimmed = text.trim();
 
   // 1. Identify where the final question prompt begins
-  const promptSplitRegex = /(?:\n\s*(?:No\.?\s*)?\d+[\s.:)]+|\n\s*(?:\*{1,2}|#{1,4}\s*)?Question\s*\d*[\s.:*]+|\n\s*\[(?:Matching|Multiple|Table|Fill|Pilihan|Menjodohkan)[^\]]*\]|\n\s*(?:Which|What|How|Why|Where|When|Who|Whom|Whose|Explain|Identify|According to|Based on|In the text|The text|The word|The passage|The author|From the (?:text|passage))\b)/i;
+  const promptSplitRegex =
+    /(?:\n\s*(?:No\.?\s*)?\d+[\s.:)]+|\n\s*(?:\*{1,2}|#{1,4}\s*)?Question\s*\d*[\s.:*]+|\n\s*\[(?:Matching|Multiple|Table|Fill|Pilihan|Menjodohkan)[^\]]*\]|\n\s*(?:Which|What|How|Why|Where|When|Who|Whom|Whose|Explain|Identify|According to|Based on|In the text|The text|The word|The passage|The author|From the (?:text|passage)|Berdasarkan|Manakah|Interpretasi|Makna tersirat|Peribahasa|Perbaikan|Topik|Pesan tersirat|Pendapat|Masalah utama|Ulasan|Hubungan|Jika ditinjau|Tentukan)\b)/i;
 
   const match = trimmed.match(promptSplitRegex);
 
@@ -445,12 +482,18 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
 
   return questions.map((q) => {
     const text = q.question_text || '';
+    if (hasNoPassageDirective(text)) {
+      return q;
+    }
     const detected = detectPassageContent(text);
     const qNum = parseInt(String(q.question_number).replace(/\D/g, ''), 10);
 
     if (detected) {
-      activePassageBody = detected;
-      const firstLine = detected
+      activePassageBody = hasExplicitPassageMarkers(detected)
+        ? detected
+        : `${PASSAGE_OPEN_TAG}${detected}${PASSAGE_CLOSE_TAG}`;
+      const detectedClean = stripPassageControlTags(detected);
+      const firstLine = detectedClean
         .split('\n')[0]
         .replace(/^#{1,4}\s*/, '')
         .replace(/^\*{1,2}|\*{1,2}$/g, '')
@@ -462,20 +505,23 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
       activePassageHeadingClean = labelMatch ? labelMatch[0].trim() : firstLine.replace(/[:(≈±].*$/, '').trim();
 
       // Detect question range if stated (e.g. questions 1 to 5, 5 Questions)
-      activePassageRange = parseQuestionRange(detected, q.question_number);
+      activePassageRange = parseQuestionRange(detectedClean, q.question_number);
 
       // Sample the actual body text (excluding the header line) to accurately detect body presence
-      const lines = detected.split('\n').map((l) => l.trim()).filter((l) => l.length > 20 && !l.startsWith('#'));
+      const lines = detectedClean.split('\n').map((l) => l.trim()).filter((l) => l.length > 20 && !l.startsWith('#'));
       activePassageSample = lines.length > 0 ? lines[0].slice(0, 50) : '';
       return q;
     }
 
     // Check if there is an active passage to propagate to linked questions
     if (activePassageBody) {
+      const cleanText = stripPassageControlTags(text);
+      const activeCleanBody = stripPassageControlTags(activePassageBody);
       // 1. Check if current question text already contains the passage body text
       const alreadyHasPassageBody = Boolean(
-        (activePassageSample && text.includes(activePassageSample)) ||
-        (text.length > 300 && text.includes(activePassageBody.slice(0, 80)))
+        hasExplicitPassageMarkers(text) ||
+        (activePassageSample && cleanText.includes(activePassageSample)) ||
+        (cleanText.length > 300 && cleanText.includes(activeCleanBody.slice(0, 80)))
       );
 
       // 2. Check if current question is within the declared passage question range
@@ -490,12 +536,17 @@ export function propagateReadingPassages(questions: ExtractedQuestion[]): Extrac
           new RegExp(`(?:#{1,4}\\s*|\\*{1,2})?${escapeRegex(activePassageHeadingClean)}\\b`, 'i').test(text))
       );
 
+      const outOfDeclaredRange = Boolean(
+        activePassageRange && !isNaN(qNum) && (qNum < activePassageRange.start || qNum > activePassageRange.end)
+      );
+
       const hasTextRef =
         inRange ||
         hasHeadingRef ||
-        /\b(?:Based on the (?:text|passage)|According to the (?:text|passage)|In the (?:text|passage)|From the (?:text|passage)|The (?:text|passage) primarily|Paragraph (?:one|two|three|four|\d+))\b/i.test(
-          text
-        );
+        (!outOfDeclaredRange &&
+          /\b(?:Based on the (?:text|passage)|According to the (?:text|passage)|In the (?:text|passage)|From the (?:text|passage)|The (?:text|passage) primarily|Paragraph (?:one|two|three|four|\d+)|Berdasarkan\s+(?:teks|bacaan|kutipan|isi\s+teks)|teks\s+tersebut|paragraf\s+(?:pertama|kedua|ketiga|keempat|\d+))\b/i.test(
+            text
+          ));
 
       if (!alreadyHasPassageBody && hasTextRef) {
         // Strip duplicate heading line from question prompt if present so heading isn't duplicated
@@ -638,6 +689,8 @@ export async function runExtractionPipeline(
   result: ExtractionResult;
   diagramData: Map<string, DiagramCropItem>;
   previewUrls: Map<string, string>;
+  hasMarkScheme: boolean;
+  msBase64?: string;
 }> {
   try {
     // Stage 1: Parallel / Multi-Chunk AI Extraction
@@ -710,7 +763,10 @@ export async function runExtractionPipeline(
         error: null,
       });
     } else {
-      chunks = await splitPdfForParallelExtraction(bytesToChunk, 8);
+      // Dense Language / Reading Comprehension papers use smaller chunks (~4-5 active pages)
+      // so parallel calls never exceed JSON output-token limits or drop questions.
+      const maxPagesPerChunk = options.domain === 'languages' ? 4 : 8;
+      chunks = await splitPdfForParallelExtraction(bytesToChunk, maxPagesPerChunk);
     }
 
     let result: ExtractionResult;
@@ -731,9 +787,8 @@ export async function runExtractionPipeline(
           const constrained = paperOutline.profile.family === 'practical-5x';
           onStateChange({
             stage: 'extracting',
-            message: `Outline verified (${paperOutline.profile.key}): ${paperOutline.questions.length} questions · ${subCount} sub-parts · Σ${paperOutline.totalMarks ?? '?'} marks${
-              constrained ? ' — constraining extraction to the printed structure…' : '…'
-            }`,
+            message: `Outline verified (${paperOutline.profile.key}): ${paperOutline.questions.length} questions · ${subCount} sub-parts · Σ${paperOutline.totalMarks ?? '?'} marks${constrained ? ' — constraining extraction to the printed structure…' : '…'
+              }`,
             progress: 40,
             result: null,
             error: null,
@@ -755,8 +810,8 @@ export async function runExtractionPipeline(
       outlineSubject && outlineSubject.domain === domainChoice
         ? outlineSubject
         : domainChoice === 'humanities'
-        ? NEUTRAL_HUMANITIES_PROFILE
-        : null;
+          ? NEUTRAL_HUMANITIES_PROFILE
+          : null;
     if (detectedSubject && domainChoice === 'humanities') {
       onStateChange({
         stage: 'extracting',
@@ -847,9 +902,13 @@ export async function runExtractionPipeline(
 
       const isIeltsFlow = options.domain === 'languages' && Boolean(options.isIeltsCefr);
 
-      chunkResults.forEach((cr, cIdx) => {
+      // Disambiguate overlapping/reused per-chunk passage IDs ("Text 1" in Chunk 0 vs Chunk 1)
+      // BEFORE merging questions so passage_ref never points at a different chunk's reading text.
+      const { passages: uniquePassages, chunkQuestions } = mergeChunkPassagesAndQuestions(chunkResults);
+
+      chunkQuestions.forEach((questionsInChunk, cIdx) => {
         const chunkOffset = chunks[cIdx].startPage - 1;
-        cr.questions.forEach((q) => {
+        questionsInChunk.forEach((q) => {
           let qNumClean = normalizeQNum(q.question_number) || String(q.question_number).trim();
           const skillPrefix = inferIeltsSkillPrefix(qNumClean, q.topic);
           if (isIeltsFlow && skillPrefix && !/^[LRW]\s*\d/i.test(qNumClean)) {
@@ -929,10 +988,11 @@ export async function runExtractionPipeline(
                       ? sq.question_text
                       : prev.question_text,
                   marks: sq.marks || prev.marks,
-                  mark_scheme:
-                    sq.mark_scheme && sq.mark_scheme.length > (prev.mark_scheme?.length || 0)
-                      ? sq.mark_scheme
-                      : prev.mark_scheme,
+                  mark_scheme: chooseBetterSubMarkScheme(
+                    prev.mark_scheme,
+                    sq.mark_scheme,
+                    sq.marks || prev.marks
+                  ),
                   options: sq.options && sq.options.length > 0 ? sq.options : prev.options,
                   data_tables: prev.data_tables && prev.data_tables.length > 0 ? prev.data_tables : sq.data_tables,
                   has_diagram: prev.has_diagram || sq.has_diagram,
@@ -1005,9 +1065,13 @@ export async function runExtractionPipeline(
                   : existing.options,
               data_tables: mergedDataTables,
               mark_scheme:
-                adjustedQ.mark_scheme && Object.keys(adjustedQ.mark_scheme).length > 0
-                  ? adjustedQ.mark_scheme
-                  : existing.mark_scheme,
+                chooseBetterMarkScheme(
+                  existing.mark_scheme,
+                  adjustedQ.mark_scheme,
+                  totalSubMarks > 0
+                    ? totalSubMarks
+                    : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0)
+                ) ?? null,
               total_marks: totalSubMarks > 0 ? totalSubMarks : Math.max(existing.total_marks || 0, adjustedQ.total_marks || 0),
               sub_questions: mergedSubs.length > 0 ? mergedSubs : existing.sub_questions,
               has_diagram: existing.has_diagram || adoptAdjustedParentDiagram,
@@ -1023,30 +1087,6 @@ export async function runExtractionPipeline(
 
       // Sort naturally by question number (1, 2, 3 ... 40)
       allQuestions.sort((a, b) => compareQuestionNumbers(a.question_number, b.question_number));
-
-      // Merge passages across chunks, preferring the longest/most complete body per passage ID
-      // so an earlier chunk ending mid-passage (e.g. page 6 of pp. 1-6) never shadows the full passage in Chunk 1.
-      const mergedPassages = chunkResults.flatMap((cr) => cr.passages || []);
-      const passageById = new Map<string, (typeof mergedPassages)[number]>();
-      for (const p of mergedPassages) {
-        const idKey = (p.id || '').toLowerCase().trim();
-        if (!idKey) continue;
-        const existing = passageById.get(idKey);
-        if (!existing) {
-          passageById.set(idKey, p);
-          continue;
-        }
-        const existingLen = (existing.body || '').trim().length;
-        const nextLen = (p.body || '').trim().length;
-        const mergedTargets = Array.from(
-          new Set([...(existing.target_questions || []), ...(p.target_questions || [])])
-        );
-        passageById.set(idKey, {
-          ...(nextLen > existingLen ? p : existing),
-          target_questions: mergedTargets,
-        });
-      }
-      const uniquePassages = Array.from(passageById.values());
 
       // Verify / repair passages from source PDF if in Language domain
       let verifiedPassages = uniquePassages;
@@ -1096,17 +1136,17 @@ export async function runExtractionPipeline(
           (options.domain === 'languages'
             ? 'English'
             : options.domain === 'humanities'
-            ? 'Humanities'
-            : 'Chemistry'),
+              ? 'Humanities'
+              : 'Chemistry'),
         subject_code:
           detectedSubject?.syllabusCode ??
           (options.domain === 'languages'
             ? 'ENG'
             : options.domain === 'humanities'
-            ? 'HUM'
-            : options.isIgcse !== false
-            ? '0620'
-            : 'CHEM'),
+              ? 'HUM'
+              : options.isIgcse !== false
+                ? '0620'
+                : 'CHEM'),
         year: new Date().getFullYear(),
         series: isSaveMyExams ? 'Save My Exams' : options.isIgcse !== false ? 'Exam' : 'General',
         paper_number: isSaveMyExams
@@ -1276,7 +1316,13 @@ export async function runExtractionPipeline(
       error: null,
     });
 
-    return { result, diagramData, previewUrls };
+    return {
+      result,
+      diagramData,
+      previewUrls,
+      hasMarkScheme: Boolean(msBase64),
+      msBase64,
+    };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown pipeline error';
     onStateChange({

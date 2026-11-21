@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { tryBuildPaperOutline } from './paperOutline';
+import { isAnswerKeyStartPageText } from './markSchemeDetect';
 
 // Configure pdf.js worker in browser
 if (typeof window !== 'undefined' && pdfjsWorker) {
@@ -116,11 +117,8 @@ async function inspectInDocumentAnswerKey(
         .join(' ')
         .toLowerCase();
 
-      // Look for answer key / mark scheme headers
-      const isAnswerKeyHeader =
-        /kunci\s*jawaban|pembahasan\s*soal|answer\s*key|marking\s*scheme|mark\s*scheme\s*for|solutions\s*and\s*explanations|kunci\s*dan\s*pembahasan/i.test(
-          text
-        );
+      // Look for answer key / mark scheme headers near top of page
+      const isAnswerKeyHeader = isAnswerKeyStartPageText(text);
 
       if (isAnswerKeyHeader) {
         answerKeyStartPage = p;
@@ -312,21 +310,23 @@ export async function splitPdfForParallelExtraction(
       ];
     }
 
-    // Determine number of chunks (balanced distribution):
+    // Determine number of chunks (balanced distribution honoring maxPagesPerChunk budget):
     // 1-4 pages: single chunk
-    // 5-12 pages (e.g. Paper 5 [9 active pages] or Paper 4 [12 active pages]): 2 chunks (~5-6 pages each)
-    // 13-24 pages (e.g. 40-question Paper 2 [15 active pages]): 3 chunks (~5 pages each)
-    // 25+ pages: up to 4 chunks
-    const numChunks =
+    // 5+ pages: respect maxPagesPerChunk (e.g., dense Languages papers pass maxPagesPerChunk=4
+    // so chunks stay ~4-6 pages with ~10-14 questions instead of hitting 10 pages / 20+ questions).
+    const effectiveMax = Math.max(4, maxPagesPerChunk || 8);
+    const minChunksForBudget = Math.ceil(totalPages / effectiveMax);
+    const baseChunks =
       totalPages <= 4 ? 1 :
       totalPages <= 12 ? 2 :
       totalPages <= 24 ? 3 :
-      Math.min(4, Math.ceil(totalPages / maxPagesPerChunk));
+      4;
+    const numChunks = totalPages <= 4 ? 1 : Math.max(baseChunks, minChunksForBudget);
 
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
-    // Overlap for straddling questions (e.g. 2-3 page structured physics/chemistry/practical questions):
-    // Use 3-page overlap for 9+ page papers so 3-page questions (like Paper 5 Q1 or Paper 4 Q2) are never severed across chunks.
-    const overlapPages = totalPages >= 9 ? 3 : 2;
+    // Overlap for straddling questions / multi-page reading stimuli.
+    // Keep overlap at 2 pages when maxPagesPerChunk <= 5 so overlapping chunks stay compact.
+    const overlapPages = effectiveMax <= 5 ? 2 : (totalPages >= 9 ? 3 : 2);
 
     const chunks: PdfChunk[] = [];
 

@@ -2,10 +2,12 @@
 // Sends PDF pages to Google's multimodal AI for structured question extraction.
 // Features dynamic model discovery, auto-fallback, and retry.
 
-import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type Question, type SubQuestion } from '../types/database';
+import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type MarkScheme, type Question, type SubQuestion } from '../types/database';
 import type { PaperOutline } from './paperOutlineParse';
 import { getCambridgePracticalExtractionPrompt } from './practicalPrompt';
 import { getIeltsCefrExtractionPrompt } from './ieltsPrompt';
+import { buildMarkSchemeStrictnessBlock } from './markSchemePrompt';
+import { normalizeSubIdKey } from './markSchemeAudit';
 import type { SubjectProfile } from './subjectClassifier';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { cleanSvgContent } from '../components/ExamVisualRender';
@@ -183,7 +185,11 @@ export type SubjectDomain = 'stem' | 'humanities' | 'languages';
  * Builds the specialized STEM (Sciences, Math, Technology) extraction prompt.
  * Focuses on LaTeX math, chemical formulas ($CaCO_3$, equations), nuclide notation, titration tables, and circuit schematics.
  */
-export function getStemExtractionPrompt(includeGuidance: boolean = true, isIgcse: boolean = true): string {
+export function getStemExtractionPrompt(
+  includeGuidance: boolean = true,
+  isIgcse: boolean = true,
+  hasMarkScheme: boolean = false
+): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -600,10 +606,8 @@ CRITICAL FORMATTING RULES:
    - If a question asks to "Tick (✓) the conclusions/boxes", format choices as [ ] and put options array on that question/sub-question.
 8. In JSON strings, ALWAYS double-escape all LaTeX backslashes (\\\\rightarrow, \\\\rightleftharpoons, \\\\frac, \\\\Delta, \\\\text, \\\\times, \\\\ge, \\\\circ).
 9. MARK SCHEMES, ANSWER KEYS & AUTONOMOUS SOLUTION SYNTHESIS (CRITICAL):
-   - If a Mark Scheme PDF is attached or an answer key appears at the end of the document, extract the exact official marking points and acceptable answers.
-   - If NO Mark Scheme is attached (Question Paper only), you MUST solve every single question, sub-question, table completion, and scaffolded calculation step yourself using official Cambridge IGCSE/A-Level marking standards!
-     * For Multiple Choice: determine the exact correct letter (A, B, C, or D) and set "acceptable_answers": ["<Letter>"] and "marking_points": ["<Letter> — <concise scientific reason/working> [1]"].
-     * For Structured & Practical questions: provide every marking point with "[1]" mark allocations in each sub-question's "mark_scheme" (including balanced equations, state symbols, step-by-step mole calculations, qualitative observations with reagents, and 6-point experimental plans).
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
+   - For Structured & Practical questions without an explicit breakdown, ensure every marking point includes "[1]"/"[2]" allocations (balanced equations, state symbols, mole calculations, qualitative observations with reagents, and 6-point experimental plans).
 10. CURRENCY & PRICES: When transcribing prices or costs (e.g. $25, $1.50), write them as normal text without LaTeX delimiters to prevent math rendering conflicts.
 11. CAMBRIDGE PAPER 4 & PAPER 5 SUB-QUESTION CONTEXT & DIAGRAM PLACEMENT (CRITICAL):
    - In structured exams (Paper 4 Theory / Paper 5 Practical), questions often feature introductory setups for sections (a), (b), (c), (f) followed by sub-parts (i), (ii).
@@ -695,7 +699,8 @@ ${!isIgcse ? `13. NON-IGCSE & INDONESIAN TKA / UTBK / AKM / NATIONAL STEM EXAMS 
 export function getSaveMyExamsStemExtractionPrompt(
   includeGuidance: boolean = true,
   targetSection?: 'Easy' | 'Medium' | 'Hard',
-  topicHint?: string
+  topicHint?: string,
+  hasMarkScheme: boolean = false
 ): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
@@ -782,6 +787,7 @@ CRITICAL QUESTION FORMAT & MARKING RULES:
 
 7. SOLUTIONS & MARK SCHEME:
    - In "mark_scheme", provide the correct option letter in "acceptable_answers" (e.g. ["B"]) and the rationale in "marking_points".
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, true)}
 
 Output strictly valid JSON matching this exact schema:
 
@@ -867,7 +873,8 @@ Output strictly valid JSON matching this exact schema:
 export function getSaveMyExamsTheoryExtractionPrompt(
   includeGuidance: boolean = true,
   targetSection?: 'Easy' | 'Medium' | 'Hard',
-  topicHint?: string
+  topicHint?: string,
+  hasMarkScheme: boolean = false
 ): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
@@ -957,6 +964,7 @@ CRITICAL QUESTION FORMAT & MARKING RULES (STRUCTURED THEORY):
 
 6. MARK SCHEMES:
    - For every sub-question, provide a clear, rigorous mark scheme in "mark_scheme" indicating acceptable chemical terms, equations, reasoning, and mark breakdown (e.g. "[1]", "[2]").
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, true)}
 
 7. MULTI-PAGE STRADDLING QUESTIONS & CONTINUATIONS (CRITICAL):
    - Structured questions in Save My Exams packs regularly span across 2 pages (e.g. Question 2 across Pages 3 & 4; Question 3 across Pages 5 & 6; Question 4 across Pages 7 & 8; Question 6 across Pages 10 & 11).
@@ -1073,7 +1081,11 @@ export { getHumanitiesExtractionPrompt };
  * Focuses on reading passage preservation, 5-option MCQs (A-E/a-e), complex multiple select (Pilihan Ganda Kompleks),
  * matching/category tables (Menjodohkan), and in-PDF answer key/pembahasan parsing with 100% verbatim accuracy.
  */
-export function getLanguageExtractionPrompt(includeGuidance: boolean = true, isIgcse: boolean = true): string {
+export function getLanguageExtractionPrompt(
+  includeGuidance: boolean = true,
+  isIgcse: boolean = true,
+  hasMarkScheme: boolean = false
+): string {
   const guidanceSchemaSnippet = includeGuidance
     ? `,
       "guidance": [
@@ -1135,25 +1147,36 @@ Analyze the attached exam paper PDF page(s) and any mark scheme / answer key con
 
   return `${introText}
 
-Extract every numbered question (e.g. Question 1, 2, 3... 30) as a structured JSON object.
+Extract EVERY numbered question on the attached page(s) (whether 1–40, 1–50, or a subset inside this PDF slice) as a structured JSON object. NEVER stop early or skip questions when a chunk starts mid-paper or splits across a page break.
 
-CRITICAL READING COMPREHENSION & PASSAGE CATALOG RULES:
-1. ROOT "passages" ARRAY (EXTRACT EACH PASSAGE EXACTLY ONCE):
-   - When a reading passage, stimulus text, article, dialogue, or wacana applies to a question or group of questions (e.g. Text 1 applies to Questions 1–4; Text 4 applies to Questions 14–18):
+CRITICAL READING COMPREHENSION, INFOGRAPHIC & PASSAGE CATALOG RULES:
+1. ROOT "passages" ARRAY (RANGE-SCOPED IDs, EXTRACT EACH PASSAGE ONCE):
+   - When a reading passage, stimulus text, article, dialogue, or wacana applies to a question or group of questions (e.g. "(Teks untuk soal nomor 1-3)", "(Teks untuk soal nomor 13-15)", "(Teks untuk nomor 18 saja)", "Text 1: ..."):
    - Extract the entire reading text ONCE into the top-level "passages" array:
-     * "id": Unique identifier for the passage (e.g. "Text 1", "Text 2", "Passage A").
-     * "heading": The full text title/heading verbatim (e.g. "### Text 1: Exploring Komodo National Park (KNP)\\n(Descriptive/Expository Text, 4 Questions)").
+     * "id": ALWAYS scope the ID by its printed question range or title whenever one is printed or inferable (e.g. "Teks Q1-3", "Teks Q4-7", "Teks Q13-15", "Text 1 (Q1-4)"). NEVER reuse a generic "Text 1" ID across different reading passages or chunks!
+     * "heading": The full text title/heading verbatim (e.g. "(Teks untuk soal nomor 1-3)\\nBacalah teks laporan hasil observasi berikut!").
      * "body": Transcribe EVERY SINGLE WORD, SENTENCE, AND PARAGRAPH of the reading passage faithfully from top to bottom. ABSOLUTELY NEVER USE ELLIPSIS (...) OR TRUNCATE!
-     * "page_number": The PDF page number where this passage begins.
-     * "target_questions": Array of question numbers referencing this passage (e.g. ["1", "2", "3", "4"]).
+     * "page_number": The 1-indexed PDF page number within the attached chunk where this passage begins.
+     * "target_questions": Exact array of EVERY linked question number string (e.g. ["13", "14", "15"]).
    - In "questions":
-     * For EVERY question belonging to this passage, set "passage_ref": "<id>" (e.g. "passage_ref": "Text 1").
-     * In "question_text", DO NOT copy or duplicate the reading passage body! Include ONLY the question prompt/stem (e.g. "1. [Matching/Table] What is the main purpose of visitors coming to these places...").
-     * If a question is standalone and NOT based on any passage, set "passage_ref": null.
+     * For EVERY question belonging to this passage, set "passage_ref": "<exact id>" matching the passage's "id".
+     * In "question_text", DO NOT copy or duplicate the reading passage body! Include ONLY the question prompt/stem.
+     * If a question is standalone (or relies solely on an Infographic), set "passage_ref": null.
 
 2. EXTRACT 100% OF ALL QUESTIONS WITHOUT SKIPPING ANY:
-   - You MUST extract every numbered question (e.g. Question 1 to Question 30+) present across all pages.
-   - Never skip, merge, or omit any question. Maintain sequential order.
+   - You MUST extract EVERY numbered question present across ALL attached pages (e.g. Question 1 through Question 40+, never stop at 30).
+   - If a question's stem + options (e.g. Option A at bottom of one page, Options B–E at top of the next page) or its table/passage spans a page break, combine them into one complete Question object.
+   - Maintain sequential numbering as printed on the paper.
+
+2B. INFOGRAPHICS, POSTERS & VISUAL STIMULI ("(Infografis untuk soal nomor ...)", Charts, Advertisements):
+   - When pages print an infographic, poster, banner, map, or chart linked to one or more questions (e.g. "(Infografis untuk soal nomor 8-10)", "(Infografis utk soal nomor 16 & 17)", "(Infografis utk soal nomor 24-28)"):
+     * Attach it directly on EVERY question in that linked range (or at minimum on the anchor/first question and any question directly referencing "infografis tersebut"):
+       - "has_diagram": true
+       - "diagram_source": "qp"
+       - "resource_ref": "Infografis Q8-10" (matching the printed range)
+       - "page_number": the 1-indexed page WITHIN THE ATTACHED CHUNK where the infographic image visually appears (even if some linked questions appear on the following page)
+       - "bounding_box": [ymin, xmin, ymax, xmax] (0–1000 scale) tightly enclosing the infographic/poster graphic itself.
+     * NEVER skip a page simply because the top half is an infographic — always extract the questions below or on the next page and link them to the infographic!
 
 3. 5-OPTION MULTIPLE CHOICE QUESTIONS (A, B, C, D, E or a, b, c, d, e):
    - When a question has 5 options (A–E or a–e) and exactly 1 correct answer:
@@ -1185,10 +1208,12 @@ CRITICAL READING COMPREHENSION & PASSAGE CATALOG RULES:
    - Match each question number in the table (e.g. No. 1 to No. 30) with its question.
    - Extract the correct answer into "acceptable_answers" and "marking_points". Note: "MCC" means Multiple Choice Complex (Multiple Select) and "MC" means Multiple Choice.
    - Extract the complete pedagogical explanation / reasoning ("Pembahasan") verbatim into "guidance" or "marking_points". DO NOT summarize the Pembahasan!
+${buildMarkSchemeStrictnessBlock(hasMarkScheme, isIgcse)}
 
-7. STRICT VERBATIM LANGUAGE PRESERVATION (ZERO UNWANTED TRANSLATIONS):
+7. STRICT VERBATIM LANGUAGE & MIXED ARABIC / INDONESIAN BIDI PRESERVATION:
    - ABSOLUTELY NEVER translate English reading texts or questions into Indonesian.
    - ABSOLUTELY NEVER translate Indonesian instructions, headers, or "Pembahasan" into English.
+   - Preserve mixed Arabic + Indonesian/Latin text (e.g. PAI, Hadis, Qur'an verses, Arabic terms inside Indonesian sentences) in natural logical Unicode reading order, keeping Arabic diacritics/harakat intact; NEVER reverse Arabic characters or wrap Arabic words in LaTeX $...$ math delimiters.
    - Preserve the exact verbatim text and original language of all passages, questions, options, table rows, and explanations.
 
 8. STRICT PROHIBITION ON DUPLICATING OPTIONS IN QUESTION TEXT:
@@ -1320,24 +1345,25 @@ export function getExtractionPrompt(
   topicHint?: string,
   saveMyExamsPackType?: 'mcq' | 'theory',
   subjectProfile?: SubjectProfile,
-  isIeltsCefr: boolean = false
+  isIeltsCefr: boolean = false,
+  hasMarkScheme: boolean = false
 ): string {
   if (isSaveMyExams && domain === 'stem') {
     if (saveMyExamsPackType === 'theory') {
-      return getSaveMyExamsTheoryExtractionPrompt(includeGuidance, targetSection, topicHint);
+      return getSaveMyExamsTheoryExtractionPrompt(includeGuidance, targetSection, topicHint, hasMarkScheme);
     }
-    return getSaveMyExamsStemExtractionPrompt(includeGuidance, targetSection, topicHint);
+    return getSaveMyExamsStemExtractionPrompt(includeGuidance, targetSection, topicHint, hasMarkScheme);
   }
   if (domain === 'languages') {
     if (isIeltsCefr) {
-      return getIeltsCefrExtractionPrompt(includeGuidance);
+      return getIeltsCefrExtractionPrompt(includeGuidance, hasMarkScheme);
     }
-    return getLanguageExtractionPrompt(includeGuidance, isIgcse);
+    return getLanguageExtractionPrompt(includeGuidance, isIgcse, hasMarkScheme);
   }
   if (domain === 'humanities') {
-    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance, extractResourceCatalog, isIgcse, subjectProfile);
+    return getHumanitiesExtractionPrompt(hasInsert, includeGuidance, extractResourceCatalog, isIgcse, subjectProfile, hasMarkScheme);
   }
-  return getStemExtractionPrompt(includeGuidance, isIgcse);
+  return getStemExtractionPrompt(includeGuidance, isIgcse, hasMarkScheme);
 }
 
 /**
@@ -2233,6 +2259,60 @@ export async function testGeminiModelConnectivity(
 }
 
 /**
+ * Builds explicitly labeled Gemini multimodal content parts so the model keeps Question Paper,
+ * Insert Booklet, and Official Mark Scheme boundaries strictly separated.
+ */
+export function buildGeminiMultimodalParts(
+  promptText: string,
+  pdfBase64: string,
+  markSchemeBase64?: string,
+  insertBase64?: string
+): any[] {
+  const parts: any[] = [
+    { text: promptText },
+    {
+      text: '\n=== DOCUMENT 1: QUESTION PAPER (Extract questions, options, sub-parts, and printed marks strictly from this document) ===',
+    },
+    {
+      inlineData: {
+        mimeType: 'application/pdf',
+        data: pdfBase64,
+      },
+    },
+  ];
+
+  if (insertBase64) {
+    parts.push(
+      {
+        text: '\n=== DOCUMENT 2: INSERT / RESOURCE BOOKLET (Reference figures, maps, tables, and sources from this document) ===',
+      },
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: insertBase64,
+        },
+      }
+    );
+  }
+
+  if (markSchemeBase64) {
+    parts.push(
+      {
+        text: '\n=== DOCUMENT 3: OFFICIAL MARK SCHEME / ANSWER KEY (AUTHORITATIVE SOURCE OF TRUTH — Transcribe answers, marking points, and acceptable alternatives strictly from this document without overriding them) ===',
+      },
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: markSchemeBase64,
+        },
+      }
+    );
+  }
+
+  return parts;
+}
+
+/**
  * Helper to call a specific Gemini model endpoint with a custom prompt, target API key, and timeout.
  * Accepts optional markSchemeBase64 and insertBase64 (for Geography / Humanities insert booklets).
  * Respects the active API Key Tier ('paid' | 'free' | 'auto') and supports automatic failover in 'auto' mode.
@@ -2256,34 +2336,7 @@ async function callGeminiModel(
 
   for (const currentKey of candidateKeys) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${currentKey}`;
-
-    const parts: any[] = [
-      { text: promptText },
-      {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: pdfBase64,
-        },
-      },
-    ];
-
-    if (insertBase64) {
-      parts.push({
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: insertBase64,
-        },
-      });
-    }
-
-    if (markSchemeBase64) {
-      parts.push({
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: markSchemeBase64,
-        },
-      });
-    }
+    const parts = buildGeminiMultimodalParts(promptText, pdfBase64, markSchemeBase64, insertBase64);
 
     const controller = new AbortController();
     // Multi-document payloads (Question Paper + Insert Booklet + Mark Scheme) and heavier models
@@ -2489,7 +2542,8 @@ export async function extractQuestionsFromPdf(
         options.topicHint,
         options.saveMyExamsPackType,
         options.subjectProfile,
-        Boolean(options.isIeltsCefr)
+        Boolean(options.isIeltsCefr),
+        Boolean(markSchemeBase64)
       );
   if (practicalOutline) {
     onProgress?.(`Outline-constrained extraction (${practicalOutline.profile.key})…`);
@@ -2686,9 +2740,370 @@ export async function extractQuestionsFromPdf(
   return parsed;
 }
 
+async function collectQuestionVisionParts(
+  question: Partial<Question> & { sub_questions?: SubQuestion[] | null },
+  diagramUrlOverride?: string | null,
+  subDiagramUrls?: Record<string, string | null>
+): Promise<{ imageParts: any[]; svgNotes: string[] }> {
+  const imageParts: any[] = [];
+  const svgNotes: string[] = [];
+  const seenUrls = new Set<string>();
+  const qNum = question.question_number || '?';
+
+  const attachUrl = async (label: string, rawUrl?: string | null, svgText?: string | null) => {
+    const cleanUrl = (rawUrl || '').trim();
+    if (cleanUrl && !seenUrls.has(cleanUrl)) {
+      seenUrls.add(cleanUrl);
+      const inline = await urlToInlineData(cleanUrl);
+      if (inline && inline.mimeType !== 'image/svg+xml') {
+        imageParts.push({ text: label }, { inlineData: inline });
+        return;
+      }
+      if (inline && inline.mimeType === 'image/svg+xml') {
+        svgNotes.push(`${label} [Vector SVG graphic attached]`);
+        return;
+      }
+    }
+    if (svgText && !cleanUrl) {
+      svgNotes.push(`${label} [Parametric SVG graphic present]`);
+    }
+  };
+
+  await attachUrl(
+    `Diagram for Question ${qNum}:`,
+    diagramUrlOverride ?? question.diagram_url ?? null,
+    question.svg_content ?? null
+  );
+
+  for (const sq of question.sub_questions || []) {
+    const sqUrl = subDiagramUrls?.[sq.sub_id] ?? sq.diagram_url ?? null;
+    await attachUrl(
+      `Diagram for Question ${qNum} sub-part ${sq.sub_id}:`,
+      sqUrl,
+      sq.svg_content ?? null
+    );
+  }
+
+  return { imageParts, svgNotes };
+}
+
+async function callGeminiJsonWithFailover(
+  parts: any[],
+  config: {
+    temperature: number;
+    maxOutputTokens: number;
+    timeoutMs: number;
+    failurePrefix: string;
+  }
+): Promise<string> {
+  const keyPool = getGeminiApiKeys();
+  const primaryKey = getApiKeyForChunk(0) || keyPool[0];
+  if (!primaryKey) {
+    throw new Error(
+      'Missing VITE_GEMINI_API_KEY in .env.local. ' +
+      'Get your API key from https://aistudio.google.com/apikey'
+    );
+  }
+
+  const candidateKeys = Array.from(new Set([primaryKey, ...keyPool].filter(Boolean)));
+  const userConfiguredModel = getConfiguredGeminiModel();
+  const discoveredModels = await discoverAvailableModels(primaryKey);
+  const candidateModels = Array.from(
+    new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])
+  );
+
+  let lastError = '';
+
+  for (const model of candidateModels) {
+    for (const currentKey of candidateKeys) {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort(
+          new Error(`Timeout of ${config.timeoutMs / 1000}s exceeded while waiting for ${model}`)
+        );
+      }, config.timeoutMs);
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: config.temperature,
+              maxOutputTokens: config.maxOutputTokens,
+            },
+          }),
+        });
+
+        if (response.ok) {
+          const rawData = await response.json();
+          const text = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return text;
+          lastError = `Model ${model} returned an empty response.`;
+          break; // Same prompt on same model will stay empty; try next model
+        }
+
+        const errorBody = await response.text();
+        lastError = `Model ${model} returned (${response.status}): ${errorBody}`;
+
+        // Rotate API key on quota/overload; otherwise switch model on 404/400
+        if (response.status === 429 || response.status === 503) {
+          continue;
+        }
+        break;
+      } catch (err: any) {
+        lastError = err?.message || 'Network or timeout error';
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  throw new Error(`${config.failurePrefix}: ${lastError}`);
+}
+
+function matchReturnedSubQuestion<T extends { sub_id?: string }>(
+  returnedSubs: T[] | undefined,
+  sq: SubQuestion,
+  index: number,
+  expectedLength: number
+): T | undefined {
+  if (!Array.isArray(returnedSubs) || returnedSubs.length === 0) return undefined;
+  const targetKey = normalizeSubIdKey(sq.sub_id);
+  const exactNorm = returnedSubs.find((pSq) => normalizeSubIdKey(pSq.sub_id) === targetKey);
+  if (exactNorm) return exactNorm;
+  if (returnedSubs.length === expectedLength) return returnedSubs[index];
+  return undefined;
+}
+
+export interface GenerateMarkSchemeOptions {
+  markSchemePdfBase64?: string | null;
+  includeGuidance?: boolean;
+  diagramUrlOverride?: string | null;
+  subDiagramUrls?: Record<string, string | null>;
+}
+
+export interface GeneratedMarkSchemeResult {
+  mark_scheme: MarkScheme;
+  sub_questions?: SubQuestion[];
+  source: 'official_ms_realigned' | 'ai_generated';
+}
+
+/**
+ * Vision-aware per-question Mark Scheme Generator / Official MS Re-Aligner.
+ * - Mode A (markSchemePdfBase64 provided): locates Question + sub-parts inside the Official MS PDF and transcribes verbatim without overriding.
+ * - Mode B (QP/Question only): solves using attached raster diagrams + style/mark parity rules.
+ */
+export async function generateQuestionMarkScheme(
+  question: Partial<Question> & Pick<Question, 'question_number' | 'question_text'>,
+  options: GenerateMarkSchemeOptions = {}
+): Promise<GeneratedMarkSchemeResult> {
+  const effectiveMarks = Number((question as any).total_marks ?? question.marks ?? 0) || 1;
+  const style = normalizeQuestionStyle(question.question_style, question.options);
+  const includeGuidance = options.includeGuidance !== false;
+  const hasOfficialMs = Boolean(options.markSchemePdfBase64);
+
+  const { imageParts, svgNotes } = await collectQuestionVisionParts(
+    question,
+    options.diagramUrlOverride,
+    options.subDiagramUrls
+  );
+
+  const subQuestions = Array.isArray(question.sub_questions) ? question.sub_questions : [];
+  const dataTables = (question as any).data_tables || [];
+
+  const promptHeader = hasOfficialMs
+    ? `You are a Chief Examiner re-aligning an extracted exam question's Mark Scheme STRICTLY to the attached OFFICIAL MARK SCHEME PDF.
+- Locate Question "${question.question_number}" (and every printed sub-question in the list below) inside the Official Mark Scheme PDF.
+- TRANSCRIBE official answers, values, units, tolerances, equations, option letters, acceptable alternatives ("allow", "accept", "ora", "owtte", "ecf"), and rejected/ignored points VERBATIM from the PDF.
+- STRICT NO-OVERRIDE RULE: NEVER alter or override any official Mark Scheme answer with your own answer.
+- ONLY if a question or sub-part is genuinely absent or unreadable in the PDF, solve it to examiner standard and prepend "[NOT IN MARK SCHEME — AI SOLVED] " to the first marking point (or that sub-part's mark_scheme).`
+    : `You are a Chief Examiner creating a rigorous, unambiguous official-style Mark Scheme for a single exam question.
+- Inspect the question text, data tables, options, sub-questions, and ALL attached diagram image(s) carefully before solving.
+- STRICT MARK-TAG SUM PARITY: Break marking_points (and each sub-question's mark_scheme) into explicit "[1]" or "[2]" tags whose sum equals ${effectiveMarks} total marks (or state "(max ${effectiveMarks})" if listing acceptable alternatives).
+- STYLE RULES (${style}):
+  * Multiple Choice: set "acceptable_answers" to the single exact option letter ["B"] and "marking_points" to ["B — <concise justification> [1]"].
+  * Multiple Select: set "acceptable_answers" to comma-separated letters ["A, C"] and "marking_points" to ["A, C — <justification> [2]"].
+  * Table Choice: output exactly 1 marking point per table statement row in order (e.g. "Row 1: Tepat [1]").
+  * Fill in the Blank: output 1 entry per numbered blank matching the gap number (e.g. "[1] exact answer [1]") plus synonymous forms in acceptable_answers.
+  * Calculation: award explicit M1 formula/method, working/substitution, final numerical answer + units, and include Cambridge 2–3 s.f. / tolerance / equivalent unit variants in "acceptable_answers".`;
+
+  const guidanceSchemaHint = includeGuidance
+    ? `,
+    "guidance": ["Examiner marking notes: allowable methods (M1/A1), ecf rules, or unit rules"],
+    "common_misconceptions": ["Typical student mistake or distractor trap"]`
+    : '';
+
+  const subSchemaHint =
+    subQuestions.length > 0
+      ? `,
+  "sub_questions": [
+    {
+      "sub_id": "${subQuestions[0]?.sub_id || '(a)'}",
+      "mark_scheme": "Concise official marking points with [1] / [2] tags summing to printed marks"${
+        includeGuidance
+          ? `,
+      "guidance": "Examiner tip for this sub-part",
+      "common_misconceptions": ["Common student error for this sub-part"]`
+          : ''
+      }
+    }
+  ]`
+      : '';
+
+  const promptText = `${promptHeader}
+
+QUESTION TO PROCESS:
+- Question Number: ${question.question_number}
+- Topic: ${question.topic || 'General'}${question.sub_topic ? ` -> ${question.sub_topic}` : ''}
+- Style: ${style}
+- Printed Total Marks: ${effectiveMarks}
+- Question Text:
+${question.question_text || ''}
+- Options: ${question.options && question.options.length > 0 ? JSON.stringify(question.options) : 'None'}
+- Data Tables: ${dataTables.length > 0 ? JSON.stringify(dataTables) : 'None'}
+- Sub-questions (${subQuestions.length}): ${JSON.stringify(
+    subQuestions.map((sq) => ({
+      sub_id: sq.sub_id,
+      question_text: sq.question_text,
+      marks: sq.marks,
+      data_tables: sq.data_tables,
+      options: sq.options,
+    }))
+  )}
+- Existing Mark Scheme (for reference only — verify/fix against ${hasOfficialMs ? 'Official MS PDF' : 'question & diagrams'}): ${JSON.stringify(question.mark_scheme || {})}
+${svgNotes.length > 0 ? `- Visual notes: ${svgNotes.join('; ')}` : ''}
+
+Return strictly valid JSON matching this schema (double-escape all LaTeX backslashes, no markdown fences, no commentary):
+{
+  "mark_scheme": {
+    "marking_points": ["Step / answer point [1]"],
+    "acceptable_answers": ["Exact letter or numeric/unit equivalents"]${guidanceSchemaHint}
+  }${subSchemaHint}
+}`;
+
+  const parts: any[] = [{ text: promptText }];
+  if (options.markSchemePdfBase64) {
+    parts.push(
+      {
+        text: '\n=== DOCUMENT: OFFICIAL MARK SCHEME PDF (AUTHORITATIVE SOURCE OF TRUTH) ===',
+      },
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: options.markSchemePdfBase64,
+        },
+      }
+    );
+  }
+  if (imageParts.length > 0) {
+    parts.push(...imageParts);
+  }
+
+  const rawText = await callGeminiJsonWithFailover(parts, {
+    temperature: 0.0,
+    maxOutputTokens: 8192,
+    timeoutMs: hasOfficialMs ? 90000 : 60000,
+    failurePrefix: hasOfficialMs
+      ? 'Failed to re-align mark scheme from official PDF'
+      : 'Failed to generate mark scheme',
+  });
+
+  const parsed = parseRobustJson<{
+    mark_scheme?: {
+      marking_points?: string[];
+      acceptable_answers?: string[];
+      guidance?: string[];
+      common_misconceptions?: string[];
+    };
+    sub_questions?: Array<{
+      sub_id: string;
+      mark_scheme?: string;
+      guidance?: string;
+      common_misconceptions?: string[];
+    }>;
+  }>(rawText);
+
+  const preservedMeta: Record<string, unknown> = {};
+  if (question.mark_scheme && typeof question.mark_scheme === 'object') {
+    for (const [k, v] of Object.entries(question.mark_scheme)) {
+      if (k.startsWith('_') && v !== undefined) {
+        preservedMeta[k] = v;
+      }
+    }
+  }
+
+  const cleanedPoints = (parsed.mark_scheme?.marking_points || [])
+    .map((pt) => ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(String(pt || ''))))
+    .filter((pt) => pt.trim().length > 0);
+  const cleanedAcceptable = (parsed.mark_scheme?.acceptable_answers || [])
+    .map((ans) => ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(String(ans || ''))))
+    .filter((ans) => ans.trim().length > 0);
+  const cleanedGuidance = (parsed.mark_scheme?.guidance || [])
+    .map((g) => ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(String(g || ''))))
+    .filter((g) => g.trim().length > 0);
+  const cleanedMisc = (parsed.mark_scheme?.common_misconceptions || [])
+    .map((m) => ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(String(m || ''))))
+    .filter((m) => m.trim().length > 0);
+
+  let mergedSubQuestions: SubQuestion[] | undefined = undefined;
+  if (subQuestions.length > 0) {
+    mergedSubQuestions = subQuestions.map((sq, idx) => {
+      const match = matchReturnedSubQuestion(parsed.sub_questions, sq, idx, subQuestions.length);
+      if (!match) return sq;
+      const nextMs =
+        typeof match.mark_scheme === 'string' && match.mark_scheme.trim()
+          ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(match.mark_scheme))
+          : sq.mark_scheme;
+      const nextGuidance =
+        typeof match.guidance === 'string' && match.guidance.trim()
+          ? ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(match.guidance))
+          : sq.guidance;
+      const nextMisc =
+        Array.isArray(match.common_misconceptions) && match.common_misconceptions.length > 0
+          ? match.common_misconceptions.map((m) =>
+              ensureInlineMathDelimiters(cleanExtAndLatexArtifacts(String(m || '')))
+            )
+          : sq.common_misconceptions;
+      return {
+        ...sq,
+        mark_scheme: nextMs,
+        guidance: nextGuidance,
+        common_misconceptions: nextMisc,
+      };
+    });
+  }
+
+  const nextMarkScheme: MarkScheme = {
+    ...preservedMeta,
+    marking_points: cleanedPoints.length > 0 ? cleanedPoints : question.mark_scheme?.marking_points || [],
+    acceptable_answers: cleanedAcceptable,
+    ...(cleanedGuidance.length > 0
+      ? { guidance: cleanedGuidance }
+      : question.mark_scheme?.guidance
+        ? { guidance: question.mark_scheme.guidance }
+        : {}),
+    ...(cleanedMisc.length > 0
+      ? { common_misconceptions: cleanedMisc }
+      : question.mark_scheme?.common_misconceptions
+        ? { common_misconceptions: question.mark_scheme.common_misconceptions }
+        : {}),
+  };
+
+  return {
+    mark_scheme: nextMarkScheme,
+    sub_questions: mergedSubQuestions,
+    source: hasOfficialMs ? 'official_ms_realigned' : 'ai_generated',
+  };
+}
+
 /**
  * On-demand AI enrichment: Generates teacher marking guidance, examiner tips,
- * and common student misconceptions for a single existing Question.
+ * and common student misconceptions for a single existing Question (vision-aware).
  */
 export async function enrichQuestionWithGuidance(
   question: Question
@@ -2697,23 +3112,10 @@ export async function enrichQuestionWithGuidance(
   common_misconceptions: string[];
   sub_questions?: SubQuestion[];
 }> {
-  const activeKey = getApiKeyForChunk(0);
-  if (!activeKey) {
-    throw new Error(
-      'Missing VITE_GEMINI_API_KEY in .env.local. ' +
-      'Get your API key from https://aistudio.google.com/apikey'
-    );
-  }
-
-  const userConfiguredModel = getConfiguredGeminiModel();
-  // Prioritize configured model
-  const discoveredModels = await discoverAvailableModels(activeKey);
-  const candidateModels = Array.from(
-    new Set([userConfiguredModel, ...discoveredModels].filter(Boolean) as string[])
-  );
+  const { imageParts, svgNotes } = await collectQuestionVisionParts(question);
 
   const prompt = `You are a chief examiner and educational assessment expert.
-Analyze this exam question and generate actionable teacher marking guidance and common student misconceptions:
+Analyze this exam question (and any attached diagram images) and generate actionable teacher marking guidance and common student misconceptions:
 
 Question:
 Topic: ${question.topic || 'General'}
@@ -2723,6 +3125,7 @@ Total Marks: ${question.marks}
 Options: ${question.options ? JSON.stringify(question.options) : 'N/A'}
 Sub-questions: ${JSON.stringify(question.sub_questions || [])}
 Existing Mark Scheme: ${JSON.stringify(question.mark_scheme || {})}
+${svgNotes.length > 0 ? `Visual notes: ${svgNotes.join('; ')}` : ''}
 
 Return strictly valid JSON with this schema (no markdown formatting, no commentary):
 {
@@ -2741,39 +3144,13 @@ Return strictly valid JSON with this schema (no markdown formatting, no commenta
   ]
 }`;
 
-  let response: Response | null = null;
-  let lastError = '';
-
-  for (const model of candidateModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-            maxOutputTokens: 2048,
-          },
-        }),
-      });
-
-      if (response.ok) break;
-      lastError = await response.text();
-    } catch (e: any) {
-      lastError = e?.message || 'Network error';
-    }
-  }
-
-  if (!response || !response.ok) {
-    throw new Error(`Failed to enrich question with AI guidance: ${lastError}`);
-  }
-
-  const rawData = await response.json();
-  const text = rawData.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('AI returned empty response for guidance enrichment.');
+  const parts: any[] = [{ text: prompt }, ...imageParts];
+  const text = await callGeminiJsonWithFailover(parts, {
+    temperature: 0.2,
+    maxOutputTokens: 4096,
+    timeoutMs: 60000,
+    failurePrefix: 'Failed to enrich question with AI guidance',
+  });
 
   const parsed = parseRobustJson<{
     guidance: string[];
@@ -2781,11 +3158,11 @@ Return strictly valid JSON with this schema (no markdown formatting, no commenta
     sub_questions?: { sub_id: string; guidance?: string; common_misconceptions?: string[] }[];
   }>(text);
 
-  // Merge sub-question guidance back into existing sub_questions if present
+  // Merge sub-question guidance back into existing sub_questions using normalized sub_id matching
   let mergedSubQuestions: SubQuestion[] | undefined = undefined;
   if (question.sub_questions && question.sub_questions.length > 0) {
-    mergedSubQuestions = question.sub_questions.map((sq) => {
-      const match = parsed.sub_questions?.find((pSq) => pSq.sub_id === sq.sub_id);
+    mergedSubQuestions = question.sub_questions.map((sq, idx) => {
+      const match = matchReturnedSubQuestion(parsed.sub_questions, sq, idx, question.sub_questions!.length);
       return {
         ...sq,
         guidance: match?.guidance || sq.guidance,

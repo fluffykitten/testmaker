@@ -25,6 +25,8 @@ export interface SubjectProfile {
   isOptionalChoicePaper: boolean;
   /** Multi-skill IELTS / CEFR English proficiency exam (Listening, Reading, Writing). */
   isIeltsCefr?: boolean;
+  /** National / non-Cambridge curriculum (e.g. Indonesian TKA, AKM, Kurikulum Merdeka). */
+  isNonCambridge?: boolean;
   /** Printed paper total. Only set where verified against a real paper. */
   standardTotalMarks?: number;
 }
@@ -91,6 +93,7 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   '1123': { syllabusCode: '1123', subjectName: 'English Language', domain: 'languages', hasInsertByDefault: true, hasInPaperStimulus: false, isOptionalChoicePaper: false },
   '9093': { syllabusCode: '9093', subjectName: 'English Language (AS/A Level)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
+  'BI': { syllabusCode: 'BI', subjectName: 'Bahasa Indonesia', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
 };
 
 /** Neutral profile for a humanities paper whose syllabus could not be identified. */
@@ -136,6 +139,20 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'code',
       evidence: syllabusCode,
+    };
+  }
+
+  // Detect Indonesian Bahasa Indonesia / TKA / AKM Literacy covers
+  if (
+    /\bBAHASA\s+INDONESIA\b/i.test(haystack) ||
+    /\b(?:TKA|AKM|SAS|PAS|PAT)\b.*\bBAHASA\s+INDONESIA\b/i.test(haystack)
+  ) {
+    return {
+      profile: SYLLABUS_REGISTRY['BI'],
+      syllabusCode: 'BI',
+      paperCode,
+      method: 'title',
+      evidence: 'Bahasa Indonesia',
     };
   }
 
