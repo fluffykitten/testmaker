@@ -14,7 +14,7 @@
 
 .sdo-modal {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1280px;
   max-height: 90vh;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -447,6 +447,11 @@
   color: #a5b4fc;
 }
 
+.sdo-subject-chip-time {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
 .sdo-day-status-row {
   display: flex;
   flex-wrap: wrap;
@@ -604,6 +609,60 @@
   border-radius: 6px;
   background: var(--color-surface-sunken);
   color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.sdo-col-time {
+  min-width: 155px;
+}
+
+.sdo-time-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sdo-time-window {
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sdo-time-window--scheduled {
+  color: #1d4ed8;
+}
+
+.sdo-time-window--open {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+:root.dark .sdo-time-window--scheduled {
+  color: #93c5fd;
+}
+
+.sdo-time-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.sdo-duration-pill {
+  font-size: 0.69rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.sdo-timetable-hint {
+  font-size: 0.69rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
   white-space: nowrap;
 }
 

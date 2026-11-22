@@ -21,6 +21,12 @@ import {
 } from '../lib/readingPassageUtils';
 import { formatPaperLabel } from '../utils/paperUtils';
 import { validateCambridgeHubUrl } from '../services/questionBankService';
+import {
+  normalizeDiagramUrlList,
+  normalizeOptionDiagramList,
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+} from '../utils/questionDiagramUtils';
 import './ExtractionReview.css';
 
 interface ExtractionReviewProps {
@@ -45,6 +51,8 @@ interface ExtractionReviewProps {
 interface CropTarget {
   qIdx: number;
   subIdx?: number;
+  imageIndex?: number;
+  optionIndex?: number;
   key: string;
   questionNumber: string;
   initialBox?: [number, number, number, number] | null;
@@ -143,6 +151,76 @@ export function ExtractionReview({
       return diagramUrls.get(key) || fallback || null;
     },
     [diagramUrls, removedDiagramKeys]
+  );
+
+  const getStemDiagramEntries = useCallback(
+    (q: ExtractedQuestion): Array<{ key: string; url: string; index: number }> => {
+      const seenUrls = new Set<string>();
+      const entries: Array<{ key: string; url: string; index: number }> = [];
+
+      const primaryUrl = getDiagramUrl(q.question_number, (q as any).diagram_url);
+      if (primaryUrl && !seenUrls.has(primaryUrl)) {
+        seenUrls.add(primaryUrl);
+        entries.push({ key: q.question_number, url: primaryUrl, index: 0 });
+      }
+
+      const extraUrls = Array.isArray(q.diagram_urls) ? q.diagram_urls : [];
+      extraUrls.forEach((rawUrl, i) => {
+        const key = i === 0 ? q.question_number : `${q.question_number}__img_${i}`;
+        const url = getDiagramUrl(key, rawUrl);
+        if (url && !seenUrls.has(url)) {
+          seenUrls.add(url);
+          entries.push({ key, url, index: i });
+        }
+      });
+
+      // Also include any diagramUrls map entries keyed as `${q.question_number}__img_*`
+      for (const [k, url] of diagramUrls.entries()) {
+        if (k.startsWith(`${q.question_number}__img_`) && !removedDiagramKeys.has(k) && !seenUrls.has(url)) {
+          const suffixIdx = Number(k.slice(`${q.question_number}__img_`.length));
+          seenUrls.add(url);
+          entries.push({ key: k, url, index: isNaN(suffixIdx) ? entries.length : suffixIdx });
+        }
+      }
+
+      return entries;
+    },
+    [diagramUrls, removedDiagramKeys, getDiagramUrl]
+  );
+
+  const getSubDiagramEntries = useCallback(
+    (q: ExtractedQuestion, sub: SubQuestion, si: number): Array<{ key: string; url: string; index: number }> => {
+      const subBaseKey = `${q.question_number}_sub_${si}`;
+      const seenUrls = new Set<string>();
+      const entries: Array<{ key: string; url: string; index: number }> = [];
+
+      const primaryUrl = getDiagramUrl(subBaseKey, sub.diagram_url);
+      if (primaryUrl && !seenUrls.has(primaryUrl)) {
+        seenUrls.add(primaryUrl);
+        entries.push({ key: subBaseKey, url: primaryUrl, index: 0 });
+      }
+
+      const extraUrls = Array.isArray(sub.diagram_urls) ? sub.diagram_urls : [];
+      extraUrls.forEach((rawUrl, i) => {
+        const key = i === 0 ? subBaseKey : `${subBaseKey}__img_${i}`;
+        const url = getDiagramUrl(key, rawUrl);
+        if (url && !seenUrls.has(url)) {
+          seenUrls.add(url);
+          entries.push({ key, url, index: i });
+        }
+      });
+
+      for (const [k, url] of diagramUrls.entries()) {
+        if (k.startsWith(`${subBaseKey}__img_`) && !removedDiagramKeys.has(k) && !seenUrls.has(url)) {
+          const suffixIdx = Number(k.slice(`${subBaseKey}__img_`.length));
+          seenUrls.add(url);
+          entries.push({ key: k, url, index: isNaN(suffixIdx) ? entries.length : suffixIdx });
+        }
+      }
+
+      return entries;
+    },
+    [diagramUrls, removedDiagramKeys, getDiagramUrl]
   );
 
   const handleRebuildMarkScheme = useCallback(
@@ -1260,32 +1338,37 @@ export function ExtractionReview({
                 )}
               </div>
 
-              {/* ─── Parent Question Diagram ──────────────────────────────── */}
+              {/* ─── Parent Question Diagrams (Multi-Image Supported) ──────── */}
               {(() => {
-                const parentDiagramUrl = getDiagramUrl(q.question_number, (q as any).diagram_url);
-                if (!parentDiagramUrl) {
+                const stemEntries = getStemDiagramEntries(q);
+                const isInsert = q.diagram_source === 'insert';
+                const targetPage = isInsert
+                  ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1)
+                  : (q.page_number && q.page_number > 0 ? q.page_number : 1);
+
+                const openAddParentCrop = () => {
+                  const nextIdx = stemEntries.length;
+                  const nextKey = nextIdx === 0 ? q.question_number : `${q.question_number}__img_${nextIdx}`;
+                  setCropTarget({
+                    qIdx: idx,
+                    imageIndex: nextIdx,
+                    key: nextKey,
+                    questionNumber: nextIdx === 0 ? `Question ${q.question_number}` : `Question ${q.question_number} (Fig. ${nextIdx + 1})`,
+                    initialBox: q.bounding_box,
+                    initialPage: targetPage,
+                    initialQpPage: q.page_number || 1,
+                    initialInsertPage: q.insert_page_number || 1,
+                    initialSourceType: isInsert ? 'insert' : 'qp',
+                  });
+                };
+
+                if (stemEntries.length === 0) {
                   return (
                     <div className="review-diagram-bar">
                       <button
                         type="button"
                         className="review-add-diagram-btn"
-                        onClick={() => {
-                          const isInsert = q.diagram_source === 'insert';
-                          const targetPage = isInsert
-                            ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1)
-                            : (q.page_number && q.page_number > 0 ? q.page_number : 1);
-
-                          setCropTarget({
-                            qIdx: idx,
-                            key: q.question_number,
-                            questionNumber: `Question ${q.question_number}`,
-                            initialBox: q.bounding_box,
-                            initialPage: targetPage,
-                            initialQpPage: q.page_number || 1,
-                            initialInsertPage: q.insert_page_number || 1,
-                            initialSourceType: isInsert ? 'insert' : 'qp',
-                          });
-                        }}
+                        onClick={openAddParentCrop}
                       >
                         + 📸 Add/Crop Main Diagram
                       </button>
@@ -1294,69 +1377,87 @@ export function ExtractionReview({
                 }
 
                 return (
-                  <div className="review-diagram">
-                    <div className="review-diagram-wrap">
-                      <img
-                        src={parentDiagramUrl}
-                        alt={`Diagram for Q${q.question_number}`}
-                        className="review-diagram-img"
-                      />
-                      <div className="review-diagram-overlay-actions">
-                        <button
-                          type="button"
-                          className="review-crop-btn"
-                          onClick={() => {
-                            const isInsert = q.diagram_source === 'insert';
-                            const targetPage = isInsert
-                              ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1)
-                              : (q.page_number && q.page_number > 0 ? q.page_number : 1);
-
-                            setCropTarget({
-                              qIdx: idx,
-                              key: q.question_number,
-                              questionNumber: `Question ${q.question_number}`,
-                              initialBox: q.bounding_box,
-                              initialPage: targetPage,
-                              initialQpPage: q.page_number || 1,
-                              initialInsertPage: q.insert_page_number || 1,
-                              initialSrc: parentDiagramUrl,
-                              initialSourceType: isInsert ? 'insert' : 'qp',
-                            });
-                          }}
-                          title="Fine-tune diagram boundaries"
-                        >
-                          ✂️ Adjust Crop
-                        </button>
-                        <button
-                          type="button"
-                          className="review-crop-btn review-crop-btn--remove"
-                          onClick={() => {
-                            setRemovedDiagramKeys((prev) => new Set(prev).add(q.question_number));
-                            onRemoveDiagram?.(q.question_number);
-                            setQuestions((prev) => {
-                              const next = [...prev];
-                              if (next[idx]) {
-                                next[idx] = {
-                                  ...next[idx],
-                                  has_diagram: false,
-                                  diagram_url: null,
-                                  svg_content: null,
-                                  ai_diagram_prompt: null,
-                                  diagram_source: null,
-                                  resource_ref: null,
-                                  bounding_box: null,
-                                };
-                              }
-                              result.questions = next;
-                              return next;
-                            });
-                          }}
-                          title="Remove diagram"
-                        >
-                          🗑️ Remove
-                        </button>
+                  <div className="review-diagrams-gallery">
+                    {stemEntries.map((entry, ePos) => (
+                      <div key={entry.key} className="review-diagram-card">
+                        {stemEntries.length > 1 && (
+                          <span className="review-diagram-fig-label">Figure {ePos + 1}</span>
+                        )}
+                        <img
+                          src={entry.url}
+                          alt={`Diagram ${ePos + 1} for Q${q.question_number}`}
+                          className="review-diagram-img"
+                        />
+                        <div className="review-diagram-overlay-actions">
+                          <button
+                            type="button"
+                            className="review-crop-btn"
+                            onClick={() => {
+                              setCropTarget({
+                                qIdx: idx,
+                                imageIndex: entry.index,
+                                key: entry.key,
+                                questionNumber: `Question ${q.question_number} (Fig. ${ePos + 1})`,
+                                initialBox: q.bounding_box,
+                                initialPage: targetPage,
+                                initialQpPage: q.page_number || 1,
+                                initialInsertPage: q.insert_page_number || 1,
+                                initialSrc: entry.url,
+                                initialSourceType: isInsert ? 'insert' : 'qp',
+                              });
+                            }}
+                            title="Fine-tune diagram boundaries"
+                          >
+                            ✂️ Adjust Crop
+                          </button>
+                          <button
+                            type="button"
+                            className="review-crop-btn review-crop-btn--remove"
+                            onClick={() => {
+                              setRemovedDiagramKeys((prev) => new Set(prev).add(entry.key));
+                              onRemoveDiagram?.(entry.key);
+                              setQuestions((prev) => {
+                                const next = [...prev];
+                                if (next[idx]) {
+                                  const remaining = stemEntries
+                                    .filter((other) => other.key !== entry.key)
+                                    .map((other) => other.url);
+                                  next[idx] = {
+                                    ...next[idx],
+                                    has_diagram: remaining.length > 0,
+                                    diagram_url: remaining[0] || null,
+                                    diagram_urls: remaining.length > 0 ? remaining : null,
+                                    ...(remaining.length === 0
+                                      ? {
+                                          svg_content: null,
+                                          ai_diagram_prompt: null,
+                                          diagram_source: null,
+                                          resource_ref: null,
+                                          bounding_box: null,
+                                        }
+                                      : {}),
+                                  };
+                                }
+                                result.questions = next;
+                                return next;
+                              });
+                            }}
+                            title="Remove diagram"
+                          >
+                            🗑️ Remove
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="review-add-diagram-btn"
+                      style={{ alignSelf: 'center' }}
+                      onClick={openAddParentCrop}
+                      title="Crop an additional figure for this question"
+                    >
+                      + 📸 Add Another Diagram
+                    </button>
                   </div>
                 );
               })()}
@@ -1365,9 +1466,6 @@ export function ExtractionReview({
               {q.sub_questions && q.sub_questions.length > 0 && (
                 <div className="review-sub-questions">
                   {q.sub_questions.map((sub, si) => {
-                    const subDiagramKey = `${q.question_number}_sub_${si}`;
-                    const subDiagramUrl = getDiagramUrl(subDiagramKey, sub.diagram_url);
-
                     return (
                       <div key={si} className="review-sub-question">
                         <div className="review-sub-header">
@@ -1458,99 +1556,132 @@ export function ExtractionReview({
                           )}
                         </div>
 
-                        {/* Sub-Question Diagram Preview & Snip Controls */}
-                        {subDiagramUrl ? (
-                          <div className="review-sub-diagram-container">
-                            <img
-                              src={subDiagramUrl}
-                              alt={`Diagram for ${sub.sub_id}`}
-                              className="review-sub-diagram-img"
-                            />
-                            <div className="review-sub-diagram-actions">
-                              <button
-                                type="button"
-                                className="review-sub-crop-btn"
-                                onClick={() => {
-                                  const isSubInsert = sub.diagram_source === 'insert' || (!sub.diagram_source && q.diagram_source === 'insert' && !sub.page_number);
-                                  const subTargetPage = isSubInsert
-                                    ? (sub.insert_page_number && sub.insert_page_number > 0 ? sub.insert_page_number : (q.insert_page_number || 1))
-                                    : (sub.page_number && sub.page_number > 0 ? sub.page_number : (q.page_number || 1));
+                        {/* Sub-Question Multi-Image Diagram Preview & Snip Controls */}
+                        {(() => {
+                          const subEntries = getSubDiagramEntries(q, sub, si);
+                          const subBaseKey = `${q.question_number}_sub_${si}`;
+                          const isSubInsert = sub.diagram_source === 'insert' || (!sub.diagram_source && q.diagram_source === 'insert' && !sub.page_number);
+                          const subTargetPage = isSubInsert
+                            ? (sub.insert_page_number && sub.insert_page_number > 0 ? sub.insert_page_number : (q.insert_page_number || 1))
+                            : (sub.page_number && sub.page_number > 0 ? sub.page_number : (q.page_number || 1));
 
-                                  setCropTarget({
-                                    qIdx: idx,
-                                    subIdx: si,
-                                    key: subDiagramKey,
-                                    questionNumber: `Question ${q.question_number} ${sub.sub_id}`,
-                                    initialBox: sub.bounding_box || q.bounding_box,
-                                    initialPage: subTargetPage,
-                                    initialQpPage: sub.page_number || q.page_number || 1,
-                                    initialInsertPage: sub.insert_page_number || q.insert_page_number || 1,
-                                    initialSrc: subDiagramUrl,
-                                    initialSourceType: isSubInsert ? 'insert' : 'qp',
-                                  });
-                                }}
-                              >
-                                ✂️ Re-crop
-                              </button>
-                              <button
-                                type="button"
-                                className="review-sub-crop-btn review-sub-crop-btn--remove"
-                                onClick={() => {
-                                  setRemovedDiagramKeys((prev) => new Set(prev).add(subDiagramKey));
-                                  onRemoveDiagram?.(subDiagramKey);
-                                  setQuestions((prev) => {
-                                    const next = [...prev];
-                                    const subs = [...(next[idx]?.sub_questions || [])];
-                                    if (subs[si]) {
-                                      subs[si] = {
-                                        ...subs[si],
-                                        diagram_url: null,
-                                        has_diagram: false,
-                                        svg_content: null,
-                                        ai_diagram_prompt: null,
-                                        diagram_source: null,
-                                        resource_ref: null,
-                                        bounding_box: null,
-                                      };
-                                      next[idx] = { ...next[idx], sub_questions: subs };
-                                    }
-                                    result.questions = next;
-                                    return next;
-                                  });
-                                }}
-                              >
-                                🗑️ Remove
-                              </button>
+                          const openAddSubCrop = () => {
+                            const nextIdx = subEntries.length;
+                            const nextKey = nextIdx === 0 ? subBaseKey : `${subBaseKey}__img_${nextIdx}`;
+                            setCropTarget({
+                              qIdx: idx,
+                              subIdx: si,
+                              imageIndex: nextIdx,
+                              key: nextKey,
+                              questionNumber: `Question ${q.question_number} ${sub.sub_id}${nextIdx > 0 ? ` (Fig. ${nextIdx + 1})` : ''}`,
+                              initialBox: sub.bounding_box || q.bounding_box,
+                              initialPage: subTargetPage,
+                              initialQpPage: sub.page_number || q.page_number || 1,
+                              initialInsertPage: sub.insert_page_number || q.insert_page_number || 1,
+                              initialSourceType: isSubInsert ? 'insert' : 'qp',
+                            });
+                          };
+
+                          if (subEntries.length === 0) {
+                            return (
+                              <div className="review-sub-diagram-trigger-bar">
+                                <button
+                                  type="button"
+                                  className="review-sub-add-diagram-btn"
+                                  onClick={openAddSubCrop}
+                                >
+                                  + 📸 Add Diagram to {sub.sub_id}
+                                </button>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              {subEntries.map((entry, ePos) => (
+                                <div key={entry.key} className="review-sub-diagram-container">
+                                  {subEntries.length > 1 && (
+                                    <span className="review-diagram-fig-label">Figure {ePos + 1}</span>
+                                  )}
+                                  <img
+                                    src={entry.url}
+                                    alt={`Diagram ${ePos + 1} for ${sub.sub_id}`}
+                                    className="review-sub-diagram-img"
+                                  />
+                                  <div className="review-sub-diagram-actions">
+                                    <button
+                                      type="button"
+                                      className="review-sub-crop-btn"
+                                      onClick={() => {
+                                        setCropTarget({
+                                          qIdx: idx,
+                                          subIdx: si,
+                                          imageIndex: entry.index,
+                                          key: entry.key,
+                                          questionNumber: `Question ${q.question_number} ${sub.sub_id} (Fig. ${ePos + 1})`,
+                                          initialBox: sub.bounding_box || q.bounding_box,
+                                          initialPage: subTargetPage,
+                                          initialQpPage: sub.page_number || q.page_number || 1,
+                                          initialInsertPage: sub.insert_page_number || q.insert_page_number || 1,
+                                          initialSrc: entry.url,
+                                          initialSourceType: isSubInsert ? 'insert' : 'qp',
+                                        });
+                                      }}
+                                    >
+                                      ✂️ Re-crop
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="review-sub-crop-btn review-sub-crop-btn--remove"
+                                      onClick={() => {
+                                        setRemovedDiagramKeys((prev) => new Set(prev).add(entry.key));
+                                        onRemoveDiagram?.(entry.key);
+                                        setQuestions((prev) => {
+                                          const next = [...prev];
+                                          const subs = [...(next[idx]?.sub_questions || [])];
+                                          if (subs[si]) {
+                                            const remaining = subEntries
+                                              .filter((other) => other.key !== entry.key)
+                                              .map((other) => other.url);
+                                            subs[si] = {
+                                              ...subs[si],
+                                              diagram_url: remaining[0] || null,
+                                              diagram_urls: remaining.length > 0 ? remaining : null,
+                                              has_diagram: remaining.length > 0,
+                                              ...(remaining.length === 0
+                                                ? {
+                                                    svg_content: null,
+                                                    ai_diagram_prompt: null,
+                                                    diagram_source: null,
+                                                    resource_ref: null,
+                                                    bounding_box: null,
+                                                  }
+                                                : {}),
+                                            };
+                                            next[idx] = { ...next[idx], sub_questions: subs };
+                                          }
+                                          result.questions = next;
+                                          return next;
+                                        });
+                                      }}
+                                    >
+                                      🗑️ Remove
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                              <div>
+                                <button
+                                  type="button"
+                                  className="review-sub-add-diagram-btn"
+                                  onClick={openAddSubCrop}
+                                >
+                                  + 📸 Add Another Diagram to {sub.sub_id}
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <div className="review-sub-diagram-trigger-bar">
-                            <button
-                              type="button"
-                              className="review-sub-add-diagram-btn"
-                              onClick={() => {
-                                const isSubInsert = sub.diagram_source === 'insert' || (!sub.diagram_source && q.diagram_source === 'insert' && !sub.page_number);
-                                const subTargetPage = isSubInsert
-                                  ? (sub.insert_page_number && sub.insert_page_number > 0 ? sub.insert_page_number : (q.insert_page_number || 1))
-                                  : (sub.page_number && sub.page_number > 0 ? sub.page_number : (q.page_number || 1));
-
-                                setCropTarget({
-                                  qIdx: idx,
-                                  subIdx: si,
-                                  key: subDiagramKey,
-                                  questionNumber: `Question ${q.question_number} ${sub.sub_id}`,
-                                  initialBox: sub.bounding_box || q.bounding_box,
-                                  initialPage: subTargetPage,
-                                  initialQpPage: sub.page_number || q.page_number || 1,
-                                  initialInsertPage: sub.insert_page_number || q.insert_page_number || 1,
-                                  initialSourceType: isSubInsert ? 'insert' : 'qp',
-                                });
-                              }}
-                            >
-                              + 📸 Add Diagram to {sub.sub_id}
-                            </button>
-                          </div>
-                        )}
+                          );
+                        })()}
 
                         {/* Sub-Question Mark Scheme */}
                         {sub.mark_scheme && (showAllMarkSchemes || expandedMark.has(idx)) && (
@@ -1605,34 +1736,116 @@ export function ExtractionReview({
                 </div>
               )}
 
-              {/* ─── MCQ Options ──────────────────────────────────────────── */}
+              {/* ─── MCQ Options (With Optional Per-Option Diagrams) ──────── */}
               {q.options && q.options.length > 0 && (
                 <div className="review-options">
-                  {q.options.map((opt, oi) => (
-                    <div key={oi} className="review-option">
-                      {isFastEditMode ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
-                          <span style={{ fontWeight: 600, minWidth: '22px', color: 'var(--text-muted)' }}>
-                            {String.fromCharCode(65 + oi)}.
-                          </span>
-                          <input
-                            type="text"
-                            className="review-inline-topic-input"
-                            style={{ flex: 1, padding: '4px 8px', fontSize: '0.88rem' }}
-                            value={opt}
-                            onChange={(e) => {
-                              const newOpts = [...(q.options || [])];
-                              newOpts[oi] = e.target.value;
-                              handleUpdateQuestionField(idx, 'options', newOpts);
-                            }}
-                            placeholder={`Option ${String.fromCharCode(65 + oi)}`}
-                          />
+                  {q.options.map((opt, oi) => {
+                    const optKey = `${q.question_number}__opt_${oi}`;
+                    const optDiagramUrl = getDiagramUrl(optKey, q.option_diagrams?.[oi]);
+                    const letter = String.fromCharCode(65 + oi);
+                    const openOptionCrop = () => {
+                      const isInsert = q.diagram_source === 'insert';
+                      const targetPage = isInsert
+                        ? (q.insert_page_number && q.insert_page_number > 0 ? q.insert_page_number : 1)
+                        : (q.page_number && q.page_number > 0 ? q.page_number : 1);
+                      setCropTarget({
+                        qIdx: idx,
+                        optionIndex: oi,
+                        key: optKey,
+                        questionNumber: `Question ${q.question_number} Option ${letter}`,
+                        initialBox: q.bounding_box,
+                        initialPage: targetPage,
+                        initialQpPage: q.page_number || 1,
+                        initialInsertPage: q.insert_page_number || 1,
+                        initialSrc: optDiagramUrl,
+                        initialSourceType: isInsert ? 'insert' : 'qp',
+                      });
+                    };
+
+                    return (
+                      <div key={oi} className="review-option">
+                        <div className="review-option-main-row">
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            {isFastEditMode ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
+                                <span style={{ fontWeight: 600, minWidth: '22px', color: 'var(--text-muted)' }}>
+                                  {letter}.
+                                </span>
+                                <input
+                                  type="text"
+                                  className="review-inline-topic-input"
+                                  style={{ flex: 1, padding: '4px 8px', fontSize: '0.88rem' }}
+                                  value={opt}
+                                  onChange={(e) => {
+                                    const newOpts = [...(q.options || [])];
+                                    newOpts[oi] = e.target.value;
+                                    handleUpdateQuestionField(idx, 'options', newOpts);
+                                  }}
+                                  placeholder={`Option ${letter} (text optional if image attached)`}
+                                />
+                              </div>
+                            ) : opt && opt.trim() ? (
+                              <ExamMathText content={opt} />
+                            ) : (
+                              <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 600 }}>
+                                Option {letter} (Diagram)
+                              </span>
+                            )}
+                          </div>
+
+                          <div style={{ display: 'inline-flex', gap: 6, flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              className="review-sub-add-diagram-btn"
+                              onClick={openOptionCrop}
+                              title={`Crop diagram from PDF for Option ${letter}`}
+                            >
+                              {optDiagramUrl ? `✂️ Re-crop ${letter}` : `+ 📸 Crop Option ${letter}`}
+                            </button>
+                            {optDiagramUrl && (
+                              <button
+                                type="button"
+                                className="review-sub-crop-btn review-sub-crop-btn--remove"
+                                onClick={() => {
+                                  setRemovedDiagramKeys((prev) => new Set(prev).add(optKey));
+                                  onRemoveDiagram?.(optKey);
+                                  setQuestions((prev) => {
+                                    const next = [...prev];
+                                    if (next[idx]) {
+                                      const nextOptDiags = normalizeOptionDiagramList(
+                                        next[idx].option_diagrams,
+                                        next[idx].options?.length || oi + 1
+                                      );
+                                      nextOptDiags[oi] = null;
+                                      next[idx] = {
+                                        ...next[idx],
+                                        option_diagrams: nextOptDiags.some(Boolean) ? nextOptDiags : null,
+                                      };
+                                    }
+                                    result.questions = next;
+                                    return next;
+                                  });
+                                }}
+                                title={`Remove Option ${letter} diagram`}
+                              >
+                                🗑️
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      ) : (
-                        <ExamMathText content={opt} />
-                      )}
-                    </div>
-                  ))}
+
+                        {optDiagramUrl && (
+                          <div className="review-option-thumb-wrap">
+                            <img
+                              src={optDiagramUrl}
+                              alt={`Option ${letter} diagram`}
+                              className="review-option-thumb-img"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1794,14 +2007,23 @@ export function ExtractionReview({
       {/* ─── Question Editor Modal ───────────────────────────────────────── */}
       {editingIdx !== null && questions[editingIdx] && (() => {
         const curQ = questions[editingIdx];
-        const diagramUrl =
-          diagramUrls.get(curQ.question_number) ||
-          (curQ.parent_question_id ? diagramUrls.get(curQ.parent_question_id) : undefined) ||
-          diagramUrls.get(`Q${curQ.question_number}`) ||
-          diagramUrls.get(curQ.question_number.replace(/^Q/i, '')) ||
-          null;
+        const stemEntries = getStemDiagramEntries(curQ);
+        const combinedStemUrls = normalizeDiagramUrlList([
+          ...stemEntries.map((e) => e.url),
+          ...resolveQuestionImageUrlsExcludingStandaloneSvg(curQ),
+          diagramUrls.get(curQ.question_number),
+          curQ.parent_question_id ? diagramUrls.get(curQ.parent_question_id) : undefined,
+          diagramUrls.get(`Q${curQ.question_number}`),
+          diagramUrls.get(curQ.question_number.replace(/^Q/i, '')),
+        ]);
+        const resolvedCurOptDiagrams = normalizeOptionDiagramList(
+          (curQ.options || []).map((_, oi) =>
+            getDiagramUrl(`${curQ.question_number}__opt_${oi}`, curQ.option_diagrams?.[oi])
+          ),
+          curQ.options?.length || 0
+        );
 
-        const effectiveInitialStyle = normalizeQuestionStyle(curQ.question_style, curQ.options);
+        const effectiveInitialStyle = normalizeQuestionStyle(curQ.question_style, curQ.options, resolvedCurOptDiagrams);
 
         return (
           <QuestionEditorModal
@@ -1827,10 +2049,12 @@ export function ExtractionReview({
               cambridge_ms_hub_url: curQ.cambridge_ms_hub_url || null,
               page_number: curQ.page_number ?? null,
               marks: Number(curQ.total_marks) || 1,
-              diagram_url: diagramUrl || curQ.diagram_url || null,
+              diagram_url: combinedStemUrls[0] || curQ.diagram_url || null,
+              diagram_urls: combinedStemUrls.length > 0 ? combinedStemUrls : null,
               svg_content: curQ.svg_content || null,
               ai_diagram_prompt: curQ.ai_diagram_prompt || null,
               options: curQ.options && curQ.options.length > 0 ? curQ.options : null,
+              option_diagrams: resolvedCurOptDiagrams.some(Boolean) ? resolvedCurOptDiagrams : null,
               sub_questions: curQ.sub_questions || [],
               mark_scheme: curQ.mark_scheme || null,
             }}
@@ -1840,16 +2064,16 @@ export function ExtractionReview({
                 const updatedList = [...questions];
                 const originalQ = updatedList[editingIdx];
 
-                // Defensive options preservation:
-                // If saved.options is non-empty, use it.
-                // If saved.options is null/empty but original had options AND style didn't switch to Calculation/Short Answer, keep original options!
+                const savedOptDiags = resolveOptionDiagramUrls(saved, saved.options?.length ?? originalQ.options?.length);
                 const preservedOptions = (saved.options && saved.options.length > 0)
                   ? saved.options
+                  : (savedOptDiags.some(Boolean))
+                  ? savedOptDiags.map(() => '')
                   : (originalQ.options && originalQ.options.length > 0 && saved.question_style !== 'Calculation' && saved.question_style !== 'Short Answer')
                   ? originalQ.options
                   : null;
 
-                const resolvedSavedStyle = normalizeQuestionStyle(saved.question_style, preservedOptions);
+                const resolvedSavedStyle = normalizeQuestionStyle(saved.question_style, preservedOptions, savedOptDiags);
 
                 const originalHadPassage =
                   Boolean(originalQ.passage_ref) || hasExplicitPassageMarkers(originalQ.question_text);
@@ -1862,7 +2086,8 @@ export function ExtractionReview({
                   ? `${NO_PASSAGE_TAG}\n${saved.question_text || ''}`
                   : saved.question_text;
 
-                const hasEditedDiagram = Boolean(saved.diagram_url || saved.svg_content);
+                const savedStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(saved);
+                const hasEditedDiagram = Boolean(savedStemUrls.length > 0 || saved.diagram_url || saved.svg_content);
                 if (!hasEditedDiagram && originalQ.has_diagram) {
                   setRemovedDiagramKeys((prev) => new Set(prev).add(originalQ.question_number));
                   onRemoveDiagram?.(originalQ.question_number);
@@ -1884,11 +2109,13 @@ export function ExtractionReview({
                   total_marks: saved.marks,
                   question_style: resolvedSavedStyle,
                   has_diagram: hasEditedDiagram,
-                  diagram_url: saved.diagram_url ?? null,
+                  diagram_url: savedStemUrls[0] ?? saved.diagram_url ?? null,
+                  diagram_urls: savedStemUrls.length > 0 ? savedStemUrls : null,
                   svg_content: saved.svg_content ?? null,
                   ai_diagram_prompt: saved.ai_diagram_prompt ?? null,
                   ...(hasEditedDiagram ? {} : { diagram_source: null, resource_ref: null, bounding_box: null }),
                   options: preservedOptions,
+                  option_diagrams: savedOptDiags.some(Boolean) ? savedOptDiags : null,
                   sub_questions: saved.sub_questions && saved.sub_questions.length > 0 ? saved.sub_questions : undefined,
                   mark_scheme: saved.mark_scheme as any,
                 };
@@ -1916,7 +2143,7 @@ export function ExtractionReview({
           questionNumber={cropTarget.questionNumber}
           onClose={() => setCropTarget(null)}
           onSaveCrop={({ blob, localUrl, boundingBox, pageNumber, sourceDoc }) => {
-            const { qIdx, subIdx, key } = cropTarget;
+            const { qIdx, subIdx, imageIndex, optionIndex, key } = cropTarget;
             const chosenDoc = sourceDoc || cropTarget.initialSourceType || 'qp';
             setRemovedDiagramKeys((prev) => {
               const next = new Set(prev);
@@ -1926,14 +2153,33 @@ export function ExtractionReview({
             onUpdateDiagram?.(key, { blob, localUrl, sourceDoc: chosenDoc, pageNumber });
 
             const updatedList = [...questions];
-            if (subIdx !== undefined && updatedList[qIdx]?.sub_questions?.[subIdx]) {
-              // Sub-question crop
+            const isInsert = chosenDoc === 'insert';
+            if (optionIndex !== undefined && updatedList[qIdx]) {
+              // MC option diagram crop on parent question
+              const curQ = updatedList[qIdx];
+              const nextOptDiags = normalizeOptionDiagramList(
+                curQ.option_diagrams,
+                Math.max(curQ.options?.length || 0, optionIndex + 1)
+              );
+              nextOptDiags[optionIndex] = localUrl;
+              updatedList[qIdx] = {
+                ...curQ,
+                option_diagrams: nextOptDiags,
+              };
+            } else if (subIdx !== undefined && updatedList[qIdx]?.sub_questions?.[subIdx]) {
+              // Sub-question crop (single or multi-image)
               const subs = [...(updatedList[qIdx].sub_questions || [])];
-              const isInsert = chosenDoc === 'insert';
+              const existingSubUrls = getSubDiagramEntries(updatedList[qIdx], subs[subIdx], subIdx).map((e) => e.url);
+              const targetImgIdx = imageIndex ?? 0;
+              const nextSubUrls =
+                targetImgIdx >= existingSubUrls.length
+                  ? normalizeDiagramUrlList([...existingSubUrls, localUrl])
+                  : normalizeDiagramUrlList(existingSubUrls.map((u, ui) => (ui === targetImgIdx ? localUrl : u)));
               subs[subIdx] = {
                 ...subs[subIdx],
                 has_diagram: true,
-                diagram_url: localUrl,
+                diagram_url: nextSubUrls[0] || localUrl,
+                diagram_urls: nextSubUrls.length > 0 ? nextSubUrls : [localUrl],
                 diagram_source: chosenDoc,
                 bounding_box: boundingBox,
                 page_number: isInsert ? (subs[subIdx].page_number || updatedList[qIdx].page_number || 1) : pageNumber,
@@ -1944,14 +2190,22 @@ export function ExtractionReview({
                 sub_questions: subs,
               };
             } else if (updatedList[qIdx]) {
-              // Parent question crop
-              const isInsert = chosenDoc === 'insert';
+              // Parent question crop (single or multi-image)
+              const curQ = updatedList[qIdx];
+              const existingStemUrls = getStemDiagramEntries(curQ).map((e) => e.url);
+              const targetImgIdx = imageIndex ?? 0;
+              const nextStemUrls =
+                targetImgIdx >= existingStemUrls.length
+                  ? normalizeDiagramUrlList([...existingStemUrls, localUrl])
+                  : normalizeDiagramUrlList(existingStemUrls.map((u, ui) => (ui === targetImgIdx ? localUrl : u)));
               updatedList[qIdx] = {
-                ...updatedList[qIdx],
+                ...curQ,
                 has_diagram: true,
+                diagram_url: nextStemUrls[0] || localUrl,
+                diagram_urls: nextStemUrls.length > 0 ? nextStemUrls : [localUrl],
                 diagram_source: chosenDoc,
                 bounding_box: boundingBox,
-                page_number: isInsert ? (updatedList[qIdx].page_number || 1) : pageNumber,
+                page_number: isInsert ? (curQ.page_number || 1) : pageNumber,
                 insert_page_number: isInsert ? pageNumber : null,
               };
             }

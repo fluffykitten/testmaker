@@ -19,6 +19,11 @@ import { normalizeLatexString } from '../lib/latexUtils';
 import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import {
+  resolveOptionDiagramUrl,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
+import {
   stripDuplicateOptionsFromStem,
   stripDuplicateSubQuestionsFromStem,
   extractSvgFromDiagramUrl,
@@ -800,27 +805,52 @@ export function openStudentPaperPrintWindow(
             </div>
         `;
 
-        const diagramUrl = sanitizeMediaUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
+        const stemDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+          diagram_url: q.diagram_url || (q as any).image_url || (q as any).diagram_base64,
+          diagram_urls: q.diagram_urls,
+          mark_scheme: q.mark_scheme,
+        })
+          .map((u) => sanitizeMediaUrl(u))
+          .filter(Boolean) as string[];
         const rawSvg = q.svg_content || extractSvgFromDiagramUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
         const svgContent = rawSvg ? sanitizeSvgForPrint(rawSvg) : '';
         const isInsert = isInsertResource(q);
-        // Only show diagram on the question paper if an insert booklet is NOT attached, or if it is a QP diagram
-        if ((svgContent || diagramUrl) && (!options.includeInsertBooklet || !isInsert)) {
-          content += `
-            <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
-              ${svgContent ? `<div style="max-width: 85%; max-height: 280px; margin: 0 auto; display: inline-block;">${svgContent}</div>` : `<img src="${diagramUrl}" alt="Question ${qNum} Diagram" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />`}
-              <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(q.resource_ref || `Fig. ${qNum}.1`)}</div>
-            </div>
-          `;
+        // Only show diagram(s) on the question paper if an insert booklet is NOT attached, or if it is a QP diagram
+        if ((svgContent || stemDiagramUrls.length > 0) && (!options.includeInsertBooklet || !isInsert)) {
+          if (svgContent && stemDiagramUrls.length === 0) {
+            content += `
+              <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
+                <div style="max-width: 85%; max-height: 280px; margin: 0 auto; display: inline-block;">${svgContent}</div>
+                <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(q.resource_ref || `Fig. ${qNum}.1`)}</div>
+              </div>
+            `;
+          } else {
+            stemDiagramUrls.forEach((dUrl, dIdx) => {
+              const figLabel = q.resource_ref
+                ? (stemDiagramUrls.length > 1 ? `${q.resource_ref} (${dIdx + 1})` : q.resource_ref)
+                : `Fig. ${qNum}.${dIdx + 1}`;
+              content += `
+                <div class="q-diagram-container" style="text-align: center; margin: 12px 0;">
+                  ${dIdx === 0 && svgContent ? `<div style="max-width: 85%; max-height: 280px; margin: 0 auto; display: inline-block;">${svgContent}</div>` : `<img src="${dUrl}" alt="Question ${qNum} Diagram ${dIdx + 1}" style="max-width: 85%; max-height: 280px; object-fit: contain; border-radius: 4px;" />`}
+                  <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(figLabel)}</div>
+                </div>
+              `;
+            });
+          }
         }
 
         if (q.options && q.options.length > 0) {
           q.options.forEach((opt, optIdx) => {
-            const { letter, text } = parseMcqOption(opt, optIdx);
+            const { letter, text } = parseMcqOption(stripInlineMarkdownImage(opt), optIdx);
+            const rawOptImg = resolveOptionDiagramUrl(q, optIdx, opt);
+            const safeOptImg = rawOptImg ? sanitizeMediaUrl(rawOptImg) : '';
             content += `
-              <div class="mcq-choice" style="display: flex; align-items: baseline; margin: 6px 0 6px 32px; font-size: 14px;">
+              <div class="mcq-choice" style="display: flex; align-items: flex-start; margin: 6px 0 6px 32px; font-size: 14px;">
                 <span style="font-weight: bold; min-width: 28px; margin-right: 14px; font-size: 15px;">${escapeHtml(letter)}</span>
-                <div style="flex: 1; text-align: justify;">${formatLatexForHtml(text)}</div>
+                <div style="flex: 1; text-align: justify;">
+                  ${text ? `<div>${formatLatexForHtml(text)}</div>` : ''}
+                  ${safeOptImg ? `<div style="margin-top: ${text ? '6px' : '2px'};"><img src="${safeOptImg}" alt="Option ${escapeHtml(letter)} Diagram" style="max-width: 320px; max-height: 170px; object-fit: contain; border-radius: 4px;" /></div>` : ''}
+                </div>
               </div>
             `;
           });
@@ -846,18 +876,37 @@ export function openStudentPaperPrintWindow(
             `;
 
             const subRawUrl = (sub as any).diagram_url || (sub as any).image_url || (sub as any).diagram_base64;
-            const subDiagramUrl = sanitizeMediaUrl(subRawUrl);
+            const subDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+              diagram_url: subRawUrl,
+              diagram_urls: sub.diagram_urls,
+            })
+              .map((u) => sanitizeMediaUrl(u))
+              .filter(Boolean) as string[];
             const rawSubSvg = (sub as any).svg_content || extractSvgFromDiagramUrl(subRawUrl);
             const subSvgContent = rawSubSvg ? sanitizeSvgForPrint(rawSubSvg) : '';
             const isSubInsert = isInsertResource(sub);
-            // Only show sub-diagram on question paper if booklet is NOT attached, or if it is a QP diagram
-            if ((subSvgContent || subDiagramUrl) && (!options.includeInsertBooklet || !isSubInsert)) {
-              content += `
-                <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
-                  ${subSvgContent ? `<div style="max-width: 80%; max-height: 220px; margin: 0 auto; display: inline-block;">${subSvgContent}</div>` : `<img src="${subDiagramUrl}" alt="Sub-question Diagram" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />`}
-                  <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(sub.resource_ref || `Fig. ${qNum}.2`)}</div>
-                </div>
-              `;
+            // Only show sub-diagram(s) on question paper if booklet is NOT attached, or if it is a QP diagram
+            if ((subSvgContent || subDiagramUrls.length > 0) && (!options.includeInsertBooklet || !isSubInsert)) {
+              if (subSvgContent && subDiagramUrls.length === 0) {
+                content += `
+                  <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
+                    <div style="max-width: 80%; max-height: 220px; margin: 0 auto; display: inline-block;">${subSvgContent}</div>
+                    <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(sub.resource_ref || `Fig. ${qNum}.2`)}</div>
+                  </div>
+                `;
+              } else {
+                subDiagramUrls.forEach((sdUrl, sdIdx) => {
+                  const subFigLabel = sub.resource_ref
+                    ? (subDiagramUrls.length > 1 ? `${sub.resource_ref} (${sdIdx + 1})` : sub.resource_ref)
+                    : `Fig. ${qNum}.${sdIdx + 2}`;
+                  content += `
+                    <div class="q-diagram-container" style="text-align: center; margin: 8px 0;">
+                      ${sdIdx === 0 && subSvgContent ? `<div style="max-width: 80%; max-height: 220px; margin: 0 auto; display: inline-block;">${subSvgContent}</div>` : `<img src="${sdUrl}" alt="Sub-question Diagram ${sdIdx + 1}" style="max-width: 80%; max-height: 220px; object-fit: contain; border-radius: 4px;" />`}
+                      <div style="font-weight: bold; font-size: 13px; margin-top: 6px; text-align: center; font-family: 'Times New Roman', serif;">${escapeHtml(subFigLabel)}</div>
+                    </div>
+                  `;
+                });
+              }
             }
 
             if (includeAnswerLines && !isSeparate) {
@@ -1008,12 +1057,16 @@ export function renderInsertBookletSectionHtml(
   const items: InsertItem[] = [];
 
   questions.forEach((q, idx) => {
-    const qDiagram = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+    const qStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+      diagram_url: q.diagram_url || (q as any).image_url || (q as any).diagram_base64,
+      diagram_urls: q.diagram_urls,
+      mark_scheme: q.mark_scheme,
+    });
     const qRef = q.resource_ref;
     const isInsert = isInsertResource(q) || Boolean(options.includeAllFiguresInBooklet);
 
-    // Parent visual: ONLY push if an actual diagram exists
-    if (qDiagram && isInsert) {
+    // Parent visuals: ONLY push if actual diagrams exist
+    if (qStemUrls.length > 0 && isInsert) {
       let topic = q.topic || undefined;
       const titleMatch =
         (q.question_text || '').match(/Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i) ||
@@ -1024,26 +1077,30 @@ export function renderInsertBookletSectionHtml(
         topic = titleMatch[1].trim();
       }
 
-      const headerLabel = qRef
-        ? (/^figs?/i.test(qRef)
-            ? `${qRef} for Question ${q.question_number || idx + 1}`
-            : `${qRef} — Resource for Question ${q.question_number || idx + 1}`)
-        : `Resource for Question ${q.question_number || idx + 1}`;
-
-      items.push({
-        header: headerLabel,
-        topic,
-        diagramUrl: qDiagram,
+      qStemUrls.forEach((qDiagram, dIdx) => {
+        const baseHeader = qRef
+          ? (/^figs?/i.test(qRef)
+              ? `${qRef} for Question ${q.question_number || idx + 1}`
+              : `${qRef} — Resource for Question ${q.question_number || idx + 1}`)
+          : `Resource for Question ${q.question_number || idx + 1}`;
+        items.push({
+          header: qStemUrls.length > 1 ? `${baseHeader} (${dIdx + 1})` : baseHeader,
+          topic,
+          diagramUrl: qDiagram,
+        });
       });
     }
 
-    // Check sub-questions: ONLY push if an actual diagram exists
+    // Check sub-questions: ONLY push if actual diagrams exist
     (q.sub_questions || []).forEach((sq) => {
-      const sqDiagram = sq.diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
+      const sqUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+        diagram_url: sq.diagram_url || (sq as any).image_url || (sq as any).diagram_base64,
+        diagram_urls: sq.diagram_urls,
+      });
       const sqRef = sq.resource_ref;
       const isSubInsert = isInsertResource(sq) || Boolean(options.includeAllFiguresInBooklet);
 
-      if (sqDiagram && isSubInsert) {
+      if (sqUrls.length > 0 && isSubInsert) {
         let sqTopic = q.topic || undefined;
         const subTitleMatch = (sq.question_text || '').match(
           /Study\s+Figs?\.?\s*[0-9.]+\s*(?:\(Insert\))?,?\s*([^.\n]+)/i
@@ -1052,16 +1109,17 @@ export function renderInsertBookletSectionHtml(
           sqTopic = subTitleMatch[1].trim();
         }
 
-        const sqHeaderLabel = sqRef
-          ? (/^figs?/i.test(sqRef)
-              ? `${sqRef} for Question ${q.question_number || idx + 1}`
-              : `${sqRef} — Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`)
-          : `Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`;
-
-        items.push({
-          header: sqHeaderLabel,
-          topic: sqTopic,
-          diagramUrl: sqDiagram,
+        sqUrls.forEach((sqDiagram, sdIdx) => {
+          const baseSqHeader = sqRef
+            ? (/^figs?/i.test(sqRef)
+                ? `${sqRef} for Question ${q.question_number || idx + 1}`
+                : `${sqRef} — Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`)
+            : `Resource for Question ${q.question_number || idx + 1} ${sq.sub_id}`;
+          items.push({
+            header: sqUrls.length > 1 ? `${baseSqHeader} (${sdIdx + 1})` : baseSqHeader,
+            topic: sqTopic,
+            diagramUrl: sqDiagram,
+          });
         });
       }
     });
@@ -1523,7 +1581,13 @@ export function openTeacherMarkSchemePrintWindow(
         `;
       }
 
-      const diagramUrl = sanitizeMediaUrl(q.diagram_url || (q as any).image_url || (q as any).diagram_base64);
+      const stemDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+        diagram_url: q.diagram_url || (q as any).image_url || (q as any).diagram_base64,
+        diagram_urls: q.diagram_urls,
+        mark_scheme: q.mark_scheme,
+      })
+        .map((u) => sanitizeMediaUrl(u))
+        .filter(Boolean) as string[];
 
       return `
         <div class="q-section">
@@ -1533,7 +1597,7 @@ export function openTeacherMarkSchemePrintWindow(
           </div>
           <div class="q-stem-box">
             ${stem}
-            ${diagramUrl ? `<div style="text-align: center; margin: 8px 0;"><img src="${diagramUrl}" alt="Diagram" style="max-width: 75%; max-height: 200px; object-fit: contain;" /></div>` : ''}
+            ${stemDiagramUrls.map((dUrl) => `<div style="text-align: center; margin: 8px 0;"><img src="${dUrl}" alt="Diagram" style="max-width: 75%; max-height: 200px; object-fit: contain;" /></div>`).join('')}
           </div>
           <table>
             <thead>

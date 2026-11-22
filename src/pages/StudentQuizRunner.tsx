@@ -58,6 +58,12 @@ import {
   wasRecentlyIntercepted,
 } from '../lib/examGestureGuard';
 import {
+  hasAnyOptionDiagrams,
+  resolveOptionDiagramUrl,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
+import {
   exportIndividualStudentReportPdf,
   exportStudentFeedbackReportPdf,
 } from '../services/quizReportPdfService';
@@ -6843,38 +6849,100 @@ export function StudentQuizRunner({
                         <ExamMathText content={cleanQuestionStem(q.question_text || '', q.options)} />
                       </div>
 
-                      {/* Question Diagram / SVG if present */}
-                      {q.svg_content ? (
-                        <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
-                          <div
-                            className="exam-svg-wrap"
-                            style={{ margin: '0 auto', maxWidth: '600px' }}
-                            dangerouslySetInnerHTML={{ __html: q.svg_content }}
-                          />
+                      {/* Question Diagram(s) / SVG if present */}
+                      {(() => {
+                        const reviewStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(q);
+                        if (q.svg_content && reviewStemUrls.length === 0) {
+                          return (
+                            <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
+                              <div
+                                className="exam-svg-wrap"
+                                style={{ margin: '0 auto', maxWidth: '600px' }}
+                                dangerouslySetInnerHTML={{ __html: q.svg_content }}
+                              />
+                            </div>
+                          );
+                        }
+                        if (reviewStemUrls.length === 0) return null;
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', margin: '12px 0' }}>
+                            {reviewStemUrls.map((dUrl, dIdx) => (
+                              <div key={dIdx} className="sol-diagram-wrap" style={{ textAlign: 'center' }}>
+                                <img
+                                  src={dUrl}
+                                  alt={`Diagram ${dIdx + 1} for Question ${idx + 1}`}
+                                  loading="lazy"
+                                  decoding="async"
+                                  draggable={false}
+                                  onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                  style={{
+                                    maxWidth: '100%',
+                                    maxHeight: '340px',
+                                    borderRadius: 'var(--radius-md)',
+                                    border: '1px solid var(--color-border)',
+                                    cursor: 'zoom-in',
+                                    background: '#ffffff',
+                                    userSelect: 'none',
+                                  }}
+                                  onClick={() => setZoomedImage(dUrl)}
+                                  title="Click to zoom diagram"
+                                />
+                                {reviewStemUrls.length > 1 && (
+                                  <div className="sq-q-diagram-figure-label">Figure {dIdx + 1}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Visual MC Options Breakdown if choices carry diagrams */}
+                      {q.options && q.options.length > 0 && hasAnyOptionDiagrams(q, q.options) && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', margin: '12px 0' }}>
+                          {q.options.map((optText, oIdx) => {
+                            const optImgUrl = resolveOptionDiagramUrl(q, oIdx, optText);
+                            const letter = String.fromCharCode(65 + oIdx);
+                            const cleaned = cleanOptionText(stripInlineMarkdownImage(optText), oIdx);
+                            return (
+                              <div
+                                key={oIdx}
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: 'var(--radius-md)',
+                                  border: '1px solid var(--color-border)',
+                                  background: 'var(--color-surface-sunken)',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '6px',
+                                }}
+                              >
+                                <div style={{ fontSize: '0.8125rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span>{letter}.</span>
+                                  {cleaned && <ExamMathText content={cleaned} />}
+                                </div>
+                                {optImgUrl && (
+                                  <img
+                                    src={optImgUrl}
+                                    alt={`Option ${letter} diagram`}
+                                    loading="lazy"
+                                    decoding="async"
+                                    draggable={false}
+                                    onClick={() => setZoomedImage(optImgUrl)}
+                                    style={{
+                                      maxWidth: '100%',
+                                      maxHeight: '140px',
+                                      objectFit: 'contain',
+                                      background: '#ffffff',
+                                      borderRadius: '4px',
+                                      cursor: 'zoom-in',
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                      ) : q.diagram_url ? (
-                        <div className="sol-diagram-wrap" style={{ margin: '12px 0', textAlign: 'center' }}>
-                          <img
-                            src={q.diagram_url}
-                            alt={`Diagram for Question ${idx + 1}`}
-                            loading="lazy"
-                            decoding="async"
-                            draggable={false}
-                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                            style={{
-                              maxWidth: '100%',
-                              maxHeight: '340px',
-                              borderRadius: 'var(--radius-md)',
-                              border: '1px solid var(--color-border)',
-                              cursor: 'zoom-in',
-                              background: '#ffffff',
-                              userSelect: 'none',
-                            }}
-                            onClick={() => setZoomedImage(q.diagram_url || null)}
-                            title="Click to zoom diagram"
-                          />
-                        </div>
-                      ) : null}
+                      )}
 
                       {/* Sub-Questions Results Breakdown if present */}
                       {qRes?.subQuestionResults && qRes.subQuestionResults.length > 0 && (
@@ -6905,38 +6973,49 @@ export function StudentQuizRunner({
                                   </div>
                                 )}
 
-                                {/* Sub Question Diagram / SVG if present */}
-                                {subQ?.svg_content ? (
-                                  <div style={{ margin: '8px 0', textAlign: 'center' }}>
-                                    <div
-                                      className="exam-svg-wrap"
-                                      style={{ margin: '0 auto', maxWidth: '540px' }}
-                                      dangerouslySetInnerHTML={{ __html: subQ.svg_content }}
-                                    />
-                                  </div>
-                                ) : subQ?.diagram_url ? (
-                                  <div style={{ margin: '8px 0', textAlign: 'center' }}>
-                                    <img
-                                      src={subQ.diagram_url}
-                                      alt={`Diagram for Part (${sub.subId})`}
-                                      loading="lazy"
-                                      decoding="async"
-                                      draggable={false}
-                                      onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                                      style={{
-                                        maxWidth: '100%',
-                                        maxHeight: '260px',
-                                        borderRadius: 'var(--radius-md)',
-                                        border: '1px solid var(--color-border)',
-                                        cursor: 'zoom-in',
-                                        background: '#ffffff',
-                                        userSelect: 'none',
-                                      }}
-                                      onClick={() => setZoomedImage(subQ.diagram_url || null)}
-                                      title="Click to zoom diagram"
-                                    />
-                                  </div>
-                                ) : null}
+                                {/* Sub Question Diagram(s) / SVG if present */}
+                                {(() => {
+                                  const subReviewUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(subQ);
+                                  if (subQ?.svg_content && subReviewUrls.length === 0) {
+                                    return (
+                                      <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                                        <div
+                                          className="exam-svg-wrap"
+                                          style={{ margin: '0 auto', maxWidth: '540px' }}
+                                          dangerouslySetInnerHTML={{ __html: subQ.svg_content }}
+                                        />
+                                      </div>
+                                    );
+                                  }
+                                  if (subReviewUrls.length === 0) return null;
+                                  return (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '8px 0', textAlign: 'center' }}>
+                                      {subReviewUrls.map((sUrl, sImgIdx) => (
+                                        <div key={sImgIdx}>
+                                          <img
+                                            src={sUrl}
+                                            alt={`Diagram ${sImgIdx + 1} for Part (${sub.subId})`}
+                                            loading="lazy"
+                                            decoding="async"
+                                            draggable={false}
+                                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                            style={{
+                                              maxWidth: '100%',
+                                              maxHeight: '260px',
+                                              borderRadius: 'var(--radius-md)',
+                                              border: '1px solid var(--color-border)',
+                                              cursor: 'zoom-in',
+                                              background: '#ffffff',
+                                              userSelect: 'none',
+                                            }}
+                                            onClick={() => setZoomedImage(sUrl)}
+                                            title="Click to zoom diagram"
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
 
                                 <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: sub.feedback ? 4 : 0 }}>
                                   Your Answer:{' '}
@@ -7646,87 +7725,165 @@ export function StudentQuizRunner({
                   </div>
                 )}
 
-                {/* Diagram / SVG Visual if available */}
-                {currentQuestion?.svg_content ? (
-                  <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
-                    <div
-                      className="exam-svg-wrap"
-                      style={{ margin: '0 auto', maxWidth: '620px' }}
-                      dangerouslySetInnerHTML={{ __html: currentQuestion.svg_content }}
-                    />
-                    {securityEnabled && enableWatermark && (
-                      <CandidateWatermark
-                        candidateName={candidateName}
-                        candidateNumber={candidateNumber}
-                        candidateClass={candidateClass}
-                        quizCode={resolvedQuizCode}
-                        sessionHash={sessionHash}
-                        variant="diagram"
-                      />
-                    )}
-                  </div>
-                ) : currentQuestion?.diagram_url ? (
-                  <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
-                    <img
-                      src={currentQuestion.diagram_url}
-                      alt={`Diagram for Question ${currentIndex + 1}`}
-                      className="sq-q-diagram-img"
-                      loading="lazy"
-                      decoding="async"
-                      draggable={false}
-                      onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                      onClick={() => setZoomedImage(currentQuestion.diagram_url || null)}
-                      title="Click to zoom diagram"
-                    />
-                    {securityEnabled && enableWatermark && (
-                      <CandidateWatermark
-                        candidateName={candidateName}
-                        candidateNumber={candidateNumber}
-                        candidateClass={candidateClass}
-                        quizCode={resolvedQuizCode}
-                        sessionHash={sessionHash}
-                        variant="diagram"
-                      />
-                    )}
-                  </div>
-                ) : null}
-
-                {/* 1. MCQ / Multi-Select Choices Input */}
-                {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (
-                  <div className="sq-choices-list">
-                    {isMultiSelect && (
-                      <div style={{ marginBottom: 8, fontSize: '0.8125rem', color: '#2563eb', fontWeight: 700 }}>
-                        ☑ Multiple Select: Tick all choices that apply
+                {/* Question Diagrams / Figures / SVG */}
+                {(() => {
+                  const stemDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(currentQuestion);
+                  if (currentQuestion?.svg_content && stemDiagramUrls.length === 0) {
+                    return (
+                      <div className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
+                        <div
+                          className="exam-svg-wrap"
+                          style={{ margin: '0 auto', maxWidth: '560px' }}
+                          dangerouslySetInnerHTML={{ __html: currentQuestion.svg_content }}
+                        />
+                        {securityEnabled && enableWatermark && (
+                          <CandidateWatermark
+                            candidateName={candidateName}
+                            candidateNumber={candidateNumber}
+                            candidateClass={candidateClass}
+                            quizCode={resolvedQuizCode}
+                            sessionHash={sessionHash}
+                            variant="diagram"
+                          />
+                        )}
                       </div>
-                    )}
-                    {currentQuestion.options.map((optionText, oIdx) => {
-                      const { displayLetter, isSelected, isArabicQ } = getMcqChoiceDisplayState(
-                        currentQuestion,
-                        answers[currentIndex],
-                        oIdx,
-                        isMultiSelect
-                      );
-                      return (
-                        <button
-                          key={oIdx}
-                          type="button"
-                          className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''} ${isArabicQ ? 'sq-choice-btn--arabic' : ''}`}
-                          onClick={() => handleSelectOption(oIdx)}
-                          aria-pressed={isSelected}
-                          dir={isArabicQ ? 'rtl' : 'auto'}
-                        >
-                          <span
-                            className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
-                            style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                    );
+                  }
+                  if (stemDiagramUrls.length === 0) return null;
+                  return (
+                    <div className="sq-q-diagrams-stack">
+                      {stemDiagramUrls.map((imgUrl, figIdx) => (
+                        <div key={figIdx} className="sq-q-diagram-wrap" style={{ position: 'relative' }}>
+                          <img
+                            src={imgUrl}
+                            alt={`Diagram ${figIdx + 1} for Question ${currentIndex + 1}`}
+                            className="sq-q-diagram-img"
+                            loading="lazy"
+                            decoding="async"
+                            draggable={false}
+                            onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                            onClick={() => setZoomedImage(imgUrl)}
+                            title="Click to zoom diagram"
+                          />
+                          {stemDiagramUrls.length > 1 && (
+                            <div className="sq-q-diagram-figure-label">Figure {figIdx + 1}</div>
+                          )}
+                          {securityEnabled && enableWatermark && (
+                            <CandidateWatermark
+                              candidateName={candidateName}
+                              candidateNumber={candidateNumber}
+                              candidateClass={candidateClass}
+                              quizCode={resolvedQuizCode}
+                              sessionHash={sessionHash}
+                              variant="diagram"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* 1. MCQ / Multi-Select Choices Input (Supports per-option diagrams) */}
+                {(currentQuestion?.question_style === 'Multiple Choice' || currentQuestion?.question_style === 'Multiple Select' || (currentQuestion?.options && currentQuestion.options.length > 0 && currentQuestion.question_style !== 'Structured')) && currentQuestion?.options && currentQuestion.options.length > 0 ? (() => {
+                  const hasOptionImages = hasAnyOptionDiagrams(currentQuestion, currentQuestion.options);
+                  return (
+                    <div className={`sq-choices-list ${hasOptionImages ? 'sq-choices-list--visual-grid' : ''}`}>
+                      {isMultiSelect && (
+                        <div className="sq-choices-multiselect-hint" style={{ marginBottom: 8, fontSize: '0.8125rem', color: '#2563eb', fontWeight: 700 }}>
+                          ☑ Multiple Select: Tick all choices that apply
+                        </div>
+                      )}
+                      {currentQuestion.options.map((optionText, oIdx) => {
+                        const { displayLetter, isSelected, isArabicQ } = getMcqChoiceDisplayState(
+                          currentQuestion,
+                          answers[currentIndex],
+                          oIdx,
+                          isMultiSelect
+                        );
+                        const optImgUrl = resolveOptionDiagramUrl(currentQuestion, oIdx, optionText);
+                        const cleanedOptText = cleanOptionText(stripInlineMarkdownImage(optionText), oIdx);
+                        return (
+                          <button
+                            key={oIdx}
+                            type="button"
+                            className={`sq-choice-btn ${isSelected ? 'sq-choice-btn--selected' : ''} ${isArabicQ ? 'sq-choice-btn--arabic' : ''} ${optImgUrl ? 'sq-choice-btn--with-diagram' : ''}`}
+                            onClick={() => handleSelectOption(oIdx)}
+                            aria-pressed={isSelected}
+                            dir={isArabicQ ? 'rtl' : 'auto'}
                           >
-                            {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
-                          </span>
-                          <span className="sq-choice-text"><ExamMathText content={cleanOptionText(optionText, oIdx)} /></span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && !currentTable && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
+                            {optImgUrl ? (
+                              <>
+                                <div className="sq-choice-btn-head">
+                                  <span
+                                    className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
+                                    style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                                  >
+                                    {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
+                                  </span>
+                                  {cleanedOptText && (
+                                    <span className="sq-choice-text"><ExamMathText content={cleanedOptText} /></span>
+                                  )}
+                                </div>
+                                <div className="sq-choice-diagram-wrap">
+                                  <img
+                                    src={optImgUrl}
+                                    alt={`Option ${displayLetter} diagram`}
+                                    className="sq-choice-diagram-img"
+                                    loading="lazy"
+                                    decoding="async"
+                                    draggable={false}
+                                    onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                  />
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    className="sq-choice-zoom-trigger"
+                                    title={`Zoom Option ${displayLetter} diagram`}
+                                    aria-label={`Zoom Option ${displayLetter} diagram`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setZoomedImage(optImgUrl);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setZoomedImage(optImgUrl);
+                                      }
+                                    }}
+                                  >
+                                    🔍
+                                  </span>
+                                  {securityEnabled && enableWatermark && (
+                                    <CandidateWatermark
+                                      candidateName={candidateName}
+                                      candidateNumber={candidateNumber}
+                                      candidateClass={candidateClass}
+                                      quizCode={resolvedQuizCode}
+                                      sessionHash={sessionHash}
+                                      variant="diagram"
+                                    />
+                                  )}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <span
+                                  className={`sq-choice-letter ${isArabicQ ? 'sq-choice-letter--arabic' : ''}`}
+                                  style={isMultiSelect ? { borderRadius: '4px', fontSize: '0.9375rem' } : undefined}
+                                >
+                                  {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
+                                </span>
+                                <span className="sq-choice-text"><ExamMathText content={cleanedOptText} /></span>
+                              </>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })() : currentQuestion?.sub_questions && currentQuestion.sub_questions.length > 0 && !currentTable && currentQuestion.question_style !== 'Multiple Choice' && currentQuestion.question_style !== 'Multiple Select' ? (
                   /* 2. Multi-Part Sub-Questions Stream if structured */
                   <div className="sq-sub-questions-list" style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
                     {currentQuestion.sub_questions.map((sub, sIdx) => {
@@ -7838,51 +7995,65 @@ export function StudentQuizRunner({
                             );
                           })()}
 
-                          {/* Sub-Question Diagram / SVG (if specifically attached to this sub-part) */}
-                          {sub.svg_content ? (
-                            <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
-                              <div
-                                className="exam-svg-wrap"
-                                style={{ margin: '0 auto', maxWidth: '540px' }}
-                                dangerouslySetInnerHTML={{ __html: sub.svg_content }}
-                              />
-                              {securityEnabled && enableWatermark && (
-                                <CandidateWatermark
-                                  candidateName={candidateName}
-                                  candidateNumber={candidateNumber}
-                                  candidateClass={candidateClass}
-                                  quizCode={resolvedQuizCode}
-                                  sessionHash={sessionHash}
-                                  variant="diagram"
-                                />
-                              )}
-                            </div>
-                          ) : sub.diagram_url ? (
-                            <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
-                              <img
-                                src={sub.diagram_url}
-                                alt={`Diagram for ${sub.sub_id}`}
-                                className="sq-q-diagram-img"
-                                loading="lazy"
-                                decoding="async"
-                                draggable={false}
-                                onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
-                                style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
-                                onClick={() => setZoomedImage(sub.diagram_url || null)}
-                                title="Click to zoom diagram"
-                              />
-                              {securityEnabled && enableWatermark && (
-                                <CandidateWatermark
-                                  candidateName={candidateName}
-                                  candidateNumber={candidateNumber}
-                                  candidateClass={candidateClass}
-                                  quizCode={resolvedQuizCode}
-                                  sessionHash={sessionHash}
-                                  variant="diagram"
-                                />
-                              )}
-                            </div>
-                          ) : null}
+                          {/* Sub-Question Diagram(s) / SVG (if specifically attached to this sub-part) */}
+                          {(() => {
+                            const subStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+                            if (sub.svg_content && subStemUrls.length === 0) {
+                              return (
+                                <div className="sq-sub-diagram-wrap" style={{ margin: '8px 0 12px', position: 'relative' }}>
+                                  <div
+                                    className="exam-svg-wrap"
+                                    style={{ margin: '0 auto', maxWidth: '540px' }}
+                                    dangerouslySetInnerHTML={{ __html: sub.svg_content }}
+                                  />
+                                  {securityEnabled && enableWatermark && (
+                                    <CandidateWatermark
+                                      candidateName={candidateName}
+                                      candidateNumber={candidateNumber}
+                                      candidateClass={candidateClass}
+                                      quizCode={resolvedQuizCode}
+                                      sessionHash={sessionHash}
+                                      variant="diagram"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (subStemUrls.length === 0) return null;
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '8px 0 12px' }}>
+                                {subStemUrls.map((sImgUrl, sImgIdx) => (
+                                  <div key={sImgIdx} className="sq-sub-diagram-wrap" style={{ position: 'relative' }}>
+                                    <img
+                                      src={sImgUrl}
+                                      alt={`Diagram ${sImgIdx + 1} for ${sub.sub_id}`}
+                                      className="sq-q-diagram-img"
+                                      loading="lazy"
+                                      decoding="async"
+                                      draggable={false}
+                                      onContextMenu={(e) => { if (securityEnabled) e.preventDefault(); }}
+                                      style={{ maxHeight: '280px', borderRadius: '8px', cursor: 'zoom-in' }}
+                                      onClick={() => setZoomedImage(sImgUrl)}
+                                      title="Click to zoom diagram"
+                                    />
+                                    {subStemUrls.length > 1 && (
+                                      <div className="sq-q-diagram-figure-label">Figure {sImgIdx + 1}</div>
+                                    )}
+                                    {securityEnabled && enableWatermark && (
+                                      <CandidateWatermark
+                                        candidateName={candidateName}
+                                        candidateNumber={candidateNumber}
+                                        candidateClass={candidateClass}
+                                        quizCode={resolvedQuizCode}
+                                        sessionHash={sessionHash}
+                                        variant="diagram"
+                                      />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
 
                           {/* Sub-Question Data Tables if attached directly to this sub-part */}
                           {sub.data_tables && sub.data_tables.length > 0 && (hasBlankDataTableCells(sub.data_tables) || !hasMarkdownTable(sub.question_text || '')) && (
@@ -8301,6 +8472,8 @@ export function StudentQuizRunner({
                           oIdx,
                           isMultiSelect
                         );
+                        const sideOptImgUrl = resolveOptionDiagramUrl(currentQuestion, oIdx, opt);
+                        const cleanedSideText = cleanOptionText(stripInlineMarkdownImage(opt), oIdx);
                         return (
                           <button
                             key={oIdx}
@@ -8310,6 +8483,7 @@ export function StudentQuizRunner({
                             disabled={isSubmitted}
                             aria-pressed={isSelected}
                             dir={isArabicQ ? 'rtl' : 'auto'}
+                            style={sideOptImgUrl ? { alignItems: 'center', flexWrap: 'wrap' } : undefined}
                           >
                             <span
                               className={`sq-sidebar-choice-letter ${isMultiSelect ? 'is-multiselect' : ''}`}
@@ -8317,8 +8491,27 @@ export function StudentQuizRunner({
                               {isMultiSelect ? (isSelected ? '✓' : displayLetter) : displayLetter}
                             </span>
                             <span className="sq-sidebar-choice-text">
-                              <ExamMathText content={cleanOptionText(opt, oIdx)} />
+                              {cleanedSideText ? (
+                                <ExamMathText content={cleanedSideText} />
+                              ) : sideOptImgUrl ? (
+                                <span>Option {displayLetter}</span>
+                              ) : null}
                             </span>
+                            {sideOptImgUrl && (
+                              <img
+                                src={sideOptImgUrl}
+                                alt={`Option ${displayLetter}`}
+                                style={{
+                                  maxHeight: '52px',
+                                  maxWidth: '90px',
+                                  objectFit: 'contain',
+                                  background: '#ffffff',
+                                  borderRadius: '4px',
+                                  border: '1px solid var(--color-border)',
+                                  marginLeft: 'auto',
+                                }}
+                              />
+                            )}
                           </button>
                         );
                       })}

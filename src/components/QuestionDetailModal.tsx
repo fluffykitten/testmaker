@@ -8,6 +8,11 @@ import { enrichQuestionWithGuidance, generateQuestionMarkScheme } from '../lib/g
 import { auditQuestionMarkScheme, isPlaceholderMarkSchemeText } from '../lib/markSchemeAudit';
 import { updateQuestionMarkScheme } from '../services/questionBankService';
 import { formatPaperBadge } from '../utils/paperUtils';
+import {
+  resolveOptionDiagramUrl,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
 import './QuestionDetailModal.css';
 
 interface QuestionDetailModalProps {
@@ -325,28 +330,68 @@ export function QuestionDetailModal({
             </div>
           )}
 
-          {question.diagram_url && (
-            <div className="modal-section">
-              <h4 className="modal-section-title">Diagram / Visual Resource</h4>
-              <div className="modal-diagram-box">
-                <img
-                  src={question.diagram_url}
-                  alt={`Diagram for Question ${question.question_number}`}
-                  className="modal-diagram-img"
-                />
+          {(() => {
+            const detailStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(question);
+            if (detailStemUrls.length === 0) return null;
+            return (
+              <div className="modal-section">
+                <h4 className="modal-section-title">
+                  {detailStemUrls.length > 1 ? `Diagrams / Visual Resources (${detailStemUrls.length})` : 'Diagram / Visual Resource'}
+                </h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {detailStemUrls.map((dUrl, dIdx) => (
+                    <div key={dIdx} className="modal-diagram-box" style={{ flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                      <img
+                        src={dUrl}
+                        alt={`Diagram ${dIdx + 1} for Question ${question.question_number}`}
+                        className="modal-diagram-img"
+                      />
+                      {detailStemUrls.length > 1 && (
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-tertiary)' }}>
+                          Figure {dIdx + 1}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {question.options && question.options.length > 0 && (
             <div className="modal-section">
               <h4 className="modal-section-title">Multiple Choice Options</h4>
               <div className="modal-mcq-grid">
-                {question.options.map((opt, oi) => (
-                  <div key={oi} className="modal-mcq-choice">
-                    <ExamMathText content={opt} />
-                  </div>
-                ))}
+                {question.options.map((opt, oi) => {
+                  const optImgUrl = resolveOptionDiagramUrl(question, oi, opt);
+                  const cleanText = stripInlineMarkdownImage(opt);
+                  const letter = String.fromCharCode(65 + oi);
+                  return (
+                    <div
+                      key={oi}
+                      className="modal-mcq-choice"
+                      style={optImgUrl ? { flexDirection: 'column', alignItems: 'stretch', gap: '8px' } : undefined}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <strong style={{ color: 'var(--color-primary-600)' }}>{letter}.</strong>
+                        {cleanText ? (
+                          <ExamMathText content={cleanText} />
+                        ) : optImgUrl ? (
+                          <span style={{ fontSize: '0.8125rem', color: 'var(--color-text-tertiary)' }}>Option {letter} (Diagram)</span>
+                        ) : null}
+                      </div>
+                      {optImgUrl && (
+                        <div style={{ display: 'flex', justifyContent: 'center', padding: '6px', background: '#ffffff', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                          <img
+                            src={optImgUrl}
+                            alt={`Option ${letter} diagram`}
+                            style={{ maxWidth: '100%', maxHeight: '160px', objectFit: 'contain' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -355,7 +400,9 @@ export function QuestionDetailModal({
             <div className="modal-section">
               <h4 className="modal-section-title">Sub-Questions ({question.sub_questions.length} parts)</h4>
               <div className="modal-sub-list">
-                {question.sub_questions.map((sub: any, si) => (
+                {question.sub_questions.map((sub: any, si) => {
+                  const subUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+                  return (
                   <div key={si} className="modal-sub-card">
                     <div className="modal-sub-header">
                       <span className="modal-sub-id">{sub.sub_id}</span>
@@ -381,6 +428,25 @@ export function QuestionDetailModal({
                       </div>
                       <span className="modal-sub-marks">[{sub.marks} mark{sub.marks !== 1 ? 's' : ''}]</span>
                     </div>
+
+                    {subUrls.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '6px 0' }}>
+                        {subUrls.map((sUrl, sImgIdx) => (
+                          <div key={sImgIdx} className="modal-diagram-box" style={{ flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                            <img
+                              src={sUrl}
+                              alt={`Diagram ${sImgIdx + 1} for ${sub.sub_id}`}
+                              className="modal-diagram-img"
+                            />
+                            {subUrls.length > 1 && (
+                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-tertiary)' }}>
+                                Figure {sImgIdx + 1}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {sub.mark_scheme && showMarkScheme && (
                       <div className="modal-sub-ms">
@@ -414,7 +480,8 @@ export function QuestionDetailModal({
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

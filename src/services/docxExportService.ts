@@ -30,6 +30,11 @@ import type { ExportLayoutOptions } from '../types/exportTemplates';
 import { getCambridgeCoverDetails } from './cambridgeCoverService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
+import {
+  resolveOptionDiagramUrl,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
 import { parseMcqOption } from '../utils/mcqUtils';
 import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
@@ -977,60 +982,93 @@ export async function exportStudentPaperDocx(
     const stemElements = convertTextAndTablesToDocxElements(cleanStem, `${qNum}.  `, 22, fontName);
     docParagraphs.push(...stemElements);
 
-    // Embed Main Question Diagram if present (only if NOT an insert diagram when booklet is attached)
-    const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
+    // Embed Main Question Diagrams if present (only if NOT an insert diagram when booklet is attached)
+    const stemDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+      diagram_url: q.diagram_url || (q as any).image_url || (q as any).diagram_base64,
+      diagram_urls: q.diagram_urls,
+      svg_content: q.svg_content,
+      mark_scheme: q.mark_scheme,
+    });
     const isParentInsert = isInsertResource(q);
-    if (diagramUrl && (!options.includeInsertBooklet || !isParentInsert)) {
-      const imgData = await loadImageData(diagramUrl);
-      if (imgData) {
-        docParagraphs.push(
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [
-              new ImageRun({
-                type: 'png',
-                data: imgData.data,
-                transformation: {
-                  width: imgData.width,
-                  height: imgData.height,
-                },
-              }),
-            ],
-            spacing: { before: 120, after: 60 },
-          })
-        );
-        docParagraphs.push(
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [
-              new TextRun({
-                text: q.resource_ref || `Fig. ${qNum}.1`,
-                bold: true,
-                size: 20,
-                font: fontName,
-              }),
-            ],
-            spacing: { before: 0, after: 120 },
-          })
-        );
+    if (stemDiagramUrls.length > 0 && (!options.includeInsertBooklet || !isParentInsert)) {
+      for (let dIdx = 0; dIdx < stemDiagramUrls.length; dIdx++) {
+        const imgData = await loadImageData(stemDiagramUrls[dIdx]);
+        if (imgData) {
+          docParagraphs.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new ImageRun({
+                  type: 'png',
+                  data: imgData.data,
+                  transformation: {
+                    width: imgData.width,
+                    height: imgData.height,
+                  },
+                }),
+              ],
+              spacing: { before: 120, after: 60 },
+            })
+          );
+          const figLabel = q.resource_ref
+            ? (stemDiagramUrls.length > 1 ? `${q.resource_ref} (${dIdx + 1})` : q.resource_ref)
+            : `Fig. ${qNum}.${dIdx + 1}`;
+          docParagraphs.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new TextRun({
+                  text: figLabel,
+                  bold: true,
+                  size: 20,
+                  font: fontName,
+                }),
+              ],
+              spacing: { before: 0, after: 120 },
+            })
+          );
+        }
       }
     }
 
-    // Options for Multiple Choice
+    // Options for Multiple Choice (Supports per-option diagrams)
     if (q.options && q.options.length > 0) {
-      q.options.forEach((opt, optIdx) => {
-        const { letter, text } = parseMcqOption(opt, optIdx);
+      for (let optIdx = 0; optIdx < q.options.length; optIdx++) {
+        const opt = q.options[optIdx];
+        const { letter, text } = parseMcqOption(stripInlineMarkdownImage(opt), optIdx);
         docParagraphs.push(
           new Paragraph({
             indent: { left: 800, hanging: 380 },
             children: [
               new TextRun({ text: `${letter}    `, bold: true, size: 20, font: fontName }),
-              ...parseFormattedTextToDocxRuns(text, { size: 20, color: '374151', font: fontName }),
+              ...(text ? parseFormattedTextToDocxRuns(text, { size: 20, color: '374151', font: fontName }) : []),
             ],
-            spacing: { before: 50, after: 50, line: 260 },
+            spacing: { before: 50, after: 40, line: 260 },
           })
         );
-      });
+        const optDiagramUrl = resolveOptionDiagramUrl(q, optIdx, opt);
+        if (optDiagramUrl) {
+          const optImgData = await loadImageData(optDiagramUrl);
+          if (optImgData) {
+            docParagraphs.push(
+              new Paragraph({
+                indent: { left: 800 },
+                children: [
+                  new ImageRun({
+                    type: 'png',
+                    data: optImgData.data,
+                    transformation: {
+                      width: Math.min(240, optImgData.width),
+                      height: Math.min(140, optImgData.height),
+                    },
+                  }),
+                ],
+                spacing: { before: 20, after: 80 },
+              })
+            );
+          }
+        }
+      }
     }
 
     // Sub-questions with hanging indent (a) and right-aligned mark tab
@@ -1049,42 +1087,50 @@ export async function exportStudentPaperDocx(
           })
         );
 
-        // Sub-question diagram if present (only if NOT an insert resource when booklet is attached)
-        const subDiagramUrl = (sq as any).diagram_url || (sq as any).image_url || (sq as any).diagram_base64;
+        // Sub-question diagrams if present (only if NOT an insert resource when booklet is attached)
+        const subDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+          diagram_url: (sq as any).diagram_url || (sq as any).image_url || (sq as any).diagram_base64,
+          diagram_urls: sq.diagram_urls,
+        });
         const isSubInsert = isInsertResource(sq);
-        if (subDiagramUrl && (!options.includeInsertBooklet || !isSubInsert)) {
-          const subImgData = await loadImageData(subDiagramUrl);
-          if (subImgData) {
-            docParagraphs.push(
-              new Paragraph({
-                alignment: AlignmentType.CENTER,
-                children: [
-                  new ImageRun({
-                    type: 'png',
-                    data: subImgData.data,
-                    transformation: {
-                      width: Math.min(340, subImgData.width),
-                      height: Math.min(180, subImgData.height),
-                    },
-                  }),
-                ],
-                spacing: { before: 100, after: 40 },
-              })
-            );
-            docParagraphs.push(
-              new Paragraph({
-                alignment: AlignmentType.CENTER,
-                children: [
-                  new TextRun({
-                    text: sq.resource_ref || `Fig. ${qNum}.2`,
-                    bold: true,
-                    size: 20,
-                    font: fontName,
-                  }),
-                ],
-                spacing: { before: 0, after: 100 },
-              })
-            );
+        if (subDiagramUrls.length > 0 && (!options.includeInsertBooklet || !isSubInsert)) {
+          for (let sdIdx = 0; sdIdx < subDiagramUrls.length; sdIdx++) {
+            const subImgData = await loadImageData(subDiagramUrls[sdIdx]);
+            if (subImgData) {
+              docParagraphs.push(
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  children: [
+                    new ImageRun({
+                      type: 'png',
+                      data: subImgData.data,
+                      transformation: {
+                        width: Math.min(340, subImgData.width),
+                        height: Math.min(180, subImgData.height),
+                      },
+                    }),
+                  ],
+                  spacing: { before: 100, after: 40 },
+                })
+              );
+              const subFigLabel = sq.resource_ref
+                ? (subDiagramUrls.length > 1 ? `${sq.resource_ref} (${sdIdx + 1})` : sq.resource_ref)
+                : `Fig. ${qNum}.${sdIdx + 2}`;
+              docParagraphs.push(
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  children: [
+                    new TextRun({
+                      text: subFigLabel,
+                      bold: true,
+                      size: 20,
+                      font: fontName,
+                    }),
+                  ],
+                  spacing: { before: 0, after: 100 },
+                })
+              );
+            }
           }
         }
 
@@ -1620,10 +1666,14 @@ export async function exportTeacherMarkSchemeDocx(
     const stemElements = convertTextAndTablesToDocxElements(cleanStem, '', 19, 'Arial');
     docParagraphs.push(...stemElements);
 
-    // Embed Question Diagram if present
-    const diagramUrl = q.diagram_url || (q as any).image_url || (q as any).diagram_base64;
-    if (diagramUrl) {
-      const imgData = await loadImageData(diagramUrl);
+    // Embed Question Diagrams if present
+    const msStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
+      diagram_url: q.diagram_url || (q as any).image_url || (q as any).diagram_base64,
+      diagram_urls: q.diagram_urls,
+      mark_scheme: q.mark_scheme,
+    });
+    for (const msDiagramUrl of msStemUrls) {
+      const imgData = await loadImageData(msDiagramUrl);
       if (imgData) {
         docParagraphs.push(
           new Paragraph({
@@ -1644,21 +1694,44 @@ export async function exportTeacherMarkSchemeDocx(
       }
     }
 
-    // If MCQ, list options
+    // If MCQ, list options (including per-option diagrams)
     if (q.options && q.options.length > 0) {
-      q.options.forEach((opt, optIdx) => {
-        const { letter, text } = parseMcqOption(opt, optIdx);
+      for (let optIdx = 0; optIdx < q.options.length; optIdx++) {
+        const opt = q.options[optIdx];
+        const { letter, text } = parseMcqOption(stripInlineMarkdownImage(opt), optIdx);
         docParagraphs.push(
           new Paragraph({
             indent: { left: 400, hanging: 240 },
             children: [
               new TextRun({ text: `${letter}   `, bold: true, size: 18, color: '1e3a8a', font: 'Arial' }),
-              ...parseFormattedTextToDocxRuns(text, { size: 18, color: '4b5563', font: 'Arial' }),
+              ...(text ? parseFormattedTextToDocxRuns(text, { size: 18, color: '4b5563', font: 'Arial' }) : []),
             ],
             spacing: { before: 20, after: 20 },
           })
         );
-      });
+        const msOptImg = resolveOptionDiagramUrl(q, optIdx, opt);
+        if (msOptImg) {
+          const optImgData = await loadImageData(msOptImg);
+          if (optImgData) {
+            docParagraphs.push(
+              new Paragraph({
+                indent: { left: 400 },
+                children: [
+                  new ImageRun({
+                    type: 'png',
+                    data: optImgData.data,
+                    transformation: {
+                      width: Math.min(220, optImgData.width),
+                      height: Math.min(130, optImgData.height),
+                    },
+                  }),
+                ],
+                spacing: { before: 20, after: 60 },
+              })
+            );
+          }
+        }
+      }
     }
 
     // Mark Scheme Table for this Question

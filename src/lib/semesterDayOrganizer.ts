@@ -40,10 +40,18 @@ const MONTH_MAP: Record<string, number> = {
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
+export interface ScheduleDaySession {
+  subject: string;
+  time: string;
+  duration?: string;
+  targetClass?: string;
+}
+
 export interface ScheduleDayPreset {
   dayKey: string;
   label: string;
   subjects: string[];
+  sessions: ScheduleDaySession[];
 }
 
 export interface SemesterDayGroup {
@@ -51,11 +59,20 @@ export interface SemesterDayGroup {
   dayNumber: number | null;
   label: string;
   scheduleSubjects: string[];
+  scheduleSessions: ScheduleDaySession[];
   quizzes: PublishedQuiz[];
   activeCount: number;
   scheduledCount: number;
   pausedCount: number;
   closedCount: number;
+}
+
+export interface QuizExamTimeInfo {
+  windowLabel: string;
+  durationLabel: string;
+  timetableHint: string | null;
+  hasExplicitWindow: boolean;
+  tooltip: string;
 }
 
 export interface DayWarmSummary {
@@ -150,33 +167,152 @@ export function formatExamDayDateLabel(dayKey: string): string {
   return `${WEEKDAY_SHORT[dt.getDay()]}, ${day} ${MONTH_SHORT[dt.getMonth()]} ${year}`;
 }
 
+function extractStartMinutes(timeStr?: string): number {
+  const m = String(timeStr || '').match(/(\d{1,2})[:.](\d{2})/);
+  if (!m) return Number.MAX_SAFE_INTEGER;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
 /**
- * Extracts unique chronological day presets with aggregated subject labels from School Exam Schedule entries.
+ * Extracts unique chronological day presets with aggregated subject labels and timed sessions
+ * from School Exam Schedule entries.
  */
 export function extractScheduleDayPresets(
   entries?: ExamScheduleEntry[] | null
 ): ScheduleDayPreset[] {
   if (!Array.isArray(entries) || entries.length === 0) return [];
-  const map = new Map<string, string[]>();
+  const map = new Map<string, { subjects: string[]; sessions: ScheduleDaySession[] }>();
 
   for (const entry of entries) {
     const dayKey = normalizeExamDayKey(entry?.date);
     if (!dayKey) continue;
-    const subjects = map.get(dayKey) || [];
+    const bucket = map.get(dayKey) || { subjects: [], sessions: [] };
     const subj = String(entry?.subject || '').trim();
-    if (subj && !subjects.some((s) => s.toLowerCase() === subj.toLowerCase())) {
-      subjects.push(subj);
+    const time = String(entry?.time || '').trim();
+    if (subj && !bucket.subjects.some((s) => s.toLowerCase() === subj.toLowerCase())) {
+      bucket.subjects.push(subj);
     }
-    map.set(dayKey, subjects);
+    if (
+      subj &&
+      !bucket.sessions.some(
+        (s) => s.subject.toLowerCase() === subj.toLowerCase() && s.time.toLowerCase() === time.toLowerCase()
+      )
+    ) {
+      bucket.sessions.push({
+        subject: subj,
+        time,
+        duration: entry?.duration,
+        targetClass: entry?.targetClass,
+      });
+    }
+    map.set(dayKey, bucket);
   }
 
   return Array.from(map.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([dayKey, subjects]) => ({
+    .map(([dayKey, bucket]) => ({
       dayKey,
       label: formatExamDayDateLabel(dayKey),
-      subjects,
+      subjects: bucket.subjects,
+      sessions: [...bucket.sessions].sort((a, b) => extractStartMinutes(a.time) - extractStartMinutes(b.time)),
     }));
+}
+
+function normalizeSubjectToken(raw?: string | null): string {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function formatClock24(ms: number): string {
+  const dt = new Date(ms);
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mm = String(dt.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function formatShortMonthDay(ms: number): string {
+  const dt = new Date(ms);
+  return `${MONTH_SHORT[dt.getMonth()]} ${dt.getDate()}`;
+}
+
+function formatLocalDayKey(ms: number): string | null {
+  const dt = new Date(ms);
+  return formatLocalYmd(dt.getFullYear(), dt.getMonth(), dt.getDate());
+}
+
+/**
+ * Resolves concise exam time window, duration, and matching School Exam Schedule timetable hint
+ * for a quiz row inside Semester Exam Day Organizer.
+ */
+export function resolveQuizExamTimeInfo(
+  quiz: Pick<PublishedQuiz, 'scheduledStartAt' | 'scheduledEndAt' | 'durationMinutes' | 'subject' | 'headerConfig'>,
+  groupDayKey?: string | null,
+  scheduleEntries?: ExamScheduleEntry[] | null
+): QuizExamTimeInfo {
+  const startMs = parseScheduleTimestamp(quiz?.scheduledStartAt);
+  const endMs = parseScheduleTimestamp(quiz?.scheduledEndAt);
+  const mins = Number(quiz?.durationMinutes) > 0 ? Math.round(Number(quiz.durationMinutes)) : 45;
+  const durationLabel = `${mins} min`;
+
+  const effectiveDayKey =
+    groupDayKey && groupDayKey !== UNSCHEDULED_DAY_KEY ? groupDayKey : null;
+
+  const formatPoint = (ms: number): string => {
+    const clock = formatClock24(ms);
+    if (effectiveDayKey && formatLocalDayKey(ms) === effectiveDayKey) {
+      return clock;
+    }
+    return `${formatShortMonthDay(ms)}, ${clock}`;
+  };
+
+  let windowLabel = 'Open (No window)';
+  const hasExplicitWindow = startMs !== null || endMs !== null;
+
+  if (startMs !== null && endMs !== null) {
+    const sameDay = formatLocalDayKey(startMs) === formatLocalDayKey(endMs);
+    if (sameDay) {
+      windowLabel = `${formatPoint(startMs)} – ${formatClock24(endMs)}`;
+    } else {
+      windowLabel = `${formatPoint(startMs)} → ${formatPoint(endMs)}`;
+    }
+  } else if (startMs !== null) {
+    windowLabel = `Opens ${formatPoint(startMs)}`;
+  } else if (endMs !== null) {
+    windowLabel = `Closes ${formatPoint(endMs)}`;
+  }
+
+  let timetableHint: string | null = null;
+  if (effectiveDayKey && Array.isArray(scheduleEntries) && scheduleEntries.length > 0) {
+    const rawSubj = (quiz?.subject || quiz?.headerConfig?.subject || '').trim();
+    const normSubj = normalizeSubjectToken(rawSubj);
+    if (normSubj) {
+      const matched = scheduleEntries.find((entry) => {
+        if (normalizeExamDayKey(entry?.date) !== effectiveDayKey) return false;
+        const entryNorm = normalizeSubjectToken(entry?.subject);
+        return Boolean(entryNorm && (entryNorm === normSubj || entryNorm.includes(normSubj) || normSubj.includes(entryNorm)));
+      });
+      if (matched?.time) {
+        timetableHint = `Timetable: ${matched.time}`;
+      }
+    }
+  }
+
+  const tooltipParts: string[] = [];
+  if (startMs !== null) tooltipParts.push(`Starts: ${new Date(startMs).toLocaleString()}`);
+  if (endMs !== null) tooltipParts.push(`Closes: ${new Date(endMs).toLocaleString()}`);
+  if (!hasExplicitWindow) tooltipParts.push('No scheduled start/close time window (manual open/pause)');
+  tooltipParts.push(`Duration: ${durationLabel}`);
+  if (timetableHint) tooltipParts.push(timetableHint);
+
+  return {
+    windowLabel,
+    durationLabel,
+    timetableHint,
+    hasExplicitWindow,
+    tooltip: tooltipParts.join(' · '),
+  };
 }
 
 function compareQuizzesByCode(a: PublishedQuiz, b: PublishedQuiz): number {
@@ -217,9 +353,12 @@ export function groupQuizzesByExamDay(
   extraDayKeys?: string[],
   nowMs: number = Date.now()
 ): { days: SemesterDayGroup[]; unscheduled: SemesterDayGroup } {
-  const schedulePresetMap = new Map<string, string[]>();
+  const schedulePresetMap = new Map<string, { subjects: string[]; sessions: ScheduleDaySession[] }>();
   for (const preset of extractScheduleDayPresets(scheduleEntries)) {
-    schedulePresetMap.set(preset.dayKey, preset.subjects);
+    schedulePresetMap.set(preset.dayKey, {
+      subjects: preset.subjects,
+      sessions: preset.sessions,
+    });
   }
 
   const byDay = new Map<string, PublishedQuiz[]>();
@@ -250,11 +389,13 @@ export function groupQuizzesByExamDay(
   const days: SemesterDayGroup[] = sortedDayKeys.map((dayKey, idx) => {
     const sortedQuizzes = [...(byDay.get(dayKey) || [])].sort(compareQuizzesByCode);
     const counts = buildStatusSummary(sortedQuizzes, nowMs);
+    const presetInfo = schedulePresetMap.get(dayKey);
     return {
       dayKey,
       dayNumber: idx + 1,
       label: formatExamDayDateLabel(dayKey),
-      scheduleSubjects: schedulePresetMap.get(dayKey) || [],
+      scheduleSubjects: presetInfo?.subjects || [],
+      scheduleSessions: presetInfo?.sessions || [],
       quizzes: sortedQuizzes,
       ...counts,
     };
@@ -270,6 +411,7 @@ export function groupQuizzesByExamDay(
       dayNumber: null,
       label: 'Unscheduled Exams',
       scheduleSubjects: [],
+      scheduleSessions: [],
       quizzes: sortedUnscheduled,
       ...unscheduledCounts,
     },

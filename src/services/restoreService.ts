@@ -14,6 +14,12 @@ import {
   readTextFileFromDirectory,
 } from './localBackupFolderService';
 import type { Question, Syllabus, CustomTest } from '../types/database';
+import {
+  normalizeOptionDiagramList,
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  serializeQuestionDiagramsForColumn,
+} from '../utils/questionDiagramUtils';
 
 export type RestoreSourceInput = File | Blob | ArrayBuffer | FileSystemDirectoryHandle;
 
@@ -344,7 +350,16 @@ export function rewriteQuestionMediaUrls(
     );
   }
 
-  const updatedDiagramUrl = getNewMediaUrl(q.diagram_url);
+  const rawStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(q);
+  const rewrittenStemUrls = rawStemUrls.map((u) => getNewMediaUrl(u) || u);
+  const rawOptDiagrams = resolveOptionDiagramUrls(q);
+  const rewrittenOptDiagrams = normalizeOptionDiagramList(
+    rawOptDiagrams.map((u) => (u ? getNewMediaUrl(u) || u : null))
+  );
+  const updatedDiagramUrl = serializeQuestionDiagramsForColumn(
+    rewrittenStemUrls,
+    rewrittenOptDiagrams
+  );
   const updatedAudioUrl = getNewMediaUrl(q.audio_url);
   const updatedSourcePdfUrl = getNewMediaUrl((q as any).source_pdf_url);
   const updatedInsertPdfUrl = getNewMediaUrl((q as any).insert_pdf_url);
@@ -352,6 +367,12 @@ export function rewriteQuestionMediaUrls(
   let updatedMarkScheme = (q as any).mark_scheme;
   if (updatedMarkScheme && typeof updatedMarkScheme === 'object') {
     updatedMarkScheme = { ...updatedMarkScheme };
+    if (rewrittenStemUrls.length > 1) {
+      updatedMarkScheme._diagram_urls = rewrittenStemUrls;
+    }
+    if (rewrittenOptDiagrams.some(Boolean)) {
+      updatedMarkScheme._option_diagrams = rewrittenOptDiagrams;
+    }
     if (updatedMarkScheme._source_pdf_url) {
       updatedMarkScheme._source_pdf_url =
         getNewMediaUrl(updatedMarkScheme._source_pdf_url) || updatedMarkScheme._source_pdf_url;
@@ -370,13 +391,16 @@ export function rewriteQuestionMediaUrls(
   let updatedSubs = subQuestions;
   if (Array.isArray(subQuestions)) {
     updatedSubs = subQuestions.map((sub: any) => {
-      let subDiagram = sub?.diagram_url;
+      const subRawUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+      const subRewrittenUrls = subRawUrls.map((u) => getNewMediaUrl(u) || u);
+      const subOptUrls = resolveOptionDiagramUrls(sub).map((u) => (u ? getNewMediaUrl(u) || u : null));
       let subAudio = sub?.audio_url;
-      if (subDiagram) subDiagram = getNewMediaUrl(subDiagram);
       if (subAudio) subAudio = getNewMediaUrl(subAudio);
       return {
         ...sub,
-        diagram_url: subDiagram,
+        diagram_url: subRewrittenUrls[0] ?? (sub?.diagram_url ? getNewMediaUrl(sub.diagram_url) : null),
+        ...(subRewrittenUrls.length > 0 ? { diagram_urls: subRewrittenUrls } : {}),
+        ...(subOptUrls.some(Boolean) ? { option_diagrams: subOptUrls } : {}),
         audio_url: subAudio,
       };
     });

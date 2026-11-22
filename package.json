@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.7.3",
+  "version": "2.7.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -35,6 +35,7 @@
     "test:teacher-accounts": "node --import ./scripts/register-ts.mjs scripts/test-admin-teacher-accounts.mjs",
     "test:exam-schedule": "node --import ./scripts/register-ts.mjs scripts/test-exam-session-schedule.mjs",
     "test:multi-select": "node --import ./scripts/register-ts.mjs scripts/test-multiple-select-grading.mjs",
+    "test:multi-image": "node --import ./scripts/register-ts.mjs scripts/test-multi-image-questions.mjs",
     "test:backup-restore": "node --import ./scripts/register-ts.mjs scripts/test-backup-restore.mjs",
     "test:proctor-alerts": "node --import ./scripts/register-ts.mjs scripts/test-proctor-alert-engine.mjs",
     "test:submission-tombstones": "node scripts/test-submission-deletion-tombstones.mjs",

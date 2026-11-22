@@ -22,6 +22,7 @@ const KNOWN_SYLLABUS_CODES: Record<string, string> = {
   Geography: '0460',
   Economics: '0455',
   Sociology: '0495',
+  'Civics (PKn)': 'PKN',
   PAI: '',
   Arabic: '',
   'Bahasa Indonesia': '',
@@ -37,6 +38,7 @@ function getSubjectIcon(subject: string): string {
   if (s.includes('geo')) return '🌍';
   if (s.includes('econ')) return '📈';
   if (s.includes('socio')) return '⚖️';
+  if (s.includes('civic') || /\bpp?kn\b/.test(s) || s.includes('kewarganegaraan') || s.includes('pancasila')) return '🏛️';
   if (s.includes('pai') || s.includes('islam')) return '🕌';
   if (s.includes('arab')) return '📜';
   if (s.includes('indonesia')) return '🇮🇩';

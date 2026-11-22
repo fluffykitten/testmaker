@@ -8,6 +8,11 @@ import type { ExamHeaderConfig } from './testBuilderService';
 import { ensureInlineMathDelimiters } from '../components/ExamMathText';
 import { resolveMcqCorrectOptionIndex } from './deterministicGradingService';
 import { stripDuplicateOptionsFromStem } from '../lib/gemini';
+import {
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
 
 export function exportOfflineInteractiveHtmlQuiz(
   headerConfig: ExamHeaderConfig,
@@ -18,29 +23,36 @@ export function exportOfflineInteractiveHtmlQuiz(
   const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 0), 0);
 
   const serializedQuestions = JSON.stringify(
-    questions.map((q, idx) => ({
+    questions.map((q, idx) => {
+      const stemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(q);
+      const optionDiagrams = resolveOptionDiagramUrls(q, q.options?.length);
+      return {
       id: q.id || `q_${idx + 1}`,
       number: idx + 1,
       text: ensureInlineMathDelimiters(stripDuplicateOptionsFromStem(q.question_text || '', q.options)),
-      options: (q.options || []).map((opt) => ensureInlineMathDelimiters(opt)),
+      options: (q.options || []).map((opt) => ensureInlineMathDelimiters(stripInlineMarkdownImage(opt))),
+      optionDiagrams,
       correctOptionIndex: q.options && q.options.length > 0 ? resolveMcqCorrectOptionIndex(q) : -1,
       subQuestions: (q.sub_questions || []).map((sq) => ({
         ...sq,
         question_text: ensureInlineMathDelimiters(stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options)),
+        diagramUrls: resolveQuestionImageUrlsExcludingStandaloneSvg(sq),
         dataTables: sq.data_tables || null,
       })),
       dataTables: q.data_tables || null,
       marks: q.marks || 1,
       topic: q.topic || 'General',
       subTopic: q.sub_topic || '',
-      diagramUrl: q.diagram_url || '',
+      diagramUrl: stemUrls[0] || q.diagram_url || '',
+      diagramUrls: stemUrls,
       svgContent: q.svg_content || '',
       audioUrl: q.audio_url || '',
       audioMetadata: q.audio_metadata || null,
       markScheme: q.mark_scheme,
       guidance: q.mark_scheme?.guidance || [],
       misconceptions: q.mark_scheme?.common_misconceptions || [],
-    }))
+    };
+    })
   );
 
   const html = `<!DOCTYPE html>
@@ -196,11 +208,14 @@ export function exportOfflineInteractiveHtmlQuiz(
 
       const dBox = document.getElementById('qDiagram');
       if (dBox) {
-        if (q.svgContent) {
+        const stemImgs = Array.isArray(q.diagramUrls) && q.diagramUrls.length > 0 ? q.diagramUrls : (q.diagramUrl ? [q.diagramUrl] : []);
+        if (q.svgContent && stemImgs.length === 0) {
           dBox.innerHTML = '<div style="max-width: 520px; margin: 0 auto; background: #ffffff; padding: 12px; border-radius: 10px; border: 1px solid var(--border); overflow: hidden;">' + q.svgContent + '</div>';
           dBox.style.display = 'block';
-        } else if (q.diagramUrl) {
-          dBox.innerHTML = '<img src="' + q.diagramUrl + '" style="max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px;" />';
+        } else if (stemImgs.length > 0) {
+          dBox.innerHTML = stemImgs.map(function(u) {
+            return '<div style="margin-bottom: 10px;"><img src="' + u + '" style="max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px; background: #fff;" /></div>';
+          }).join('');
           dBox.style.display = 'block';
         } else {
           dBox.innerHTML = '';
@@ -217,7 +232,10 @@ export function exportOfflineInteractiveHtmlQuiz(
         q.options.forEach((opt, oIdx) => {
           const btn = document.createElement('button');
           btn.className = 'choice-btn' + (answers[idx] === oIdx ? ' selected' : '');
-          btn.innerHTML = '<strong>' + String.fromCharCode(65 + oIdx) + '</strong> ' + opt;
+          const optImg = Array.isArray(q.optionDiagrams) ? q.optionDiagrams[oIdx] : null;
+          btn.style.flexDirection = optImg ? 'column' : 'row';
+          btn.style.alignItems = optImg ? 'flex-start' : 'center';
+          btn.innerHTML = '<div><strong>' + String.fromCharCode(65 + oIdx) + '</strong> ' + (opt || '') + '</div>' + (optImg ? '<img src="' + optImg + '" style="max-width: 240px; max-height: 150px; object-fit: contain; background: #fff; border-radius: 6px; padding: 4px;" />' : '');
           btn.onclick = () => { answers[idx] = oIdx; showQuestion(idx); };
           list.appendChild(btn);
         });

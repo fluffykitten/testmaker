@@ -157,6 +157,17 @@ export const SUBJECT_REGISTRY: Record<string, SubjectMetadata> = {
     borderDark: 'rgba(4, 120, 87, 0.35)',
     description: 'Hadith studies, Quranic literacy, Islamic jurisprudence & history',
   },
+  civics: {
+    id: 'civics',
+    name: 'Civics (PKn)',
+    code: 'PKN / NAT-ID',
+    color: '#dc2626',
+    bgLight: '#fef2f2',
+    borderLight: '#fecaca',
+    bgDark: 'rgba(220, 38, 38, 0.15)',
+    borderDark: 'rgba(220, 38, 38, 0.35)',
+    description: 'Pancasila, UUD 1945, constitutional governance, human rights & civic literacy',
+  },
   general: {
     id: 'general',
     name: 'General Assessment',
@@ -216,6 +227,14 @@ export function getSubjectMetadata(rawSubject: string): SubjectMetadata {
   }
   if (lower.includes('islam') || lower.includes('quran') || lower.includes('pai') || lower.includes('agama')) {
     return SUBJECT_REGISTRY['islamic studies'];
+  }
+  if (
+    lower.includes('civic') ||
+    /\bpp?kn\b/.test(lower) ||
+    lower.includes('kewarganegaraan') ||
+    lower.includes('pancasila')
+  ) {
+    return SUBJECT_REGISTRY.civics;
   }
 
   // Check direct key match

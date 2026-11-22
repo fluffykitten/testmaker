@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.3`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.4`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.3-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.4-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -169,6 +169,17 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.4] — Multi-Image Questions, MC Option Diagrams, Civics (PKn) Subject & Semester Day Exam Time Column
+- **Multi-Image Questions & Per-Option Multiple Choice Diagrams:**
+  - Extended [`database.ts`](src/types/database.ts), [`questionDiagramUtils.ts`](src/utils/questionDiagramUtils.ts), [`questionBankService.ts`](src/services/questionBankService.ts), and [`pdfProcessor.ts`](src/lib/pdfProcessor.ts) with `diagram_urls` and `option_diagrams` support using backward-compatible plain URL storage for single-image stems and compact JSON envelope packing in `questions.diagram_url` so multi-figure stems and visual MC options survive student RPC `mark_scheme` stripping (`sanitize_question_json_for_student`) with zero SQL migrations.
+  - Upgraded [`QuestionEditorModal.tsx`](src/components/QuestionEditorModal.tsx) and [`ExtractionReview.tsx`](src/components/ExtractionReview.tsx) with multi-image stem/sub-question galleries (multi-file upload, PDF/image cropping, clipboard paste, reordering, URL slots) and per-option MC diagram upload/crop/URL/preview controls that preserve image-only MC choices on save.
+  - Updated [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) (stacked stem/sub-question visuals, responsive `.sq-choices-list--visual-grid` cards with dedicated `🔍` zoom buttons, quick-choice thumbnails, and post-submit visual review), [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts) / [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts) (image-only MC grading & formatting), [`QuestionCard.tsx`](src/components/QuestionCard.tsx), [`QuestionDetailModal.tsx`](src/components/QuestionDetailModal.tsx), [`pdfExportService.ts`](src/services/pdfExportService.ts), [`docxExportService.ts`](src/services/docxExportService.ts), [`htmlQuizExportService.ts`](src/services/htmlQuizExportService.ts), [`backupService.ts`](src/services/backupService.ts), and [`restoreService.ts`](src/services/restoreService.ts).
+  - Added automated regression tests in [`scripts/test-multi-image-questions.mjs`](scripts/test-multi-image-questions.mjs) (`npm run test:multi-image`).
+- **Indonesian Civics (`Civics (PKn)`) Subject Support:**
+  - Added full `Civics (PKn)` / `PPKn` / `Pendidikan Pancasila dan Kewarganegaraan` classification, catalog metadata (`PKN / NAT-ID`), Civic Shield SVG icon, default subject preset, and teacher profile chip/modal support across [`subjectClassifier.ts`](src/lib/subjectClassifier.ts), [`subjectCatalog.ts`](src/utils/subjectCatalog.ts), [`subjectMeta.tsx`](src/utils/subjectMeta.tsx), [`settings.ts`](src/lib/settings.ts), [`TeacherProfileModal.tsx`](src/components/TeacherProfileModal.tsx), [`TeacherProfileChip.tsx`](src/components/TeacherProfileChip.tsx), and [`scripts/test-languages-and-bidi.mjs`](scripts/test-languages-and-bidi.mjs).
+- **Semester Exam Day Organizer Exam Time Column & Wider Layout:**
+  - Added `resolveQuizExamTimeInfo` and per-day `scheduleSessions` in [`semesterDayOrganizer.ts`](src/lib/semesterDayOrganizer.ts), widened [`SemesterDayOrganizerModal.css`](src/components/SemesterDayOrganizerModal.css) (`1280px`), and added the **Exam Time** column in [`SemesterDayOrganizerModal.tsx`](src/components/SemesterDayOrganizerModal.tsx) showing exam windows, durations, and matching timetable hints.
 
 ### [v.2.7.3] — Animated Student Exam-Entry Loader, Lotus Orbital Emblem & Locked Tool Tooltip Cleanup
 - **Animated Exam Join & Fetch Loading Flow:**

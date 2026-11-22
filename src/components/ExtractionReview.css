@@ -558,6 +558,34 @@
   padding: 0 20px 16px;
 }
 
+.review-diagrams-gallery {
+  padding: 0 20px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.review-diagram-card {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.review-diagram-fig-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: var(--color-primary-600);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .review-diagram-wrap {
   position: relative;
   display: inline-flex;
@@ -686,7 +714,7 @@
   padding: 0 20px 16px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .review-option {
@@ -695,6 +723,34 @@
   border-radius: var(--radius-md);
   font-size: 0.875rem;
   color: var(--color-text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-option-main-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-option-thumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  width: fit-content;
+}
+
+.review-option-thumb-img {
+  max-height: 110px;
+  max-width: 240px;
+  object-fit: contain;
+  display: block;
 }
 
 /* Mark Scheme */

@@ -97,6 +97,7 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
   'BI': { syllabusCode: 'BI', subjectName: 'Bahasa Indonesia', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
   'FIS': { syllabusCode: 'FIS', subjectName: 'Fisika', domain: 'stem', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
+  'PKN': { syllabusCode: 'PKN', subjectName: 'Civics (PKn)', domain: 'humanities', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
   'PAI': { syllabusCode: 'PAI', subjectName: 'Pendidikan Agama Islam', domain: 'humanities', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
   'BAR': { syllabusCode: 'BAR', subjectName: 'Bahasa Arab', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
   'ARA': { syllabusCode: 'ARA', subjectName: 'Arabic', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
@@ -176,6 +177,21 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'title',
       evidence: 'Fisika',
+    };
+  }
+
+  // Detect Indonesian Civics (PKn / PPKn / Pendidikan Pancasila & Kewarganegaraan) covers
+  if (
+    /\b(?:PPKN|PKN|CIVICS|CIVIC\s+EDUCATION|PENDIDIKAN\s+(?:PANCASILA(?:\s+DAN\s+KEWARGANEGARAAN)?|KEWARGANEGARAAN))\b/i.test(
+      haystack
+    )
+  ) {
+    return {
+      profile: SYLLABUS_REGISTRY['PKN'],
+      syllabusCode: 'PKN',
+      paperCode,
+      method: 'title',
+      evidence: 'Civics (PKn)',
     };
   }
 

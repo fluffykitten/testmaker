@@ -46,6 +46,11 @@ import { buildQualitativeNotesResources, renderNotePagesToDataUrls } from './pra
 import type { ExtractionResult, ExtractedQuestion, SubQuestion } from '../types/database';
 import { compareQuestionNumbers } from '../services/questionBankService';
 import {
+  normalizeDiagramUrlList,
+  normalizeOptionDiagramList,
+  serializeQuestionDiagramsForColumn,
+} from '../utils/questionDiagramUtils';
+import {
   extractTextFromPdfPages,
   verifyAndRepairPassages,
   stitchPassagesToQuestions,
@@ -135,6 +140,7 @@ export function filterActiveDiagramDataForSave(
 
   const activeKeys = new Set<string>();
   const removedKeys = new Set<string>();
+  const activePrefixes: string[] = [];
 
   for (const q of questions) {
     if (q.has_diagram === false) {
@@ -142,6 +148,11 @@ export function filterActiveDiagramDataForSave(
     } else {
       activeKeys.add(q.question_number);
       if (q.parent_question_id) activeKeys.add(q.parent_question_id);
+      activePrefixes.push(`${q.question_number}__img_`);
+    }
+
+    if (Array.isArray(q.option_diagrams) && q.option_diagrams.some(Boolean)) {
+      activePrefixes.push(`${q.question_number}__opt_`);
     }
 
     (q.sub_questions || []).forEach((sub, sIdx) => {
@@ -150,13 +161,17 @@ export function filterActiveDiagramDataForSave(
         removedKeys.add(subKey);
       } else {
         activeKeys.add(subKey);
+        activePrefixes.push(`${subKey}__img_`);
+      }
+      if (Array.isArray(sub.option_diagrams) && sub.option_diagrams.some(Boolean)) {
+        activePrefixes.push(`${subKey}__opt_`);
       }
     });
   }
 
   for (const [key, item] of diagramData.entries()) {
     if (removedKeys.has(key)) continue;
-    if (activeKeys.has(key)) {
+    if (activeKeys.has(key) || activePrefixes.some((p) => key.startsWith(p))) {
       filtered.set(key, item);
     }
   }
@@ -178,6 +193,7 @@ export async function saveExtractedQuestions(
   // 1. Upload only active (non-deleted, selected) cropped diagram blobs to Supabase Storage
   const activeDiagramData = filterActiveDiagramDataForSave(questions, diagramData);
   let permanentDiagramUrls = new Map<string, string>();
+  const localToPermanentUrl = new Map<string, string>();
   if (activeDiagramData.size > 0) {
     permanentDiagramUrls = await uploadDiagramsToStorage(
       activeDiagramData,
@@ -188,6 +204,12 @@ export async function saveExtractedQuestions(
       },
       onProgress
     );
+    for (const [key, item] of activeDiagramData.entries()) {
+      const uploadedUrl = permanentDiagramUrls.get(key);
+      if (uploadedUrl && item?.localUrl) {
+        localToPermanentUrl.set(item.localUrl, uploadedUrl);
+      }
+    }
   }
 
   // 2b. Upload source Question Paper PDF to R2 / Supabase Storage for persistent citations
@@ -276,8 +298,58 @@ export async function saveExtractedQuestions(
     if (effectiveCognitiveLevel) (ms as any)._cognitive_level = effectiveCognitiveLevel;
     if (effectivePageNumber) (ms as any)._page_number = effectivePageNumber;
 
-    const fallbackParentDiagramUrl =
-      q.diagram_url && !q.diagram_url.startsWith('blob:') ? q.diagram_url : null;
+    const resolveUploadedOrPermanentUrl = (rawUrl: unknown): string | null => {
+      if (typeof rawUrl !== 'string') return null;
+      const trimmed = rawUrl.trim();
+      if (!trimmed) return null;
+      if (localToPermanentUrl.has(trimmed)) {
+        return localToPermanentUrl.get(trimmed)!;
+      }
+      if (trimmed.startsWith('blob:')) return null;
+      return trimmed;
+    };
+
+    const collectPermanentUrlsByPrefix = (prefix: string): string[] => {
+      const matches: Array<{ idx: number; url: string }> = [];
+      for (const [key, url] of permanentDiagramUrls.entries()) {
+        if (key.startsWith(prefix)) {
+          const suffixIdx = Number(key.slice(prefix.length));
+          matches.push({ idx: isNaN(suffixIdx) ? 999 : suffixIdx, url });
+        }
+      }
+      matches.sort((a, b) => a.idx - b.idx);
+      return matches.map((m) => m.url);
+    };
+
+    const rawParentStemUrls =
+      q.has_diagram === false
+        ? []
+        : normalizeDiagramUrlList([
+            ...(Array.isArray(q.diagram_urls) ? q.diagram_urls.map(resolveUploadedOrPermanentUrl) : []),
+            permanentDiagramUrls.get(q.question_number),
+            resolveUploadedOrPermanentUrl(q.diagram_url),
+            ...collectPermanentUrlsByPrefix(`${q.question_number}__img_`),
+          ]);
+
+    const rawOptionDiagrams = normalizeOptionDiagramList(
+      (q.options || []).map((_, oi) => {
+        const uploadedForSlot = permanentDiagramUrls.get(`${q.question_number}__opt_${oi}`);
+        const explicitForSlot = resolveUploadedOrPermanentUrl(q.option_diagrams?.[oi]);
+        return uploadedForSlot || explicitForSlot || null;
+      }),
+      q.options?.length ?? 0
+    );
+
+    if (rawParentStemUrls.length > 1) {
+      (ms as any)._diagram_urls = rawParentStemUrls;
+    } else {
+      delete (ms as any)._diagram_urls;
+    }
+    if (rawOptionDiagrams.some(Boolean)) {
+      (ms as any)._option_diagrams = rawOptionDiagrams;
+    } else {
+      delete (ms as any)._option_diagrams;
+    }
 
     return {
       syllabus_id: syllabusId,
@@ -295,28 +367,44 @@ export async function saveExtractedQuestions(
       source_pdf_url: effectivePdfUrl,
       page_number: effectivePageNumber,
       marks: q.total_marks,
-      diagram_url:
-        q.has_diagram === false
-          ? null
-          : permanentDiagramUrls.get(q.question_number) || fallbackParentDiagramUrl,
+      diagram_url: serializeQuestionDiagramsForColumn(rawParentStemUrls, rawOptionDiagrams),
       diagram_source: q.has_diagram === false ? null : q.diagram_source || null,
       resource_ref: q.has_diagram === false ? null : q.resource_ref || null,
       insert_page_number: q.has_diagram === false ? null : q.insert_page_number || null,
       options: (q.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
-      sub_questions: (q.sub_questions || []).map((sub, sIdx) => ({
-        ...sub,
-        cognitive_level: sub.cognitive_level || null,
-        question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
-        options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
-        diagram_source: sub.has_diagram === false ? null : sub.diagram_source || null,
-        resource_ref: sub.has_diagram === false ? null : sub.resource_ref || null,
-        insert_page_number: sub.has_diagram === false ? null : sub.insert_page_number || null,
-        diagram_url:
+      sub_questions: (q.sub_questions || []).map((sub, sIdx) => {
+        const subKey = `${q.question_number}_sub_${sIdx}`;
+        const subUrls =
           sub.has_diagram === false
-            ? null
-            : permanentDiagramUrls.get(`${q.question_number}_sub_${sIdx}`) ||
-              (sub.diagram_url && !sub.diagram_url.startsWith('blob:') ? sub.diagram_url : null),
-      })),
+            ? []
+            : normalizeDiagramUrlList([
+                ...(Array.isArray(sub.diagram_urls) ? sub.diagram_urls.map(resolveUploadedOrPermanentUrl) : []),
+                permanentDiagramUrls.get(subKey),
+                resolveUploadedOrPermanentUrl(sub.diagram_url),
+                ...collectPermanentUrlsByPrefix(`${subKey}__img_`),
+              ]);
+        const subOptDiagrams = normalizeOptionDiagramList(
+          (sub.options || []).map((_, oi) => {
+            const up = permanentDiagramUrls.get(`${subKey}__opt_${oi}`);
+            const ex = resolveUploadedOrPermanentUrl(sub.option_diagrams?.[oi]);
+            return up || ex || null;
+          }),
+          sub.options?.length ?? 0
+        );
+        return {
+          ...sub,
+          cognitive_level: sub.cognitive_level || null,
+          question_text: stripDuplicateOptionsFromStem(sub.question_text, sub.options || q.options),
+          options: (sub.options || null)?.map((opt) => cleanQuotesAndTemperatures(opt)) || null,
+          option_diagrams: subOptDiagrams.some(Boolean) ? subOptDiagrams : null,
+          diagram_source: sub.has_diagram === false ? null : sub.diagram_source || null,
+          resource_ref: sub.has_diagram === false ? null : sub.resource_ref || null,
+          insert_page_number: sub.has_diagram === false ? null : sub.insert_page_number || null,
+          diagram_url: subUrls[0] ?? null,
+          diagram_urls: subUrls.length > 0 ? subUrls : null,
+          has_diagram: Boolean(subUrls.length > 0 || sub.svg_content),
+        };
+      }),
       mark_scheme: ms,
     };
   });

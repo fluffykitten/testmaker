@@ -71,6 +71,7 @@ export const DEFAULT_SUBJECTS: string[] = [
   'Geography',
   'Economics',
   'Sociology',
+  'Civics (PKn)',
   'PAI',
   'Arabic',
   'Bahasa Indonesia',

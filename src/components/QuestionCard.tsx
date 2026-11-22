@@ -9,6 +9,11 @@ import { ExamDataTable } from './ExamDataTable';
 import { formatPaperBadge } from '../utils/paperUtils';
 import { stripDuplicateOptionsFromStem, stripDuplicateSubQuestionsFromStem, stripDuplicateSubIdPrefix } from '../lib/gemini';
 import { hasMarkdownTable } from '../lib/markdownTable';
+import {
+  resolveOptionDiagramUrl,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  stripInlineMarkdownImage,
+} from '../utils/questionDiagramUtils';
 import './QuestionCard.css';
 
 interface QuestionCardProps {
@@ -85,8 +90,9 @@ function QuestionCardComponent({
     } else {
       str = String(text);
     }
+    const strClean = stripInlineMarkdownImage(str);
     const letter = String.fromCharCode(65 + oIdx);
-    return str
+    return strClean
       .replace(new RegExp(`^\\s*(\\(${letter}\\)|${letter}[\\.\\)\\:\\s\\-]+)\\s*`, 'i'), '')
       .trim();
   };
@@ -301,16 +307,39 @@ function QuestionCardComponent({
           </div>
         )}
 
-        {/* Diagram / SVG Preview */}
-        <ExamVisualRender
-          svgContent={question.svg_content}
-          diagramUrl={question.diagram_url}
-          resourceRef={question.resource_ref}
-          alt={`Diagram for Question ${question.question_number}`}
-          diagramType={question.diagram_type}
-          hasEmbeddedValues={question.has_embedded_values}
-          onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
-        />
+        {/* Diagram(s) / SVG Preview */}
+        {(() => {
+          const stemImgUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(question);
+          if (stemImgUrls.length === 0) {
+            return (
+              <ExamVisualRender
+                svgContent={question.svg_content}
+                diagramUrl={question.diagram_url}
+                resourceRef={question.resource_ref}
+                alt={`Diagram for Question ${question.question_number}`}
+                diagramType={question.diagram_type}
+                hasEmbeddedValues={question.has_embedded_values}
+                onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+              />
+            );
+          }
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '6px 0' }}>
+              {stemImgUrls.map((dUrl, dIdx) => (
+                <ExamVisualRender
+                  key={dIdx}
+                  svgContent={dIdx === 0 ? question.svg_content : null}
+                  diagramUrl={dUrl}
+                  resourceRef={stemImgUrls.length > 1 ? `Figure ${dIdx + 1}` : question.resource_ref}
+                  alt={`Diagram ${dIdx + 1} for Question ${question.question_number}`}
+                  diagramType={question.diagram_type}
+                  hasEmbeddedValues={question.has_embedded_values}
+                  onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+                />
+              ))}
+            </div>
+          );
+        })()}
 
         {/* Structured Data Tables — only when the text carries no Markdown copy,
             otherwise the same table renders twice (question_text plus data_tables) */}
@@ -318,17 +347,39 @@ function QuestionCardComponent({
           <ExamDataTable tables={question.data_tables} />
         )}
 
-        {/* MCQ Options (Paper 1 / Paper 2) */}
+        {/* MCQ Options (Paper 1 / Paper 2, supports per-option diagrams) */}
         {question.options && question.options.length > 0 && (
           <div className="q-mcq-grid">
-            {question.options.map((opt, oi) => (
-              <div key={oi} className="q-mcq-choice">
-                <span className="q-mcq-letter">{String.fromCharCode(65 + oi)}</span>
-                <span className="q-mcq-text">
-                  <ExamMathText content={cleanOptionText(opt, oi)} />
-                </span>
-              </div>
-            ))}
+            {question.options.map((opt, oi) => {
+              const optImg = resolveOptionDiagramUrl(question, oi, opt);
+              const cleaned = cleanOptionText(opt, oi);
+              const letter = String.fromCharCode(65 + oi);
+              return (
+                <div key={oi} className={`q-mcq-choice ${optImg ? 'q-mcq-choice--with-diagram' : ''}`}>
+                  <div className="q-mcq-choice-head">
+                    <span className="q-mcq-letter">{letter}</span>
+                    {cleaned ? (
+                      <span className="q-mcq-text">
+                        <ExamMathText content={cleaned} />
+                      </span>
+                    ) : !optImg ? (
+                      <span className="q-mcq-text" style={{ opacity: 0.6 }}>Option {letter}</span>
+                    ) : null}
+                  </div>
+                  {optImg && (
+                    <div className="q-mcq-thumb-wrap">
+                      <img
+                        src={optImg}
+                        alt={`Option ${letter} diagram`}
+                        className="q-mcq-thumb-img"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -416,16 +467,39 @@ function QuestionCardComponent({
                   <span className="q-sub-marks">[{sub.marks}]</span>
                 </div>
 
-                {/* Sub-question diagram / SVG preview */}
-                <ExamVisualRender
-                  svgContent={sub.svg_content}
-                  diagramUrl={sub.diagram_url}
-                  resourceRef={sub.resource_ref}
-                  alt={`Diagram for ${sub.sub_id}`}
-                  diagramType={sub.diagram_type}
-                  hasEmbeddedValues={sub.has_embedded_values}
-                  onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
-                />
+                {/* Sub-question diagram(s) / SVG preview */}
+                {(() => {
+                  const subUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+                  if (subUrls.length === 0) {
+                    return (
+                      <ExamVisualRender
+                        svgContent={sub.svg_content}
+                        diagramUrl={sub.diagram_url}
+                        resourceRef={sub.resource_ref}
+                        alt={`Diagram for ${sub.sub_id}`}
+                        diagramType={sub.diagram_type}
+                        hasEmbeddedValues={sub.has_embedded_values}
+                        onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+                      />
+                    );
+                  }
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', margin: '4px 0' }}>
+                      {subUrls.map((sUrl, sImgIdx) => (
+                        <ExamVisualRender
+                          key={sImgIdx}
+                          svgContent={sImgIdx === 0 ? sub.svg_content : null}
+                          diagramUrl={sUrl}
+                          resourceRef={subUrls.length > 1 ? `Figure ${sImgIdx + 1}` : sub.resource_ref}
+                          alt={`Diagram ${sImgIdx + 1} for ${sub.sub_id}`}
+                          diagramType={sub.diagram_type}
+                          hasEmbeddedValues={sub.has_embedded_values}
+                          onExternalZoom={onViewDetails ? () => onViewDetails(question) : undefined}
+                        />
+                      ))}
+                    </div>
+                  );
+                })()}
 
                 {/* Sub-question data tables — fallback only when the text has no Markdown copy */}
                 {sub.data_tables && sub.data_tables.length > 0 && !hasMarkdownTable(sub.question_text) && (

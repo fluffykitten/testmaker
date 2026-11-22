@@ -4,6 +4,14 @@ import { getBookmarkedQuestionIds } from './questionBookmarkService';
 import { getAllQuestionTagsMap } from './questionTagService';
 import { expandFormulaSearch } from '../lib/formulaSearch';
 import { extractSvgFromDiagramUrl } from '../lib/gemini';
+import {
+  normalizeDiagramUrlList,
+  normalizeOptionDiagramList,
+  parseDiagramColumnValue,
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+  serializeQuestionDiagramsForColumn,
+} from '../utils/questionDiagramUtils';
 
 export interface QuestionFilterParams {
   searchQuery?: string;
@@ -330,6 +338,11 @@ export function inferTopicFromContent(text?: string, subTopic?: string): string 
   if (/geometry|angle|triangle|circle|polygon|perimeter|area/i.test(lower)) return 'Geometry & Measure';
   if (/probability|statistic|mean|median|mode|histogram/i.test(lower)) return 'Probability & Statistics';
 
+  // Civics (PKn)
+  if (/pancasila|uud\s*1945|konstitusi|demokrasi|hak\s+asasi|\bham\b|kewarganegaraan|\bnkri\b|bhinneka|civic|constitution|citizenship|sovereignty/i.test(lower)) {
+    return 'Pancasila & Kewarganegaraan';
+  }
+
   return 'General';
 }
 
@@ -582,6 +595,7 @@ export async function fetchUploadedSubjectTopics(): Promise<SubjectTopicSummary[
       else if (/biology|cell|photosynthesis|enzyme/i.test(sampleText)) subjectName = 'Biology';
       else if (/physics|force|energy|wave|circuit/i.test(sampleText)) subjectName = 'Physics';
       else if (/math|algebra|geometry|calculus/i.test(sampleText)) subjectName = 'Mathematics';
+      else if (/pancasila|uud\s*1945|kewarganegaraan|ppkn|\bpkn\b|civics/i.test(sampleText)) subjectName = 'Civics (PKn)';
       else subjectName = sObj?.subject_name || 'General';
     }
 
@@ -1256,7 +1270,27 @@ export function normalizeQuestionRecord(q: any): Question {
   const diagramSource = q.diagram_source || q.mark_scheme?._diagram_source || null;
   const resourceRef = q.resource_ref || q.mark_scheme?._resource_ref || null;
   const insertPageNumber = q.insert_page_number || q.mark_scheme?._insert_page_number || null;
-  const svgContent = q.svg_content || q.mark_scheme?._svg_content || extractSvgFromDiagramUrl(q.diagram_url) || null;
+
+  const rawStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(q);
+  const svgContent =
+    q.svg_content ||
+    q.mark_scheme?._svg_content ||
+    extractSvgFromDiagramUrl(rawStemUrls[0] || q.diagram_url) ||
+    null;
+  const stemUrls =
+    rawStemUrls.length > 0
+      ? rawStemUrls
+      : svgContent
+        ? [`data:image/svg+xml;utf8,${encodeURIComponent(svgContent)}`]
+        : [];
+  const primaryDiagramUrl = stemUrls[0] ?? null;
+
+  const resolvedOptDiagrams = resolveOptionDiagramUrls(
+    q,
+    Array.isArray(q.options) ? q.options.length : undefined
+  );
+  const optionDiagrams = resolvedOptDiagrams.some(Boolean) ? resolvedOptDiagrams : null;
+
   const aiDiagramPrompt = q.ai_diagram_prompt || q.mark_scheme?._ai_diagram_prompt || null;
   const diagramType = q.diagram_type || q.mark_scheme?._diagram_type || null;
   const hasEmbeddedValues = q.has_embedded_values ?? q.mark_scheme?._has_embedded_values;
@@ -1277,16 +1311,37 @@ export function normalizeQuestionRecord(q: any): Question {
   const pageNumber = q.page_number !== undefined && q.page_number !== null ? q.page_number : (q.mark_scheme?._page_number ?? null);
 
   const normalizedSubs = Array.isArray(q.sub_questions)
-    ? q.sub_questions.map((sub: any) => ({
-        ...sub,
-        cognitive_level: sub.cognitive_level || sub.mark_scheme?._cognitive_level || null,
-        svg_content: sub.svg_content || extractSvgFromDiagramUrl(sub.diagram_url) || null,
-        ai_diagram_prompt: sub.ai_diagram_prompt || sub.mark_scheme?._ai_diagram_prompt || null,
-      }))
+    ? q.sub_questions.map((sub: any) => {
+        const subRawUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+        const subSvg = sub.svg_content || extractSvgFromDiagramUrl(subRawUrls[0] || sub.diagram_url) || null;
+        const subUrls =
+          subRawUrls.length > 0
+            ? subRawUrls
+            : subSvg
+              ? [`data:image/svg+xml;utf8,${encodeURIComponent(subSvg)}`]
+              : [];
+        const subOptDiagrams = resolveOptionDiagramUrls(
+          sub,
+          Array.isArray(sub.options) ? sub.options.length : undefined
+        );
+        return {
+          ...sub,
+          cognitive_level: sub.cognitive_level || sub.mark_scheme?._cognitive_level || null,
+          diagram_url: subUrls[0] ?? null,
+          diagram_urls: subUrls.length > 0 ? subUrls : null,
+          option_diagrams: subOptDiagrams.some(Boolean) ? subOptDiagrams : null,
+          has_diagram: Boolean(subUrls.length > 0 || subSvg || sub.has_diagram),
+          svg_content: subSvg,
+          ai_diagram_prompt: sub.ai_diagram_prompt || sub.mark_scheme?._ai_diagram_prompt || null,
+        };
+      })
     : q.sub_questions;
 
   return {
     ...q,
+    diagram_url: primaryDiagramUrl,
+    diagram_urls: stemUrls.length > 0 ? stemUrls : null,
+    option_diagrams: optionDiagrams,
     cognitive_level: cognitiveLevel,
     source_pdf_url: sourcePdfUrl,
     cambridge_hub_url: cambridgeHubUrl,
@@ -1322,21 +1377,67 @@ export async function updateQuestion(
 
   const payload: any = { ...updates };
 
-  // Ensure SVG content is preserved in diagram_url if no separate diagram_url is set
-  if (payload.svg_content && !payload.diagram_url) {
+  const hasDiagramUpdate =
+    'diagram_url' in updates ||
+    'diagram_urls' in updates ||
+    'option_diagrams' in updates ||
+    'svg_content' in updates;
+
+  let resolvedStemUrls: string[] = [];
+  let resolvedOptionDiagrams: (string | null)[] = [];
+
+  if (hasDiagramUpdate) {
+    const rawCol = payload.diagram_url
+      ? parseDiagramColumnValue(payload.diagram_url)
+      : { urls: [], optionDiagrams: null };
+
+    resolvedStemUrls =
+      'diagram_urls' in updates
+        ? Array.isArray(updates.diagram_urls)
+          ? normalizeDiagramUrlList(updates.diagram_urls)
+          : updates.diagram_url
+            ? rawCol.urls
+            : []
+        : rawCol.urls;
+
+    if (payload.svg_content && resolvedStemUrls.length === 0) {
+      resolvedStemUrls = [`data:image/svg+xml;utf8,${encodeURIComponent(payload.svg_content)}`];
+    }
+
+    resolvedOptionDiagrams =
+      'option_diagrams' in updates
+        ? normalizeOptionDiagramList(updates.option_diagrams)
+        : normalizeOptionDiagramList(rawCol.optionDiagrams ?? (payload.mark_scheme as any)?._option_diagrams);
+
+    payload.diagram_url = serializeQuestionDiagramsForColumn(resolvedStemUrls, resolvedOptionDiagrams);
+  } else if (payload.svg_content && !payload.diagram_url) {
     payload.diagram_url = `data:image/svg+xml;utf8,${encodeURIComponent(payload.svg_content)}`;
   }
 
-  // Normalize sub_questions SVG content into diagram_url as well
+  // Normalize sub_questions diagram lists, option diagrams, and SVG content
   if (Array.isArray(payload.sub_questions)) {
-    payload.sub_questions = payload.sub_questions.map((sub: any) => ({
-      ...sub,
-      cognitive_level: sub.cognitive_level || null,
-      diagram_url:
-        sub.diagram_url ||
-        (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
-      ai_diagram_prompt: sub.ai_diagram_prompt || null,
-    }));
+    payload.sub_questions = payload.sub_questions.map((sub: any) => {
+      const subStemUrls = normalizeDiagramUrlList(
+        Array.isArray(sub.diagram_urls)
+          ? sub.diagram_urls
+          : sub.diagram_url
+            ? parseDiagramColumnValue(sub.diagram_url).urls
+            : []
+      );
+      if (sub.svg_content && subStemUrls.length === 0) {
+        subStemUrls.push(`data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}`);
+      }
+      const subOptDiagrams = normalizeOptionDiagramList(sub.option_diagrams);
+      return {
+        ...sub,
+        cognitive_level: sub.cognitive_level || null,
+        diagram_url: subStemUrls[0] || null,
+        diagram_urls: subStemUrls.length > 0 ? subStemUrls : null,
+        option_diagrams: subOptDiagrams.some(Boolean) ? subOptDiagrams : null,
+        has_diagram: Boolean(subStemUrls.length > 0 || sub.svg_content || sub.has_diagram),
+        ai_diagram_prompt: sub.ai_diagram_prompt || null,
+      };
+    });
   }
 
   // Embed non-schema metadata into mark_scheme JSONB so it persists cleanly
@@ -1353,12 +1454,26 @@ export async function updateQuestion(
     payload.cambridge_ms_hub_url !== undefined ||
     payload.insert_pdf_url !== undefined ||
     payload.insert_resources !== undefined ||
-    payload.page_number !== undefined
+    payload.page_number !== undefined ||
+    (payload.mark_scheme !== undefined && hasDiagramUpdate)
   ) {
     const baseMarkScheme =
       typeof payload.mark_scheme === 'object' && payload.mark_scheme !== null
         ? { ...payload.mark_scheme }
         : { marking_points: payload.mark_scheme ? [String(payload.mark_scheme)] : ['See marking criteria'] };
+
+    if (hasDiagramUpdate) {
+      if (resolvedStemUrls.length > 1) {
+        baseMarkScheme._diagram_urls = resolvedStemUrls;
+      } else {
+        delete baseMarkScheme._diagram_urls;
+      }
+      if (resolvedOptionDiagrams.some(Boolean)) {
+        baseMarkScheme._option_diagrams = resolvedOptionDiagrams;
+      } else {
+        delete baseMarkScheme._option_diagrams;
+      }
+    }
 
     if (payload.ai_diagram_prompt) {
       baseMarkScheme._ai_diagram_prompt = payload.ai_diagram_prompt;
@@ -1412,6 +1527,8 @@ export async function updateQuestion(
   }
 
   // Strip virtual / non-migrated client-only properties that do not exist as columns in `questions`
+  delete payload.diagram_urls;
+  delete payload.option_diagrams;
   delete payload.svg_content;
   delete payload.ai_diagram_prompt;
   delete payload.diagram_type;
@@ -1573,6 +1690,28 @@ export async function createQuestion(
     ensureMarkScheme()._page_number = questionData.page_number;
   }
 
+  const parsedInputCol = questionData.diagram_url
+    ? parseDiagramColumnValue(questionData.diagram_url)
+    : { urls: [], optionDiagrams: null };
+  const createStemUrls = normalizeDiagramUrlList(
+    Array.isArray(questionData.diagram_urls) && questionData.diagram_urls.length > 0
+      ? questionData.diagram_urls
+      : parsedInputCol.urls.length > 0
+        ? parsedInputCol.urls
+        : questionData.svg_content
+          ? [`data:image/svg+xml;utf8,${encodeURIComponent(questionData.svg_content)}`]
+          : []
+  );
+  const createOptionDiagrams = normalizeOptionDiagramList(
+    questionData.option_diagrams ?? parsedInputCol.optionDiagrams
+  );
+  if (createStemUrls.length > 1) {
+    ensureMarkScheme()._diagram_urls = createStemUrls;
+  }
+  if (createOptionDiagrams.some(Boolean)) {
+    ensureMarkScheme()._option_diagrams = createOptionDiagrams;
+  }
+
   const payload: any = {
     syllabus_id: validSyllabusId,
     year: Number(questionData.year) || new Date().getFullYear(),
@@ -1591,11 +1730,7 @@ export async function createQuestion(
     source_pdf_url: questionData.source_pdf_url || null,
     page_number: questionData.page_number || null,
     marks: Number(questionData.marks) || 1,
-    diagram_url:
-      questionData.diagram_url ||
-      (questionData.svg_content
-        ? `data:image/svg+xml;utf8,${encodeURIComponent(questionData.svg_content)}`
-        : null),
+    diagram_url: serializeQuestionDiagramsForColumn(createStemUrls, createOptionDiagrams),
     diagram_source: (questionData as any).diagram_source || null,
     resource_ref: (questionData as any).resource_ref || null,
     insert_page_number: (questionData as any).insert_page_number || null,
@@ -1603,14 +1738,27 @@ export async function createQuestion(
     audio_metadata: questionData.audio_metadata || null,
     options: Array.isArray(questionData.options) ? questionData.options : null,
     sub_questions: Array.isArray(questionData.sub_questions)
-      ? questionData.sub_questions.map((sub: any) => ({
-          ...sub,
-          cognitive_level: sub.cognitive_level || null,
-          diagram_url:
-            sub.diagram_url ||
-            (sub.svg_content ? `data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}` : null),
-          ai_diagram_prompt: (sub as any).ai_diagram_prompt || null,
-        }))
+      ? questionData.sub_questions.map((sub: any) => {
+          const subStemUrls = normalizeDiagramUrlList(
+            Array.isArray(sub.diagram_urls) && sub.diagram_urls.length > 0
+              ? sub.diagram_urls
+              : sub.diagram_url
+                ? parseDiagramColumnValue(sub.diagram_url).urls
+                : sub.svg_content
+                  ? [`data:image/svg+xml;utf8,${encodeURIComponent(sub.svg_content)}`]
+                  : []
+          );
+          const subOpts = normalizeOptionDiagramList(sub.option_diagrams);
+          return {
+            ...sub,
+            cognitive_level: sub.cognitive_level || null,
+            diagram_url: subStemUrls[0] || null,
+            diagram_urls: subStemUrls.length > 0 ? subStemUrls : null,
+            option_diagrams: subOpts.some(Boolean) ? subOpts : null,
+            has_diagram: Boolean(subStemUrls.length > 0 || sub.svg_content || sub.has_diagram),
+            ai_diagram_prompt: (sub as any).ai_diagram_prompt || null,
+          };
+        })
       : [],
     mark_scheme: baseMarkScheme,
   };

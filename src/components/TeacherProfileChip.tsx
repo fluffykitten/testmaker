@@ -66,6 +66,7 @@ export function TeacherProfileChip({
     s.includes('geo') ? '🌍' :
     s.includes('econ') ? '📈' :
     s.includes('socio') ? '⚖️' :
+    (s.includes('civic') || /\bpp?kn\b/.test(s) || s.includes('kewarganegaraan') || s.includes('pancasila')) ? '🏛️' :
     (s.includes('pai') || s.includes('islam')) ? '🕌' :
     s.includes('arab') ? '📜' :
     s.includes('indonesia') ? '🇮🇩' : '📚';

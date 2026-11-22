@@ -36,6 +36,7 @@ import {
   getDraftLockCredentials,
 } from './examDraftService';
 import type { Question } from '../types/database';
+import { stripInlineMarkdownImage } from '../utils/questionDiagramUtils';
 
 export type SubmissionStatus = 'submitted' | 'grading' | 'graded' | 'published';
 
@@ -865,7 +866,7 @@ export interface QuestionSubmissionResult {
  */
 export function cleanMcqOptionContent(text: string, oIdx?: number): string {
   if (!text) return '';
-  let clean = text.trim();
+  let clean = stripInlineMarkdownImage(text).trim();
   // Strip duplicate prefix like "Option A: A " -> "Option A: "
   clean = clean.replace(/^Option\s+([A-F]):\s+[A-F][\.\)\s:-]+\s*/i, 'Option $1: ');
   const arLetters = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];

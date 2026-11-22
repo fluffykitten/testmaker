@@ -530,6 +530,28 @@ function check(name, condition, detail = '') {
       fisikaDomain === 'science' &&
       physics0625Match?.syllabusCode === '0625'
   );
+
+  // 15. Indonesian Civics (PKn / PPKn / Pendidikan Pancasila dan Kewarganegaraan) subject detection, catalog metadata & domain routing
+  const pknMatch = classifySubject(['PENILAIAN AKHIR SEMESTER (PAS) MATA PELAJARAN: PPKn — KELAS XI Soal Pilihan Ganda']);
+  const civicsEnMatch = classifySubject(['SMA INSAN CENDEKIA MADANI SUBJECT: CIVICS (PKN) GRADE: 10']);
+  const pancasilaMatch = classifySubject(['SOAL PENDIDIKAN PANCASILA DAN KEWARGANEGARAAN SEMESTER GANJIL']);
+  const civicsMeta = getSubjectMetadata('Civics (PKn)');
+  const pknAliasMeta = getSubjectMetadata('PPKn');
+  const civicsDomain = classifyExamFallbackDomain({ subject: 'Civics (PKn)', subjectCode: 'PKN' });
+  check(
+    'CIVICS-1: classifySubject, subjectCatalog & questionDomainDetector support Indonesian Civics (PKn / PPKn)',
+    pknMatch?.syllabusCode === 'PKN' &&
+      pknMatch?.profile.subjectName === 'Civics (PKn)' &&
+      pknMatch?.profile.domain === 'humanities' &&
+      pknMatch?.profile.isNonCambridge === true &&
+      civicsEnMatch?.syllabusCode === 'PKN' &&
+      pancasilaMatch?.syllabusCode === 'PKN' &&
+      civicsMeta.id === 'civics' &&
+      civicsMeta.name === 'Civics (PKn)' &&
+      civicsMeta.code === 'PKN / NAT-ID' &&
+      pknAliasMeta.id === 'civics' &&
+      civicsDomain === 'general'
+  );
 }
 
 console.log(`\nALL ${passed} LANGUAGES & ARABIC/INDONESIAN BIDI CHECKS PASSED`);

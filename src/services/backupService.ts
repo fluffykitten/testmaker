@@ -6,6 +6,10 @@
 
 import { supabase } from '../lib/supabase';
 import type { Question, Syllabus, CustomTest } from '../types/database';
+import {
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+} from '../utils/questionDiagramUtils';
 
 export interface BackupProgressCallback {
   (status: string, percentage: number): void;
@@ -147,7 +151,12 @@ function addHttpUrl(urls: Set<string>, candidate: unknown): void {
 
 function collectQuestionMediaUrls(q: any, urls: Set<string>): void {
   if (!q || typeof q !== 'object') return;
-  addHttpUrl(urls, q.diagram_url);
+  for (const url of resolveQuestionImageUrlsExcludingStandaloneSvg(q)) {
+    addHttpUrl(urls, url);
+  }
+  for (const optUrl of resolveOptionDiagramUrls(q)) {
+    addHttpUrl(urls, optUrl);
+  }
   addHttpUrl(urls, q.audio_url);
   addHttpUrl(urls, q.source_pdf_url);
   addHttpUrl(urls, q.insert_pdf_url);
@@ -171,7 +180,12 @@ function collectQuestionMediaUrls(q: any, urls: Set<string>): void {
 
   if (Array.isArray(q.sub_questions)) {
     for (const sub of q.sub_questions) {
-      addHttpUrl(urls, sub?.diagram_url);
+      for (const subUrl of resolveQuestionImageUrlsExcludingStandaloneSvg(sub)) {
+        addHttpUrl(urls, subUrl);
+      }
+      for (const subOptUrl of resolveOptionDiagramUrls(sub)) {
+        addHttpUrl(urls, subOptUrl);
+      }
       addHttpUrl(urls, sub?.audio_url);
     }
   }

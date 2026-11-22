@@ -69,7 +69,8 @@ export type QuestionStyle =
  */
 export function normalizeQuestionStyle(
   style?: string | null,
-  options?: unknown[] | null
+  options?: unknown[] | null,
+  optionDiagrams?: (string | null)[] | null
 ): QuestionStyle {
   const s = (style || '').trim().toLowerCase().replace(/[_\-\s]+/g, ' ');
 
@@ -98,9 +99,23 @@ export function normalizeQuestionStyle(
     return 'Fill in the Blank';
   }
 
-  // If options array has at least 2 valid items and style wasn't an explicit non-MCQ type (calc/short answer/fill in blank),
+  // If options array has at least 2 valid text or visual choices and style wasn't an explicit non-MCQ type,
   // then it is an MCQ.
-  if (Array.isArray(options) && options.filter(Boolean).length >= 2) {
+  const textCount = Array.isArray(options) ? options.filter(Boolean).length : 0;
+  const imgCount = Array.isArray(optionDiagrams) ? optionDiagrams.filter(Boolean).length : 0;
+  const maxChoiceSlots = Math.max(
+    Array.isArray(options) ? options.length : 0,
+    Array.isArray(optionDiagrams) ? optionDiagrams.length : 0
+  );
+  let validSlotCount = Math.max(textCount, imgCount);
+  if (validSlotCount < 2 && maxChoiceSlots >= 2) {
+    let combined = 0;
+    for (let i = 0; i < maxChoiceSlots; i++) {
+      if (options?.[i] || optionDiagrams?.[i]) combined++;
+    }
+    validSlotCount = combined;
+  }
+  if (validSlotCount >= 2) {
     return 'Multiple Choice';
   }
 
@@ -166,7 +181,8 @@ export interface SubQuestion {
   question_text: string;    // LaTeX-enriched text
   marks: number;
   has_diagram?: boolean;    // Sub-question has diagram/figure
-  diagram_url?: string | null; // Optional sub-question diagram image URL
+  diagram_url?: string | null; // Optional primary sub-question diagram image URL
+  diagram_urls?: string[] | null; // Ordered list of sub-question diagram URLs
   svg_content?: string | null; // AI-generated parametric SVG vector graphic
   ai_diagram_prompt?: string | null; // Prompt for AI diagram generation
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null; // Classification of diagram
@@ -178,6 +194,7 @@ export interface SubQuestion {
   insert_page_number?: number | null; // Insert booklet page number if from Insert Booklet
   bounding_box?: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options?: string[] | null;// Optional choices for tick box / multiple-choice sub-questions
+  option_diagrams?: (string | null)[] | null; // Optional per-option image URLs aligned by index with `options`
   cognitive_level?: CognitiveLevel | null; // Bloom's Taxonomy cognitive level (C1-C6)
   mark_scheme?: string;     // Simplified single-line scheme for sub-parts
   guidance?: string;        // Sub-question specific teacher guidance/examiner tip
@@ -217,7 +234,8 @@ export interface Question {
   insert_pdf_url?: string | null;          // Permanent public URL of the source Insert / Resource Booklet PDF
   page_number?: number | null;             // 1-indexed page in the QP PDF where this question appears
   marks: number;
-  diagram_url: string | null;       // Supabase Storage public URL
+  diagram_url: string | null;       // Primary Supabase Storage public URL
+  diagram_urls?: string[] | null;   // Ordered list of stem diagram URLs (unpacked from diagram_url envelope)
   svg_content?: string | null;      // AI-generated parametric SVG vector graphic
   ai_diagram_prompt?: string | null;// Prompt for AI diagram generation (Workers AI)
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
@@ -229,6 +247,7 @@ export interface Question {
   audio_url?: string | null;        // Supabase Storage audio public URL
   audio_metadata?: AudioMetadata | null; // Audio play limits, transcript, duration
   options?: string[] | null;        // Multiple choice options [A, B, C, D]
+  option_diagrams?: (string | null)[] | null; // Optional per-option image URLs aligned by index with `options`
   sub_questions: SubQuestion[];     // JSONB array of nested parts
   mark_scheme: MarkScheme | null;   // JSONB marking structure
   data_tables?: ExamDataTable[];    // Structured tabular data
@@ -360,6 +379,7 @@ export interface ExtractedQuestion {
   sub_topic: string | null;
   has_diagram: boolean;
   diagram_url?: string | null;
+  diagram_urls?: string[] | null;
   svg_content?: string | null;
   ai_diagram_prompt?: string | null;
   diagram_type?: 'apparatus' | 'graph' | 'choice_grid' | 'circuit' | 'photo' | null;
@@ -369,6 +389,7 @@ export interface ExtractedQuestion {
   insert_page_number?: number | null;
   bounding_box: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options: string[] | null;
+  option_diagrams?: (string | null)[] | null;
   audio_url?: string | null;
   audio_metadata?: AudioMetadata | null;
   passage_ref?: string | null;

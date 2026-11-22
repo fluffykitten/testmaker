@@ -282,6 +282,30 @@ export const SubjectIcon: React.FC<SubjectIconProps> = ({ subject, size = 24, cl
         </svg>
       );
 
+    case 'civics':
+      return (
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={meta.color}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={className}
+          aria-label="Civics (PKn)"
+        >
+          {/* Civic Shield & Constitutional Star */}
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <polygon
+            points="12 7.5 13.4 10.3 16.5 10.8 14.2 13 14.8 16 12 14.5 9.2 16 9.8 13 7.5 10.8 10.6 10.3"
+            fill={meta.color}
+            stroke="none"
+          />
+        </svg>
+      );
+
     default:
       return (
         <svg

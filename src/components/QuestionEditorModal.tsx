@@ -63,6 +63,12 @@ import {
   generateQuestionMarkScheme,
 } from '../lib/gemini';
 import { auditQuestionMarkScheme } from '../lib/markSchemeAudit';
+import {
+  normalizeDiagramUrlList,
+  normalizeOptionDiagramList,
+  resolveOptionDiagramUrls,
+  resolveQuestionImageUrlsExcludingStandaloneSvg,
+} from '../utils/questionDiagramUtils';
 import './QuestionEditorModal.css';
 
 interface QuestionEditorModalProps {
@@ -148,12 +154,14 @@ export function QuestionEditorModal({
   const [applyHubToPaper, setApplyHubToPaper] = useState(false);
   const qpPdfInputRef = useRef<HTMLInputElement>(null);
   const [totalMarks, setTotalMarks] = useState(4);
-  const [diagramUrl, setDiagramUrl] = useState('');
+  const [diagramUrls, setDiagramUrls] = useState<string[]>([]);
   const [svgContent, setSvgContent] = useState<string | null>(question?.svg_content || null);
   const [questionText, setQuestionText] = useState('');
 
-  // MCQ Options
+  // MCQ Options & Per-Option Diagrams
   const [options, setOptions] = useState<string[]>([]);
+  const [optionDiagrams, setOptionDiagrams] = useState<(string | null)[]>([]);
+  const [openOptionUrlIndices, setOpenOptionUrlIndices] = useState<Set<number>>(() => new Set());
 
   // Sub-Questions
   const [subQuestions, setSubQuestions] = useState<SubQuestion[]>([]);
@@ -171,10 +179,22 @@ export function QuestionEditorModal({
   const [isGeneratingMs, setIsGeneratingMs] = useState(false);
   const [msGenError, setMsGenError] = useState<string | null>(null);
 
-  // Diagram Crop Modal state
+  // Diagram Crop Modal & Direct Upload state
+  type EditorCropTarget =
+    | { scope: 'stem'; index: number; append?: boolean }
+    | { scope: 'option'; optionIndex: number }
+    | { scope: 'sub'; subIndex: number; imageIndex: number; append?: boolean }
+    | { scope: 'sub-option'; subIndex: number; optionIndex: number };
+
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
+  const [cropTarget, setCropTarget] = useState<EditorCropTarget>({ scope: 'stem', index: 0 });
   const [cropSourceFile, setCropSourceFile] = useState<File | null>(null);
   const [cropSourceImage, setCropSourceImage] = useState<string | null>(null);
+  const [isLoadingSourcePdf, setIsLoadingSourcePdf] = useState(false);
+  const [isUploadingOptionOrStemImg, setIsUploadingOptionOrStemImg] = useState(false);
+  const pendingUploadTargetRef = useRef<EditorCropTarget>({ scope: 'stem', index: 0, append: true });
+  const directUploadInputRef = useRef<HTMLInputElement>(null);
+  const cachedSourcePdfRef = useRef<{ url: string; file: File } | null>(null);
 
   // AI Diagram Studio state
   const [isAiDiagramStudioOpen, setIsAiDiagramStudioOpen] = useState(false);
@@ -320,8 +340,9 @@ export function QuestionEditorModal({
           : ((question.mark_scheme as any)?._page_number ?? '')
       );
       setTotalMarks(Number(question.marks) || 1);
-      setDiagramUrl(question.diagram_url || '');
-      setSvgContent(question.svg_content || extractSvgFromDiagramUrl(question.diagram_url) || null);
+      const initialStemUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(question);
+      setDiagramUrls(initialStemUrls);
+      setSvgContent(question.svg_content || extractSvgFromDiagramUrl(initialStemUrls[0] || question.diagram_url) || null);
       setAiDiagramPrompt(question.ai_diagram_prompt || '');
       setAiStylePreset(resolveStylePreset(question.topic));
       setIsAiDiagramStudioOpen(false);
@@ -333,55 +354,70 @@ export function QuestionEditorModal({
       setIsEditingSvgCode(false);
       setQuestionText(typeof question.question_text === 'string' ? question.question_text : (question.question_text ? JSON.stringify(question.question_text) : ''));
 
-      // Safe MCQ options parsing
+      // Safe MCQ options + option diagrams parsing
       let initialOptions: string[] = [];
       if (Array.isArray(question.options)) {
         initialOptions = question.options.map((opt) => typeof opt === 'string' ? opt : JSON.stringify(opt));
       } else if (typeof question.options === 'string') {
         initialOptions = (question.options as string).split('\n').filter(Boolean);
       }
+      const initialOptionDiagrams = resolveOptionDiagramUrls(question, initialOptions.length);
+      if (initialOptions.length === 0 && initialOptionDiagrams.some(Boolean)) {
+        initialOptions = initialOptionDiagrams.map(() => '');
+      }
       setOptions(initialOptions);
+      setOptionDiagrams(initialOptionDiagrams);
+      setOpenOptionUrlIndices(new Set());
 
-      const resolvedStyle = normalizeQuestionStyle(question.question_style, initialOptions);
+      const resolvedStyle = normalizeQuestionStyle(question.question_style, initialOptions, initialOptionDiagrams);
       setQuestionStyle(resolvedStyle);
       setTableChoiceState(parseTableChoiceFromQuestion(question.question_text, question.mark_scheme));
 
       // Sanitize sub-questions to ensure all fields are safe strings/numbers
       const rawSubs = Array.isArray(question.sub_questions) ? question.sub_questions : [];
-      const sanitizedSubs: SubQuestion[] = rawSubs.map((sub: any) => ({
-        ...sub,
-        sub_id: String(sub?.sub_id || ''),
-        question_text: typeof sub?.question_text === 'string' ? sub.question_text : (sub?.question_text ? JSON.stringify(sub.question_text) : ''),
-        marks: Number(sub?.marks) || 1,
-        cognitive_level: (sub?.cognitive_level || sub?.mark_scheme?._cognitive_level || null) as CognitiveLevel | null,
-        has_diagram: Boolean(sub?.diagram_url || sub?.has_diagram),
-        diagram_url: sub?.diagram_url || null,
-        svg_content: sub?.svg_content || null,
-        ai_diagram_prompt: sub?.ai_diagram_prompt || null,
-        diagram_type: sub?.diagram_type || null,
-        has_embedded_values: sub?.has_embedded_values,
-        depends_on_sub_ids: sub?.depends_on_sub_ids,
-        data_tables: sub?.data_tables,
-        diagram_source: sub?.diagram_source || null,
-        resource_ref: sub?.resource_ref || null,
-        page_number: sub?.page_number || null,
-        insert_page_number: sub?.insert_page_number || null,
-        bounding_box: sub?.bounding_box || null,
-        audio_url: sub?.audio_url || null,
-        audio_metadata: sub?.audio_metadata || null,
-        options: Array.isArray(sub?.options) ? sub.options : null,
-        mark_scheme: typeof sub?.mark_scheme === 'string'
-          ? sub.mark_scheme
-          : (sub?.mark_scheme?.marking_points
-              ? (Array.isArray(sub.mark_scheme.marking_points) ? sub.mark_scheme.marking_points.join('; ') : String(sub.mark_scheme.marking_points))
-              : (sub?.mark_scheme ? (typeof sub.mark_scheme === 'object' ? (sub.mark_scheme.answer || sub.mark_scheme.text || JSON.stringify(sub.mark_scheme)) : String(sub.mark_scheme)) : '')),
-        guidance: typeof sub?.guidance === 'string'
-          ? sub.guidance
-          : (Array.isArray(sub?.guidance) ? sub.guidance.join('; ') : (sub?.guidance ? (typeof sub.guidance === 'object' ? JSON.stringify(sub.guidance) : String(sub.guidance)) : '')),
-        common_misconceptions: Array.isArray(sub?.common_misconceptions)
-          ? sub.common_misconceptions.map((m: any) => typeof m === 'string' ? m : String(m || ''))
-          : (typeof sub?.common_misconceptions === 'string' ? [sub.common_misconceptions] : []),
-      }));
+      const sanitizedSubs: SubQuestion[] = rawSubs.map((sub: any) => {
+        const subUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+        const subOpts: string[] | null = Array.isArray(sub?.options) ? sub.options : null;
+        const subOptDiagrams = subOpts
+          ? resolveOptionDiagramUrls(sub, subOpts.length)
+          : (Array.isArray(sub?.option_diagrams) ? normalizeOptionDiagramList(sub.option_diagrams) : null);
+        return {
+          ...sub,
+          sub_id: String(sub?.sub_id || ''),
+          question_text: typeof sub?.question_text === 'string' ? sub.question_text : (sub?.question_text ? JSON.stringify(sub.question_text) : ''),
+          marks: Number(sub?.marks) || 1,
+          cognitive_level: (sub?.cognitive_level || sub?.mark_scheme?._cognitive_level || null) as CognitiveLevel | null,
+          has_diagram: Boolean(subUrls.length > 0 || sub?.svg_content || sub?.has_diagram),
+          diagram_url: subUrls[0] || null,
+          diagram_urls: subUrls.length > 0 ? subUrls : null,
+          svg_content: sub?.svg_content || null,
+          ai_diagram_prompt: sub?.ai_diagram_prompt || null,
+          diagram_type: sub?.diagram_type || null,
+          has_embedded_values: sub?.has_embedded_values,
+          depends_on_sub_ids: sub?.depends_on_sub_ids,
+          data_tables: sub?.data_tables,
+          diagram_source: sub?.diagram_source || null,
+          resource_ref: sub?.resource_ref || null,
+          page_number: sub?.page_number || null,
+          insert_page_number: sub?.insert_page_number || null,
+          bounding_box: sub?.bounding_box || null,
+          audio_url: sub?.audio_url || null,
+          audio_metadata: sub?.audio_metadata || null,
+          options: subOpts,
+          option_diagrams: subOptDiagrams?.some(Boolean) ? subOptDiagrams : null,
+          mark_scheme: typeof sub?.mark_scheme === 'string'
+            ? sub.mark_scheme
+            : (sub?.mark_scheme?.marking_points
+                ? (Array.isArray(sub.mark_scheme.marking_points) ? sub.mark_scheme.marking_points.join('; ') : String(sub.mark_scheme.marking_points))
+                : (sub?.mark_scheme ? (typeof sub.mark_scheme === 'object' ? (sub.mark_scheme.answer || sub.mark_scheme.text || JSON.stringify(sub.mark_scheme)) : String(sub.mark_scheme)) : '')),
+          guidance: typeof sub?.guidance === 'string'
+            ? sub.guidance
+            : (Array.isArray(sub?.guidance) ? sub.guidance.join('; ') : (sub?.guidance ? (typeof sub.guidance === 'object' ? JSON.stringify(sub.guidance) : String(sub.guidance)) : '')),
+          common_misconceptions: Array.isArray(sub?.common_misconceptions)
+            ? sub.common_misconceptions.map((m: any) => typeof m === 'string' ? m : String(m || ''))
+            : (typeof sub?.common_misconceptions === 'string' ? [sub.common_misconceptions] : []),
+        };
+      });
       setSubQuestions(sanitizedSubs);
 
       // Safe Mark Scheme parsing
@@ -473,7 +509,8 @@ export function QuestionEditorModal({
       setSourcePdfUrl('');
       setPageNumber('');
       setTotalMarks(1);
-      setDiagramUrl('');
+      setDiagramUrls([]);
+      setSvgContent(null);
       setAiDiagramPrompt('');
       setAiStylePreset('stem');
       setIsAiDiagramStudioOpen(false);
@@ -481,6 +518,8 @@ export function QuestionEditorModal({
       setAiStudioError(null);
       setQuestionText('');
       setOptions(['', '', '', '']);
+      setOptionDiagrams([null, null, null, null]);
+      setOpenOptionUrlIndices(new Set());
       setAudioUrl('');
       setAudioTitle('');
       setAudioTranscript('');
@@ -666,6 +705,9 @@ export function QuestionEditorModal({
       setSubQuestions([]);
       if (options.length === 0) {
         setOptions(['', '', '', '']);
+        setOptionDiagrams([null, null, null, null]);
+      } else {
+        setOptionDiagrams((prev) => normalizeOptionDiagramList(prev, options.length));
       }
       if (markingPoints.length === 0 || !markingPoints[0] || markingPoints[0].includes('sub-question')) {
         setMarkingPoints(['A']);
@@ -673,22 +715,25 @@ export function QuestionEditorModal({
     } else if (newStyle === 'Table Choice') {
       setSubQuestions([]);
       setOptions([]);
+      setOptionDiagrams([]);
       const parsed = parseTableChoiceFromQuestion(questionText, { marking_points: markingPoints });
       setTableChoiceState(parsed);
     } else if (newStyle === 'Calculation' || newStyle === 'Short Answer') {
       setSubQuestions([]);
       setOptions([]);
+      setOptionDiagrams([]);
     }
   };
 
   // Auto-calculate sub-question mark sum
   const subQuestionsTotalMarks = subQuestions.reduce((sum, s) => sum + (Number(s.marks) || 0), 0);
 
-  // MCQ Options management
+  // MCQ Options + Per-Option Diagrams management
   const handleAddOption = () => {
     const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
     const nextLetter = letters[options.length] || String.fromCharCode(65 + options.length);
     setOptions((prev) => [...prev, `${nextLetter}. `]);
+    setOptionDiagrams((prev) => [...prev, null]);
   };
 
   const handleUpdateOption = (idx: number, value: string) => {
@@ -697,6 +742,222 @@ export function QuestionEditorModal({
 
   const handleRemoveOption = (idx: number) => {
     setOptions((prev) => prev.filter((_, i) => i !== idx));
+    setOptionDiagrams((prev) => prev.filter((_, i) => i !== idx));
+    setOpenOptionUrlIndices((prev) => {
+      const next = new Set<number>();
+      prev.forEach((v) => {
+        if (v < idx) next.add(v);
+        else if (v > idx) next.add(v - 1);
+      });
+      return next;
+    });
+  };
+
+  // Multi-image Stem, MC Option & Sub-question visual helpers
+  const applyTargetDiagramUrl = (target: EditorCropTarget, url: string) => {
+    if (target.scope === 'stem') {
+      setDiagramUrls((prev) => {
+        if (target.append || target.index >= prev.length) {
+          return normalizeDiagramUrlList([...prev, url]);
+        }
+        return normalizeDiagramUrlList(prev.map((u, i) => (i === target.index ? url : u)));
+      });
+    } else if (target.scope === 'option') {
+      setOptionDiagrams((prev) => {
+        const next = [...prev];
+        while (next.length <= target.optionIndex) next.push(null);
+        next[target.optionIndex] = url || null;
+        return next;
+      });
+    } else if (target.scope === 'sub') {
+      setSubQuestions((prev) =>
+        prev.map((sub, si) => {
+          if (si !== target.subIndex) return sub;
+          const existing = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+          const nextUrls =
+            target.append || target.imageIndex >= existing.length
+              ? normalizeDiagramUrlList([...existing, url])
+              : normalizeDiagramUrlList(existing.map((u, ii) => (ii === target.imageIndex ? url : u)));
+          return {
+            ...sub,
+            diagram_url: nextUrls[0] || null,
+            diagram_urls: nextUrls.length > 0 ? nextUrls : null,
+            has_diagram: Boolean(nextUrls.length > 0 || sub.svg_content),
+          };
+        })
+      );
+    } else if (target.scope === 'sub-option') {
+      setSubQuestions((prev) =>
+        prev.map((sub, si) => {
+          if (si !== target.subIndex) return sub;
+          const nextOpts = normalizeOptionDiagramList(sub.option_diagrams, Math.max(sub.options?.length || 0, target.optionIndex + 1));
+          nextOpts[target.optionIndex] = url || null;
+          return {
+            ...sub,
+            option_diagrams: nextOpts,
+          };
+        })
+      );
+    }
+  };
+
+  const replaceTemporaryDiagramUrl = (oldLocalUrl: string, uploadedUrl: string) => {
+    if (!oldLocalUrl || !uploadedUrl || oldLocalUrl === uploadedUrl) return;
+    setDiagramUrls((prev) => prev.map((u) => (u === oldLocalUrl ? uploadedUrl : u)));
+    setOptionDiagrams((prev) => prev.map((u) => (u === oldLocalUrl ? uploadedUrl : u)));
+    setSubQuestions((prev) =>
+      prev.map((sub) => {
+        const subUrls = Array.isArray(sub.diagram_urls) ? sub.diagram_urls.map((u) => (u === oldLocalUrl ? uploadedUrl : u)) : sub.diagram_urls;
+        const subPrimary = sub.diagram_url === oldLocalUrl ? uploadedUrl : sub.diagram_url;
+        const subOpts = Array.isArray(sub.option_diagrams)
+          ? sub.option_diagrams.map((u) => (u === oldLocalUrl ? uploadedUrl : u))
+          : sub.option_diagrams;
+        return {
+          ...sub,
+          diagram_url: subPrimary,
+          diagram_urls: subUrls,
+          option_diagrams: subOpts,
+        };
+      })
+    );
+  };
+
+  const uploadBlobForTarget = async (blob: Blob, target: EditorCropTarget, slug: string) => {
+    const localUrl = URL.createObjectURL(blob);
+    applyTargetDiagramUrl(target, localUrl);
+    setIsUploadingOptionOrStemImg(true);
+    try {
+      const uploadedUrl = await uploadSingleDiagramBlob(blob, {
+        question_number: `${questionNumber || '1'}_${slug}`,
+        year: Number(year) || new Date().getFullYear(),
+        paper_number: paperNumber ? Number(paperNumber) || String(paperNumber) : 1,
+      });
+      if (uploadedUrl) {
+        replaceTemporaryDiagramUrl(localUrl, uploadedUrl);
+      }
+    } catch (err) {
+      console.warn('Diagram upload note:', err);
+    } finally {
+      setIsUploadingOptionOrStemImg(false);
+    }
+  };
+
+  const openCropForTarget = async (target: EditorCropTarget, existingImageUrl?: string | null) => {
+    setCropTarget(target);
+    if (existingImageUrl && !cropSourceFile) {
+      setCropSourceFile(null);
+      setCropSourceImage(existingImageUrl);
+      setIsCropModalOpen(true);
+      return;
+    }
+    const cleanPdfUrl = sourcePdfUrl.trim();
+    if (cleanPdfUrl && !existingImageUrl) {
+      if (cachedSourcePdfRef.current && cachedSourcePdfRef.current.url === cleanPdfUrl) {
+        setCropSourceFile(cachedSourcePdfRef.current.file);
+        setCropSourceImage(null);
+        setIsCropModalOpen(true);
+        return;
+      }
+      setIsLoadingSourcePdf(true);
+      try {
+        const resp = await fetch(cleanPdfUrl);
+        if (resp.ok) {
+          const pdfBlob = await resp.blob();
+          const pdfFileObj = new File([pdfBlob], 'source-paper.pdf', { type: 'application/pdf' });
+          cachedSourcePdfRef.current = { url: cleanPdfUrl, file: pdfFileObj };
+          setCropSourceFile(pdfFileObj);
+          setCropSourceImage(null);
+          setIsCropModalOpen(true);
+          return;
+        }
+      } catch (err) {
+        console.warn('Direct PDF fetch for crop fell back to manual upload:', err);
+      } finally {
+        setIsLoadingSourcePdf(false);
+      }
+    }
+    pendingUploadTargetRef.current = target;
+    fileInputRef.current?.click();
+  };
+
+  const triggerDirectImageUpload = (target: EditorCropTarget) => {
+    pendingUploadTargetRef.current = target;
+    directUploadInputRef.current?.click();
+  };
+
+  const handlePasteImageForTarget = async (
+    e: React.ClipboardEvent,
+    target: EditorCropTarget,
+    slug: string
+  ) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          await uploadBlobForTarget(file, target, slug);
+          break;
+        }
+      }
+    }
+  };
+
+  const handleMoveStemDiagram = (idx: number, delta: -1 | 1) => {
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= diagramUrls.length) return;
+    setDiagramUrls((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(idx, 1);
+      next.splice(targetIdx, 0, moved);
+      return next;
+    });
+  };
+
+  const handleRemoveStemDiagram = (idx: number) => {
+    const removedUrl = diagramUrls[idx];
+    setDiagramUrls((prev) => prev.filter((_, i) => i !== idx));
+    if (removedUrl && removedUrl.startsWith('data:image/svg')) {
+      setSvgContent(null);
+    }
+  };
+
+  const handleMoveSubDiagram = (subIdx: number, imgIdx: number, delta: -1 | 1) => {
+    setSubQuestions((prev) =>
+      prev.map((sub, si) => {
+        if (si !== subIdx) return sub;
+        const urls = [...resolveQuestionImageUrlsExcludingStandaloneSvg(sub)];
+        const targetIdx = imgIdx + delta;
+        if (targetIdx < 0 || targetIdx >= urls.length) return sub;
+        const [moved] = urls.splice(imgIdx, 1);
+        urls.splice(targetIdx, 0, moved);
+        return {
+          ...sub,
+          diagram_url: urls[0] || null,
+          diagram_urls: urls.length > 0 ? urls : null,
+        };
+      })
+    );
+  };
+
+  const handleRemoveSubDiagram = (subIdx: number, imgIdx: number) => {
+    setSubQuestions((prev) =>
+      prev.map((sub, si) => {
+        if (si !== subIdx) return sub;
+        const urls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+        const removedUrl = urls[imgIdx];
+        const nextUrls = urls.filter((_, i) => i !== imgIdx);
+        const clearSvg = removedUrl && removedUrl.startsWith('data:image/svg');
+        return {
+          ...sub,
+          diagram_url: nextUrls[0] || null,
+          diagram_urls: nextUrls.length > 0 ? nextUrls : null,
+          svg_content: clearSvg ? null : sub.svg_content,
+          has_diagram: Boolean(nextUrls.length > 0 || (!clearSvg && sub.svg_content)),
+        };
+      })
+    );
   };
 
   // Mark scheme point management
@@ -855,7 +1116,7 @@ export function QuestionEditorModal({
       });
 
       if (res.success && res.url) {
-        setDiagramUrl(res.url);
+        setDiagramUrls((prev) => normalizeDiagramUrlList([res.url!, ...prev.slice(1)]));
         setAiStudioSuccessMsg('✓ Technical line art diagram generated & saved to Cloudflare R2!');
         setTimeout(() => setAiStudioSuccessMsg(null), 4000);
       } else {
@@ -873,15 +1134,20 @@ export function QuestionEditorModal({
     setSvgSuccessMsg(null);
     setSvgErrorMsg(null);
     try {
+      const primaryUrl = diagramUrls[0] || '';
       const generated = await generateParametricSvg({
         topic,
         sub_topic: subTopic,
         question_text: questionText,
         sub_questions: subQuestions,
-        diagram_url: diagramUrl || undefined,
-      }, svgCustomPrompt.trim() || undefined, diagramUrl || undefined);
+        diagram_url: primaryUrl || undefined,
+      }, svgCustomPrompt.trim() || undefined, primaryUrl || undefined);
       setSvgContent(generated);
-      setDiagramUrl(`data:image/svg+xml;utf8,${encodeURIComponent(generated)}`);
+      const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(generated)}`;
+      setDiagramUrls((prev) => {
+        const rest = prev.filter((u) => !u.startsWith('data:image/svg'));
+        return normalizeDiagramUrlList([svgDataUrl, ...rest]);
+      });
       setSvgSuccessMsg('✓ Clean Cambridge-standard Parametric SVG generated with Gemini!');
       setTimeout(() => setSvgSuccessMsg(null), 4000);
     } catch (err: any) {
@@ -920,8 +1186,11 @@ export function QuestionEditorModal({
       });
 
       if (res.success && res.url) {
+        const existingUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(subQuestions[si]);
+        const nextUrls = normalizeDiagramUrlList([...existingUrls, res.url]);
         handleUpdateSubQuestion(si, {
-          diagram_url: res.url,
+          diagram_url: nextUrls[0] || res.url,
+          diagram_urls: nextUrls,
           svg_content: null,
           diagram_type: 'apparatus',
           has_diagram: true,
@@ -1032,38 +1301,78 @@ export function QuestionEditorModal({
         }
       : null;
 
-    const effectiveStyle = normalizeQuestionStyle(questionStyle, options);
+    const pairedChoices: Array<{ text: string; diagram: string | null }> = [];
+    const maxChoiceCount = Math.max(options.length, optionDiagrams.length);
+    for (let i = 0; i < maxChoiceCount; i++) {
+      const optText = typeof options[i] === 'string' ? options[i].trim() : '';
+      const optDiagram =
+        typeof optionDiagrams[i] === 'string' && optionDiagrams[i]!.trim()
+          ? optionDiagrams[i]!.trim()
+          : null;
+      if (optText || optDiagram) {
+        pairedChoices.push({ text: optText, diagram: optDiagram });
+      }
+    }
+
+    const effectiveStyle = normalizeQuestionStyle(
+      questionStyle,
+      pairedChoices.map((c) => c.text),
+      pairedChoices.map((c) => c.diagram)
+    );
     const isMcq = effectiveStyle === 'Multiple Choice' || effectiveStyle === 'Multiple Select';
 
-    // Clean user options from current state
-    const cleanUserOptions = options
-      .map((opt) => (typeof opt === 'string' ? opt.trim() : ''))
-      .filter(Boolean);
+    const cleanUserOptions = pairedChoices.map((c) => c.text);
+    const cleanUserOptionDiagrams = pairedChoices.map((c) => c.diagram);
 
     // Safeguard choices from ever disappearing unexpectedly:
-    // If it's an MCQ style or we have choices, preserve cleanUserOptions.
+    // If it's an MCQ style or we have choices, preserve paired options + option_diagrams.
     // If modal options became empty but original question had options AND user did not switch to Calculation or Short Answer, preserve original options!
     let cleanOptions: string[] = [];
+    let cleanOptionDiagrams: (string | null)[] = [];
     if (effectiveStyle === 'Table Choice') {
       cleanOptions = [];
-    } else if (isMcq || cleanUserOptions.length >= 2) {
+      cleanOptionDiagrams = [];
+    } else if (isMcq || pairedChoices.length >= 2) {
       cleanOptions = cleanUserOptions;
+      cleanOptionDiagrams = cleanUserOptionDiagrams;
     } else if (effectiveStyle === 'Calculation' || effectiveStyle === 'Short Answer') {
       cleanOptions = [];
-    } else if (cleanUserOptions.length > 0) {
+      cleanOptionDiagrams = [];
+    } else if (pairedChoices.length > 0) {
       cleanOptions = cleanUserOptions;
+      cleanOptionDiagrams = cleanUserOptionDiagrams;
     } else if (Array.isArray(question?.options) && question.options.length > 0) {
-      cleanOptions = question.options.map((opt) => typeof opt === 'string' ? opt.trim() : '').filter(Boolean);
+      cleanOptions = question.options.map((opt) => (typeof opt === 'string' ? opt.trim() : '')).filter(Boolean);
+      cleanOptionDiagrams = normalizeOptionDiagramList(question.option_diagrams, cleanOptions.length);
     }
 
     // Determine final style to save: if 2+ options exist and style wasn't Multiple Select or Table Choice, ensure it's Multiple Choice
-    const finalQuestionStyle: QuestionStyle = (cleanOptions.length >= 2 && effectiveStyle !== 'Multiple Select' && effectiveStyle !== 'Table Choice')
-      ? 'Multiple Choice'
-      : effectiveStyle;
+    const finalQuestionStyle: QuestionStyle =
+      cleanOptions.length >= 2 && effectiveStyle !== 'Multiple Select' && effectiveStyle !== 'Table Choice'
+        ? 'Multiple Choice'
+        : effectiveStyle;
 
     const finalSubQuestions = (finalQuestionStyle === 'Multiple Choice' || finalQuestionStyle === 'Multiple Select' || finalQuestionStyle === 'Table Choice' || finalQuestionStyle === 'Calculation' || finalQuestionStyle === 'Short Answer')
       ? []
-      : subQuestions;
+      : subQuestions.map((sub) => {
+          const subUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+          const subOpts = Array.isArray(sub.options) ? sub.options : null;
+          const subOptDiags = subOpts
+            ? normalizeOptionDiagramList(sub.option_diagrams, subOpts.length)
+            : normalizeOptionDiagramList(sub.option_diagrams);
+          return {
+            ...sub,
+            diagram_url: subUrls[0] || null,
+            diagram_urls: subUrls.length > 0 ? subUrls : null,
+            option_diagrams: subOptDiags.some(Boolean) ? subOptDiags : null,
+            has_diagram: Boolean(subUrls.length > 0 || sub.svg_content),
+          };
+        });
+
+    const cleanStemUrls = normalizeDiagramUrlList(diagramUrls);
+    const primaryStemUrl = cleanStemUrls[0] || null;
+    const normalizedOptDiagramsPayload = normalizeOptionDiagramList(cleanOptionDiagrams, cleanOptions.length);
+    const hasOptionDiagramsPayload = normalizedOptDiagramsPayload.some(Boolean);
 
     const payload = {
       syllabus_id: syllabusId || (syllabuses[0]?.id ?? ''),
@@ -1085,8 +1394,14 @@ export function QuestionEditorModal({
       cambridge_ms_hub_url: cambridgeMsHubUrl.trim() || null,
       page_number: pageNumber !== '' ? Number(pageNumber) : null,
       marks: finalMarks,
-      diagram_url: diagramUrl.trim() || null,
-      svg_content: svgContent || (diagramUrl.startsWith('data:image/svg') ? extractSvgFromDiagramUrl(diagramUrl) : (question?.svg_content || null)),
+      diagram_url: primaryStemUrl,
+      diagram_urls: cleanStemUrls.length > 0 ? cleanStemUrls : null,
+      option_diagrams: hasOptionDiagramsPayload ? normalizedOptDiagramsPayload : null,
+      svg_content:
+        svgContent ||
+        (primaryStemUrl?.startsWith('data:image/svg')
+          ? extractSvgFromDiagramUrl(primaryStemUrl)
+          : (cleanStemUrls.length === 0 ? null : question?.svg_content || null)),
       ai_diagram_prompt: aiDiagramPrompt.trim() || null,
       audio_url: audioUrl.trim() || null,
       audio_metadata: audioMetadataPayload,
@@ -1415,51 +1730,61 @@ export function QuestionEditorModal({
                 </div>
               </div>
 
-              {/* Diagram URL Input */}
-              <div className="q-editor-field">
-                <label className="q-editor-label" htmlFor="diagram-url-input">
-                  Diagram / Visual Image (Optional URL, Image Upload, or Crop):
-                </label>
-                <div className="q-editor-url-row">
-                  <input
-                    type="url"
-                    id="diagram-url-input"
-                    className="q-editor-input"
-                    value={diagramUrl}
-                    onChange={(e) => setDiagramUrl(e.target.value)}
-                    placeholder="https://..."
-                  />
+              {/* Stem Multi-Image Diagrams Gallery */}
+              <div
+                className="q-editor-field"
+                onPaste={(e) =>
+                  handlePasteImageForTarget(
+                    e,
+                    { scope: 'stem', index: diagramUrls.length, append: true },
+                    `stem_${diagramUrls.length + 1}`
+                  )
+                }
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                  <label className="q-editor-label" htmlFor="diagram-url-input" style={{ margin: 0 }}>
+                    Diagrams / Visual Figures ({diagramUrls.length}):
+                  </label>
+                  <span className="q-editor-hint">
+                    Supports multiple figures, crop from PDF, direct image upload, URL, or Ctrl+V paste.
+                  </span>
+                </div>
 
-                  {/* Hidden file input for uploading images / PDFs to crop */}
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept="image/*,application/pdf"
-                    style={{ display: 'none' }}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      if (file.type === 'application/pdf') {
-                        setCropSourceFile(file);
-                        setCropSourceImage(null);
-                      } else {
-                        const url = URL.createObjectURL(file);
-                        setCropSourceImage(url);
-                        setCropSourceFile(null);
-                      }
-                      setIsCropModalOpen(true);
-                      e.target.value = '';
-                    }}
-                  />
+                <div className="q-editor-diagram-toolbar">
+                  <button
+                    type="button"
+                    className="q-editor-btn-secondary"
+                    onClick={() => directUploadInputRef.current && triggerDirectImageUpload({ scope: 'stem', index: diagramUrls.length, append: true })}
+                    disabled={isUploadingOptionOrStemImg}
+                    title="Upload one or more image files directly"
+                  >
+                    {isUploadingOptionOrStemImg ? '⏳ Uploading...' : '+ 🖼️ Upload Image(s)'}
+                  </button>
 
                   <button
                     type="button"
                     className="q-editor-btn-secondary"
-                    onClick={() => fileInputRef.current?.click()}
-                    title="Upload an image or PDF to crop diagram region"
+                    onClick={() => {
+                      pendingUploadTargetRef.current = { scope: 'stem', index: diagramUrls.length, append: true };
+                      setCropTarget({ scope: 'stem', index: diagramUrls.length, append: true });
+                      fileInputRef.current?.click();
+                    }}
+                    title="Upload a PDF or image and crop a figure region"
                   >
-                    📁 Upload & Crop
+                    ✂️ Upload PDF/Image &amp; Crop
                   </button>
+
+                  {sourcePdfUrl.trim() && (
+                    <button
+                      type="button"
+                      className="q-editor-btn-secondary"
+                      disabled={isLoadingSourcePdf}
+                      onClick={() => openCropForTarget({ scope: 'stem', index: diagramUrls.length, append: true })}
+                      title="Crop another figure directly from the linked Past Paper PDF"
+                    >
+                      {isLoadingSourcePdf ? '⏳ Loading PDF...' : '📄 Crop from Past Paper PDF'}
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -1485,33 +1810,14 @@ export function QuestionEditorModal({
                     📐 Parametric SVG (Gemini)
                   </button>
 
-                  {diagramUrl && (
-                    <button
-                      type="button"
-                      className="q-editor-btn-secondary"
-                      onClick={() => {
-                        setCropSourceImage(diagramUrl);
-                        setCropSourceFile(null);
-                        setIsCropModalOpen(true);
-                      }}
-                      title="Adjust crop boundaries with 8-handle visual selector"
-                    >
-                      ✂️ Fine-Tune
-                    </button>
-                  )}
-
-                  {(diagramUrl || svgContent) && (
-                    <button
-                      type="button"
-                      className="q-editor-btn-secondary"
-                      onClick={() => {
-                        setDiagramUrl('');
-                        setSvgContent(null);
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="q-editor-btn-secondary"
+                    onClick={() => setDiagramUrls((prev) => [...prev, ''])}
+                    title="Add an image URL input slot"
+                  >
+                    + 🔗 Add Image URL
+                  </button>
                 </div>
 
                 {/* Inline Parametric SVG Studio (Gemini) */}
@@ -1649,7 +1955,11 @@ export function QuestionEditorModal({
                           onChange={(e) => {
                             const newCode = e.target.value;
                             setSvgContent(newCode);
-                            setDiagramUrl(`data:image/svg+xml;utf8,${encodeURIComponent(newCode)}`);
+                            const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(newCode)}`;
+                            setDiagramUrls((prev) => {
+                              const rest = prev.filter((u) => !u.startsWith('data:image/svg'));
+                              return [svgDataUrl, ...rest];
+                            });
                           }}
                           spellCheck={false}
                         />
@@ -1765,16 +2075,90 @@ export function QuestionEditorModal({
                   </div>
                 )}
 
-                {(diagramUrl || svgContent) && (
+                {diagramUrls.length > 0 ? (
+                  <div className="q-editor-diagram-gallery">
+                    {diagramUrls.map((dUrl, dIdx) => (
+                      <div key={dIdx} className="q-editor-diagram-card">
+                        <div className="q-editor-diagram-card-head">
+                          <span className="q-editor-diagram-badge">Figure {dIdx + 1}</span>
+                          <div style={{ display: 'inline-flex', gap: 4 }}>
+                            {diagramUrls.length > 1 && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-mini"
+                                  disabled={dIdx === 0}
+                                  onClick={() => handleMoveStemDiagram(dIdx, -1)}
+                                  title="Move left / earlier"
+                                >
+                                  ←
+                                </button>
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-mini"
+                                  disabled={dIdx === diagramUrls.length - 1}
+                                  onClick={() => handleMoveStemDiagram(dIdx, 1)}
+                                  title="Move right / later"
+                                >
+                                  →
+                                </button>
+                              </>
+                            )}
+                            {dUrl.trim() && (
+                              <button
+                                type="button"
+                                className="q-editor-btn-mini"
+                                onClick={() => openCropForTarget({ scope: 'stem', index: dIdx }, dUrl)}
+                                title="Fine-tune crop boundaries"
+                              >
+                                ✂️ Crop
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="q-editor-btn-mini q-editor-btn-mini--danger"
+                              onClick={() => handleRemoveStemDiagram(dIdx)}
+                              title="Remove this image"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+
+                        {dUrl.trim() && (
+                          <div style={{ border: '1px solid #e2e8f0', borderRadius: '6px', overflow: 'hidden', background: '#fff' }}>
+                            <ExamVisualRender
+                              svgContent={dIdx === 0 && !dUrl ? svgContent : (dUrl.startsWith('data:image/svg') ? extractSvgFromDiagramUrl(dUrl) : null)}
+                              diagramUrl={dUrl}
+                              alt={`Question figure ${dIdx + 1}`}
+                              interactiveZoom={true}
+                            />
+                          </div>
+                        )}
+
+                        <input
+                          type="url"
+                          id={dIdx === 0 ? 'diagram-url-input' : `diagram-url-input-${dIdx}`}
+                          className="q-editor-input q-editor-input--sm"
+                          value={dUrl}
+                          onChange={(e) =>
+                            setDiagramUrls((prev) => prev.map((u, i) => (i === dIdx ? e.target.value : u)))
+                          }
+                          placeholder={`Figure ${dIdx + 1} image URL (https://...)`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : svgContent ? (
                   <div className="q-editor-diagram-preview" style={{ margin: '10px 0', border: '1px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
                     <ExamVisualRender
                       svgContent={svgContent}
-                      diagramUrl={diagramUrl}
+                      diagramUrl={null}
                       alt="Question diagram"
                       interactiveZoom={true}
                     />
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -2028,26 +2412,127 @@ export function QuestionEditorModal({
                     </div>
                   ) : (
                     <div className="q-editor-options-list">
-                      {options.map((opt, idx) => (
-                        <div key={idx} className="q-editor-option-row">
-                          <span className="q-editor-option-letter">{String.fromCharCode(65 + idx)}</span>
-                          <input
-                            type="text"
-                            className="q-editor-input"
-                            value={opt}
-                            onChange={(e) => handleUpdateOption(idx, e.target.value)}
-                            placeholder={`Option ${String.fromCharCode(65 + idx)} text`}
-                          />
-                          <button
-                            type="button"
-                            className="q-editor-btn-delete-small"
-                            onClick={() => handleRemoveOption(idx)}
-                            title="Delete this option"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
+                      {options.map((opt, idx) => {
+                        const letter = String.fromCharCode(65 + idx);
+                        const optImg = optionDiagrams[idx] || null;
+                        const isUrlOpen = openOptionUrlIndices.has(idx);
+                        return (
+                          <div key={idx} className="q-editor-option-card">
+                            <div className="q-editor-option-row">
+                              <span className="q-editor-option-letter">{letter}</span>
+                              <input
+                                type="text"
+                                className="q-editor-input"
+                                style={{ flex: 1, minWidth: '180px' }}
+                                value={opt}
+                                onChange={(e) => handleUpdateOption(idx, e.target.value)}
+                                onPaste={(e) =>
+                                  handlePasteImageForTarget(e, { scope: 'option', optionIndex: idx }, `opt_${letter}`)
+                                }
+                                placeholder={`Option ${letter} text (optional if image attached, or paste screenshot)`}
+                              />
+                              <div className="q-editor-option-actions">
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-mini"
+                                  onClick={() => triggerDirectImageUpload({ scope: 'option', optionIndex: idx })}
+                                  title={`Upload diagram/image for Option ${letter}`}
+                                >
+                                  🖼️ Image
+                                </button>
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-mini"
+                                  disabled={isLoadingSourcePdf}
+                                  onClick={() => openCropForTarget({ scope: 'option', optionIndex: idx })}
+                                  title={
+                                    sourcePdfUrl.trim()
+                                      ? `Crop Option ${letter} diagram from Past Paper PDF`
+                                      : `Upload image/PDF and crop for Option ${letter}`
+                                  }
+                                >
+                                  ✂️ Crop
+                                </button>
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-mini"
+                                  onClick={() =>
+                                    setOpenOptionUrlIndices((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(idx)) next.delete(idx);
+                                      else next.add(idx);
+                                      return next;
+                                    })
+                                  }
+                                  title={`Paste image URL for Option ${letter}`}
+                                >
+                                  🔗 URL
+                                </button>
+                                <button
+                                  type="button"
+                                  className="q-editor-btn-delete-small"
+                                  onClick={() => handleRemoveOption(idx)}
+                                  title="Delete this option"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+
+                            {(optImg || isUrlOpen) && (
+                              <div className="q-editor-option-visual-box">
+                                {optImg && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                    <ExamVisualRender
+                                      diagramUrl={optImg}
+                                      alt={`Option ${letter} diagram`}
+                                      interactiveZoom={true}
+                                      className="q-editor-option-visual-preview"
+                                    />
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                      <button
+                                        type="button"
+                                        className="q-editor-btn-mini"
+                                        onClick={() => openCropForTarget({ scope: 'option', optionIndex: idx }, optImg)}
+                                        title={`Fine-tune Option ${letter} crop`}
+                                      >
+                                        ✂️ Fine-Tune Crop
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="q-editor-btn-mini q-editor-btn-mini--danger"
+                                        onClick={() =>
+                                          setOptionDiagrams((prev) => prev.map((v, i) => (i === idx ? null : v)))
+                                        }
+                                        title={`Remove Option ${letter} image`}
+                                      >
+                                        🗑️ Remove Image
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {(isUrlOpen || Boolean(optImg)) && (
+                                  <input
+                                    type="url"
+                                    className="q-editor-input q-editor-input--sm"
+                                    value={optImg || ''}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setOptionDiagrams((prev) => {
+                                        const next = normalizeOptionDiagramList(prev, options.length);
+                                        next[idx] = val || null;
+                                        return next;
+                                      });
+                                    }}
+                                    placeholder={`Option ${letter} diagram URL (https://...)`}
+                                  />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -2183,48 +2668,234 @@ export function QuestionEditorModal({
                                   </div>
                                 </div>
 
-                                {/* Sub-Question Visual / Diagram Controls */}
-                                <div className="q-editor-sub-visual-section" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                    <label className="q-editor-sub-label" style={{ margin: 0 }}>Visual / Figure (Optional):</label>
-                                    <div style={{ display: 'flex', gap: '6px' }}>
-                                      <button
-                                        type="button"
-                                        className="q-editor-btn-secondary"
-                                        style={{ fontSize: '0.75rem', padding: '2px 8px' }}
-                                        onClick={() => {
-                                          if (activeSubDiagramStudioIdx === si) {
-                                            setActiveSubDiagramStudioIdx(null);
-                                          } else {
-                                            setActiveSubDiagramStudioIdx(si);
-                                            setSubAiPrompt(sub.ai_diagram_prompt || '');
-                                            setSubAiPreset(resolveStylePreset(topic));
-                                            setSubAiStudioError(null);
-                                          }
-                                        }}
-                                      >
-                                        {activeSubDiagramStudioIdx === si ? '✕ Close Studio' : '✨ AI Visual'}
-                                      </button>
-                                      {(sub.diagram_url || sub.svg_content) && (
-                                        <button
-                                          type="button"
-                                          className="q-editor-btn-secondary"
-                                          style={{ fontSize: '0.75rem', padding: '2px 8px' }}
-                                          onClick={() => handleUpdateSubQuestion(si, { diagram_url: null, svg_content: null, has_diagram: false })}
-                                        >
-                                          Clear
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
+                                {/* Sub-Question Multi-Image Visual / Diagram Controls */}
+                                {(() => {
+                                  const subImgUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+                                  return (
+                                    <div
+                                      className="q-editor-sub-visual-section"
+                                      style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}
+                                      onPaste={(e) =>
+                                        handlePasteImageForTarget(
+                                          e,
+                                          { scope: 'sub', subIndex: si, imageIndex: subImgUrls.length, append: true },
+                                          `sub_${si}_fig_${subImgUrls.length + 1}`
+                                        )
+                                      }
+                                    >
+                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px', flexWrap: 'wrap', gap: 6 }}>
+                                        <label className="q-editor-sub-label" style={{ margin: 0 }}>
+                                          Visuals / Figures ({subImgUrls.length}):
+                                        </label>
+                                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                          <button
+                                            type="button"
+                                            className="q-editor-btn-mini"
+                                            onClick={() =>
+                                              triggerDirectImageUpload({
+                                                scope: 'sub',
+                                                subIndex: si,
+                                                imageIndex: subImgUrls.length,
+                                                append: true,
+                                              })
+                                            }
+                                            title="Upload image(s) for this sub-question"
+                                          >
+                                            + 🖼️ Image
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="q-editor-btn-mini"
+                                            disabled={isLoadingSourcePdf}
+                                            onClick={() =>
+                                              openCropForTarget({
+                                                scope: 'sub',
+                                                subIndex: si,
+                                                imageIndex: subImgUrls.length,
+                                                append: true,
+                                              })
+                                            }
+                                            title="Crop another figure from PDF or image"
+                                          >
+                                            + ✂️ Crop
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="q-editor-btn-secondary"
+                                            style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                            onClick={() => {
+                                              if (activeSubDiagramStudioIdx === si) {
+                                                setActiveSubDiagramStudioIdx(null);
+                                              } else {
+                                                setActiveSubDiagramStudioIdx(si);
+                                                setSubAiPrompt(sub.ai_diagram_prompt || '');
+                                                setSubAiPreset(resolveStylePreset(topic));
+                                                setSubAiStudioError(null);
+                                              }
+                                            }}
+                                          >
+                                            {activeSubDiagramStudioIdx === si ? '✕ Close Studio' : '✨ AI Visual'}
+                                          </button>
+                                          {(subImgUrls.length > 0 || sub.svg_content) && (
+                                            <button
+                                              type="button"
+                                              className="q-editor-btn-secondary"
+                                              style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                              onClick={() =>
+                                                handleUpdateSubQuestion(si, {
+                                                  diagram_url: null,
+                                                  diagram_urls: null,
+                                                  svg_content: null,
+                                                  has_diagram: false,
+                                                })
+                                              }
+                                            >
+                                              Clear All
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
 
-                                  <input
-                                    type="text"
-                                    className="q-editor-input q-editor-input--sm"
-                                    value={sub.diagram_url || ''}
-                                    onChange={(e) => handleUpdateSubQuestion(si, { diagram_url: e.target.value.trim() || null, has_diagram: Boolean(e.target.value.trim()) })}
-                                    placeholder="Diagram image URL (e.g. https://...)"
-                                  />
+                                      {subImgUrls.length === 0 ? (
+                                        <input
+                                          type="text"
+                                          className="q-editor-input q-editor-input--sm"
+                                          value=""
+                                          onChange={(e) => {
+                                            const val = e.target.value.trim();
+                                            handleUpdateSubQuestion(si, {
+                                              diagram_url: val || null,
+                                              diagram_urls: val ? [val] : null,
+                                              has_diagram: Boolean(val),
+                                            });
+                                          }}
+                                          placeholder="Diagram image URL (e.g. https://...) or paste screenshot"
+                                        />
+                                      ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                          {subImgUrls.map((sUrl, sImgIdx) => (
+                                            <div key={sImgIdx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                              <span className="q-editor-diagram-badge" style={{ flexShrink: 0 }}>
+                                                Fig {sImgIdx + 1}
+                                              </span>
+                                              <input
+                                                type="text"
+                                                className="q-editor-input q-editor-input--sm"
+                                                value={sUrl}
+                                                onChange={(e) => {
+                                                  const updated = subImgUrls.map((u, idx2) =>
+                                                    idx2 === sImgIdx ? e.target.value : u
+                                                  );
+                                                  const cleaned = normalizeDiagramUrlList(updated);
+                                                  handleUpdateSubQuestion(si, {
+                                                    diagram_url: cleaned[0] || null,
+                                                    diagram_urls: updated.length > 0 ? updated : null,
+                                                    has_diagram: Boolean(cleaned.length > 0 || sub.svg_content),
+                                                  });
+                                                }}
+                                                placeholder="Diagram image URL..."
+                                              />
+                                              {subImgUrls.length > 1 && (
+                                                <>
+                                                  <button
+                                                    type="button"
+                                                    className="q-editor-btn-mini"
+                                                    disabled={sImgIdx === 0}
+                                                    onClick={() => handleMoveSubDiagram(si, sImgIdx, -1)}
+                                                    title="Move up"
+                                                  >
+                                                    ↑
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className="q-editor-btn-mini"
+                                                    disabled={sImgIdx === subImgUrls.length - 1}
+                                                    onClick={() => handleMoveSubDiagram(si, sImgIdx, 1)}
+                                                    title="Move down"
+                                                  >
+                                                    ↓
+                                                  </button>
+                                                </>
+                                              )}
+                                              <button
+                                                type="button"
+                                                className="q-editor-btn-mini"
+                                                onClick={() =>
+                                                  openCropForTarget(
+                                                    { scope: 'sub', subIndex: si, imageIndex: sImgIdx },
+                                                    sUrl
+                                                  )
+                                                }
+                                                title="Fine-tune crop"
+                                              >
+                                                ✂️
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="q-editor-btn-mini q-editor-btn-mini--danger"
+                                                onClick={() => handleRemoveSubDiagram(si, sImgIdx)}
+                                                title="Remove figure"
+                                              >
+                                                🗑️
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {/* Optional per-option image controls when sub-question has MCQ options */}
+                                      {Array.isArray(sub.options) && sub.options.length > 0 && (
+                                        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed #e2e8f0' }}>
+                                          <label className="q-editor-sub-label" style={{ display: 'block', marginBottom: 4 }}>
+                                            Sub-Question Option Diagrams ({sub.options.length} choices):
+                                          </label>
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                            {sub.options.map((subOpt, subOptIdx) => {
+                                              const subOptImg = sub.option_diagrams?.[subOptIdx] || null;
+                                              const subLetter = String.fromCharCode(65 + subOptIdx);
+                                              return (
+                                                <div key={subOptIdx} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                                  <span className="q-editor-diagram-badge">{subLetter}</span>
+                                                  <span style={{ fontSize: '0.75rem', flex: 1, minWidth: 120, color: 'var(--color-text-secondary)' }}>
+                                                    {subOpt || `(Image-only Option ${subLetter})`}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    className="q-editor-btn-mini"
+                                                    onClick={() =>
+                                                      triggerDirectImageUpload({
+                                                        scope: 'sub-option',
+                                                        subIndex: si,
+                                                        optionIndex: subOptIdx,
+                                                      })
+                                                    }
+                                                  >
+                                                    🖼️ {subOptImg ? 'Replace' : 'Add Image'}
+                                                  </button>
+                                                  {subOptImg && (
+                                                    <button
+                                                      type="button"
+                                                      className="q-editor-btn-mini q-editor-btn-mini--danger"
+                                                      onClick={() => {
+                                                        const nextOpts = normalizeOptionDiagramList(
+                                                          sub.option_diagrams,
+                                                          sub.options?.length || 0
+                                                        );
+                                                        nextOpts[subOptIdx] = null;
+                                                        handleUpdateSubQuestion(si, {
+                                                          option_diagrams: nextOpts.some(Boolean) ? nextOpts : null,
+                                                        });
+                                                      }}
+                                                    >
+                                                      🗑️
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
 
                                   {/* Inline AI Visual Studio for this sub-part */}
                                   {activeSubDiagramStudioIdx === si && (
@@ -2307,6 +2978,8 @@ export function QuestionEditorModal({
                                     </div>
                                   )}
                                 </div>
+                                  );
+                                })()}
                               </div>
 
                               {/* Right Live KaTeX Preview Column */}
@@ -2331,20 +3004,43 @@ export function QuestionEditorModal({
                                     )}
                                   </div>
 
-                                  {/* Sub-question Visual Preview */}
-                                  {(sub.diagram_url || sub.svg_content) && (
-                                    <div style={{ margin: '8px 0', border: '1px solid #e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
-                                      <ExamVisualRender
-                                        svgContent={sub.svg_content}
-                                        diagramUrl={sub.diagram_url}
-                                        resourceRef={sub.resource_ref}
-                                        alt={`Visual for ${sub.sub_id}`}
-                                        diagramType={sub.diagram_type}
-                                        hasEmbeddedValues={sub.has_embedded_values}
-                                        interactiveZoom={true}
-                                      />
-                                    </div>
-                                  )}
+                                  {/* Sub-question Visuals Preview */}
+                                  {(() => {
+                                    const previewUrls = resolveQuestionImageUrlsExcludingStandaloneSvg(sub);
+                                    if (previewUrls.length === 0 && !sub.svg_content) return null;
+                                    if (previewUrls.length === 0 && sub.svg_content) {
+                                      return (
+                                        <div style={{ margin: '8px 0', border: '1px solid #e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
+                                          <ExamVisualRender
+                                            svgContent={sub.svg_content}
+                                            diagramUrl={null}
+                                            resourceRef={sub.resource_ref}
+                                            alt={`Visual for ${sub.sub_id}`}
+                                            diagramType={sub.diagram_type}
+                                            hasEmbeddedValues={sub.has_embedded_values}
+                                            interactiveZoom={true}
+                                          />
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '8px 0' }}>
+                                        {previewUrls.map((url, uIdx) => (
+                                          <div key={uIdx} style={{ border: '1px solid #e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
+                                            <ExamVisualRender
+                                              svgContent={uIdx === 0 ? sub.svg_content : null}
+                                              diagramUrl={url}
+                                              resourceRef={previewUrls.length > 1 ? `Figure ${uIdx + 1}` : sub.resource_ref}
+                                              alt={`Visual ${uIdx + 1} for ${sub.sub_id}`}
+                                              diagramType={sub.diagram_type}
+                                              hasEmbeddedValues={sub.has_embedded_values}
+                                              interactiveZoom={true}
+                                            />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
 
                                   {sub.mark_scheme && sub.mark_scheme.trim() && (
                                     <div className="q-editor-sub-preview-ans">
@@ -2408,8 +3104,10 @@ export function QuestionEditorModal({
                     sub_topic: subTopic || null,
                     marks: draftMarks,
                     options: options.length > 0 ? options : null,
+                    option_diagrams: optionDiagrams.some(Boolean) ? optionDiagrams : null,
                     sub_questions: subQuestions,
-                    diagram_url: diagramUrl || null,
+                    diagram_url: diagramUrls[0] || null,
+                    diagram_urls: diagramUrls.length > 0 ? diagramUrls : null,
                     svg_content: svgContent,
                     mark_scheme: {
                       ...(question?.mark_scheme && typeof question.mark_scheme === 'object' ? question.mark_scheme : {}),
@@ -2422,7 +3120,7 @@ export function QuestionEditorModal({
                   {
                     markSchemePdfBase64: mode === 'realign' ? markSchemePdfBase64 : null,
                     includeGuidance: true,
-                    diagramUrlOverride: diagramUrl || null,
+                    diagramUrlOverride: diagramUrls[0] || null,
                   }
                 );
 
@@ -3698,25 +4396,86 @@ export function QuestionEditorModal({
         );
       })()}
 
+      {/* Hidden file inputs for direct image uploads & PDF/image crop across all tabs */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept="image/*,application/pdf"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          setCropTarget(pendingUploadTargetRef.current);
+          if (file.type === 'application/pdf') {
+            setCropSourceFile(file);
+            setCropSourceImage(null);
+          } else {
+            const url = URL.createObjectURL(file);
+            setCropSourceImage(url);
+            setCropSourceFile(null);
+          }
+          setIsCropModalOpen(true);
+          e.target.value = '';
+        }}
+      />
+
+      <input
+        type="file"
+        ref={directUploadInputRef}
+        accept="image/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={async (e) => {
+          const files = Array.from(e.target.files || []);
+          e.target.value = '';
+          if (files.length === 0) return;
+          const target = pendingUploadTargetRef.current;
+          for (let fIdx = 0; fIdx < files.length; fIdx++) {
+            const file = files[fIdx];
+            const slug =
+              target.scope === 'option'
+                ? `opt_${target.optionIndex}`
+                : target.scope === 'sub'
+                  ? `sub_${target.subIndex}_${target.imageIndex + fIdx}`
+                  : target.scope === 'sub-option'
+                    ? `sub_${target.subIndex}_opt_${target.optionIndex}`
+                    : `stem_${target.index + fIdx}`;
+            await uploadBlobForTarget(file, target, slug);
+            if (target.scope !== 'stem' && target.scope !== 'sub') {
+              break;
+            }
+          }
+        }}
+      />
+
       {/* ─── Diagram Fine-Tuner Modal ─────────────────────────────────────── */}
       {isCropModalOpen && (
         <DiagramCropModal
           isOpen={true}
           pdfFile={cropSourceFile}
-          imageSrc={cropSourceImage || diagramUrl || null}
+          imageSrc={cropSourceImage || diagramUrls[0] || null}
           questionNumber={questionNumber}
           onClose={() => setIsCropModalOpen(false)}
           onSaveCrop={async ({ blob, localUrl }) => {
-            setDiagramUrl(localUrl);
+            const activeTarget = cropTarget;
+            applyTargetDiagramUrl(activeTarget, localUrl);
             setIsCropModalOpen(false);
             try {
+              const slug =
+                activeTarget.scope === 'option'
+                  ? `opt_${activeTarget.optionIndex}`
+                  : activeTarget.scope === 'sub'
+                    ? `sub_${activeTarget.subIndex}_${activeTarget.imageIndex}`
+                    : activeTarget.scope === 'sub-option'
+                      ? `sub_${activeTarget.subIndex}_opt_${activeTarget.optionIndex}`
+                      : `stem_${activeTarget.index}`;
               const uploadedUrl = await uploadSingleDiagramBlob(blob, {
-                question_number: questionNumber || '1',
+                question_number: `${questionNumber || '1'}_${slug}`,
                 year: Number(year) || new Date().getFullYear(),
-                paper_number: paperNumber ? Number(paperNumber) : 1,
+                paper_number: paperNumber ? Number(paperNumber) || String(paperNumber) : 1,
               });
               if (uploadedUrl) {
-                setDiagramUrl(uploadedUrl);
+                replaceTemporaryDiagramUrl(localUrl, uploadedUrl);
               }
             } catch (err) {
               console.warn('Diagram upload note:', err);

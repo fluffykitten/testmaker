@@ -11,6 +11,7 @@ import {
   parseTableCellAnswers,
 } from '../lib/dataTableUtils.ts';
 import { hasInlineGaps, parseGapSegments } from '../lib/inlineGapParser.ts';
+import { hasAnyOptionDiagrams, stripInlineMarkdownImage } from '../utils/questionDiagramUtils.ts';
 import type { Question } from '../types/database';
 import type { StudentSubmission, QuestionSubmissionResult } from './quizSubmissionService';
 
@@ -1076,13 +1077,14 @@ export function resolveQuestionModelAnswer(question: Question, subIndex?: number
   }
 
   if (options && options.length > 0) {
+    const hasVisualOpts = hasAnyOptionDiagrams(question, options);
     const multiLetters = extractMultiSelectTargetLetters(candidates);
     if (multiLetters.length >= 2) {
       return multiLetters
         .map((l) => {
           const idx = l.charCodeAt(0) - 65;
-          const optText = options[idx] ? options[idx].replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
-          return optText ? `Option ${l} (${optText})` : `Option ${l}`;
+          const rawOptText = options[idx] ? stripInlineMarkdownImage(options[idx]).replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
+          return rawOptText ? `Option ${l} (${rawOptText})` : (hasVisualOpts ? `Option ${l} (Diagram)` : `Option ${l}`);
         })
         .join('; ');
     }
@@ -1090,8 +1092,8 @@ export function resolveQuestionModelAnswer(question: Question, subIndex?: number
     const cIdx = resolveMcqCorrectOptionIndex(question, subIndex);
     if (cIdx >= 0) {
       const letter = String.fromCharCode(65 + cIdx);
-      const optText = options[cIdx] ? options[cIdx].replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
-      return optText ? `Option ${letter}: ${optText}` : `Option ${letter}`;
+      const rawOptText = options[cIdx] ? stripInlineMarkdownImage(options[cIdx]).replace(/^[A-Za-z][\.\)\s:]+/, '').trim() : '';
+      return rawOptText ? `Option ${letter}: ${rawOptText}` : (hasVisualOpts ? `Option ${letter} (Diagram)` : `Option ${letter}`);
     }
   }
 
@@ -1397,7 +1399,8 @@ export function gradeDeterministicAnswer(
 
       const isCorrect = studentOptionIdx === correctIdx;
       const correctLetter = String.fromCharCode(65 + correctIdx);
-      const correctOptionText = options[correctIdx] || `Option ${correctLetter}`;
+      const cleanCorrectOptText = stripInlineMarkdownImage(options[correctIdx] || '').trim();
+      const correctOptionDisplay = cleanCorrectOptText || `Option ${correctLetter}`;
       const studentDisplay =
         studentOptionIdx >= 0 && studentOptionIdx < options.length
           ? `Option ${String.fromCharCode(65 + studentOptionIdx)}`
@@ -1411,9 +1414,11 @@ export function gradeDeterministicAnswer(
         matchType: 'mcq',
         feedback: isCorrect
           ? `✓ Correct choice: Option ${correctLetter}`
-          : `✗ Selected ${studentDisplay}, correct answer is Option ${correctLetter} (${correctOptionText})`,
+          : cleanCorrectOptText
+            ? `✗ Selected ${studentDisplay}, correct answer is Option ${correctLetter} (${correctOptionDisplay})`
+            : `✗ Selected ${studentDisplay}, correct answer is Option ${correctLetter}`,
         matchedCriteria: [`Option ${correctLetter}`],
-        acceptedAnswers: [`Option ${correctLetter}`, correctOptionText],
+        acceptedAnswers: cleanCorrectOptText ? [`Option ${correctLetter}`, correctOptionDisplay] : [`Option ${correctLetter}`],
       };
     }
   }

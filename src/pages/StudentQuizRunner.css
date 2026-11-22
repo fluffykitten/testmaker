@@ -608,6 +608,26 @@
   border-color: rgba(217, 119, 6, 0.35) !important;
 }
 
+.sq-q-diagrams-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0 24px;
+}
+
+.sq-q-diagrams-stack .sq-q-diagram-wrap {
+  margin: 0;
+}
+
+.sq-q-diagram-figure-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .sq-q-diagram-wrap {
   margin: 16px 0 24px;
   text-align: center;
@@ -674,6 +694,16 @@
   margin-bottom: 28px;
 }
 
+.sq-choices-list--visual-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.sq-choices-list--visual-grid > .sq-choices-multiselect-hint {
+  grid-column: 1 / -1;
+}
+
 .sq-choice-btn {
   background: var(--color-surface);
   border: 1.5px solid var(--color-border);
@@ -688,6 +718,65 @@
   font-size: 0.9375rem;
   cursor: pointer;
   transition: all var(--transition-fast);
+}
+
+.sq-choice-btn--with-diagram {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.sq-choice-btn-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.sq-choice-diagram-wrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  min-height: 96px;
+}
+
+.sq-choice-diagram-img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+}
+
+.sq-choice-zoom-trigger {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 4;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  font-size: 0.8125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-in;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
+}
+
+.sq-choice-zoom-trigger:hover {
+  background: #ffffff;
+  transform: scale(1.06);
 }
 
 .sq-choice-btn:hover {

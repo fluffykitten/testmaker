@@ -12,6 +12,7 @@ import {
   groupQuizzesByExamDay,
   normalizeExamDayKey,
   resolveQuizExamDayKey,
+  resolveQuizExamTimeInfo,
   type SemesterDayGroup,
 } from '../lib/semesterDayOrganizer';
 import {
@@ -571,14 +572,33 @@ export function SemesterDayOrganizerModal({
                 </h3>
                 <span className="sdo-count-pill">{group.quizzes.length} exam{group.quizzes.length === 1 ? '' : 's'}</span>
 
-                {group.scheduleSubjects.length > 0 && (
+                {group.scheduleSessions.length > 0 ? (
                   <div className="sdo-schedule-subjects">
-                    {group.scheduleSubjects.map((sub) => (
-                      <span key={sub} className="sdo-subject-chip">
-                        {sub}
+                    {group.scheduleSessions.map((sess) => (
+                      <span
+                        key={`${sess.subject}-${sess.time}`}
+                        className="sdo-subject-chip"
+                        title={
+                          sess.time
+                            ? `${sess.subject}: ${sess.time}${sess.duration ? ` (${sess.duration})` : ''}`
+                            : sess.subject
+                        }
+                      >
+                        {sess.subject}
+                        {sess.time && <span className="sdo-subject-chip-time"> · {sess.time}</span>}
                       </span>
                     ))}
                   </div>
+                ) : (
+                  group.scheduleSubjects.length > 0 && (
+                    <div className="sdo-schedule-subjects">
+                      {group.scheduleSubjects.map((sub) => (
+                        <span key={sub} className="sdo-subject-chip">
+                          {sub}
+                        </span>
+                      ))}
+                    </div>
+                  )
                 )}
               </div>
 
@@ -699,6 +719,7 @@ export function SemesterDayOrganizerModal({
                       <th>Code</th>
                       <th>Assessment Title</th>
                       <th>Subject &amp; Class</th>
+                      <th>Exam Time</th>
                       <th>Status</th>
                       <th>Exam Day</th>
                       <th className="sdo-col-toggle">Quick</th>
@@ -710,6 +731,7 @@ export function SemesterDayOrganizerModal({
                       const badge = STATUS_BADGE_MAP[eff];
                       const currentDayValue = resolveQuizExamDayKey(quiz) || UNSCHEDULED_DAY_KEY;
                       const isRowBusy = Boolean(busyQuizRowIds[quiz.id]);
+                      const timeInfo = resolveQuizExamTimeInfo(quiz, group.dayKey, scheduleEntries);
 
                       return (
                         <tr
@@ -738,6 +760,26 @@ export function SemesterDayOrganizerModal({
                               {quiz.targetClass && (
                                 <span className="sdo-class-pill">{quiz.targetClass}</span>
                               )}
+                            </div>
+                          </td>
+                          <td className="sdo-col-time">
+                            <div className="sdo-time-cell" title={timeInfo.tooltip}>
+                              <span
+                                className={`sdo-time-window ${
+                                  timeInfo.hasExplicitWindow
+                                    ? 'sdo-time-window--scheduled'
+                                    : 'sdo-time-window--open'
+                                }`}
+                              >
+                                {timeInfo.hasExplicitWindow ? '🕒 ' : ''}
+                                {timeInfo.windowLabel}
+                              </span>
+                              <div className="sdo-time-meta">
+                                <span className="sdo-duration-pill">{timeInfo.durationLabel}</span>
+                                {!timeInfo.hasExplicitWindow && timeInfo.timetableHint && (
+                                  <span className="sdo-timetable-hint">{timeInfo.timetableHint}</span>
+                                )}
+                              </div>
                             </div>
                           </td>
                           <td>

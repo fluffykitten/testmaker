@@ -40,6 +40,7 @@ const {
   formatExamDayDateLabel,
   extractScheduleDayPresets,
   groupQuizzesByExamDay,
+  resolveQuizExamTimeInfo,
   getWarmedQuizTimestamps,
   recordWarmedQuizCodes,
   clearWarmedQuizCodes,
@@ -100,7 +101,13 @@ check(
   'SDO-1d: extractScheduleDayPresets deduplicates schedule dates chronologically with aggregated subjects',
   presets.length > 0 &&
     presets[0].dayKey === '2026-11-23' &&
-    presets.some((p) => p.dayKey === '2026-12-01' && p.subjects.includes('Chemistry') && p.subjects.includes('English'))
+    presets.some((p) => p.dayKey === '2026-12-01' && p.subjects.includes('Chemistry') && p.subjects.includes('English')) &&
+    presets.some(
+      (p) =>
+        p.dayKey === '2026-12-01' &&
+        p.sessions.some((s) => s.subject === 'Chemistry' && s.time === '07.30 - 09.30') &&
+        p.sessions.some((s) => s.subject === 'English' && s.time === '10.00 - 12.00')
+    )
 );
 
 // ── 2. Grouping Across Subjects, Excluding Games & Numeric Code Sort ────────
@@ -114,7 +121,7 @@ function makeQuiz(id, code, subj, opts = {}) {
     totalMarks: 30,
     questionCount: 10,
     questionIds: [],
-    durationMinutes: 60,
+    durationMinutes: opts.durationMinutes ?? 60,
     isExamMode: true,
     securityEnabled: true,
     maxViolations: 3,
@@ -324,8 +331,31 @@ const modalSrc = fs.readFileSync(path.resolve('src/components/SemesterDayOrganiz
 const planExists = fs.existsSync(path.resolve('Plan/semester_day_organizer_plan.md'));
 
 const configModalSlice = qmSrc.slice(qmSrc.indexOf('isConfigModalOpen &&'));
+const modalCssSrc = fs.readFileSync(path.resolve('src/components/SemesterDayOrganizerModal.css'), 'utf8');
+
+const sameDayStart = new Date(2026, 10, 30, 7, 30).toISOString();
+const sameDayEnd = new Date(2026, 10, 30, 9, 30).toISOString();
+const scheduledTimeInfo = resolveQuizExamTimeInfo(
+  makeQuiz('t_sched', 'M-1', 'Mathematics', {
+    scheduledStartAt: sameDayStart,
+    scheduledEndAt: sameDayEnd,
+    durationMinutes: 120,
+  }),
+  '2026-11-30',
+  ICM_SEMESTER1_2026_2027_SCHEDULE
+);
+const manualDayTimeInfo = resolveQuizExamTimeInfo(
+  makeQuiz('t_manual', 'M-2', 'Mathematics', {
+    scheduledStartAt: null,
+    scheduledEndAt: null,
+    durationMinutes: 120,
+  }),
+  '2026-11-30',
+  ICM_SEMESTER1_2026_2027_SCHEDULE
+);
+
 check(
-  'SDO-5: QuizManagerPage wires SemesterDayOrganizerModal cleanly, bulk Activate stays in-place (null dayKey), and Move to Day allows moving to Unscheduled',
+  'SDO-5: QuizManagerPage wires SemesterDayOrganizerModal cleanly, Exam Time & wider layout render properly, and Move to Day allows moving to Unscheduled',
   planExists &&
     qmSrc.includes('SemesterDayOrganizerModal') &&
     qmSrc.includes('Semester Days') &&
@@ -337,7 +367,16 @@ check(
     modalSrc.includes('handleMoveQuizzesToDay(Array.from(selectedIds), bulkTargetDay, true)') &&
     modalSrc.includes('pauseQuizzesBatch') &&
     modalSrc.includes('assignQuizzesToExamDay') &&
-    modalSrc.includes('prewarmExamPaperCache')
+    modalSrc.includes('prewarmExamPaperCache') &&
+    modalSrc.includes('<th>Exam Time</th>') &&
+    modalSrc.includes('resolveQuizExamTimeInfo') &&
+    modalCssSrc.includes('max-width: 1280px') &&
+    scheduledTimeInfo.hasExplicitWindow === true &&
+    scheduledTimeInfo.windowLabel === '07:30 – 09:30' &&
+    scheduledTimeInfo.durationLabel === '120 min' &&
+    manualDayTimeInfo.hasExplicitWindow === false &&
+    manualDayTimeInfo.windowLabel === 'Open (No window)' &&
+    manualDayTimeInfo.timetableHint === 'Timetable: 07.30 - 09.30'
 );
 
 supabase.rpc = origRpc;
