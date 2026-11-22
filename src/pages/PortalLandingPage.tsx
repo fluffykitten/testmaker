@@ -335,6 +335,7 @@ export function PortalLandingPage({
   const [quizCodeInput, setQuizCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
 
   // Check Results Form State
   const [resultCodeInput, setResultCodeInput] = useState('');
@@ -490,20 +491,28 @@ export function PortalLandingPage({
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isJoining) return;
     const clean = quizCodeInput.trim().toUpperCase();
     if (!clean) {
       setCodeError('Please enter an Exam Code.');
       return;
     }
 
-    const check = await verifyTurnstileToken(turnstileToken, 'portal_join');
-    if (!check.success) {
-      setCodeError('Verification check failed. Please refresh and try again.');
-      return;
-    }
-
     setCodeError('');
-    onJoinQuiz(clean);
+    setIsJoining(true);
+    try {
+      const check = await verifyTurnstileToken(turnstileToken, 'portal_join');
+      if (!check.success) {
+        setCodeError('Verification check failed. Please refresh and try again.');
+        setIsJoining(false);
+        return;
+      }
+
+      onJoinQuiz(clean);
+    } catch {
+      setCodeError('Verification check failed. Please refresh and try again.');
+      setIsJoining(false);
+    }
   };
 
   const handleLookupResults = (e: React.FormEvent) => {
@@ -652,12 +661,21 @@ export function PortalLandingPage({
                   spellCheck="false"
                   autoFocus
                 />
-                <button type="submit" className="portal-code-submit">
-                  Start Exam
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
-                  </svg>
+                <button type="submit" className="portal-code-submit" disabled={isJoining}>
+                  {isJoining ? (
+                    <>
+                      <span className="portal-btn-spinner" aria-hidden="true" />
+                      Joining…
+                    </>
+                  ) : (
+                    <>
+                      Start Exam
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                      </svg>
+                    </>
+                  )}
                 </button>
               </div>
               {codeError && <span className="portal-error-msg">{codeError}</span>}

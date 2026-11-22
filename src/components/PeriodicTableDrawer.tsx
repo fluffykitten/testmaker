@@ -103,7 +103,7 @@ export const PeriodicTableDrawer: React.FC<PeriodicTableDrawerProps> = ({ isOpen
             >
               {isFullscreen ? '⤦ Restore' : '⛶ Fullscreen'}
             </button>
-            <button type="button" className="pt-close-btn" onClick={onClose} title="Close Reference Sheet (Esc)">
+            <button type="button" className="pt-close-btn" onClick={onClose} title="Close Reference Sheet">
               ✕
             </button>
           </div>

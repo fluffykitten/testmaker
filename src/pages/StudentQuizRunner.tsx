@@ -418,6 +418,8 @@ export function StudentQuizRunner({
 }: StudentQuizRunnerProps) {
   // Test Data State
   const [loading, setLoading] = useState(!initialQuestions);
+  const [loadingStage, setLoadingStage] = useState<'queuing' | 'fetching'>('fetching');
+  const [isSlowLoading, setIsSlowLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isQuizPaused, setIsQuizPaused] = useState<boolean>(false);
   const [scheduleBlockStatus, setScheduleBlockStatus] = useState<EffectiveQuizStatus | null>(null);
@@ -953,16 +955,22 @@ export function StudentQuizRunner({
       }
     };
 
+    let isCancelled = false;
+
     async function load() {
       setLoading(true);
       try {
         if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
+          setLoadingStage('queuing');
           const bootJitterMs = Math.floor(Math.random() * 6000);
           if (bootJitterMs > 50) {
             await new Promise((r) => setTimeout(r, bootJitterMs));
           }
         }
+        if (isCancelled) return;
+        setLoadingStage('fetching');
         const data = await resolveStudentQuiz(testIdOrCode!);
+        if (isCancelled) return;
         if (!data) {
           setError(`Quiz "${testIdOrCode}" not found. Please check your quiz code with your teacher.`);
           return;
@@ -1072,7 +1080,19 @@ export function StudentQuizRunner({
     }
 
     load();
+    return () => {
+      isCancelled = true;
+    };
   }, [testIdOrCode, initialQuestions, initialHeaderConfig]);
+
+  useEffect(() => {
+    if (!loading) {
+      setIsSlowLoading(false);
+      return;
+    }
+    const timer = setTimeout(() => setIsSlowLoading(true), 12000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   // ─── 1-Second Waiting Room Countdown Tick (only while waiting for scheduledStartAt) ──
   useEffect(() => {
@@ -4965,11 +4985,73 @@ export function StudentQuizRunner({
 
   // ─── Loading / Grading / Error Screens ─────────────────────────────────────
   if (loading && !(isSubmitted && completedSubmission)) {
+    const displayCode = (resolvedQuizCode || testIdOrCode || '').trim().toUpperCase();
+    const isQueuing = loadingStage === 'queuing';
     return (
-      <div className="student-quiz-loading-screen">
-        <div className="student-quiz-spinner" />
-        <h2>Loading Assessment…</h2>
-        <p>Fetching questions and formulas</p>
+      <div className="student-quiz-loading-screen" role="status" aria-live="polite">
+        <div className="sq-loading-card">
+          {displayCode && displayCode !== 'EXAM' && (
+            <div className="sq-loading-code-pill">
+              <span className="sq-loading-live-dot" aria-hidden="true" />
+              <span>Exam Code: {displayCode}</span>
+            </div>
+          )}
+
+          <div className="sq-loader-orbit" aria-hidden="true">
+            <div className="sq-loader-ring" />
+            <div className="sq-loader-pulse" />
+            <img
+              src="/favicon.svg"
+              alt="ICM"
+              className="sq-loader-lotus"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = DEFAULT_SCHOOL_LOGO;
+              }}
+            />
+          </div>
+
+          <h2 className="sq-loading-title">
+            {isQueuing ? 'Securing Exam Connection…' : 'Fetching Questions & Formulas…'}
+          </h2>
+          <p className="sq-loading-subtitle">
+            {isQueuing
+              ? 'Preparing your assessment seat cleanly across the school network.'
+              : 'Downloading questions, diagrams, and reference sheets.'}
+          </p>
+
+          <div className="sq-loading-bar" aria-hidden="true">
+            <div className="sq-loading-bar-fill" />
+          </div>
+
+          <div className="sq-loading-steps">
+            <span className={`sq-loading-step ${isQueuing ? 'is-active' : 'is-done'}`}>
+              {isQueuing ? '●' : '✓'} Securing connection
+            </span>
+            <span className="sq-loading-step-sep" aria-hidden="true">→</span>
+            <span className={`sq-loading-step ${!isQueuing ? 'is-active' : ''}`}>
+              {!isQueuing ? '●' : '○'} Fetching paper
+            </span>
+          </div>
+
+          <p className="sq-loading-hint">
+            Please keep this tab open and do not refresh.
+          </p>
+
+          {isSlowLoading && (
+            <div className="sq-loading-slow-box">
+              <span>Still connecting — heavy exam traffic can take a few extra seconds.</span>
+              {onExit && (
+                <button
+                  type="button"
+                  className="sq-loading-back-btn"
+                  onClick={onExit}
+                >
+                  ← Back to Portal
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -4989,9 +5071,11 @@ export function StudentQuizRunner({
     setLoading(true);
     try {
       if (isSupabaseConfigured() && !hasActiveTeacherSession()) {
+        setLoadingStage('queuing');
         const refreshJitterMs = 1000 + Math.floor(Math.random() * 5000);
         await new Promise((r) => setTimeout(r, refreshJitterMs));
       }
+      setLoadingStage('fetching');
       clearQuizMemoryCache(testIdOrCode);
       if (resolvedQuizCode) clearQuizMemoryCache(resolvedQuizCode);
       const refreshed = await resolveStudentQuiz(testIdOrCode);

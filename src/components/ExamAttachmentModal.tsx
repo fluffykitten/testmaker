@@ -222,7 +222,7 @@ export const ExamAttachmentModal: React.FC<ExamAttachmentModalProps> = ({
               type="button"
               className="exam-att-close-btn"
               onClick={onClose}
-              title="Close Reference Material (Esc)"
+              title="Close Reference Material"
             >
               ✕
             </button>

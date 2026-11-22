@@ -1822,8 +1822,220 @@
   border: 4px solid var(--color-border);
   border-top-color: var(--color-primary-500);
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  animation: sqSpin 0.75s linear infinite;
   margin-bottom: 20px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sqSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sqLoaderPulse {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.9;
+  }
+}
+
+@keyframes sqIndeterminateBar {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.sq-loading-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 28px 26px 24px;
+  border-radius: 20px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #e2e8f0);
+  box-shadow: 0 20px 45px -16px rgba(15, 23, 42, 0.16);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: sqFadeIn 0.25s ease-out;
+}
+
+.sq-loading-code-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  color: var(--color-primary-500, #2563eb);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 18px;
+}
+
+.sq-loading-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
+  animation: sqLoaderPulse 1.4s ease-in-out infinite;
+}
+
+.sq-loader-orbit {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.sq-loader-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3.5px solid var(--color-border, #e2e8f0);
+  border-top-color: var(--color-primary-500, #2563eb);
+  border-right-color: var(--color-primary-500, #2563eb);
+  animation: sqSpin 0.85s linear infinite;
+}
+
+.sq-loader-pulse {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.12);
+  animation: sqLoaderPulse 1.8s ease-in-out infinite;
+}
+
+.sq-loader-icon {
+  position: relative;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.sq-loader-lotus {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  display: block;
+  border-radius: 8px;
+}
+
+.sq-loading-title {
+  margin: 0 0 6px;
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+}
+
+.sq-loading-subtitle {
+  margin: 0 0 18px;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.sq-loading-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border, rgba(148, 163, 184, 0.25));
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.sq-loading-bar-fill {
+  width: 42%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-primary-500, #2563eb), #10b981);
+  animation: sqIndeterminateBar 1.35s ease-in-out infinite;
+}
+
+.sq-loading-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 12px;
+}
+
+.sq-loading-step {
+  opacity: 0.55;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+.sq-loading-step.is-active {
+  opacity: 1;
+  color: var(--color-primary-500, #2563eb);
+  font-weight: 700;
+}
+
+.sq-loading-step.is-done {
+  opacity: 0.95;
+  color: #16a34a;
+}
+
+.sq-loading-step-sep {
+  opacity: 0.45;
+}
+
+.sq-loading-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  opacity: 0.85;
+}
+
+.sq-loading-slow-box {
+  margin-top: 16px;
+  padding-top: 14px;
+  width: 100%;
+  border-top: 1px dashed var(--color-border, #e2e8f0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8rem;
+  color: #d97706;
+  animation: sqFadeIn 0.25s ease-out;
+}
+
+.sq-loading-back-btn {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sq-loading-back-btn:hover {
+  background: rgba(148, 163, 184, 0.12);
 }
 
 .error-icon {

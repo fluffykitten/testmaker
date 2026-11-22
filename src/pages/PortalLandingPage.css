@@ -364,8 +364,29 @@
   white-space: nowrap;
 }
 
-.portal-code-submit:hover {
+.portal-code-submit:hover:not(:disabled) {
   background: #50751e;
+}
+
+.portal-code-submit:disabled {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.portal-btn-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: portalSpin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes portalSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .portal-error-msg {

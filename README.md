@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.3`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.2-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.3-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -169,6 +169,14 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.3] — Animated Student Exam-Entry Loader, Lotus Orbital Emblem & Locked Tool Tooltip Cleanup
+- **Animated Exam Join & Fetch Loading Flow:**
+  - Added `@keyframes spin`, `@keyframes sqSpin`, `@keyframes sqLoaderPulse`, and `@keyframes sqIndeterminateBar` directly inside [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css) so student entry and grading spinners animate reliably without depending on teacher-only stylesheets.
+  - Upgraded [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) with `.sq-loading-card` featuring the ICM lotus flower emblem (`/favicon.svg` with `DEFAULT_SCHOOL_LOGO` fallback), orbital ring animation, exam code pill, indeterminate shimmer progress bar, live 2-stage transitions (**Securing connection** → **Fetching paper**), and a 12-second slow-network notice with a **← Back to Portal** escape button.
+  - Added `isJoining` state and `.portal-btn-spinner` (`"Joining…"`) to [`PortalLandingPage.tsx`](src/pages/PortalLandingPage.tsx) and [`PortalLandingPage.css`](src/pages/PortalLandingPage.css) so clicking **Start Exam** gives immediate visual feedback during Turnstile verification and prevents duplicate submits.
+- **Exam Tool Close-Button Tooltip Cleanup:**
+  - Removed misleading `(Esc)` shortcut hints from the close-button tooltips in [`PeriodicTableDrawer.tsx`](src/components/PeriodicTableDrawer.tsx) and [`ExamAttachmentModal.tsx`](src/components/ExamAttachmentModal.tsx) so candidates aren't prompted to press `Esc` in browsers where hardware keyboard lock is unsupported.
 
 ### [v.2.7.2] — Fisika Subject Support, KaTeX Text-Mode Degree Fix, Exam Config Combobox & Semester Organizer Polish
 - **Indonesian Subject Support (`Fisika`), Arabic MCQ Reconciliation & Extraction Review Edit Sync:**
