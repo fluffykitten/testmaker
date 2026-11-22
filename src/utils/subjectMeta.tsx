@@ -63,6 +63,7 @@ export const SubjectIcon: React.FC<SubjectIconProps> = ({ subject, size = 24, cl
       );
 
     case 'physics':
+    case 'fisika':
       return (
         <svg
           width={size}

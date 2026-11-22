@@ -47,6 +47,17 @@ export const SUBJECT_REGISTRY: Record<string, SubjectMetadata> = {
     borderDark: 'rgba(2, 132, 199, 0.35)',
     description: 'Mechanics, wave properties, electromagnetism & quantum atomic physics',
   },
+  fisika: {
+    id: 'fisika',
+    name: 'Fisika',
+    code: 'FIS / NAT-ID',
+    color: '#0284c7',
+    bgLight: '#f0f9ff',
+    borderLight: '#bae6fd',
+    bgDark: 'rgba(2, 132, 199, 0.15)',
+    borderDark: 'rgba(2, 132, 199, 0.35)',
+    description: 'Mekanika, listrik statis, kalor & termodinamika, gelombang & fisika modern',
+  },
   biology: {
     id: 'biology',
     name: 'Biology',
@@ -172,6 +183,9 @@ export function getSubjectMetadata(rawSubject: string): SubjectMetadata {
   }
   if (lower.includes('chem')) {
     return SUBJECT_REGISTRY.chemistry;
+  }
+  if (lower.includes('fisika') || lower === 'fis') {
+    return SUBJECT_REGISTRY.fisika;
   }
   if (lower.includes('phys')) {
     return SUBJECT_REGISTRY.physics;

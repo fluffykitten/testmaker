@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { webcrypto } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { createClient } from '@supabase/supabase-js';
 
@@ -37,7 +38,7 @@ if (!SUPABASE_URL || !ANON_KEY) {
   process.exit(1);
 }
 
-// CLI flags: --students=170 (default 170, or 200), --sitting-sec=35 (default 35s compressed sitting)
+// CLI flags: --students=180 (default 180, i.e. 170+), --sitting-sec=45 (default 45s compressed 1-hour sitting)
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
     const clean = a.replace(/^--/, '');
@@ -46,9 +47,10 @@ const args = Object.fromEntries(
   })
 );
 
-const TOTAL_STUDENTS = Math.max(10, Math.min(300, Number(args.students || 170)));
-const SITTING_DURATION_MS = Math.max(15, Math.min(1200, Number(args['sitting-sec'] || 35))) * 1000;
+const TOTAL_STUDENTS = Math.max(10, Math.min(300, Number(args.students || 180)));
+const SITTING_DURATION_MS = Math.max(15, Math.min(1200, Number(args['sitting-sec'] || 45))) * 1000;
 const ENABLE_WEBSOCKETS = args['no-ws'] !== 'true';
+const APPROVE_DELETE = args['approve-delete'] === 'true';
 const RUN_TAG = Date.now().toString(36);
 const WRITE_QUIZ_CODE = 'STRESS200';
 const WRITE_QUIZ_ID = 'stress-realistic-exam-fixture';
@@ -263,7 +265,7 @@ function buildRealisticStudents(totalCount) {
     else if (i % 10 === 3) behavior = 'mid_exam_reload';
     else if (i % 7 === 0) behavior = 'violator_tab_blur';
 
-    const isEarlySubmitter = i % 10 < 3; // 30% submit slightly early, 70% hit simultaneous timer expiry
+    const isEarlySubmitter = i % 5 === 0; // 20% submit early near minute 50-55 while others still save drafts; 80% hit simultaneous hour-end expiry
     const slugClass = assigned.className
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
@@ -307,17 +309,52 @@ function buildRealisticStudents(totalCount) {
   return students;
 }
 
-// ─── Realistic Payload Builders (Full 12-Question Results + Forensics) ──────
+// ─── Realistic Payload Builders (Full 40-Question 1-Hour Sitting + Forensics) ─
+
+function buildNormalized40Questions(liveQuestions) {
+  const base = Array.isArray(liveQuestions) ? [...liveQuestions] : [];
+  if (base.length >= 40) return base.slice(0, 40);
+  const padded = [...base];
+  for (let idx = padded.length; idx < 40; idx++) {
+    const isStruct = idx >= 30;
+    const isMulti = idx >= 25 && idx < 30;
+    padded.push({
+      id: `sim_1hr_q_${idx + 1}`,
+      question_number: String(idx + 1),
+      question_text: isStruct
+        ? `Question ${idx + 1}: Analyze the experimental measurements recorded across a 60-minute assessment window and show all steps.`
+        : `Question ${idx + 1}: Which conclusion best aligns with the printed physical and textual evidence presented in the stimulus above?`,
+      options: isStruct
+        ? undefined
+        : [
+            'A. Option statement alpha with quantitative justification',
+            'B. Option statement beta with equilibrium shift',
+            'C. Option statement gamma with boundary conservation',
+            'D. Option statement delta with comparative interpretation',
+          ],
+      marks: isStruct ? 3 : 1,
+      topic: isStruct ? 'Structured Analysis & Problem Solving' : isMulti ? 'Multi-Statement Evaluation' : 'Core Assessment Concepts',
+      question_style: isStruct ? 'Structured' : isMulti ? 'Multiple Select' : 'Multiple Choice',
+      sub_questions: isStruct
+        ? [
+            { sub_id: '(a)', question_text: 'State the governing relationship and identify key variables.', marks: 1 },
+            { sub_id: '(b)', question_text: 'Calculate the resulting change and explain the physical significance.', marks: 2 },
+          ]
+        : [],
+    });
+  }
+  return padded;
+}
 
 function generateAnswerForQuestion(q, qIdx, studentIdx, editRound) {
   const style = q?.question_style || 'Multiple Choice';
   if (style === 'Multiple Select') {
-    return editRound % 2 === 0 ? 'A, C' : 'B, C';
+    return editRound % 2 === 0 ? 'A, C' : 'B, D';
   }
   if (Array.isArray(q?.sub_questions) && q.sub_questions.length > 0 && style !== 'Multiple Choice') {
     const obj = {};
     q.sub_questions.forEach((sq, sIdx) => {
-      obj[sIdx] = `Candidate #${studentIdx} round ${editRound} derivation for part (${sq.sub_id || sIdx + 1}): rate increases proportionally with concentration and effective collision frequency.`;
+      obj[sIdx] = `Candidate #${studentIdx} rev ${editRound} (${sq.sub_id || sIdx + 1}): energy conservation ΔU = Q - W governs the measured state change.`;
     });
     return obj;
   }
@@ -325,7 +362,7 @@ function generateAnswerForQuestion(q, qIdx, studentIdx, editRound) {
     const letters = ['A', 'B', 'C', 'D'];
     return letters[(studentIdx + qIdx + editRound) % letters.length];
   }
-  return `Detailed scientific explanation by student ${studentIdx} (rev ${editRound}): thermal energy is transferred to the surroundings, decreasing enthalpy.`;
+  return `Detailed candidate response #${studentIdx} (rev ${editRound}) covering step-by-step reasoning and unit checks.`;
 }
 
 function buildRealisticDraftPayload(student, currentIndex, timeLeftSeconds) {
@@ -339,10 +376,10 @@ function buildRealisticDraftPayload(student, currentIndex, timeLeftSeconds) {
     answers: student.answers,
     currentIndex,
     timeLeftSeconds,
-    startTime: Date.now() - (1200 - timeLeftSeconds) * 1000,
+    startTime: Date.now() - (3600 - timeLeftSeconds) * 1000,
     targetEndTime: Date.now() + timeLeftSeconds * 1000,
-    flaggedIndices: [2, 7],
-    audioProgress: { '/audio/pilot-english-listening.wav': { currentTime: 19.0, playedCount: 2 } },
+    flaggedIndices: [2, 14, 33],
+    audioProgress: { '/audio/pilot-english-listening.wav': { currentTime: 42.5, playedCount: 2 } },
     violations: student.violations,
     isLockedByProctor: false,
     lockReason: '',
@@ -357,22 +394,7 @@ function buildRealisticDraftPayload(student, currentIndex, timeLeftSeconds) {
 }
 
 function buildRealisticSubmissionRow(student) {
-  const qs = student.questions.length > 0 ? student.questions : Array.from({ length: 12 }, (_, idx) => ({
-    id: `fallback_q_${idx + 1}`,
-    question_number: String(idx + 1),
-    question_text: `Sample Cambridge IGCSE examination stem for Question ${idx + 1} with extended context and experimental data table.`,
-    options: ['Option A statement', 'Option B statement', 'Option C statement', 'Option D statement'],
-    marks: 2,
-    topic: 'Core Science & Quantitative Analysis',
-    question_style: idx === 4 || idx === 5 ? 'Structured' : 'Multiple Choice',
-    sub_questions:
-      idx === 4 || idx === 5
-        ? [
-          { sub_id: 'a', question_text: 'State the physical feature and calculate the gradient.', marks: 1 },
-          { sub_id: 'b', question_text: 'Explain two socioeconomic impacts on the surrounding valley.', marks: 2 },
-        ]
-        : [],
-  }));
+  const qs = buildNormalized40Questions(student.questions);
 
   const questionResults = [];
   const topicBreakdown = {};
@@ -381,7 +403,7 @@ function buildRealisticSubmissionRow(student) {
   let totalMarks = 0;
 
   qs.forEach((q, idx) => {
-    const qMarks = Number(q.marks || 2);
+    const qMarks = Number(q.marks || 1);
     totalMarks += qMarks;
     const top = q.topic || 'General';
     if (!topicBreakdown[top]) {
@@ -395,10 +417,10 @@ function buildRealisticSubmissionRow(student) {
     questionTimeAnalytics.push({
       questionIndex: idx,
       questionId: String(q.id || `q_${idx + 1}`),
-      totalDwellSeconds: 45 + ((student.index + idx * 7) % 90),
+      totalDwellSeconds: 50 + ((student.index * 11 + idx * 17) % 125),
       visitCount: 1 + (idx % 3),
-      firstVisitElapsedSeconds: idx * 55,
-      lastVisitElapsedSeconds: idx * 55 + 40,
+      firstVisitElapsedSeconds: idx * 80,
+      lastVisitElapsedSeconds: idx * 80 + 48,
     });
 
     const subResults = Array.isArray(q.sub_questions) && q.sub_questions.length > 0
@@ -449,15 +471,15 @@ function buildRealisticSubmissionRow(student) {
     id: student.submissionId,
     quiz_id: WRITE_QUIZ_ID,
     quiz_code: WRITE_QUIZ_CODE,
-    quiz_title: `Realistic 13-Exam Stress Simulation (${student.liveExamCode})`,
-    subject: 'Multi-Subject Pilot',
+    quiz_title: `Realistic 1-Hour Multi-Exam Simulation (${student.liveExamCode})`,
+    subject: 'Multi-Subject 40Q Pilot',
     student_name: student.studentName,
     student_class: student.studentClass,
     candidate_number: student.candidateNumber,
     submitted_at: new Date().toISOString(),
-    duration_seconds: 1120 + (student.index % 180),
+    duration_seconds: student.isEarlySubmitter ? 2950 + (student.index % 240) : 3540 + (student.index % 60),
     score: 0,
-    total_marks: totalMarks || 24,
+    total_marks: totalMarks || 60,
     percentage: 0,
     violations_count: student.violations.length,
     proctoring_logs: student.violations,
@@ -494,10 +516,13 @@ async function executeStudentBootMount(student, phaseLabel, paperCacheByCode) {
   const paperRes = await supaRpc('get_student_exam_paper', { p_code: student.liveExamCode });
 
   if (paperRes.status === 200 && Array.isArray(paperRes.data?.questions) && paperRes.data.questions.length > 0) {
-    student.questions = paperRes.data.questions;
-    paperCacheByCode.set(student.liveExamCode, paperRes.data.questions);
+    const padded = buildNormalized40Questions(paperRes.data.questions);
+    student.questions = padded;
+    paperCacheByCode.set(student.liveExamCode, padded);
   } else if (paperCacheByCode.has(student.liveExamCode)) {
     student.questions = paperCacheByCode.get(student.liveExamCode);
+  } else {
+    student.questions = buildNormalized40Questions([]);
   }
 
   const paperOk =
@@ -632,6 +657,108 @@ async function executeStudentBootAndLobby(student, phaseLabel, createdDrafts, pa
   await executeStudentClickBeginExam(student, phaseLabel, createdDrafts);
 }
 
+async function submitStudentAttemptWithRetries(student, phaseLabel, createdDrafts, submittedIds) {
+  if (student._ws?.subscribed) {
+    const nowIso = new Date().toISOString();
+    void student._ws.ch.send({
+      type: 'broadcast',
+      event: 'student_heartbeat',
+      payload: {
+        studentId: student.candidateNumber,
+        studentName: student.studentName,
+        candidateNumber: student.candidateNumber,
+        candidateClass: student.studentClass,
+        quizCode: student.liveExamCode,
+        status: 'submitted',
+        answeredCount: 40,
+        totalQuestions: 40,
+        currentIndex: 40,
+        timeLeftSeconds: 0,
+        violationsCount: student.violations.length,
+        lastHeartbeat: Date.now(),
+      },
+    });
+    void student._ws.ch.send({
+      type: 'broadcast',
+      event: 'proctor_log_event',
+      payload: {
+        id: `sub_evt_${RUN_TAG}_${student.studentId}`,
+        timestamp: nowIso,
+        studentId: student.candidateNumber,
+        studentName: student.studentName,
+        candidateNumber: student.candidateNumber,
+        candidateClass: student.studentClass,
+        heartbeatKey: student.draftOwnerToken,
+        quizCode: student.liveExamCode,
+        type: 'submitted',
+        detail: 'Exam submitted (40/40 answered)',
+        severity: 'info',
+      },
+    });
+  }
+
+  const row = buildRealisticSubmissionRow(student);
+  let accepted = false;
+  let attempts = 0;
+  let firstAttemptMs = 0;
+  let totalSubmitMs = 0;
+  let lastRes = null;
+  const subStart = performance.now();
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    attempts = attempt;
+    const res = await supaRpc('submit_student_exam_attempt', { p_row: row }, { timeoutMs: 25000 });
+    lastRes = res;
+    if (attempt === 1) firstAttemptMs = res.durationMs;
+
+    const ok = res.status === 200 && res.data === true;
+    recordEvent({
+      phase: phaseLabel,
+      cohort: student.behavior,
+      actorId: student.studentId,
+      examCode: student.liveExamCode,
+      action: `submit_attempt_${attempt}`,
+      target: 'rpc:submit_student_exam_attempt',
+      durationMs: res.durationMs,
+      httpStatus: res.status,
+      outcome: ok ? 'ok' : 'error',
+      payloadBytes: res.payloadBytes,
+      notes: ok ? `early=${student.isEarlySubmitter}` : res.errorText || String(res.data),
+    });
+
+    if (ok) {
+      accepted = true;
+      submittedIds.push(student.submissionId);
+      break;
+    }
+
+    if (res.status === 401 || res.status === 403 || /42501|another device/i.test(res.errorText)) {
+      break;
+    }
+
+    if (attempt < 3) {
+      const backoffMs = Math.round(1200 * Math.pow(1.8, attempt - 1) + Math.random() * 600);
+      await sleep(backoffMs);
+    }
+  }
+  totalSubmitMs = performance.now() - subStart;
+
+  if (accepted) {
+    createdDrafts.delete(student.draftKey);
+  }
+
+  return {
+    student,
+    accepted,
+    attempts,
+    firstAttemptMs,
+    totalSubmitMs,
+    draftCleared: accepted,
+    payloadBytes: lastRes?.payloadBytes || 0,
+    errorText: lastRes?.errorText || '',
+  };
+}
+
 // ─── Main Orchestrator ───────────────────────────────────────────────────────
 
 async function main() {
@@ -658,6 +785,7 @@ async function main() {
   // Authenticate teacher session if credentials provided
   if (TEACHER_SESSION_TOKEN) {
     teacherSessionHeader = { 'x-teacher-session': TEACHER_SESSION_TOKEN };
+    console.log('  🔐 Teacher Auth        : Using provided TEACHER_SESSION_TOKEN');
   } else if (TEACHER_LOGIN_ID && TEACHER_LOGIN_PASSWORD) {
     const authRes = await supaRpc('login_teacher_account', {
       p_identifier: TEACHER_LOGIN_ID,
@@ -665,8 +793,13 @@ async function main() {
     });
     if (authRes.status === 200 && authRes.data?.token) {
       teacherSessionHeader = { 'x-teacher-session': authRes.data.token };
+      const teacherName = authRes.data?.profile?.name || TEACHER_LOGIN_ID;
+      console.log(`  🔐 Teacher Auth        : Authenticated as "${teacherName}" (${authRes.durationMs.toFixed(1)}ms)`);
+    } else {
+      console.warn(`  ⚠️ Teacher Auth        : login_teacher_account failed (HTTP ${authRes.status}: ${authRes.data?.error || authRes.errorText || 'unknown error'})`);
     }
   }
+  console.log(`  🛡️ Delete Approval Gate: ${APPROVE_DELETE ? 'ENABLED (--approve-delete=true)' : 'SAFE MODE (NO automatic DB deletes)'}\n`);
 
   // ── Start Continuous 2-Second Supabase Health Probe ─────────────────────────
   const healthProbeLoop = (async () => {
@@ -715,6 +848,21 @@ async function main() {
   let resultsWatcherTriggers = 0;
   const teacherClients = [];
   const teacherMountPromises = [];
+  const proctorRoomChannels = new Map();
+  const proctorKeyId = `proctor_key_${RUN_TAG}`;
+  let proctorPublicJwk = null;
+
+  if (teacherSessionHeader) {
+    try {
+      const kp = await webcrypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify']
+      );
+      const jwk = await webcrypto.subtle.exportKey('jwk', kp.publicKey);
+      proctorPublicJwk = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y, ext: true };
+    } catch { }
+  }
 
   if (ENABLE_WEBSOCKETS) {
     console.log('👩‍🏫 Starting 3 Live Invigilator Cockpits (all 13 exam channels + cache pre-warm) + 2 Live Results Modal Watchers...');
@@ -728,7 +876,7 @@ async function main() {
         Promise.all([
           supaRest('app_config?select=value&key=eq.school_classes'),
           supaRest('app_config?select=value&key=eq.school_roster'),
-          supaRpc('is_authenticated_teacher', {}),
+          supaRpc('is_authenticated_teacher', {}, { extraHeaders: teacherSessionHeader || {} }),
         ]).then(([cRes, rRes, aRes]) => {
           recordEvent({
             phase: 'phase_0_teacher_mount',
@@ -751,7 +899,7 @@ async function main() {
           sleep(cIdx * 80).then(async () => {
             const warmRes = await supaRpc('get_student_exam_paper', { p_code: c.quizCode });
             if (warmRes.status === 200 && Array.isArray(warmRes.data?.questions) && warmRes.data.questions.length > 0) {
-              paperCacheByCode.set(c.quizCode, warmRes.data.questions);
+              paperCacheByCode.set(c.quizCode, buildNormalized40Questions(warmRes.data.questions));
             }
             recordEvent({
               phase: 'phase_0_teacher_mount',
@@ -765,6 +913,27 @@ async function main() {
               httpStatus: warmRes.status,
               outcome: warmRes.status === 200 ? 'ok' : 'error',
             });
+
+            if (teacherSessionHeader && proctorPublicJwk && APPROVE_DELETE && tIdx === 1 && cIdx === 0) {
+              const keyRes = await supaRpc(
+                'register_proctor_public_key',
+                { p_quiz_code: WRITE_QUIZ_CODE, p_key_id: proctorKeyId, p_public_jwk: proctorPublicJwk },
+                { extraHeaders: teacherSessionHeader }
+              );
+              recordEvent({
+                phase: 'phase_0_teacher_mount',
+                actorRole: 'invigilator',
+                cohort: 'teacher_cockpit',
+                actorId: `INVIG-${tIdx}`,
+                examCode: WRITE_QUIZ_CODE,
+                action: 'invigilator_register_proctor_key',
+                target: 'rpc:register_proctor_public_key',
+                durationMs: keyRes.durationMs,
+                httpStatus: keyRes.status,
+                outcome: keyRes.status === 200 && keyRes.data === true ? 'ok' : 'error',
+                notes: keyRes.errorText,
+              });
+            }
           })
         );
       });
@@ -777,55 +946,83 @@ async function main() {
         ch.on('broadcast', { event: 'student_heartbeat' }, () => {
           invigilatorHeartbeatsReceived++;
         });
-        ch.on('broadcast', { event: 'proctor_log' }, () => {
+        ch.on('broadcast', { event: 'proctor_log_event' }, () => {
           invigilatorLogsReceived++;
-          // Post-Step 2 LiveInvigilatorModal.tsx:682 calls recordProctorAuditEvent(..., { localOnly: true })
-          // so incoming WebSocket broadcasts do not trigger duplicate DB audit inserts.
+          // LiveInvigilatorModal calls recordProctorAuditEvent(..., { localOnly: true })
+          // so incoming WebSocket broadcasts never trigger duplicate DB audit inserts.
         });
         ch.subscribe();
+        proctorRoomChannels.set(c.quizCode, { ch, subscribed: true });
         activeSockets.push({ client: tClient, ch });
       }
     }
 
     // 2 QuizResultsModal Watchers subscribed to postgres_changes on quiz_submissions
+    // Mirrors QuizResultsModal.tsx:390-408: filters by quizCode & debounces refreshSubmissions by 2500ms
+    const watcherTimers = [];
     for (let rIdx = 1; rIdx <= 2; rIdx++) {
       const rClient = createClient(SUPABASE_URL, ANON_KEY);
       teacherClients.push(rClient);
+      let refreshTimer = null;
+      const timerEntry = { clear: () => { if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; } } };
+      watcherTimers.push(timerEntry);
       const ch = rClient
         .channel(`quiz_results_${WRITE_QUIZ_CODE}_${rIdx}_${Date.now()}`)
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'quiz_submissions' },
-          () => {
+          (payload) => {
+            const row = payload?.new || payload?.old;
+            if (row && row.quiz_code && String(row.quiz_code).toUpperCase() !== WRITE_QUIZ_CODE) {
+              return;
+            }
             resultsWatcherTriggers++;
-            // Mirrors QuizResultsModal.tsx:402 -> refreshSubmissions()
-            void supaRest(
-              `quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id,quiz_id,quiz_code,student_name,student_class,score,total_marks,status,submitted_at&order=submitted_at.desc&limit=250`,
-              { extraHeaders: teacherSessionHeader || {} }
-            ).then((res) => {
-              recordEvent({
-                phase: 'teacher_results_watcher',
-                actorRole: 'teacher_results',
-                cohort: 'results_modal',
-                actorId: `RESULTS-${rIdx}`,
-                examCode: WRITE_QUIZ_CODE,
-                action: 'results_modal_refresh_submissions',
-                target: 'table:quiz_submissions(select)',
-                durationMs: res.durationMs,
-                httpStatus: res.status,
-                outcome: res.status === 200 ? 'ok' : 'error',
-                notes: res.errorText,
+            if (refreshTimer) clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(() => {
+              refreshTimer = null;
+              void supaRest(
+                `quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id,quiz_id,quiz_code,student_name,student_class,score,total_marks,status,submitted_at&order=submitted_at.desc&limit=250`,
+                { extraHeaders: teacherSessionHeader || {} }
+              ).then((res) => {
+                recordEvent({
+                  phase: 'teacher_results_watcher',
+                  actorRole: 'teacher_results',
+                  cohort: 'results_modal',
+                  actorId: `RESULTS-${rIdx}`,
+                  examCode: WRITE_QUIZ_CODE,
+                  action: 'results_modal_refresh_submissions',
+                  target: 'table:quiz_submissions(select)',
+                  durationMs: res.durationMs,
+                  httpStatus: res.status,
+                  outcome: res.status === 200 ? 'ok' : 'error',
+                  notes: res.errorText,
+                });
               });
-            });
+            }, 2500);
           }
         )
         .subscribe();
-      activeSockets.push({ client: rClient, ch });
+      activeSockets.push({ client: rClient, ch, timerEntry });
     }
 
     // Wait for Phase 0 Invigilator Cockpits to mount & pre-warm caches before instructing students to open links
     await Promise.all(teacherMountPromises);
   }
+
+  let dbForensics = {
+    mode: SERVICE_ROLE_KEY ? 'service_role' : teacherSessionHeader ? 'teacher_session' : 'anon_rpc_sample',
+    persistedSubmissionCount: null,
+    totalStressSubmissionCount: null,
+    persistedAuditCount: null,
+    totalStressAuditCount: null,
+    orphanedAppConfigDraftKeys: null,
+    totalStressDraftKeys: null,
+    sampleAttemptChecksOk: 0,
+    sampleAttemptChecksTotal: 0,
+    sampleResultLookupsOk: 0,
+    sampleDraftOrphansFound: 0,
+    sampleProctorKeyLookupsOk: 0,
+  };
 
   try {
     // ══════════════════════════════════════════════════════════════════════════
@@ -842,7 +1039,7 @@ async function main() {
     );
     console.log(`   ✔ Phase 1A boot mount completed at ${((performance.now() - p1T0) / 1000).toFixed(2)}s (peakInFlight=${peakInFlightRequests})`);
 
-    console.log(`🌊 PHASE 1B: Students enter name, class & 4-digit PIN (2x debounced get_student_exam_draft probes)...`);
+    console.log(`🌊 PHASE 1B: Students enter name, class & 4-digit PIN (debounced get_student_exam_draft probe)...`);
     await Promise.all(
       students.map(async (student) => {
         await sleep(Math.floor(Math.random() * 600));
@@ -857,8 +1054,6 @@ async function main() {
         await sleep(Math.floor(Math.random() * 600));
         await executeStudentClickBeginExam(student, 'phase_1c_begin_exam', createdDrafts);
 
-        // Connect to a pooled Student WebSocket per exam room (`exam_proctor:ICM-1`..`ICM-13`) so
-        // 200 intra-process student sockets don't multiply inbound broadcast frame echoes 15x on one Node event loop.
         if (ENABLE_WEBSOCKETS) {
           let wsState = studentWsByExamCode.get(student.liveExamCode);
           if (!wsState) {
@@ -890,9 +1085,9 @@ async function main() {
               quizCode: student.liveExamCode,
               status: 'active',
               answeredCount: 0,
-              totalQuestions: 12,
+              totalQuestions: 40,
               currentIndex: 1,
-              timeLeftSeconds: 1200,
+              timeLeftSeconds: 3600,
               violationsCount: 0,
               lastHeartbeat: Date.now(),
             },
@@ -910,28 +1105,83 @@ async function main() {
     console.log(`   ✔ Phase 1 completed in ${(p1WallMs / 1000).toFixed(2)}s (inFlight=${inFlightRequests}, peakInFlight=${peakInFlightRequests})`);
 
     // ══════════════════════════════════════════════════════════════════════════
-    // PHASE 2: Active Multi-Exam Sitting (Overlapping WebSockets + Draft Saves +
-    //          Tab-Blur Keepalive Flushes + Proctor Violations + Mid-Exam Reloads)
+    // PHASE 2: Compressed 1-Hour Active Multi-Exam Sitting (6 x 10-Min Checkpoints)
+    //          40 Questions, ~48 Answer Logs, Tab-Blur Violations, Mid-Exam Reloads,
+    //          Invigilator Mid-Exam Broadcast Command, & 20% Early Finishers
     // ══════════════════════════════════════════════════════════════════════════
-    console.log(`\n🌊 PHASE 2: Running ${(SITTING_DURATION_MS / 1000).toFixed(0)}s active exam sitting across ICM-1..ICM-13...`);
+    console.log(`\n🌊 PHASE 2: Running ${(SITTING_DURATION_MS / 1000).toFixed(0)}s compressed 1-hour sitting (6 checkpoints, 40 Qs, ~45 KB payloads) across ICM-1..ICM-13...`);
     const p2T0 = performance.now();
+    const earlySubmitResults = [];
+    let midExamBroadcastTriggered = false;
+    const verifiedRoomKeyCodes = new Set();
 
     await Promise.all(
       students.map(async (student) => {
-        const numQuestions = student.questions.length || 12;
-        const rounds = 3;
+        const numQuestions = 40;
+        const rounds = 6;
         const intervalMs = Math.floor(SITTING_DURATION_MS / (rounds + 1));
 
         // Deterministic stratified offset + jitter mirroring StudentQuizRunner's 12..18s cloud draft debounce
         const stratifiedOffsetMs = Math.floor(((student.index - 1) / TOTAL_STUDENTS) * intervalMs);
-        await sleep(stratifiedOffsetMs + Math.floor(Math.random() * 2500));
+        await sleep(stratifiedOffsetMs + Math.floor(Math.random() * 1800));
 
         for (let r = 1; r <= rounds; r++) {
-          await sleep(intervalMs + Math.floor(Math.random() * 4500));
+          await sleep(intervalMs + Math.floor(Math.random() * 2500));
 
-          // Answer 4 questions per round & record realistic forensics
-          for (let qOffset = 0; qOffset < 4; qOffset++) {
-            const qIdx = ((r - 1) * 4 + qOffset) % numQuestions;
+          // At Round 3 (Minute 30), invigilators broadcast proctor_sync_request + add_time command
+          // and student rooms check get_proctor_public_key cleanly once per room
+          if (r === 3 && !midExamBroadcastTriggered && ENABLE_WEBSOCKETS) {
+            midExamBroadcastTriggered = true;
+            for (const c of LIVE_EXAM_COHORTS) {
+              const room = proctorRoomChannels.get(c.quizCode);
+              if (room?.ch) {
+                void room.ch.send({
+                  type: 'broadcast',
+                  event: 'proctor_sync_request',
+                  payload: { quizCode: c.quizCode, requestedAt: Date.now() },
+                });
+                void room.ch.send({
+                  type: 'broadcast',
+                  event: 'proctor_cmd',
+                  payload: {
+                    id: `cmd_${RUN_TAG}_${c.quizCode}`,
+                    type: 'announcement',
+                    targetStudentId: 'ALL',
+                    detail: 'Halfway mark (30 mins elapsed). Check your diagrams and calculations.',
+                    keyId: proctorKeyId,
+                    issuedAt: Date.now(),
+                  },
+                });
+              }
+            }
+          }
+
+          if (r === 3 && !verifiedRoomKeyCodes.has(student.liveExamCode)) {
+            verifiedRoomKeyCodes.add(student.liveExamCode);
+            const keyLookupRes = await supaRpc('get_proctor_public_key', {
+              p_quiz_code: student.liveExamCode,
+              p_key_id: proctorKeyId,
+            });
+            const lookupOk = keyLookupRes.status === 200 && keyLookupRes.data && typeof keyLookupRes.data === 'object';
+            if (lookupOk) dbForensics.sampleProctorKeyLookupsOk++;
+            recordEvent({
+              phase: 'phase_2_active_sitting',
+              cohort: student.behavior,
+              actorId: student.studentId,
+              examCode: student.liveExamCode,
+              action: 'get_proctor_public_key',
+              target: 'rpc:get_proctor_public_key',
+              durationMs: keyLookupRes.durationMs,
+              httpStatus: keyLookupRes.status,
+              outcome: lookupOk ? 'ok' : 'error',
+              notes: keyLookupRes.errorText,
+            });
+          }
+
+          // Answer/revise 7 questions per round across all 40 questions (42 changes by Round 6)
+          const qsPerRound = 7;
+          for (let qOffset = 0; qOffset < qsPerRound; qOffset++) {
+            const qIdx = ((r - 1) * qsPerRound + qOffset) % numQuestions;
             const qObj = student.questions[qIdx];
             const prevAns = student.answers[qIdx];
             const nextAns = generateAnswerForQuestion(qObj, qIdx, student.index, r);
@@ -942,12 +1192,15 @@ async function main() {
               previousAnswer: prevAns !== undefined ? prevAns : '',
               newAnswer: nextAns,
               timestamp: new Date().toISOString(),
-              elapsedExamSeconds: r * 180 + qOffset * 35,
-              timeSinceLastActionMs: 4200 + qOffset * 1100,
+              elapsedExamSeconds: r * 540 + qOffset * 45,
+              timeSinceLastActionMs: 3800 + qOffset * 900,
             });
           }
 
-          // Emit WebSocket heartbeat (guarded by subscribed state matching examProctorRealtimeService.ts)
+          const answeredNow = Object.keys(student.answers).length;
+          const timeLeftSec = Math.max(60, 3600 - r * 540);
+
+          // Emit WebSocket heartbeat
           if (student._ws?.subscribed) {
             void student._ws.ch.send({
               type: 'broadcast',
@@ -959,10 +1212,10 @@ async function main() {
                 candidateClass: student.studentClass,
                 quizCode: student.liveExamCode,
                 status: student.strikeCount > 0 ? 'warning' : 'active',
-                answeredCount: Object.keys(student.answers).length,
+                answeredCount: answeredNow,
                 totalQuestions: numQuestions,
-                currentIndex: Math.min(numQuestions, r * 4),
-                timeLeftSeconds: 1200 - r * 300,
+                currentIndex: Math.min(numQuestions, r * qsPerRound),
+                timeLeftSeconds: timeLeftSec,
                 violationsCount: student.violations.length,
                 strikeCount: student.strikeCount,
                 lastHeartbeat: Date.now(),
@@ -970,8 +1223,20 @@ async function main() {
             });
           }
 
-          // Debounced dirty-checked cloud draft sync (with realistic 15-30 KB payload)
-          const draftPayload = buildRealisticDraftPayload(student, Math.min(numQuestions - 1, r * 4 - 1), 1200 - r * 300);
+          // Early finishers (20% of hall) submit right near Round 6 while remaining 80% keep saving drafts
+          if (r === rounds && student.isEarlySubmitter) {
+            const res = await submitStudentAttemptWithRetries(
+              student,
+              'phase_2_early_submit',
+              createdDrafts,
+              submittedIds
+            );
+            earlySubmitResults.push(res);
+            continue;
+          }
+
+          // Debounced dirty-checked cloud draft sync (grows toward ~25-45 KB as 40 Qs fill in)
+          const draftPayload = buildRealisticDraftPayload(student, Math.min(numQuestions - 1, answeredNow - 1), timeLeftSec);
           const draftRes = await supaRpc('save_student_exam_draft', {
             p_key: student.draftKey,
             p_value: JSON.stringify(draftPayload),
@@ -991,13 +1256,13 @@ async function main() {
             notes: draftRes.errorText,
           });
 
-          // Cohort Behavior A: Tab-switch / Fullscreen-exit violators (15% of students, staggered across sitting rounds)
-          if (student.behavior === 'violator_tab_blur' && ((student.index % 2 === 0 && r <= 2) || (student.index % 2 === 1 && r >= 2))) {
-            await sleep(600 + Math.floor(Math.random() * 2400));
+          // Cohort Behavior A: Tab-switch / Fullscreen-exit violators (15% of students, Rounds 2 & 4)
+          if (student.behavior === 'violator_tab_blur' && ((student.index % 2 === 0 && (r === 2 || r === 4)) || (student.index % 2 === 1 && (r === 3 || r === 5)))) {
+            await sleep(500 + Math.floor(Math.random() * 1800));
             student.strikeCount += 1;
-            const vType = r === 1 ? 'tab_switch' : 'fullscreen_exit';
+            const vType = r <= 3 ? 'tab_switch' : 'fullscreen_exit';
             const vDetail =
-              r === 1
+              r <= 3
                 ? 'Tab visibility changed to hidden (Tier 1 Warning Lock)'
                 : 'Exited fullscreen exam shell (Tier 2 Penalty Lock)';
             const nowIso = new Date().toISOString();
@@ -1005,18 +1270,14 @@ async function main() {
               type: vType,
               timestamp: nowIso,
               detail: vDetail,
-              elapsedExamSeconds: r * 210,
+              elapsedExamSeconds: r * 540,
             });
 
-            // 1. visibilitychange ('hidden') immediately fires a keepalive save_student_exam_draft (StudentQuizRunner.tsx:3550)!
-            // 2. Student inserts into proctor_audit_events (StudentQuizRunner.tsx:1107)
-            // 3. Student broadcasts proctor_log over WebSocket
-            // 4. Invigilator enters Teacher Unlock PIN (`verify_teacher_unlock_pin` against real `student.liveExamCode`)
             const eventId = `evt_${RUN_TAG}_${student.studentId}_r${r}`;
             if (student._ws?.subscribed) {
               void student._ws.ch.send({
                 type: 'broadcast',
-                event: 'proctor_log',
+                event: 'proctor_log_event',
                 payload: {
                   id: eventId,
                   timestamp: nowIso,
@@ -1024,6 +1285,7 @@ async function main() {
                   studentName: student.studentName,
                   candidateNumber: student.candidateNumber,
                   candidateClass: student.studentClass,
+                  heartbeatKey: student.draftOwnerToken,
                   quizCode: student.liveExamCode,
                   type: vType,
                   detail: vDetail,
@@ -1035,7 +1297,7 @@ async function main() {
             const [keepaliveDraftRes, auditRes, unlockPinRes] = await Promise.all([
               supaRpc('save_student_exam_draft', {
                 p_key: student.draftKey,
-                p_value: JSON.stringify(buildRealisticDraftPayload(student, r * 3, 1180 - r * 300)),
+                p_value: JSON.stringify(buildRealisticDraftPayload(student, Math.min(39, r * 6), Math.max(60, timeLeftSec - 20))),
                 p_owner_token: student.draftOwnerToken,
               }),
               supaRest('proctor_audit_events', {
@@ -1099,8 +1361,8 @@ async function main() {
             });
           }
 
-          // Cohort Behavior B: Mid-exam browser refresh / Wi-Fi reconnect (10% of students in round 2)
-          if (student.behavior === 'mid_exam_reload' && r === 2) {
+          // Cohort Behavior B: Mid-exam browser refresh / Wi-Fi reconnect (10% of students in round 4)
+          if (student.behavior === 'mid_exam_reload' && r === 4) {
             await executeStudentBootAndLobby(student, 'phase_2_mid_exam_reload', createdDrafts, paperCacheByCode);
           }
         }
@@ -1108,135 +1370,125 @@ async function main() {
     );
 
     const p2WallMs = Number((performance.now() - p2T0).toFixed(1));
-    console.log(`   ✔ Phase 2 completed in ${(p2WallMs / 1000).toFixed(2)}s (inFlight=${inFlightRequests}, peakInFlight=${peakInFlightRequests})`);
+    console.log(`   ✔ Phase 2 completed in ${(p2WallMs / 1000).toFixed(2)}s (earlySubmitters=${earlySubmitResults.length}, peakInFlight=${peakInFlightRequests})`);
 
     // ══════════════════════════════════════════════════════════════════════════
-    // PHASE 3: Synchronized Hall Submission ("Everyone click Submit Exam Now!" /
-    //          Proctor Force-Submit — 0..800ms Human Reaction Window, Zero Timer
-    //          Jitter, Full 22 KB Payloads, WebSocket 'submitted' Broadcasts ->
-    //          Invigilator Duplicate Audit Storm + post-submit delete_draft)
+    // PHASE 3: End-of-Hour Timer-Expiry Submission Wave (Remaining ~80% of Hall)
     // ══════════════════════════════════════════════════════════════════════════
-    console.log(`\n🌊 PHASE 3: Proctor says "Everyone click Submit Exam Now!" (${TOTAL_STUDENTS} students click Submit in 0..800ms + 0..4500ms client upload jitter)...`);
+    const timerExpiryStudents = students.filter((s) => !s.isEarlySubmitter);
+    console.log(`\n🌊 PHASE 3: Hour-end timer expires ("Everyone click Submit Exam Now!" — ${timerExpiryStudents.length} remaining students submit in 0..800ms + 0..4500ms jitter)...`);
     const p3T0 = performance.now();
 
-    const submitResults = await Promise.all(
-      students.map(async (student) => {
-        // Human reaction window (0..800ms) + Exam Mode upload smoothing jitter (0..4500ms, StudentQuizRunner.tsx)
+    const waveSubmitResults = await Promise.all(
+      timerExpiryStudents.map(async (student) => {
         const submitDelayMs = Math.floor(Math.random() * 800) + Math.floor(Math.random() * 4500);
         await sleep(submitDelayMs);
-
-        // 1. Broadcast 'submitted' heartbeat + proctor_log over WebSocket (StudentQuizRunner.tsx:2544-2553)
-        if (student._ws?.subscribed) {
-          const nowIso = new Date().toISOString();
-          void student._ws.ch.send({
-            type: 'broadcast',
-            event: 'student_heartbeat',
-            payload: {
-              studentId: student.candidateNumber,
-              studentName: student.studentName,
-              candidateNumber: student.candidateNumber,
-              candidateClass: student.studentClass,
-              quizCode: student.liveExamCode,
-              status: 'submitted',
-              answeredCount: 12,
-              totalQuestions: 12,
-              currentIndex: 12,
-              timeLeftSeconds: 0,
-              violationsCount: student.violations.length,
-              lastHeartbeat: Date.now(),
-            },
-          });
-          void student._ws.ch.send({
-            type: 'broadcast',
-            event: 'proctor_log',
-            payload: {
-              id: `sub_evt_${RUN_TAG}_${student.studentId}`,
-              timestamp: nowIso,
-              studentId: student.candidateNumber,
-              studentName: student.studentName,
-              candidateNumber: student.candidateNumber,
-              candidateClass: student.studentClass,
-              quizCode: student.liveExamCode,
-              type: 'submitted',
-              detail: `Exam submitted (12/12 answered)`,
-              severity: 'info',
-            },
-          });
-        }
-
-        // 2. Submit full 12-question + forensics payload with 3-attempt verified retry loop (matching saveQuizSubmissionWithVerification)
-        const row = buildRealisticSubmissionRow(student);
-        let accepted = false;
-        let attempts = 0;
-        let firstAttemptMs = 0;
-        let totalSubmitMs = 0;
-        let lastRes = null;
-        const subStart = performance.now();
-
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          attempts = attempt;
-          const res = await supaRpc('submit_student_exam_attempt', { p_row: row }, { timeoutMs: 20000 });
-          lastRes = res;
-          if (attempt === 1) firstAttemptMs = res.durationMs;
-
-          const ok = res.status === 200 && res.data === true;
-          recordEvent({
-            phase: 'phase_3_submission_wave',
-            cohort: student.behavior,
-            actorId: student.studentId,
-            examCode: student.liveExamCode,
-            action: `submit_attempt_${attempt}`,
-            target: 'rpc:submit_student_exam_attempt',
-            durationMs: res.durationMs,
-            httpStatus: res.status,
-            outcome: ok ? 'ok' : 'error',
-            payloadBytes: res.payloadBytes,
-            notes: ok ? `early=${student.isEarlySubmitter}` : res.errorText || String(res.data),
-          });
-
-          if (ok) {
-            accepted = true;
-            submittedIds.push(student.submissionId);
-            break;
-          }
-
-          // Deterministic rejection check
-          if (res.status === 401 || res.status === 403 || /42501|another device/i.test(res.errorText)) {
-            break;
-          }
-
-          if (attempt < 3) {
-            const backoffMs = Math.round(1200 * Math.pow(1.8, attempt - 1) + Math.random() * 600);
-            await sleep(backoffMs);
-          }
-        }
-        totalSubmitMs = performance.now() - subStart;
-
-        // 3. Migration 036 deletes app_config + exam_draft_locks inline during submit_student_exam_attempt,
-        //    so StudentQuizRunner clears only local storage via clearExamDraft(..., { localOnly: true }).
-        let draftCleared = false;
-        if (accepted) {
-          draftCleared = true;
-          createdDrafts.delete(student.draftKey);
-        }
-
-        return {
-          student,
-          accepted,
-          attempts,
-          firstAttemptMs,
-          totalSubmitMs,
-          draftCleared,
-          payloadBytes: lastRes?.payloadBytes || 0,
-          errorText: lastRes?.errorText || '',
-        };
+        return submitStudentAttemptWithRetries(student, 'phase_3_submission_wave', createdDrafts, submittedIds);
       })
     );
 
+    const submitResults = [...earlySubmitResults, ...waveSubmitResults];
     const p3WallMs = Number((performance.now() - p3T0).toFixed(1));
     console.log(`   ✔ Phase 3 completed in ${(p3WallMs / 1000).toFixed(2)}s`);
 
-    // Allow trailing invigilator mirror audit writes to settle
+    // ══════════════════════════════════════════════════════════════════════════
+    // PHASE 3B: Post-Submit Student Verification & Pre-Cleanup DB Audit
+    // ══════════════════════════════════════════════════════════════════════════
+    console.log(`\n🔍 PHASE 3B: Verifying post-submit RPC state (30-student sample) & inline draft-lock cleanup in Supabase...`);
+    const sampleStudents = students.filter((_, idx) => idx % Math.max(1, Math.floor(students.length / 30)) === 0).slice(0, 30);
+    dbForensics.sampleAttemptChecksTotal = sampleStudents.length;
+
+    await Promise.all(
+      sampleStudents.map(async (student) => {
+        const [attemptVerifyRes, lookupVerifyRes, orphanDraftRes] = await Promise.all([
+          supaRpc('check_student_attempt_submitted', {
+            p_quiz_code: WRITE_QUIZ_CODE,
+            p_student_name: student.studentName,
+            p_student_class: student.studentClass,
+            p_student_number: student.candidateNumber,
+          }),
+          supaRpc('lookup_student_exam_result', {
+            p_quiz_code: WRITE_QUIZ_CODE,
+            p_student_query: student.studentName,
+            p_result_pin: '',
+          }),
+          supaRpc('get_student_exam_draft', {
+            p_key: student.draftKey,
+            p_owner_token: student.draftOwnerToken,
+          }),
+        ]);
+
+        const attemptOk = attemptVerifyRes.status === 200 && attemptVerifyRes.data?.submitted === true;
+        const lookupOk = lookupVerifyRes.status === 200 && lookupVerifyRes.data && typeof lookupVerifyRes.data === 'object';
+        const draftCleaned = orphanDraftRes.status === 200 && (orphanDraftRes.data === null || orphanDraftRes.data === '');
+        if (attemptOk) dbForensics.sampleAttemptChecksOk++;
+        if (lookupOk) dbForensics.sampleResultLookupsOk++;
+        if (!draftCleaned) dbForensics.sampleDraftOrphansFound++;
+
+        recordEvent({
+          phase: 'phase_3b_post_submit_audit',
+          cohort: student.behavior,
+          actorId: student.studentId,
+          examCode: WRITE_QUIZ_CODE,
+          action: 'post_submit_verify_attempt',
+          target: 'rpc:check_student_attempt_submitted',
+          durationMs: attemptVerifyRes.durationMs,
+          httpStatus: attemptVerifyRes.status,
+          outcome: attemptOk ? 'ok' : 'error',
+        });
+        recordEvent({
+          phase: 'phase_3b_post_submit_audit',
+          cohort: student.behavior,
+          actorId: student.studentId,
+          examCode: WRITE_QUIZ_CODE,
+          action: 'post_submit_lookup_result',
+          target: 'rpc:lookup_student_exam_result',
+          durationMs: lookupVerifyRes.durationMs,
+          httpStatus: lookupVerifyRes.status,
+          outcome: lookupOk ? 'ok' : 'error',
+        });
+        recordEvent({
+          phase: 'phase_3b_post_submit_audit',
+          cohort: student.behavior,
+          actorId: student.studentId,
+          examCode: WRITE_QUIZ_CODE,
+          action: 'post_submit_draft_orphan_probe',
+          target: 'rpc:get_student_exam_draft',
+          durationMs: orphanDraftRes.durationMs,
+          httpStatus: orphanDraftRes.status,
+          outcome: draftCleaned ? 'ok' : 'error',
+          notes: draftCleaned ? 'cleaned_inline' : 'orphan_remaining',
+        });
+      })
+    );
+
+    if (SERVICE_ROLE_KEY || teacherSessionHeader) {
+      const readAuth = SERVICE_ROLE_KEY
+        ? {
+            bearer: SERVICE_ROLE_KEY,
+            extraHeaders: { Authorization: `Bearer ${SERVICE_ROLE_KEY}`, apikey: SERVICE_ROLE_KEY },
+          }
+        : { extraHeaders: teacherSessionHeader };
+      const [subRowsRes, auditRowsRes, orphanCfgRes] = await Promise.all([
+        supaRest(`quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id,status&limit=5000`, readAuth),
+        supaRest(`proctor_audit_events?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id,event_type&limit=5000`, readAuth),
+        supaRest(`app_config?key=like.draft_stress200_%25&select=key&limit=5000`, readAuth),
+      ]);
+      if (subRowsRes.status === 200 && Array.isArray(subRowsRes.data)) {
+        dbForensics.totalStressSubmissionCount = subRowsRes.data.length;
+        dbForensics.persistedSubmissionCount = subRowsRes.data.filter((r) => String(r.id || '').includes(RUN_TAG)).length;
+      }
+      if (auditRowsRes.status === 200 && Array.isArray(auditRowsRes.data)) {
+        dbForensics.totalStressAuditCount = auditRowsRes.data.length;
+        dbForensics.persistedAuditCount = auditRowsRes.data.filter((r) => String(r.id || '').includes(RUN_TAG)).length;
+      }
+      if (orphanCfgRes.status === 200 && Array.isArray(orphanCfgRes.data)) {
+        dbForensics.totalStressDraftKeys = orphanCfgRes.data.length;
+        dbForensics.orphanedAppConfigDraftKeys = orphanCfgRes.data.filter((r) => String(r.key || '').includes(RUN_TAG)).length;
+      }
+    }
+
+    // Allow trailing Realtime/audit settles
     await sleep(1500);
     healthProbeRunning = false;
     await healthProbeLoop;
@@ -1259,6 +1511,7 @@ async function main() {
     const summary = {
       bootTeacherProfiles: countByAction('boot_teacher_profiles'),
       bootAppConfig: countByAction('load_'),
+      invigilatorKeyReg: countByAction('invigilator_register_proctor_key'),
       getPaper: countByAction('get_student_exam_paper'),
       rosterDir: countByAction('get_public_roster_directory'),
       lobbyDraftProbes: countByAction('lobby_typing_draft_probe'),
@@ -1270,9 +1523,12 @@ async function main() {
       studentAuditInserts: countByAction('student_violation_audit_insert'),
       invigilatorMirrorAudits: countByAction('invigilator_mirror_audit_insert'),
       unlockPinChecks: countByAction('verify_teacher_unlock_pin'),
+      proctorKeyLookup: countByAction('get_proctor_public_key'),
       submitAttempt1: countByAction('submit_attempt_1'),
       submitAllAttempts: countByAction('submit_attempt_'),
-      postSubmitClearDraft: countByAction('post_submit_clear_draft'),
+      postSubmitVerify: countByAction('post_submit_verify_attempt'),
+      postSubmitLookup: countByAction('post_submit_lookup_result'),
+      postSubmitOrphanProbe: countByAction('post_submit_draft_orphan_probe'),
     };
 
     const acceptedSubmissions = submitResults.filter((r) => r.accepted).length;
@@ -1287,6 +1543,15 @@ async function main() {
         1024
       ).toFixed(1)
     );
+    const totalPayloadMB = Number(
+      (allEvents.reduce((acc, e) => acc + (e.payloadBytes || 0), 0) / (1024 * 1024)).toFixed(2)
+    );
+
+    const statusCounts = {};
+    for (const e of allEvents) {
+      const k = String(e.httpStatus);
+      statusCounts[k] = (statusCounts[k] || 0) + 1;
+    }
 
     const total5xxOrTimeoutEvents = allEvents.filter((e) => e.httpStatus >= 500 || e.httpStatus === 0);
     const unhealthyProbeSamples = healthSamples.filter((h) => !h.healthy);
@@ -1299,19 +1564,19 @@ async function main() {
         id: 'SLO-1',
         name: 'Zero HTTP 544 / 5xx / Client Timeouts across all requests',
         target: '0 errors',
-        actual: `${total5xxOrTimeoutEvents.length} errors`,
+        actual: `${total5xxOrTimeoutEvents.length} errors across ${allEvents.length} requests`,
         passed: total5xxOrTimeoutEvents.length === 0,
       },
       {
         id: 'SLO-2',
-        name: '100% Final Exam Submission Delivery (within 3 retries)',
+        name: '100% Final Exam Submission Delivery (Early Finishers + Hour-End Wave)',
         target: `${TOTAL_STUDENTS}/${TOTAL_STUDENTS} (100%)`,
         actual: `${acceptedSubmissions}/${TOTAL_STUDENTS} (${((acceptedSubmissions / TOTAL_STUDENTS) * 100).toFixed(1)}%) — 1st try: ${firstTrySubmissions}, retried: ${retriedSubmissions}`,
         passed: acceptedSubmissions === TOTAL_STUDENTS,
       },
       {
         id: 'SLO-3',
-        name: 'Submission RPC Latency (p50 < 1,200 ms, p95 < 4,500 ms)',
+        name: '40-Question Submission RPC Latency (p50 < 1,200 ms, p95 < 4,500 ms)',
         target: 'p50 < 1200ms, p95 < 4500ms',
         actual: `p50=${summary.submitAllAttempts.stats.p50}ms, p95=${summary.submitAllAttempts.stats.p95}ms, max=${summary.submitAllAttempts.stats.max}ms (payload ~${avgSubmitPayloadKB} KB)`,
         passed:
@@ -1327,7 +1592,7 @@ async function main() {
       },
       {
         id: 'SLO-5',
-        name: 'Cloud Draft Autosave Latency & Reliability (100% ok, p95 < 1,500 ms)',
+        name: 'Cloud Draft Autosave Latency & Reliability across 6 Checkpoints (100% ok, p95 < 1,500 ms)',
         target: '100% ok, p95 < 1500ms',
         actual: `${summary.periodicDraftSave.ok}/${summary.periodicDraftSave.total} ok, p50=${summary.periodicDraftSave.stats.p50}ms, p95=${summary.periodicDraftSave.stats.p95}ms`,
         passed:
@@ -1341,20 +1606,32 @@ async function main() {
         actual: `${unhealthyProbeSamples.length}/${healthSamples.length} degraded ticks (rpc p95=${healthRpcStats.p95}ms, max=${healthRpcStats.max}ms; rest p95=${healthRestStats.p95}ms, max=${healthRestStats.max}ms)`,
         passed: unhealthyProbeSamples.length === 0,
       },
+      {
+        id: 'SLO-7',
+        name: 'Post-Submit Attempt Verification & Zero Orphaned Cloud Drafts (30-Student Sample)',
+        target: '30/30 verified, 0 orphans',
+        actual: `verified=${dbForensics.sampleAttemptChecksOk}/${dbForensics.sampleAttemptChecksTotal}, resultLookups=${dbForensics.sampleResultLookupsOk}/${dbForensics.sampleAttemptChecksTotal}, orphans=${dbForensics.sampleDraftOrphansFound}`,
+        passed:
+          dbForensics.sampleAttemptChecksOk === dbForensics.sampleAttemptChecksTotal &&
+          dbForensics.sampleResultLookupsOk === dbForensics.sampleAttemptChecksTotal &&
+          dbForensics.sampleDraftOrphansFound === 0,
+      },
     ];
 
     console.log(`\n══════════════════════════════════════════════════════════════════════════════════`);
-    console.log(`  REALISTIC STRESS TEST RESULTS & STRICT SLO VERDICT`);
+    console.log(`  REALISTIC 1-HOUR STRESS TEST RESULTS & STRICT SLO VERDICT`);
     console.log(`══════════════════════════════════════════════════════════════════════════════════`);
     for (const s of sloChecks) {
       console.log(`  ${s.passed ? '✅ PASS' : '❌ FAIL'} [${s.id}] ${s.name}`);
       console.log(`          Target: ${s.target} | Actual: ${s.actual}`);
     }
     console.log(`──────────────────────────────────────────────────────────────────────────────────`);
+    console.log(`  • Total HTTP Requests Logged              : ${allEvents.length} (${totalPayloadMB} MB payload written)`);
+    console.log(`  • HTTP Status Breakdown                   : ${JSON.stringify(statusCounts)}`);
     console.log(`  • Peak Concurrent In-Flight HTTP Requests : ${peakInFlightRequests}`);
-    console.log(`  • WebSocket Heartbeats Received by Proctor: ${invigilatorHeartbeatsReceived}`);
-    console.log(`  • Duplicate Invigilator Audit DB Writes   : ${invigilatorDuplicateAuditsSent}`);
-    console.log(`  • Post-Submit Draft Locks Cleaned Inline  : ${clearedDraftsOnSubmit}/${acceptedSubmissions}`);
+    console.log(`  • Avg 40-Question Submission Payload      : ${avgSubmitPayloadKB} KB`);
+    console.log(`  • WebSocket Heartbeats Received by Proctor: ${invigilatorHeartbeatsReceived} (logs=${invigilatorLogsReceived})`);
+    console.log(`  • Post-Submit Draft Locks Cleaned Inline  : ${clearedDraftsOnSubmit}/${acceptedSubmissions} (orphans=${dbForensics.sampleDraftOrphansFound})`);
     console.log(`══════════════════════════════════════════════════════════════════════════════════\n`);
 
     const reportMd = buildRealisticReportMarkdown({
@@ -1365,12 +1642,18 @@ async function main() {
       p2WallMs,
       p3WallMs,
       totalWallMs: Number((performance.now() - globalT0).toFixed(1)),
+      totalRequests: allEvents.length,
+      totalPayloadMB,
+      statusCounts,
       peakInFlightRequests,
       invigilatorHeartbeatsReceived,
       invigilatorLogsReceived,
       invigilatorDuplicateAuditsSent,
       resultsWatcherTriggers,
       avgSubmitPayloadKB,
+      earlySubmitCount: earlySubmitResults.length,
+      waveSubmitCount: waveSubmitResults.length,
+      dbForensics,
       summary,
       sloChecks,
       healthSamples,
@@ -1384,7 +1667,10 @@ async function main() {
   } finally {
     healthProbeRunning = false;
 
-    // Disconnect all WebSockets cleanly
+    // Disconnect all WebSockets cleanly & clear any pending watcher debounce timers
+    for (const sock of activeSockets) {
+      if (sock.timerEntry) sock.timerEntry.clear();
+    }
     if (activeSockets.length > 0) {
       console.log(`🧹 Disconnecting ${activeSockets.length} active Realtime WebSocket channels...`);
       await Promise.all(
@@ -1396,34 +1682,59 @@ async function main() {
       );
     }
 
-    // Clean up any leftover draft locks
+    // Clean up any leftover draft locks ONLY when --approve-delete=true is explicitly passed
     if (createdDrafts.size > 0) {
-      console.log(`🧹 Cleaning up ${createdDrafts.size} remaining temporary draft keys...`);
-      const entries = Array.from(createdDrafts.entries());
-      for (let i = 0; i < entries.length; i += 25) {
-        const chunk = entries.slice(i, i + 25);
-        await Promise.all(
-          chunk.map(([k, tok]) =>
-            supaRpc('delete_student_exam_draft', { p_key: k, p_owner_token: tok })
-          )
-        );
+      if (APPROVE_DELETE) {
+        console.log(`🧹 Cleaning up ${createdDrafts.size} remaining temporary draft keys...`);
+        const entries = Array.from(createdDrafts.entries());
+        for (let i = 0; i < entries.length; i += 25) {
+          const chunk = entries.slice(i, i + 25);
+          await Promise.all(
+            chunk.map(([k, tok]) =>
+              supaRpc('delete_student_exam_draft', { p_key: k, p_owner_token: tok })
+            )
+          );
+        }
+      } else {
+        console.log(`🛡️ Safe Mode: Skipping deletion of ${createdDrafts.size} remaining temporary draft keys (pass --approve-delete=true to clean up).`);
       }
     }
 
-    // Clean up STRESS200 submissions & audit rows if service role or teacher session available
+    // Clean up STRESS200 submissions & audit rows ONLY if --approve-delete=true is explicitly passed
     if (SERVICE_ROLE_KEY || teacherSessionHeader) {
-      const authOpts = SERVICE_ROLE_KEY
-        ? {
-          method: 'DELETE',
-          bearer: SERVICE_ROLE_KEY,
-          extraHeaders: { Authorization: `Bearer ${SERVICE_ROLE_KEY}`, apikey: SERVICE_ROLE_KEY },
-        }
-        : {
-          method: 'DELETE',
-          extraHeaders: teacherSessionHeader,
-        };
-      await supaRest(`quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}`, authOpts);
-      await supaRest(`proctor_audit_events?quiz_code=eq.${WRITE_QUIZ_CODE}`, authOpts);
+      if (APPROVE_DELETE) {
+        console.log(`🧹 Cleaning up ${WRITE_QUIZ_CODE} rows from quiz_submissions and proctor_audit_events (--approve-delete=true)...`);
+        const authOpts = SERVICE_ROLE_KEY
+          ? {
+            method: 'DELETE',
+            bearer: SERVICE_ROLE_KEY,
+            extraHeaders: { Authorization: `Bearer ${SERVICE_ROLE_KEY}`, apikey: SERVICE_ROLE_KEY },
+          }
+          : {
+            method: 'DELETE',
+            extraHeaders: teacherSessionHeader,
+          };
+        const [delSubRes, delAuditRes] = await Promise.all([
+          supaRest(`quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}`, authOpts),
+          supaRest(`proctor_audit_events?quiz_code=eq.${WRITE_QUIZ_CODE}`, authOpts),
+        ]);
+        const readHeaders = SERVICE_ROLE_KEY
+          ? { bearer: SERVICE_ROLE_KEY, extraHeaders: { Authorization: `Bearer ${SERVICE_ROLE_KEY}`, apikey: SERVICE_ROLE_KEY } }
+          : { extraHeaders: teacherSessionHeader };
+        const [remSubRes, remAuditRes] = await Promise.all([
+          supaRest(`quiz_submissions?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id&limit=10`, readHeaders),
+          supaRest(`proctor_audit_events?quiz_code=eq.${WRITE_QUIZ_CODE}&select=id&limit=10`, readHeaders),
+        ]);
+        const remSubs = Array.isArray(remSubRes.data) ? remSubRes.data.length : `err(${remSubRes.status})`;
+        const remAudits = Array.isArray(remAuditRes.data) ? remAuditRes.data.length : `err(${remAuditRes.status})`;
+        console.log(`   ✔ Cleanup result: quiz_submissions DELETE=${delSubRes.status} (remaining=${remSubs}), proctor_audit_events DELETE=${delAuditRes.status} (remaining=${remAudits})`);
+      } else {
+        console.log(`🛡️ Safe Mode: NO rows deleted from quiz_submissions or proctor_audit_events (pass --approve-delete=true after reviewing counts to remove synthetic ${WRITE_QUIZ_CODE} rows).`);
+      }
+    }
+
+    if (teacherSessionHeader && TEACHER_LOGIN_ID) {
+      await supaRpc('logout_teacher_session', {}, { extraHeaders: teacherSessionHeader }).catch(() => { });
     }
 
     eventStream.end();
@@ -1438,12 +1749,18 @@ function buildRealisticReportMarkdown({
   p2WallMs,
   p3WallMs,
   totalWallMs,
+  totalRequests,
+  totalPayloadMB,
+  statusCounts,
   peakInFlightRequests,
   invigilatorHeartbeatsReceived,
   invigilatorLogsReceived,
   invigilatorDuplicateAuditsSent,
   resultsWatcherTriggers,
   avgSubmitPayloadKB,
+  earlySubmitCount,
+  waveSubmitCount,
+  dbForensics,
   summary,
   sloChecks,
   healthSamples,
@@ -1452,14 +1769,16 @@ function buildRealisticReportMarkdown({
   const rowFmt = (label, item) =>
     `| **${label}** | ${item.total} | ${item.ok}/${item.total} | ${item.http544Or5xx} | ${item.stats.min} | ${item.stats.p50} | ${item.stats.p95} | ${item.stats.p99} | ${item.stats.max} |`;
 
-  return `# Realistic Multi-Exam Sitting Stress Test Report (\`ICM-1\`..\`ICM-13\`)
+  return `# Realistic 1-Hour Multi-Exam Sitting Stress Test Report (\`ICM-1\`..\`ICM-13\`)
 
 - **Run ID**: \`${runTag}\`
 - **Simulated Cohort**: **${totalStudents} Concurrent Students** distributed across **13 Live Exams (\`ICM-1\`..\`ICM-13\`)** + **3 Live Invigilator Cockpits** + **2 Live Results Watchers**
-- **Sitting Duration**: ${sittingSec}s active sitting window (${(totalWallMs / 1000).toFixed(1)}s total runtime)
-- **Peak Concurrent In-Flight HTTP Requests**: **${peakInFlightRequests}**
-- **Average Submission Payload Size**: **${avgSubmitPayloadKB} KB** (12 questions + sub-questions + full forensics)
-- **Realtime Proctor Telemetry**: ${invigilatorHeartbeatsReceived} heartbeats received, ${invigilatorLogsReceived} proctor log events received, **${invigilatorDuplicateAuditsSent} duplicate invigilator audit DB inserts triggered**, ${resultsWatcherTriggers} \`postgres_changes\` watcher triggers
+- **1-Hour Exam Model**: 40 questions per paper, 6 checkpoints (Minutes 10–60), **${earlySubmitCount} early finishers** submitting during active draft traffic + **${waveSubmitCount} simultaneous hour-end expiry submissions**
+- **Runtime**: ${sittingSec}s active sitting window (${(totalWallMs / 1000).toFixed(1)}s total runtime; Phase 1: ${(p1WallMs / 1000).toFixed(1)}s, Phase 2: ${(p2WallMs / 1000).toFixed(1)}s, Phase 3: ${(p3WallMs / 1000).toFixed(1)}s)
+- **HTTP Volume & Concurrency**: **${totalRequests} HTTP requests** (**${totalPayloadMB} MB** write payload, **${(totalRequests / Math.max(1, totalWallMs / 1000)).toFixed(1)} avg RPS**), **Peak Concurrent In-Flight Requests: ${peakInFlightRequests}**
+- **HTTP Status Distribution**: \`${JSON.stringify(statusCounts)}\`
+- **Average 40Q Submission Payload Size**: **${avgSubmitPayloadKB} KB** (40 questions + sub-questions + 42 answer change logs)
+- **Realtime Proctor Telemetry**: ${invigilatorHeartbeatsReceived} heartbeats received, ${invigilatorLogsReceived} \`proctor_log_event\` broadcasts received, **${invigilatorDuplicateAuditsSent} duplicate invigilator audit DB inserts**, ${resultsWatcherTriggers} \`postgres_changes\` triggers
 
 ---
 
@@ -1480,22 +1799,23 @@ ${sloChecks
 
 | Phase & Operation | Requests | Success | 5xx / Timeouts | Min (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Max (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-${rowFmt('Boot: `teacher_profiles` select (root provider)', summary.bootTeacherProfiles)}
-${rowFmt('Boot: `app_config` settings (4 keys/student)', summary.bootAppConfig)}
+${rowFmt('Phase 0: `register_proctor_public_key`', summary.invigilatorKeyReg)}
 ${rowFmt('Lobby: `get_student_exam_paper(ICM-1..13)`', summary.getPaper)}
 ${rowFmt('Lobby: `get_public_roster_directory`', summary.rosterDir)}
-${rowFmt('Lobby Typing: `get_student_exam_draft` (2x/student)', summary.lobbyDraftProbes)}
+${rowFmt('Lobby Typing: `get_student_exam_draft`', summary.lobbyDraftProbes)}
 ${rowFmt('Begin Exam: `verify_student_pin`', summary.verifyPinOnStart)}
 ${rowFmt('Begin Exam: `check_student_attempt_submitted`', summary.checkAttempt)}
 ${rowFmt('Begin Exam: Initial `save_student_exam_draft`', summary.initialDraftSave)}
-${rowFmt('Mid-Exam: Periodic `save_student_exam_draft` (~20 KB)', summary.periodicDraftSave)}
+${rowFmt('Mid-Exam: Periodic `save_student_exam_draft` (6 rounds)', summary.periodicDraftSave)}
 ${rowFmt('Mid-Exam: `visibilitychange` Keepalive Draft Flush', summary.keepaliveDraftFlush)}
 ${rowFmt('Mid-Exam: Student `proctor_audit_events` Insert', summary.studentAuditInserts)}
-${rowFmt('Mid-Exam: Invigilator Mirror `proctor_audit_events` Insert', summary.invigilatorMirrorAudits)}
 ${rowFmt('Mid-Exam: `verify_teacher_unlock_pin(ICM-1..13)`', summary.unlockPinChecks)}
+${rowFmt('Mid-Exam: `get_proctor_public_key` Room Verification', summary.proctorKeyLookup)}
 ${rowFmt('Submit Wave: `submit_student_exam_attempt` (Attempt 1)', summary.submitAttempt1)}
 ${rowFmt('Submit Wave: `submit_student_exam_attempt` (All Attempts)', summary.submitAllAttempts)}
-${rowFmt('Submit Wave: `delete_student_exam_draft` (Post-Submit)', summary.postSubmitClearDraft)}
+${rowFmt('Post-Submit: `check_student_attempt_submitted` Sample', summary.postSubmitVerify)}
+${rowFmt('Post-Submit: `lookup_student_exam_result` Sample', summary.postSubmitLookup)}
+${rowFmt('Post-Submit: `get_student_exam_draft` Orphan Probe', summary.postSubmitOrphanProbe)}
 
 ---
 
@@ -1510,8 +1830,21 @@ ${healthSamples
       )
       .join('\n')}
 
+---
+
+## 4. Supabase Server-Side State & Pre-Cleanup Database Forensics
+
+- **Verification Access Mode**: \`${dbForensics.mode}\`
+- **Post-Submit RPC Attempt Checks (30-student sample)**: **${dbForensics.sampleAttemptChecksOk}/${dbForensics.sampleAttemptChecksTotal}** confirmed \`submitted=true\`
+- **Post-Submit Result Lookups (30-student sample)**: **${dbForensics.sampleResultLookupsOk}/${dbForensics.sampleAttemptChecksTotal}** returned clean HTTP 200 JSON responses
+- **Inline Cloud Draft Cleanup Probe (30-student sample)**: **${dbForensics.sampleDraftOrphansFound}** orphaned draft keys left behind in Postgres \`app_config\`
+- **Privileged Table Row Counts (\`quiz_submissions\` / \`proctor_audit_events\` / \`app_config\`)**: ${
+    dbForensics.persistedSubmissionCount !== null
+      ? `this_run_submissions=${dbForensics.persistedSubmissionCount} (total_${WRITE_QUIZ_CODE}=${dbForensics.totalStressSubmissionCount}), this_run_audit_events=${dbForensics.persistedAuditCount} (total_${WRITE_QUIZ_CODE}=${dbForensics.totalStressAuditCount}), this_run_remaining_drafts=${dbForensics.orphanedAppConfigDraftKeys} (total_draft_stress200=${dbForensics.totalStressDraftKeys})`
+      : 'Skipped direct table SELECT (no `SUPABASE_SERVICE_ROLE_KEY` or `TEACHER_SESSION_TOKEN` in env — verified via scoped RPCs above).'
+  }
 ${failedSubmissions.length > 0
-      ? `\n---\n\n## 4. Failed Submission Samples (${failedSubmissions.length} total)\n\n` +
+      ? `\n---\n\n## 5. Failed Submission Samples (${failedSubmissions.length} total)\n\n` +
       failedSubmissions
         .slice(0, 15)
         .map(

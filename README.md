@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.1`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.2`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.1-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.2-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -169,6 +169,18 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.2] — Fisika Subject Support, KaTeX Text-Mode Degree Fix, Exam Config Combobox & Semester Organizer Polish
+- **Indonesian Subject Support (`Fisika`), Arabic MCQ Reconciliation & Extraction Review Edit Sync:**
+  - Added full **Fisika** (`FIS` / `FIS / NAT-ID`) subject support across [`subjectClassifier.ts`](src/lib/subjectClassifier.ts), [`subjectCatalog.ts`](src/utils/subjectCatalog.ts), [`subjectMeta.tsx`](src/utils/subjectMeta.tsx), [`questionDomainDetector.ts`](src/utils/questionDomainDetector.ts), [`settings.ts`](src/lib/settings.ts), [`TeacherProfileModal.tsx`](src/components/TeacherProfileModal.tsx), and [`TeacherProfileChip.tsx`](src/components/TeacherProfileChip.tsx).
+  - Fixed [`ExtractionReview.tsx`](src/components/ExtractionReview.tsx) and [`UploadPage.tsx`](src/pages/UploadPage.tsx) paper metadata edit synchronization so post-extraction header/question edits persist cleanly without resetting, and included Arabic MCQ mark-scheme key reconciliation and visual PNG chunking improvements (`b448c7e`).
+- **KaTeX Degree-in-`\text{...}` Parsing Fix:**
+  - Extracted shared [`src/lib/latexUtils.ts`](src/lib/latexUtils.ts) (`normalizeLatexString`) wired through [`ExamMathText.tsx`](src/components/ExamMathText.tsx) and [`pdfExportService.ts`](src/services/pdfExportService.ts) so degree symbols inside `\text{...}` / `\mbox{...}` (such as `$1\text{ kal/g°C}$`) stay literal `°C` / `°F` / `°` in text mode instead of emitting `^\circ` parse errors in KaTeX.
+- **Quiz Manager Exam Configuration Modal & Semester Day Organizer Fixes:**
+  - Redesigned the Configure Exam Settings modal in [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx) and [`QuizManagerPage.css`](src/pages/QuizManagerPage.css) with compact spacing, a sticky save footer, default-open Target Classes & Session Schedule sections, and searchable/subject-filtered [`SourceTestCombobox.tsx`](src/components/SourceTestCombobox.tsx) + [`sourceTestPickerUtils.ts`](src/lib/sourceTestPickerUtils.ts).
+  - Fixed [`SemesterDayOrganizerModal.tsx`](src/components/SemesterDayOrganizerModal.tsx) so bulk **▶ Activate & Warm** activates selected exams in place without altering `examDay`, and fixed the `hasInitializedBulkTarget` guard so **Move to Day** cleanly supports moving exams back to **Unscheduled**.
+- **Live 180-Student Multi-Exam Stress Test & Verification:**
+  - Upgraded [`scripts/stress-test-realistic-exam-sitting.mjs`](scripts/stress-test-realistic-exam-sitting.mjs) with a default Safe Mode delete gate (`--approve-delete=true`) and debounced `QuizResultsModal` realtime watcher parity, passing **7/7 SLOs** (`0` errors across `2,466` requests, `180/180` first-try submissions, `p95=193 ms`) across active `ICM-1`..`ICM-13` ([`Plan/realistic_stress_test_report.md`](Plan/realistic_stress_test_report.md)).
 
 ### [v.2.7.1] — Visual Arabic PDF Extraction, CMap Corruption Bypass & PAI/Arabic Auto-Detection
 - **Lossless High-DPI Visual Page Routing for Arabic-Containing PDFs:**

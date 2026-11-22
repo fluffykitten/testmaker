@@ -3,7 +3,9 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { stripPassageControlTags } from '../lib/readingPassageUtils';
 import { normalizeExtractedArabicText } from '../lib/arabicTextUtils';
+import { normalizeLatexString } from '../lib/latexUtils';
 import { hasArabicCharacters, isDominantlyArabicText } from '../services/deterministicGradingService';
+export { normalizeLatexString };
 import './ExamMathText.css';
 
 interface ExamMathTextProps {
@@ -295,42 +297,6 @@ export function ensureInlineMathDelimiters(text: string): string {
 
   // Always restore currency symbols before returning so external callers (Gemini, HTML export) get clean strings
   return restoreCurrencySymbols(transformedParts.join(''));
-}
-
-export function normalizeLatexString(raw: string): string {
-  if (!raw) return '';
-  return raw
-    // LaTeX spacing commands: \, \: \; \! \ ~
-    .replace(/\\,/g, ' ')
-    .replace(/\\:/g, ' ')
-    .replace(/\\;/g, ' ')
-    .replace(/\\!/g, '')
-    .replace(/\\ /g, ' ')
-    .replace(/~/g, ' ')
-    // Comprehensive Temperature formats for KaTeX math mode: ensure KaTeX-compatible ^\circ rather than literal °
-    .replace(/\\(degreeC|celsius)\b/g, '^\\circ\\text{C}')
-    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '^\\circ\\text{C}')
-    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '^\\circ\\text{C}')
-    .replace(/\\degree\s*C\b/gi, '^\\circ\\text{C}')
-    .replace(/\^\{\\circ\s*C\}/gi, '^\\circ\\text{C}')
-    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '^\\circ\\text{C}')
-    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '^\\circ\\text{F}')
-    .replace(/\\degree\b/g, '^\\circ')
-    .replace(/°\s*C\b|°C/g, '^\\circ\\text{C}')
-    .replace(/°\s*F\b|°F/g, '^\\circ\\text{F}')
-    .replace(/°/g, '^\\circ')
-    // Clean ext artifacts inside LaTeX strings
-    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
-    .replace(/\bext\{([^{}]+)\}/g, '$1')
-    // Normalize malformed isotope notation like _^{40}_{20}W or _^{40} or _{20}^{40}W -> {}^{40}_{20}W
-    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
-    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
-    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '{}^{$1}_{$2}')
-    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '{}^{$2}_{$1}')
-    .replace(/_\^\{([^{}]+)\}/g, '{}^{$1}')
-    .replace(/_\^([0-9a-zA-Z]+)/g, '{}^{$1}')
-    .replace(/\\quad/g, ' \\quad ')
-    .replace(/\\qquad/g, ' \\qquad ');
 }
 
 const ARABIC_ISOLATION_RUN_RE =

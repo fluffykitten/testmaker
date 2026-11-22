@@ -96,6 +96,7 @@ export const SYLLABUS_REGISTRY: Record<string, SubjectProfile> = {
   '9093': { syllabusCode: '9093', subjectName: 'English Language (AS/A Level)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
   'IELTS': { syllabusCode: 'IELTS', subjectName: 'English (IELTS / CEFR)', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isIeltsCefr: true },
   'BI': { syllabusCode: 'BI', subjectName: 'Bahasa Indonesia', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
+  'FIS': { syllabusCode: 'FIS', subjectName: 'Fisika', domain: 'stem', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
   'PAI': { syllabusCode: 'PAI', subjectName: 'Pendidikan Agama Islam', domain: 'humanities', hasInsertByDefault: false, hasInPaperStimulus: false, isOptionalChoicePaper: false, isNonCambridge: true },
   'BAR': { syllabusCode: 'BAR', subjectName: 'Bahasa Arab', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false, isNonCambridge: true },
   'ARA': { syllabusCode: 'ARA', subjectName: 'Arabic', domain: 'languages', hasInsertByDefault: false, hasInPaperStimulus: true, isOptionalChoicePaper: false },
@@ -164,6 +165,17 @@ export function classifySubject(pageTexts: string[], hint?: { fileName?: string 
       paperCode,
       method: 'title',
       evidence: 'Bahasa Indonesia',
+    };
+  }
+
+  // Detect Indonesian Fisika (Physics) covers (e.g. PAS/SAS/PAT/TKA Mata Pelajaran: Fisika)
+  if (/\bFISIKA\b/i.test(haystack)) {
+    return {
+      profile: SYLLABUS_REGISTRY['FIS'],
+      syllabusCode: 'FIS',
+      paperCode,
+      method: 'title',
+      evidence: 'Fisika',
     };
   }
 

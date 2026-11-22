@@ -15,6 +15,7 @@ interface TeacherProfileModalProps {
 const KNOWN_SYLLABUS_CODES: Record<string, string> = {
   Chemistry: '0620',
   Physics: '0625',
+  Fisika: 'FIS',
   Biology: '0610',
   Mathematics: '0580',
   English: '0500',
@@ -29,7 +30,7 @@ const KNOWN_SYLLABUS_CODES: Record<string, string> = {
 function getSubjectIcon(subject: string): string {
   const s = (subject || '').toLowerCase();
   if (s.includes('chem')) return '🧪';
-  if (s.includes('phys')) return '⚡';
+  if (s.includes('phys') || s.includes('fisika')) return '⚡';
   if (s.includes('bio')) return '🧬';
   if (s.includes('math')) return '📐';
   if (s.includes('eng')) return '📖';

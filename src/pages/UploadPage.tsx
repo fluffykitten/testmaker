@@ -368,6 +368,106 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
     selectedFilesRef.current = { qpFile: null, msFile: null, insertFile: null };
   }, [diagramData]);
 
+  const handleReviewUpdateDiagram = useCallback((qNum: string, item: DiagramCropItem) => {
+    setDiagramData((prev) => {
+      const next = new Map(prev);
+      next.set(qNum, item);
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        diagramData: next,
+      };
+      scheduleDraftPersist(true);
+      return next;
+    });
+    setPreviewUrls((prev) => {
+      const next = new Map(prev);
+      next.set(qNum, item.localUrl);
+      return next;
+    });
+  }, [scheduleDraftPersist]);
+
+  const handleReviewRemoveDiagram = useCallback((key: string) => {
+    setDiagramData((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        diagramData: next,
+      };
+      scheduleDraftPersist(true);
+      return next;
+    });
+    setPreviewUrls((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, [scheduleDraftPersist]);
+
+  const handleReviewRenameDiagramKey = useCallback((oldKey: string, newKey: string) => {
+    if (!oldKey || !newKey || oldKey === newKey) return;
+    setDiagramData((prev) => {
+      const existingItem = prev.get(oldKey);
+      if (!existingItem) return prev;
+      const next = new Map(prev);
+      next.delete(oldKey);
+      next.set(newKey, existingItem);
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        diagramData: next,
+      };
+      scheduleDraftPersist(true);
+      return next;
+    });
+    setPreviewUrls((prev) => {
+      const existingUrl = prev.get(oldKey);
+      if (!existingUrl) return prev;
+      const next = new Map(prev);
+      next.delete(oldKey);
+      next.set(newKey, existingUrl);
+      return next;
+    });
+  }, [scheduleDraftPersist]);
+
+  const handleReviewUpdateQuestions = useCallback((updatedQuestions: ExtractedQuestion[]) => {
+    setExtractionResult((prev) => {
+      const base = prev || latestDraftRef.current.result;
+      if (!base) return prev;
+      const next = { ...base, questions: updatedQuestions };
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        result: next,
+      };
+      return next;
+    });
+    scheduleDraftPersist(false);
+  }, [scheduleDraftPersist]);
+
+  const handleReviewUpdateTags = useCallback((newTags: string) => {
+    setPendingTags(newTags);
+    latestDraftRef.current = {
+      ...latestDraftRef.current,
+      tags: newTags,
+    };
+    scheduleDraftPersist(true);
+  }, [scheduleDraftPersist]);
+
+  const handleReviewUpdateMetadata = useCallback((newMeta: ExtractionResult['paper_metadata']) => {
+    setExtractionResult((prev) => {
+      const base = prev || latestDraftRef.current.result;
+      if (!base) return prev;
+      const next = { ...base, paper_metadata: newMeta };
+      latestDraftRef.current = {
+        ...latestDraftRef.current,
+        result: next,
+      };
+      return next;
+    });
+    scheduleDraftPersist(true);
+  }, [scheduleDraftPersist]);
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
@@ -466,102 +566,16 @@ export function UploadPage({ onBuildTest }: UploadPageProps = {}) {
             insertFile={uploadedInsertFile || selectedFilesRef.current.insertFile}
             markSchemeBase64={effectiveMsBase64}
             hasOfficialMarkScheme={Boolean(effectiveMsBase64)}
-            onUpdateDiagram={(qNum, item) => {
-              setDiagramData((prev) => {
-                const next = new Map(prev);
-                next.set(qNum, item);
-                latestDraftRef.current = {
-                  ...latestDraftRef.current,
-                  diagramData: next,
-                };
-                scheduleDraftPersist(true);
-                return next;
-              });
-              setPreviewUrls((prev) => {
-                const next = new Map(prev);
-                next.set(qNum, item.localUrl);
-                return next;
-              });
-            }}
-            onRemoveDiagram={(key) => {
-              setDiagramData((prev) => {
-                if (!prev.has(key)) return prev;
-                const next = new Map(prev);
-                next.delete(key);
-                latestDraftRef.current = {
-                  ...latestDraftRef.current,
-                  diagramData: next,
-                };
-                scheduleDraftPersist(true);
-                return next;
-              });
-              setPreviewUrls((prev) => {
-                if (!prev.has(key)) return prev;
-                const next = new Map(prev);
-                next.delete(key);
-                return next;
-              });
-            }}
-            onRenameDiagramKey={(oldKey, newKey) => {
-              if (!oldKey || !newKey || oldKey === newKey) return;
-              setDiagramData((prev) => {
-                const existingItem = prev.get(oldKey);
-                if (!existingItem) return prev;
-                const next = new Map(prev);
-                next.delete(oldKey);
-                next.set(newKey, existingItem);
-                latestDraftRef.current = {
-                  ...latestDraftRef.current,
-                  diagramData: next,
-                };
-                scheduleDraftPersist(true);
-                return next;
-              });
-              setPreviewUrls((prev) => {
-                const existingUrl = prev.get(oldKey);
-                if (!existingUrl) return prev;
-                const next = new Map(prev);
-                next.delete(oldKey);
-                next.set(newKey, existingUrl);
-                return next;
-              });
-            }}
-            onUpdateQuestions={(updatedQuestions: ExtractedQuestion[]) => {
-              setExtractionResult((prev) => {
-                if (!prev) return prev;
-                const next = { ...prev, questions: updatedQuestions };
-                latestDraftRef.current = {
-                  ...latestDraftRef.current,
-                  result: next,
-                };
-                return next;
-              });
-              scheduleDraftPersist(false);
-            }}
+            onUpdateDiagram={handleReviewUpdateDiagram}
+            onRemoveDiagram={handleReviewRemoveDiagram}
+            onRenameDiagramKey={handleReviewRenameDiagramKey}
+            onUpdateQuestions={handleReviewUpdateQuestions}
             onConfirmSave={handleConfirmSave}
             onCancel={handleCancel}
             isSaving={isSaving}
             initialTags={pendingTags}
-            onUpdateTags={(newTags) => {
-              setPendingTags(newTags);
-              latestDraftRef.current = {
-                ...latestDraftRef.current,
-                tags: newTags,
-              };
-              scheduleDraftPersist(true);
-            }}
-            onUpdateMetadata={(newMeta) => {
-              setExtractionResult((prev) => {
-                if (!prev) return prev;
-                const next = { ...prev, paper_metadata: newMeta };
-                latestDraftRef.current = {
-                  ...latestDraftRef.current,
-                  result: next,
-                };
-                return next;
-              });
-              scheduleDraftPersist(true);
-            }}
+            onUpdateTags={handleReviewUpdateTags}
+            onUpdateMetadata={handleReviewUpdateMetadata}
           />
         )}
 

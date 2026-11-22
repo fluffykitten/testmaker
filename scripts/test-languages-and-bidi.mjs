@@ -511,6 +511,25 @@ function check(name, condition, detail = '') {
       prioritized.indexOf('gemini-2.5-flash') < prioritized.indexOf('gemini-3.1-flash-lite') &&
       prioritized.indexOf('gemini-2.5-pro') < prioritized.indexOf('gemini-3.1-flash-lite')
   );
+
+  // 14. Indonesian Fisika subject detection, catalog metadata, domain tools, and Cambridge 0625 non-regression
+  const { getSubjectMetadata } = await import('../src/utils/subjectCatalog.ts');
+  const { classifyExamFallbackDomain } = await import('../src/utils/questionDomainDetector.ts');
+  const fisikaMatch = classifySubject(['PENILAIAN AKHIR SEMESTER (PAS) MATA PELAJARAN: FISIKA — KELAS XII Soal Pilihan Ganda']);
+  const physics0625Match = classifySubject(['Cambridge IGCSE 0625/12 Physics']);
+  const fisikaMeta = getSubjectMetadata('Fisika');
+  const fisikaDomain = classifyExamFallbackDomain({ subject: 'Fisika', subjectCode: 'FIS' });
+  check(
+    'FISIKA-1: classifySubject, subjectCatalog & questionDomainDetector support Indonesian Fisika (FIS) while preserving 0625 Physics',
+    fisikaMatch?.syllabusCode === 'FIS' &&
+      fisikaMatch?.profile.subjectName === 'Fisika' &&
+      fisikaMatch?.profile.domain === 'stem' &&
+      fisikaMatch?.profile.isNonCambridge === true &&
+      fisikaMeta.id === 'fisika' &&
+      fisikaMeta.code === 'FIS / NAT-ID' &&
+      fisikaDomain === 'science' &&
+      physics0625Match?.syllabusCode === '0625'
+  );
 }
 
 console.log(`\nALL ${passed} LANGUAGES & ARABIC/INDONESIAN BIDI CHECKS PASSED`);

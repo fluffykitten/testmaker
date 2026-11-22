@@ -64,6 +64,7 @@ export const DEFAULT_CLASSES: string[] = [
 export const DEFAULT_SUBJECTS: string[] = [
   'Chemistry',
   'Physics',
+  'Fisika',
   'Biology',
   'Mathematics',
   'English',

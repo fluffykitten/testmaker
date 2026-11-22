@@ -10,7 +10,12 @@ import { getCambridgeCoverDetails, renderCambridgeCoverPageHtml, renderMcqAnswer
 import { parseMcqOption } from '../utils/mcqUtils';
 import { renderPeriodicTableHtml } from './periodicTableService';
 import { DEFAULT_SCHOOL_LOGO, DEFAULT_CAMBRIDGE_LOGO } from '../assets/logoConstants';
-import { autoFormatChemistryAndMath, protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
+import {
+  autoFormatChemistryAndMath,
+  protectCurrencySymbols,
+  restoreCurrencySymbols,
+} from '../components/ExamMathText';
+import { normalizeLatexString } from '../lib/latexUtils';
 import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
 import { isInsertResource, resolveQuestionResources } from '../utils/questionResourceHelper';
 import {
@@ -60,39 +65,6 @@ function sanitizeSvgForPrint(svg: string): string {
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .replace(/javascript\s*:/gi, '');
-}
-
-function normalizeLatexForPrint(raw: string): string {
-  if (!raw) return '';
-  return raw
-    .replace(/\\,/g, ' ')
-    .replace(/\\:/g, ' ')
-    .replace(/\\;/g, ' ')
-    .replace(/\\!/g, '')
-    .replace(/\\ /g, ' ')
-    .replace(/~/g, ' ')
-    // Comprehensive Temperature formats for KaTeX math mode: ensure KaTeX-compatible ^\circ rather than literal °
-    .replace(/\\(degreeC|celsius)\b/g, '^\\circ\\text{C}')
-    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '^\\circ\\text{C}')
-    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '^\\circ\\text{C}')
-    .replace(/\\degree\s*C\b/gi, '^\\circ\\text{C}')
-    .replace(/\^\{\\circ\s*C\}/gi, '^\\circ\\text{C}')
-    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '^\\circ\\text{C}')
-    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '^\\circ\\text{F}')
-    .replace(/\\degree\b/g, '^\\circ')
-    .replace(/°\s*C\b|°C/g, '^\\circ\\text{C}')
-    .replace(/°\s*F\b|°F/g, '^\\circ\\text{F}')
-    .replace(/°/g, '^\\circ')
-    .replace(/\bext([A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*)\b/g, '$1')
-    .replace(/\bext\{([^{}]+)\}/g, '$1')
-    .replace(/_?\^\{([^{}]+)\}_\{([^{}]+)\}/g, '{}^{$1}_{$2}')
-    .replace(/_\{([^{}]+)\}\^\{([^{}]+)\}/g, '{}^{$2}_{$1}')
-    .replace(/_?\^([0-9a-zA-Z]+)_([0-9a-zA-Z]+)/g, '{}^{$1}_{$2}')
-    .replace(/_([0-9a-zA-Z]+)\^([0-9a-zA-Z]+)/g, '{}^{$2}_{$1}')
-    .replace(/_\^\{([^{}]+)\}/g, '{}^{$1}')
-    .replace(/_\^([0-9a-zA-Z]+)/g, '{}^{$1}')
-    .replace(/\\quad/g, ' \\quad ')
-    .replace(/\\qquad/g, ' \\qquad ');
 }
 
 /**
@@ -235,7 +207,7 @@ export function formatLatexForHtml(text: string): string {
     // Block math: $$ ... $$
     if (token.startsWith('$$') && token.endsWith('$$') && token.length >= 4) {
       const rawMath = restoreCurrencySymbols(token.slice(2, -2).trim());
-      const math = normalizeLatexForPrint(rawMath).replace(/(?<!\\)%/g, '\\%');
+      const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
         const rendered = katex.renderToString(math, { ...KATEX_OPTIONS, displayMode: true });
         return `<div class="katex-display-wrap" style="text-align: center; margin: 8px 0; break-inside: avoid; page-break-inside: avoid;">${rendered}</div>`;
@@ -254,7 +226,7 @@ export function formatLatexForHtml(text: string): string {
         return formatPlainTextForPrint(rawMath);
       }
 
-      const math = normalizeLatexForPrint(rawMath).replace(/(?<!\\)%/g, '\\%');
+      const math = normalizeLatexString(rawMath).replace(/(?<!\\)%/g, '\\%');
       try {
         return katex.renderToString(math, { ...KATEX_OPTIONS, displayMode: false });
       } catch {

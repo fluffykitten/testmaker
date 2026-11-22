@@ -241,6 +241,69 @@ async function run() {
     'ES-4b: resolveStudentQuiz returns scheduleStatus="closed" and empty questions after scheduledEndAt'
   );
 
+  const {
+    getSavedTestSubject,
+    sortSavedTestsNewestFirst,
+    extractSavedTestSubjects,
+    filterSavedTests,
+  } = await import('../src/lib/sourceTestPickerUtils.ts');
+
+  const sampleSaved = [
+    {
+      id: 't1',
+      title: 'Old Biology Paper',
+      primarySubject: 'Biology',
+      question_ids: ['q1'],
+      total_marks: 40,
+      created_at: '2026-01-10T08:00:00Z',
+      updated_at: '2026-01-10T08:00:00Z',
+    },
+    {
+      id: 't2',
+      title: 'G12 Fisika Semester Exam',
+      primarySubject: 'Fisika',
+      topics: ['Termodinamika', 'Listrik Statis'],
+      question_ids: ['q1', 'q2'],
+      total_marks: 40,
+      created_at: '2026-11-20T08:00:00Z',
+      updated_at: '2026-11-21T08:00:00Z',
+    },
+    {
+      id: 't3',
+      title: 'Chemistry Mock',
+      header_config: { subject: 'Chemistry', subjectCode: '0620' },
+      question_ids: ['q3'],
+      total_marks: 30,
+      created_at: '2026-05-01T08:00:00Z',
+    },
+  ];
+
+  const sortedSaved = sortSavedTestsNewestFirst(sampleSaved);
+  const subjectsSaved = extractSavedTestSubjects(sortedSaved);
+  const filteredFisika = filterSavedTests(sortedSaved, 'termo', 'Fisika');
+  const filteredAll = filterSavedTests(sortedSaved, '0620', 'ALL');
+  const qmPageSrc = fs.readFileSync(path.resolve('src/pages/QuizManagerPage.tsx'), 'utf8');
+  const qmCssSrc = fs.readFileSync(path.resolve('src/pages/QuizManagerPage.css'), 'utf8');
+
+  assert(
+    sortedSaved[0].id === 't2' &&
+      sortedSaved[1].id === 't3' &&
+      sortedSaved[2].id === 't1' &&
+      getSavedTestSubject(sampleSaved[2]) === 'Chemistry' &&
+      subjectsSaved.join(',') === 'Biology,Chemistry,Fisika' &&
+      filteredFisika.length === 1 &&
+      filteredFisika[0].id === 't2' &&
+      filteredAll.length === 1 &&
+      filteredAll[0].id === 't3' &&
+      qmPageSrc.includes('<SourceTestCombobox') &&
+      qmPageSrc.includes('const [isTargetClassesOpen, setIsTargetClassesOpen] = useState(true);') &&
+      qmPageSrc.includes('const [isScheduleOpen, setIsScheduleOpen] = useState(true);') &&
+      qmPageSrc.includes('isGradeCurveOpen') &&
+      qmCssSrc.includes('overflow: hidden !important') &&
+      qmCssSrc.includes('position: sticky'),
+    'ES-5: SourceTestCombobox filtering/sorting & compact sticky-footer Exam Settings layout verified'
+  );
+
   console.log(`\nExam Schedule tests: ${passed} passed, ${failed} failed.`);
   process.exit(failed > 0 ? 1 : 0);
 }

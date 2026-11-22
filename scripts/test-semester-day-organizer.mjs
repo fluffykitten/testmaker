@@ -275,12 +275,23 @@ check(
 );
 
 upsertCalls = 0;
-const moveRes = await assignQuizzesToExamDay(['icm_1', 'icm_2'], '2026-12-02');
+const unschedRes = await assignQuizzesToExamDay(['icm_1'], null);
+const bulkActInPlaceRes = await activateExamDayQuizzes(['icm_1', 'makeup_1'], null);
+const movedFromUnschedRes = await assignQuizzesToExamDay(['icm_1'], '2026-12-03');
+const movedToDayRes = await assignQuizzesToExamDay(['icm_1', 'icm_2'], '2026-12-02');
 const clearRes = await assignQuizzesToExamDay(['icm_2'], null);
 check(
-  'SDO-3d: assignQuizzesToExamDay moves batches atomically and Unscheduled clears examDay + schedule bounds',
-  moveRes.ok &&
-    moveRes.quizzes.find((q) => q.id === 'icm_1')?.examDay === '2026-12-02' &&
+  'SDO-3d: activateExamDayQuizzes(ids, null) activates in-place (keeps Unscheduled unscheduled & Day-assigned on its Day), and Move to Day moves cleanly to Day & back to Unscheduled',
+  unschedRes.ok &&
+    bulkActInPlaceRes.batch.ok &&
+    bulkActInPlaceRes.batch.quizzes.find((q) => q.id === 'icm_1')?.isActive === true &&
+    bulkActInPlaceRes.batch.quizzes.find((q) => q.id === 'icm_1')?.examDay === null &&
+    bulkActInPlaceRes.batch.quizzes.find((q) => q.id === 'makeup_1')?.isActive === true &&
+    bulkActInPlaceRes.batch.quizzes.find((q) => q.id === 'makeup_1')?.examDay === '2026-11-30' &&
+    movedFromUnschedRes.ok &&
+    movedFromUnschedRes.quizzes.find((q) => q.id === 'icm_1')?.examDay === '2026-12-03' &&
+    movedToDayRes.ok &&
+    movedToDayRes.quizzes.find((q) => q.id === 'icm_1')?.examDay === '2026-12-02' &&
     clearRes.ok &&
     clearRes.quizzes.find((q) => q.id === 'icm_2')?.examDay === null &&
     clearRes.quizzes.find((q) => q.id === 'icm_2')?.scheduledStartAt === null
@@ -314,13 +325,16 @@ const planExists = fs.existsSync(path.resolve('Plan/semester_day_organizer_plan.
 
 const configModalSlice = qmSrc.slice(qmSrc.indexOf('isConfigModalOpen &&'));
 check(
-  'SDO-5: QuizManagerPage wires SemesterDayOrganizerModal & button while keeping Publish/Edit config modal unchanged',
+  'SDO-5: QuizManagerPage wires SemesterDayOrganizerModal cleanly, bulk Activate stays in-place (null dayKey), and Move to Day allows moving to Unscheduled',
   planExists &&
     qmSrc.includes('SemesterDayOrganizerModal') &&
     qmSrc.includes('Semester Days') &&
     qmSrc.includes('setIsDayOrganizerOpen(true)') &&
     !configModalSlice.includes('examDay') &&
     modalSrc.includes('activateExamDayQuizzes') &&
+    modalSrc.includes('activateExamDayQuizzes(ids, null)') &&
+    modalSrc.includes('hasInitializedBulkTarget') &&
+    modalSrc.includes('handleMoveQuizzesToDay(Array.from(selectedIds), bulkTargetDay, true)') &&
     modalSrc.includes('pauseQuizzesBatch') &&
     modalSrc.includes('assignQuizzesToExamDay') &&
     modalSrc.includes('prewarmExamPaperCache')

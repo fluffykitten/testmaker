@@ -22,6 +22,8 @@ if (!globalThis.window) {
 }
 
 const { formatLatexForHtml } = await import('../src/services/pdfExportService.ts');
+const { normalizeLatexString } = await import('../src/lib/latexUtils.ts');
+const katex = (await import('katex')).default;
 const { parseFormattedTextToDocxRuns } = await import('../src/services/docxExportService.ts');
 const examMathSrc = fs.readFileSync(path.resolve('src/components/ExamMathText.tsx'), 'utf8');
 const inlineGapSrc = fs.readFileSync(path.resolve('src/components/InlineGapText.tsx'), 'utf8');
@@ -305,6 +307,40 @@ check(
     /leadMatch/.test(inlineGapSrc) &&
     /stripPassageControlTags\(content,\s*true\)/.test(inlineGapSrc) &&
     /stripPassageControlTags\(.*,\s*true\)/.test(examMathSrc)
+);
+
+// Verify degree symbols inside \text{...} do not inject ^\circ in text mode
+const normUnit = normalizeLatexString('1\\text{ kal/g°C}');
+const healedUnit = normalizeLatexString('1\\text{ kal/g^\\circ\\text{C}}');
+const normMathTemp = normalizeLatexString('25°C + \\Delta T');
+const renderedPrintHtml = formatLatexForHtml('kalor jenis air $1\\text{ kal/g°C}$');
+let katexUnitOk = false;
+try {
+  katex.renderToString(normUnit, { throwOnError: true, strict: false });
+  katex.renderToString(healedUnit, { throwOnError: true, strict: false });
+  katex.renderToString(normMathTemp, { throwOnError: true, strict: false });
+  katexUnitOk = true;
+} catch {
+  katexUnitOk = false;
+}
+check(
+  'Step 4.5: normalizeLatexString preserves literal °C inside \\text{...}, heals malformed ^\\circ inside \\text{...}, and formats math-mode °C cleanly for KaTeX',
+  normUnit === '1\\text{ kal/g°C}' &&
+    healedUnit === '1\\text{ kal/g°C}' &&
+    normMathTemp === '25^\\circ\\text{C} + \\Delta T' &&
+    !renderedPrintHtml.includes('katex-error') &&
+    katexUnitOk
+);
+
+const extractionReviewSrc = fs.readFileSync(path.resolve('src/components/ExtractionReview.tsx'), 'utf8');
+const uploadPageSrc = fs.readFileSync(path.resolve('src/pages/UploadPage.tsx'), 'utf8');
+check(
+  'Step 4.6: ExtractionReview & UploadPage decouple question-edit persistence from paper_metadata draft state (prevents render loop & draft reset)',
+  /onUpdateQuestionsRef\.current\?\.\(questions\);\s*\}, \[questions\]\);/.test(extractionReviewSrc) &&
+    /if \(!isEditingMetadataRef\.current\)/.test(extractionReviewSrc) &&
+    /lastEmittedMetadataRef/.test(extractionReviewSrc) &&
+    /handleReviewUpdateMetadata = useCallback/.test(uploadPageSrc) &&
+    /handleReviewUpdateQuestions = useCallback/.test(uploadPageSrc)
 );
 
 console.log(`\nReading Passage & Editor Format summary: ${passed} passed, ${failed} failed.`);

@@ -32,6 +32,8 @@ import { ConfirmDeleteModal } from '../components/ConfirmDeleteModal';
 import { CandidateCardPrintModal } from '../components/CandidateCardPrintModal';
 import { SemesterDayOrganizerModal } from '../components/SemesterDayOrganizerModal';
 import { GradeThresholdEditor } from '../components/GradeThresholdEditor';
+import { SourceTestCombobox } from '../components/SourceTestCombobox';
+import { DEFAULT_GRADE_THRESHOLDS, GRADE_PRESETS } from '../utils/gradeThresholdUtils';
 import { getSavedSettings, getSchoolClasses, loadAndSyncSchoolClasses } from '../lib/settings';
 import {
   normalizeTargetClassKey,
@@ -179,6 +181,9 @@ export function QuizManagerPage({
   const [schoolClasses, setSchoolClasses] = useState<string[]>(() => getSchoolClasses());
   const [showCustomTargetClassInput, setShowCustomTargetClassInput] = useState(false);
   const [customTargetClassInput, setCustomTargetClassInput] = useState('');
+  const [isTargetClassesOpen, setIsTargetClassesOpen] = useState(true);
+  const [isScheduleOpen, setIsScheduleOpen] = useState(true);
+  const [isGradeCurveOpen, setIsGradeCurveOpen] = useState(false);
   const [offlineGradingData, setOfflineGradingData] = useState<{
     headerConfig: ExamHeaderConfig;
     questions: Question[];
@@ -193,6 +198,9 @@ export function QuizManagerPage({
     setAttachmentUploadError(null);
     setShowCustomTargetClassInput(false);
     setCustomTargetClassInput('');
+    setIsTargetClassesOpen(true);
+    setIsScheduleOpen(true);
+    setIsGradeCurveOpen(false);
   });
 
   // ─── 1. Load Data on Mount ──────────────────────────────────────────────────
@@ -476,6 +484,9 @@ export function QuizManagerPage({
     setOriginalQuizCode(null);
     setAttachmentUploadError(null);
     setActiveQuizDraft(draft);
+    setIsTargetClassesOpen(true);
+    setIsScheduleOpen(true);
+    setIsGradeCurveOpen(false);
     setIsConfigModalOpen(true);
   };
 
@@ -640,6 +651,9 @@ export function QuizManagerPage({
     });
     setSelectedSchedulePresetId('');
     setSelectedTestId(quiz.testId);
+    setIsTargetClassesOpen(true);
+    setIsScheduleOpen(true);
+    setIsGradeCurveOpen(false);
     setIsConfigModalOpen(true);
     setOpenMobileMenuId(null);
   };
@@ -720,6 +734,7 @@ export function QuizManagerPage({
     if (!isGame) {
       const schedCheck = validateExamScheduleWindow(nextStartAt, nextEndAt);
       if (!schedCheck.valid) {
+        setIsScheduleOpen(true);
         alert(schedCheck.error || 'Please fix the Session Schedule times before saving.');
         return;
       }
@@ -2368,23 +2383,17 @@ export function QuizManagerPage({
                     <h3 className="qm-studio-section-title">
                       <span>🏷️</span> Identification
                     </h3>
-                  {/* Select Saved Test */}
+                  {/* Select Saved Test (Searchable Combobox) */}
                   <div className="qm-form-group">
                     <label className="qm-form-label">Select Source Test from Saved Exams:</label>
-                    <select
-                      className="qm-form-select"
-                      value={selectedTestId || ''}
-                      onChange={(e) => handleSelectSavedTest(e.target.value)}
+                    <SourceTestCombobox
+                      savedTests={savedTests}
+                      selectedTestId={selectedTestId}
+                      onSelect={handleSelectSavedTest}
                       disabled={Boolean(originalQuizCode)}
-                    >
-                      {savedTests.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.title} ({t.primarySubject || t.header_config?.subject || 'General'} • {t.question_ids?.length || 0} questions • {t.total_marks} marks)
-                        </option>
-                      ))}
-                    </select>
+                    />
                     {originalQuizCode && (
-                      <span className="qm-form-hint" style={{ fontSize: '0.78rem' }}>
+                      <span className="qm-form-hint" style={{ fontSize: '0.76rem' }}>
                         Source test questions are locked to this quiz. To publish a different test, create a new interactive quiz.
                       </span>
                     )}
@@ -2450,17 +2459,17 @@ export function QuizManagerPage({
                           q.id !== activeQuizDraft.id &&
                           q.quizCode.trim().toUpperCase() === activeQuizDraft.quizCode.trim().toUpperCase()
                       ) ? (
-                      <span style={{ color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'block', marginTop: '6px' }}>
+                      <span style={{ color: '#ef4444', fontSize: '0.8rem', fontWeight: 600, display: 'block', marginTop: '4px' }}>
                         ⚠️ This Quiz Code is already in use by another quiz. Please choose a unique code.
                       </span>
                     ) : (
                       <span className="qm-form-hint">
-                        Students will use this exact code to join on the landing page.
+                        Students use this exact code to join on the landing page.
                       </span>
                     )}
                   </div>
 
-                  {/* Target Class Cohort */}
+                  {/* Target Class Cohort (Collapsible Accordion) */}
                   {(() => {
                     const selectedTargets = parseTargetClassList(activeQuizDraft.targetClass);
                     const selectedKeys = new Set(selectedTargets.map((c) => normalizeTargetClassKey(c)));
@@ -2468,6 +2477,12 @@ export function QuizManagerPage({
                       (c) => !schoolClasses.some((sc) => normalizeTargetClassKey(sc) === normalizeTargetClassKey(c))
                     );
                     const pillOptions = [...schoolClasses, ...extraCustomTargets];
+                    const classSummary =
+                      selectedTargets.length === 0
+                        ? 'All school classes & candidate names'
+                        : selectedTargets.length <= 3
+                          ? selectedTargets.join(', ')
+                          : `${selectedTargets.slice(0, 2).join(', ')} +${selectedTargets.length - 2} more`;
 
                     const handleAddCustomTargetClass = () => {
                       const trimmed = customTargetClassInput.trim();
@@ -2482,104 +2497,129 @@ export function QuizManagerPage({
                     };
 
                     return (
-                      <div className="qm-form-group">
-                        <div className="qm-target-classes-header">
-                          <label className="qm-form-label" style={{ marginBottom: 0 }}>
-                            Target Classes / Cohorts (Optional):
-                          </label>
-                          <div className="qm-target-classes-meta">
+                      <div className="qm-accordion-card">
+                        <button
+                          type="button"
+                          className="qm-accordion-trigger"
+                          onClick={() => setIsTargetClassesOpen((v) => !v)}
+                          aria-expanded={isTargetClassesOpen}
+                        >
+                          <div className="qm-accordion-left">
+                            <span className="qm-accordion-title">👥 Target Classes</span>
+                            <span className="qm-accordion-summary">{classSummary}</span>
+                          </div>
+                          <div className="qm-accordion-right">
                             <span
                               className={`qm-target-classes-badge ${
                                 selectedTargets.length > 0 ? 'qm-target-classes-badge--filtered' : ''
                               }`}
                             >
                               {selectedTargets.length === 0
-                                ? 'All Classes (Default)'
+                                ? 'All Classes'
                                 : `${selectedTargets.length} Selected`}
                             </span>
                             {selectedTargets.length > 0 && (
-                              <button
-                                type="button"
+                              <span
+                                role="button"
+                                tabIndex={0}
                                 className="qm-target-clear-btn"
-                                onClick={() =>
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setActiveQuizDraft({
                                     ...activeQuizDraft,
                                     targetClass: '',
-                                  })
-                                }
+                                  });
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setActiveQuizDraft({
+                                      ...activeQuizDraft,
+                                      targetClass: '',
+                                    });
+                                  }
+                                }}
                               >
-                                Clear (All)
-                              </button>
+                                Clear
+                              </span>
                             )}
+                            <span className="qm-accordion-chevron" aria-hidden="true">
+                              {isTargetClassesOpen ? '▴' : '▾'}
+                            </span>
                           </div>
-                        </div>
+                        </button>
 
-                        <div className="qm-cohort-pills" role="group" aria-label="Target classes">
-                          {pillOptions.map((cls) => {
-                            const active = selectedKeys.has(normalizeTargetClassKey(cls));
-                            return (
+                        {isTargetClassesOpen && (
+                          <div className="qm-accordion-body">
+                            <div className="qm-cohort-pills" role="group" aria-label="Target classes">
+                              {pillOptions.map((cls) => {
+                                const active = selectedKeys.has(normalizeTargetClassKey(cls));
+                                return (
+                                  <button
+                                    key={cls}
+                                    type="button"
+                                    className={`qm-cohort-pill ${active ? 'qm-cohort-pill--active' : ''}`}
+                                    onClick={() =>
+                                      setActiveQuizDraft({
+                                        ...activeQuizDraft,
+                                        targetClass: toggleTargetClassSelection(activeQuizDraft.targetClass, cls),
+                                      })
+                                    }
+                                  >
+                                    {active && <span>✓</span>}
+                                    <span>{cls}</span>
+                                  </button>
+                                );
+                              })}
                               <button
-                                key={cls}
                                 type="button"
-                                className={`qm-cohort-pill ${active ? 'qm-cohort-pill--active' : ''}`}
-                                onClick={() =>
-                                  setActiveQuizDraft({
-                                    ...activeQuizDraft,
-                                    targetClass: toggleTargetClassSelection(activeQuizDraft.targetClass, cls),
-                                  })
-                                }
+                                className="qm-cohort-pill qm-cohort-pill--add"
+                                onClick={() => setShowCustomTargetClassInput((v) => !v)}
                               >
-                                {active && <span>✓</span>}
-                                <span>{cls}</span>
+                                {showCustomTargetClassInput ? 'Cancel' : '+ Custom'}
                               </button>
-                            );
-                          })}
-                          <button
-                            type="button"
-                            className="qm-cohort-pill qm-cohort-pill--add"
-                            onClick={() => setShowCustomTargetClassInput((v) => !v)}
-                          >
-                            {showCustomTargetClassInput ? 'Cancel' : '+ Custom'}
-                          </button>
-                        </div>
+                            </div>
 
-                        {showCustomTargetClassInput && (
-                          <div className="qm-cohort-custom-row">
-                            <input
-                              type="text"
-                              className="qm-form-input"
-                              value={customTargetClassInput}
-                              onChange={(e) => setCustomTargetClassInput(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  handleAddCustomTargetClass();
-                                }
-                              }}
-                              placeholder="Enter ad-hoc class (e.g. 10-D, Olympians)..."
-                              autoFocus
-                            />
-                            <button
-                              type="button"
-                              className="qm-btn-secondary"
-                              onClick={handleAddCustomTargetClass}
-                              disabled={!customTargetClassInput.trim()}
-                            >
-                              Add
-                            </button>
+                            {showCustomTargetClassInput && (
+                              <div className="qm-cohort-custom-row">
+                                <input
+                                  type="text"
+                                  className="qm-form-input"
+                                  value={customTargetClassInput}
+                                  onChange={(e) => setCustomTargetClassInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleAddCustomTargetClass();
+                                    }
+                                  }}
+                                  placeholder="Enter ad-hoc class (e.g. 10-D, Olympians)..."
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  className="qm-btn-secondary"
+                                  onClick={handleAddCustomTargetClass}
+                                  disabled={!customTargetClassInput.trim()}
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            )}
+
+                            <span className="qm-form-hint">
+                              Leave all unselected to allow all school classes. Selecting classes filters dropdowns, autocomplete, and live proctoring.
+                            </span>
                           </div>
                         )}
-
-                        <span className="qm-form-hint">
-                          Leave all unselected to show all school classes and candidate names. Selecting classes filters the exam dropdown, candidate autocomplete, and live proctor.
-                        </span>
                       </div>
                     );
                   })()}
 
                   {/* Assessment Format (Formal Exam vs Quizizz Game) */}
                   {isQuizizzAllowed && (
-                    <div className="qm-form-group" style={{ marginTop: '8px' }}>
+                    <div className="qm-form-group" style={{ marginTop: '4px' }}>
                       <label className="qm-form-label">Assessment Format:</label>
                       <div className="qm-mode-selector-grid">
                         <div
@@ -2755,7 +2795,7 @@ export function QuizManagerPage({
                     </div>
                   ) : (
                     /* Formal Exam Mode Timing */
-                    <div className="qm-timing-panel">
+                    <div className="qm-timing-panel" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div className="qm-form-row">
                         <div className="qm-form-group" style={{ flex: 1 }}>
                           <label className="qm-form-label">Duration (Minutes):</label>
@@ -2772,7 +2812,7 @@ export function QuizManagerPage({
                             min={5}
                             max={300}
                           />
-                          <span className="qm-form-hint">Standard Cambridge papers: 45–120 mins.</span>
+                          <span className="qm-form-hint">Standard papers: 45–120 mins.</span>
                         </div>
 
                         <div className="qm-form-group" style={{ flex: 1 }}>
@@ -2790,13 +2830,13 @@ export function QuizManagerPage({
                             <option value="exam">🔒 Timed Exam (Strict Lockdown)</option>
                             <option value="practice">📖 Practice Mode (Flexible)</option>
                           </select>
-                          <span className="qm-form-hint">Practice mode allows flexible pauses and retry.</span>
+                          <span className="qm-form-hint">Practice allows flexible pauses &amp; retry.</span>
                         </div>
                       </div>
 
                       {/* Practice Mode Solution Release */}
                       {!activeQuizDraft.isExamMode && (
-                        <div className="qm-checkbox-row" style={{ marginTop: '16px' }}>
+                        <div className="qm-checkbox-row">
                           <label className="qm-checkbox-label">
                             <input
                               type="checkbox"
@@ -2813,127 +2853,168 @@ export function QuizManagerPage({
                         </div>
                       )}
 
-                      {/* Session Schedule (Active / Inactive Window) */}
-                      <div className="qm-schedule-panel">
-                        <div className="qm-schedule-header-row">
-                          <div>
-                            <strong className="qm-studio-card-title">🗓️ Session Schedule (Active / Inactive Window)</strong>
-                            <p className="qm-studio-card-sub">
-                              Optional automatic open &amp; entry-close times. Manual Pause always overrides the schedule.
-                            </p>
-                          </div>
-                          <span className="qm-schedule-tz-pill" title="Times entered below use this local timezone">
-                            🌐 {getLocalTimezoneLabel()}
-                          </span>
-                        </div>
+                      {/* Session Schedule Accordion */}
+                      {(() => {
+                        const hasSchedule = Boolean(
+                          activeQuizDraft.scheduledStartAt || activeQuizDraft.scheduledEndAt
+                        );
+                        const schedCheck = validateExamScheduleWindow(
+                          activeQuizDraft.scheduledStartAt,
+                          activeQuizDraft.scheduledEndAt
+                        );
+                        const schedSummary = hasSchedule
+                          ? formatScheduleWindowLabel(
+                              activeQuizDraft.scheduledStartAt,
+                              activeQuizDraft.scheduledEndAt
+                            ) || `Scheduled • ${getLocalTimezoneLabel()}`
+                          : `Immediate entry • ${getLocalTimezoneLabel()}`;
 
-                        {schoolScheduleEntries.length > 0 && (
-                          <div className="qm-form-group" style={{ marginBottom: '2px' }}>
-                            <label className="qm-form-label" htmlFor="qm-school-sched-preset">
-                              Pick from School Exam Schedule (Quick-Fill):
-                            </label>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              <select
-                                id="qm-school-sched-preset"
-                                className="qm-form-select"
-                                value={selectedSchedulePresetId}
-                                onChange={(e) => {
-                                  const presetId = e.target.value;
-                                  setSelectedSchedulePresetId(presetId);
-                                  const entry = schoolScheduleEntries.find((item) => item.id === presetId);
-                                  if (entry) {
-                                    const win = buildWindowFromSchoolScheduleEntry(
-                                      entry,
-                                      activeQuizDraft.durationMinutes || 60
-                                    );
-                                    setActiveQuizDraft({
-                                      ...activeQuizDraft,
-                                      scheduledStartAt: win.scheduledStartAt,
-                                      scheduledEndAt: win.scheduledEndAt,
-                                    });
-                                  }
-                                }}
-                              >
-                                <option value="">— Custom Date &amp; Time —</option>
-                                {schoolScheduleEntries.map((entry) => (
-                                  <option key={entry.id} value={entry.id}>
-                                    {entry.date} • {entry.time} — {entry.subject}
-                                    {entry.targetClass && entry.targetClass !== 'ALL' ? ` (${entry.targetClass})` : ''}
-                                  </option>
-                                ))}
-                              </select>
-                              {(activeQuizDraft.scheduledStartAt || activeQuizDraft.scheduledEndAt) && (
-                                <button
-                                  type="button"
-                                  className="qm-btn qm-btn-secondary"
-                                  style={{ whiteSpace: 'nowrap' }}
-                                  onClick={() => {
-                                    setSelectedSchedulePresetId('');
-                                    setActiveQuizDraft({
-                                      ...activeQuizDraft,
-                                      scheduledStartAt: null,
-                                      scheduledEndAt: null,
-                                    });
-                                  }}
-                                >
-                                  Clear
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
+                        return (
+                          <div className="qm-accordion-card">
+                            <button
+                              type="button"
+                              className="qm-accordion-trigger"
+                              onClick={() => setIsScheduleOpen((v) => !v)}
+                              aria-expanded={isScheduleOpen}
+                            >
+                              <div className="qm-accordion-left">
+                                <span className="qm-accordion-title">🗓️ Session Schedule</span>
+                                <span className="qm-accordion-summary">
+                                  {!schedCheck.valid ? '⚠️ Invalid window' : schedSummary}
+                                </span>
+                              </div>
+                              <div className="qm-accordion-right">
+                                {hasSchedule && (
+                                  <span className="qm-target-classes-badge qm-target-classes-badge--filtered">
+                                    Scheduled
+                                  </span>
+                                )}
+                                <span className="qm-accordion-chevron" aria-hidden="true">
+                                  {isScheduleOpen ? '▴' : '▾'}
+                                </span>
+                              </div>
+                            </button>
 
-                        <div className="qm-form-row">
-                          <div className="qm-form-group" style={{ flex: 1 }}>
-                            <label className="qm-form-label" htmlFor="qm-sched-start">
-                              Auto-Open At (Start Date &amp; Time):
-                            </label>
-                            <input
-                              id="qm-sched-start"
-                              type="datetime-local"
-                              className="qm-form-input"
-                              value={isoToLocalDateTimeInput(activeQuizDraft.scheduledStartAt)}
-                              onChange={(e) => {
-                                setSelectedSchedulePresetId('');
-                                setActiveQuizDraft({
-                                  ...activeQuizDraft,
-                                  scheduledStartAt: localDateTimeInputToIso(e.target.value),
-                                });
-                              }}
-                            />
-                            <span className="qm-form-hint">Leave blank to allow entry immediately when active.</span>
-                          </div>
+                            {isScheduleOpen && (
+                              <div className="qm-accordion-body">
+                                <div className="qm-schedule-header-row">
+                                  <p className="qm-studio-card-sub" style={{ margin: 0 }}>
+                                    Optional auto open &amp; entry-close times. Manual Pause always overrides.
+                                  </p>
+                                  <span className="qm-schedule-tz-pill" title="Times entered below use this local timezone">
+                                    🌐 {getLocalTimezoneLabel()}
+                                  </span>
+                                </div>
 
-                          <div className="qm-form-group" style={{ flex: 1 }}>
-                            <label className="qm-form-label" htmlFor="qm-sched-end">
-                              Close Entry At (End Date &amp; Time, Optional):
-                            </label>
-                            <input
-                              id="qm-sched-end"
-                              type="datetime-local"
-                              className="qm-form-input"
-                              value={isoToLocalDateTimeInput(activeQuizDraft.scheduledEndAt)}
-                              onChange={(e) => {
-                                setSelectedSchedulePresetId('');
-                                setActiveQuizDraft({
-                                  ...activeQuizDraft,
-                                  scheduledEndAt: localDateTimeInputToIso(e.target.value),
-                                });
-                              }}
-                            />
-                            <span className="qm-form-hint">Blocks new joins after this time; active candidates still finish.</span>
-                          </div>
-                        </div>
+                                {schoolScheduleEntries.length > 0 && (
+                                  <div className="qm-form-group" style={{ marginBottom: '2px' }}>
+                                    <label className="qm-form-label" htmlFor="qm-school-sched-preset">
+                                      Pick from School Exam Schedule (Quick-Fill):
+                                    </label>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                      <select
+                                        id="qm-school-sched-preset"
+                                        className="qm-form-select"
+                                        value={selectedSchedulePresetId}
+                                        onChange={(e) => {
+                                          const presetId = e.target.value;
+                                          setSelectedSchedulePresetId(presetId);
+                                          const entry = schoolScheduleEntries.find((item) => item.id === presetId);
+                                          if (entry) {
+                                            const win = buildWindowFromSchoolScheduleEntry(
+                                              entry,
+                                              activeQuizDraft.durationMinutes || 60
+                                            );
+                                            setActiveQuizDraft({
+                                              ...activeQuizDraft,
+                                              scheduledStartAt: win.scheduledStartAt,
+                                              scheduledEndAt: win.scheduledEndAt,
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        <option value="">— Custom Date &amp; Time —</option>
+                                        {schoolScheduleEntries.map((entry) => (
+                                          <option key={entry.id} value={entry.id}>
+                                            {entry.date} • {entry.time} — {entry.subject}
+                                            {entry.targetClass && entry.targetClass !== 'ALL' ? ` (${entry.targetClass})` : ''}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      {hasSchedule && (
+                                        <button
+                                          type="button"
+                                          className="qm-btn qm-btn-secondary"
+                                          style={{ whiteSpace: 'nowrap' }}
+                                          onClick={() => {
+                                            setSelectedSchedulePresetId('');
+                                            setActiveQuizDraft({
+                                              ...activeQuizDraft,
+                                              scheduledStartAt: null,
+                                              scheduledEndAt: null,
+                                            });
+                                          }}
+                                        >
+                                          Clear
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
 
-                        {!validateExamScheduleWindow(activeQuizDraft.scheduledStartAt, activeQuizDraft.scheduledEndAt).valid && (
-                          <div className="qm-schedule-error">
-                            ⚠️ {validateExamScheduleWindow(activeQuizDraft.scheduledStartAt, activeQuizDraft.scheduledEndAt).error}
+                                <div className="qm-form-row">
+                                  <div className="qm-form-group" style={{ flex: 1 }}>
+                                    <label className="qm-form-label" htmlFor="qm-sched-start">
+                                      Auto-Open At:
+                                    </label>
+                                    <input
+                                      id="qm-sched-start"
+                                      type="datetime-local"
+                                      className="qm-form-input"
+                                      value={isoToLocalDateTimeInput(activeQuizDraft.scheduledStartAt)}
+                                      onChange={(e) => {
+                                        setSelectedSchedulePresetId('');
+                                        setActiveQuizDraft({
+                                          ...activeQuizDraft,
+                                          scheduledStartAt: localDateTimeInputToIso(e.target.value),
+                                        });
+                                      }}
+                                    />
+                                  </div>
+
+                                  <div className="qm-form-group" style={{ flex: 1 }}>
+                                    <label className="qm-form-label" htmlFor="qm-sched-end">
+                                      Close Entry At (Optional):
+                                    </label>
+                                    <input
+                                      id="qm-sched-end"
+                                      type="datetime-local"
+                                      className="qm-form-input"
+                                      value={isoToLocalDateTimeInput(activeQuizDraft.scheduledEndAt)}
+                                      onChange={(e) => {
+                                        setSelectedSchedulePresetId('');
+                                        setActiveQuizDraft({
+                                          ...activeQuizDraft,
+                                          scheduledEndAt: localDateTimeInputToIso(e.target.value),
+                                        });
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+
+                                {!schedCheck.valid && (
+                                  <div className="qm-schedule-error">
+                                    ⚠️ {schedCheck.error}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
+                        );
+                      })()}
 
                       {/* Post-Exam Full Script PDF / Stem Review Policy (safe-by-default OFF) */}
-                      <div className="qm-checkbox-row" style={{ marginTop: '12px' }}>
+                      <div className="qm-checkbox-row" style={{ marginTop: '2px' }}>
                         <label className="qm-checkbox-label">
                           <input
                             type="checkbox"
@@ -2945,31 +3026,65 @@ export function QuizManagerPage({
                               })
                             }
                           />
-                          <span>Allow students to view &amp; download Full Script PDF (question text + marking breakdown) after results release</span>
+                          <span>Allow students to view &amp; download Full Script PDF after results release</span>
                         </label>
                       </div>
                     </div>
                   )}
                 </section>
 
-                {/* 3. Grade Boundaries & Curve (A* – U) */}
-                <section className="qm-studio-section">
-                  <h3 className="qm-studio-section-title">
-                    <span>📊</span> Grade Boundaries &amp; Curve (A* – U)
-                  </h3>
-                  <div className="qm-studio-card">
-                    <GradeThresholdEditor
-                      value={activeQuizDraft.gradeThresholds}
-                      onChange={(gradeThresholds) =>
-                        setActiveQuizDraft({
-                          ...activeQuizDraft,
-                          gradeThresholds,
-                        })
-                      }
-                      totalMarks={activeQuizDraft.totalMarks}
-                    />
-                  </div>
-                </section>
+                {/* 3. Grade Boundaries & Curve (Collapsible Accordion) */}
+                {(() => {
+                  const gThresh = activeQuizDraft.gradeThresholds || DEFAULT_GRADE_THRESHOLDS;
+                  const matchedPreset = GRADE_PRESETS.find(
+                    (p) =>
+                      p.thresholds.aStar === gThresh.aStar &&
+                      p.thresholds.a === gThresh.a &&
+                      p.thresholds.b === gThresh.b &&
+                      p.thresholds.c === gThresh.c &&
+                      p.thresholds.d === gThresh.d &&
+                      p.thresholds.e === gThresh.e
+                  );
+                  const curveSummary = matchedPreset
+                    ? `${matchedPreset.name} (A* ≥ ${gThresh.aStar}%)`
+                    : `Custom Curve (A* ≥ ${gThresh.aStar}% • D ≥ ${gThresh.d}%)`;
+
+                  return (
+                    <div className="qm-accordion-card">
+                      <button
+                        type="button"
+                        className="qm-accordion-trigger"
+                        onClick={() => setIsGradeCurveOpen((v) => !v)}
+                        aria-expanded={isGradeCurveOpen}
+                      >
+                        <div className="qm-accordion-left">
+                          <span className="qm-accordion-title">📊 Grade Boundaries (A* – U)</span>
+                          <span className="qm-accordion-summary">{curveSummary}</span>
+                        </div>
+                        <div className="qm-accordion-right">
+                          <span className="qm-accordion-chevron" aria-hidden="true">
+                            {isGradeCurveOpen ? '▴' : '▾'}
+                          </span>
+                        </div>
+                      </button>
+
+                      {isGradeCurveOpen && (
+                        <div className="qm-accordion-body">
+                          <GradeThresholdEditor
+                            value={activeQuizDraft.gradeThresholds}
+                            onChange={(gradeThresholds) =>
+                              setActiveQuizDraft({
+                                ...activeQuizDraft,
+                                gradeThresholds,
+                              })
+                            }
+                            totalMarks={activeQuizDraft.totalMarks}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* ═══ RIGHT COLUMN: Security (Top) + Tools + Attachments ══ */}
@@ -2983,7 +3098,7 @@ export function QuizManagerPage({
                     <div className="qm-studio-card-row">
                       <div>
                         <strong className="qm-studio-card-title">Browser Lockdown</strong>
-                        <p className="qm-studio-card-sub">Blocks tab switching and unauthorized applications</p>
+                        <p className="qm-studio-card-sub">Blocks tab switching and unauthorized apps</p>
                       </div>
                       <label className="qm-switch" title="Toggle browser lockdown">
                         <input
@@ -3005,7 +3120,7 @@ export function QuizManagerPage({
                     <div className="qm-studio-card-row">
                       <div>
                         <strong className="qm-studio-card-title">🪪 Require Personal Candidate PIN</strong>
-                        <p className="qm-studio-card-sub">Candidates must enter their 4-digit roster PIN before starting or resuming</p>
+                        <p className="qm-studio-card-sub">4-digit roster PIN before starting or resuming</p>
                       </div>
                       <label className="qm-switch" title="Toggle 4-digit Personal Candidate PIN verification">
                         <input
@@ -3024,12 +3139,12 @@ export function QuizManagerPage({
 
                     {activeQuizDraft.securityEnabled && (
                       <div className="qm-studio-security-sub">
-                        <div className="qm-studio-card-row">
+                        <div className="qm-studio-sec-mini-tile" title="Dynamic student ID overlay to prevent photo leaks">
                           <div>
                             <span className="qm-studio-sub-label">Candidate Watermark</span>
-                            <p className="qm-studio-card-sub">Dynamic student ID overlay to prevent photo leaks</p>
+                            <p className="qm-studio-card-sub">Student ID overlay</p>
                           </div>
-                          <label className="qm-switch" title="Toggle candidate watermark">
+                          <label className="qm-switch">
                             <input
                               type="checkbox"
                               checked={activeQuizDraft.enableWatermark ?? false}
@@ -3044,12 +3159,12 @@ export function QuizManagerPage({
                           </label>
                         </div>
 
-                        <div className="qm-studio-card-row">
+                        <div className="qm-studio-sec-mini-tile" title="Alerts invigilator if student has secondary displays">
                           <div>
-                            <span className="qm-studio-sub-label">Multi-Monitor Detection</span>
-                            <p className="qm-studio-card-sub">Alerts invigilator if student has secondary displays</p>
+                            <span className="qm-studio-sub-label">Multi-Monitor Alert</span>
+                            <p className="qm-studio-card-sub">Detect 2nd display</p>
                           </div>
-                          <label className="qm-switch" title="Toggle multi-monitor detection">
+                          <label className="qm-switch">
                             <input
                               type="checkbox"
                               checked={activeQuizDraft.enableMultiMonitorDetection ?? false}
@@ -3064,12 +3179,12 @@ export function QuizManagerPage({
                           </label>
                         </div>
 
-                        <div className="qm-studio-card-row">
+                        <div className="qm-studio-sec-mini-tile" title="Hides the mid-exam emergency save & exit button for students">
                           <div>
-                            <span className="qm-studio-sub-label">Hide Emergency Save Button</span>
-                            <p className="qm-studio-card-sub">Hides the mid-exam emergency save & exit button for students</p>
+                            <span className="qm-studio-sub-label">Hide Emergency Save</span>
+                            <p className="qm-studio-card-sub">No mid-exam exit</p>
                           </div>
-                          <label className="qm-switch" title="Toggle emergency save button visibility">
+                          <label className="qm-switch">
                             <input
                               type="checkbox"
                               checked={activeQuizDraft.hideEmergencyExamButton ?? false}
@@ -3084,36 +3199,35 @@ export function QuizManagerPage({
                           </label>
                         </div>
 
-                        <div className="qm-studio-pin-row">
+                        <div className="qm-studio-pin-row" title="Classroom PIN to unlock student lockout strikes">
                           <div>
-                            <span className="qm-studio-sub-label">Teacher Unlock PIN</span>
-                            <p className="qm-studio-card-sub">Classroom PIN to unlock student lockout strikes</p>
+                            <span className="qm-studio-sub-label">Unlock PIN</span>
+                            <p className="qm-studio-card-sub">Strike reset</p>
                           </div>
-                          <div className="qm-pin-input-group" style={{ marginTop: 0 }}>
-                            <div className="qm-pin-inputs-row">
-                              <input
-                                type={showDraftPin ? 'text' : 'password'}
-                                className="qm-form-input qm-pin-input"
-                                value={activeQuizDraft.teacherPin || '1234'}
-                                onChange={(e) =>
-                                  setActiveQuizDraft({
-                                    ...activeQuizDraft,
-                                    teacherPin: e.target.value.replace(/\D/g, '').slice(0, 8),
-                                  })
-                                }
-                                placeholder="1234"
-                                maxLength={8}
-                                style={{ width: '85px', padding: '6px 8px', fontSize: '0.875rem' }}
-                              />
-                              <button
-                                type="button"
-                                className="qm-btn qm-btn-secondary"
-                                style={{ padding: '4px 8px', fontSize: '0.75rem' }}
-                                onClick={() => setShowDraftPin((v) => !v)}
-                              >
-                                {showDraftPin ? '🙈' : '👁️'}
-                              </button>
-                            </div>
+                          <div className="qm-pin-inputs-row" style={{ marginTop: 0 }}>
+                            <input
+                              type={showDraftPin ? 'text' : 'password'}
+                              className="qm-form-input qm-pin-input"
+                              value={activeQuizDraft.teacherPin || '1234'}
+                              onChange={(e) =>
+                                setActiveQuizDraft({
+                                  ...activeQuizDraft,
+                                  teacherPin: e.target.value.replace(/\D/g, '').slice(0, 8),
+                                })
+                              }
+                              placeholder="1234"
+                              maxLength={8}
+                              style={{ width: '70px', padding: '5px 7px', fontSize: '0.8rem' }}
+                            />
+                            <button
+                              type="button"
+                              className="qm-btn qm-btn-secondary"
+                              style={{ padding: '4px 7px', fontSize: '0.72rem' }}
+                              onClick={() => setShowDraftPin((v) => !v)}
+                              title={showDraftPin ? 'Hide PIN' : 'Show PIN'}
+                            >
+                              {showDraftPin ? '🙈' : '👁️'}
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -3131,7 +3245,7 @@ export function QuizManagerPage({
                     <div className="qm-studio-card-row">
                       <div style={{ flex: 1 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontSize: '1.1rem' }}>🧮</span>
+                          <span style={{ fontSize: '1.05rem' }}>🧮</span>
                           <strong className="qm-studio-card-title">Calculator</strong>
                         </div>
                         {activeQuizDraft.allowCalculator && (
@@ -3256,8 +3370,8 @@ export function QuizManagerPage({
                         <span>Uploading file...</span>
                       </div>
                     ) : (
-                      <div className="qm-attachment-dropzone-inner" style={{ padding: '8px 12px' }}>
-                        <span className="qm-dropzone-icon" style={{ fontSize: '1.25rem' }}>📥</span>
+                      <div className="qm-attachment-dropzone-inner" style={{ padding: '4px 10px' }}>
+                        <span className="qm-dropzone-icon" style={{ fontSize: '1.15rem' }}>📥</span>
                         <div>
                           <strong>Click or drag to attach reference materials</strong>
                           <p>PDF case studies, formula sheets, maps (Max 25 MB)</p>
@@ -3274,7 +3388,7 @@ export function QuizManagerPage({
 
                   {/* Staged Attachments List */}
                   {activeQuizDraft.attachments && activeQuizDraft.attachments.length > 0 && (
-                    <div className="qm-attachment-list" style={{ marginTop: '8px' }}>
+                    <div className="qm-attachment-list" style={{ marginTop: '6px' }}>
                       {activeQuizDraft.attachments.map((att) => (
                         <div key={att.id} className="qm-attachment-item" style={{ padding: '6px 10px' }}>
                           <span className="qm-attachment-icon" style={{ fontSize: '1rem' }}>
@@ -3316,7 +3430,19 @@ export function QuizManagerPage({
 
           <div className="qm-modal-footer qm-studio-footer">
             <span className="qm-studio-footer-note">
-              Settings apply to candidates entering code {activeQuizDraft.quizCode || '—'}
+              <span>
+                Settings apply to code <strong>{activeQuizDraft.quizCode || '—'}</strong>
+              </span>
+              {activeQuizDraft.quizCode.trim().length > 0 &&
+                quizzes.some(
+                  (q) =>
+                    q.id !== activeQuizDraft.id &&
+                    q.quizCode.trim().toUpperCase() === activeQuizDraft.quizCode.trim().toUpperCase()
+                ) && (
+                  <span className="qm-studio-footer-warn">
+                    • ⚠️ Duplicate code in use
+                  </span>
+                )}
             </span>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button

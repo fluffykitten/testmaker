@@ -59,7 +59,7 @@ export function TeacherProfileChip({
   const s = activeProfile.subject.toLowerCase();
   const subjectIcon =
     s.includes('chem') ? '🧪' :
-    s.includes('phys') ? '⚡' :
+    (s.includes('phys') || s.includes('fisika')) ? '⚡' :
     s.includes('bio') ? '🧬' :
     s.includes('math') ? '📐' :
     s.includes('eng') ? '📖' :

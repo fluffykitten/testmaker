@@ -149,7 +149,8 @@ export function classifyExamFallbackDomain(examContext?: ExamDomainContext | nul
     code.includes('9709') ||
     mats.includes('calc');
   const hasScience =
-    /\b(phys(?:ics)?|bio(?:logy)?|sci(?:ence)?|econ(?:omics)?|account(?:ing)?)\b/.test(combined) ||
+    /\b(phys(?:ics)?|fisika|bio(?:logy|logi)?|sci(?:ence)?|ipa|econ(?:omics)?|account(?:ing)?)\b/.test(combined) ||
+    code === 'fis' ||
     code.includes('0625') ||
     code.includes('0610');
 

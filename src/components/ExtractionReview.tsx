@@ -206,9 +206,18 @@ export function ExtractionReview({
     ? validateCambridgeHubUrl(paperMetadata.cambridge_ms_hub_url)
     : null;
 
+  const onUpdateQuestionsRef = useRef(onUpdateQuestions);
+  onUpdateQuestionsRef.current = onUpdateQuestions;
+  const resultRef = useRef(result);
+  resultRef.current = result;
+  const isEditingMetadataRef = useRef(isEditingMetadata);
+  isEditingMetadataRef.current = isEditingMetadata;
+
   const lastEmittedQuestionsRef = useRef<ExtractedQuestion[] | null>(null);
   const lastSyncedInputQuestionsRef = useRef<ExtractedQuestion[] | null>(result?.questions ?? null);
   const syncedInitialQuestionsRef = useRef<ExtractedQuestion[]>(questions);
+  const lastEmittedMetadataRef = useRef<PaperMetadata | null>(null);
+  const lastSyncedMetadataRef = useRef<PaperMetadata | null>(result?.paper_metadata ?? null);
   const initialPassageQNumsRef = useRef<Set<string>>(
     new Set(
       questions
@@ -217,13 +226,18 @@ export function ExtractionReview({
     )
   );
 
-  // Persist every local question/mark-scheme/diagram edit back to UploadPage & IndexedDB draft recovery
+  // Persist every local question/mark-scheme/diagram edit back to UploadPage & IndexedDB draft recovery.
+  // Depend strictly on `questions` (never on callback identity or `result`) so parent state updates
+  // cannot trigger an infinite re-render loop or reset paper metadata edits.
   useEffect(() => {
     if (questions === syncedInitialQuestionsRef.current) return;
+    if (questions === lastEmittedQuestionsRef.current) return;
     lastEmittedQuestionsRef.current = questions;
-    result.questions = questions;
-    onUpdateQuestions?.(questions);
-  }, [questions, onUpdateQuestions, result]);
+    if (resultRef.current) {
+      resultRef.current.questions = questions;
+    }
+    onUpdateQuestionsRef.current?.(questions);
+  }, [questions]);
 
   // Sync questions & metadata ONLY when a genuinely new external result/draft arrives
   useEffect(() => {
@@ -243,9 +257,16 @@ export function ExtractionReview({
       setQuestions(cleaned);
       setSelectedIndices(new Set(cleaned.map((_, i) => i)));
     }
-    if (result?.paper_metadata) {
+    if (
+      result?.paper_metadata &&
+      result.paper_metadata !== lastSyncedMetadataRef.current &&
+      result.paper_metadata !== lastEmittedMetadataRef.current
+    ) {
+      lastSyncedMetadataRef.current = result.paper_metadata;
       setPaperMetadata(result.paper_metadata);
-      setMetadataDraft(result.paper_metadata);
+      if (!isEditingMetadataRef.current) {
+        setMetadataDraft(result.paper_metadata);
+      }
     }
   }, [result]);
 
@@ -257,12 +278,21 @@ export function ExtractionReview({
   };
 
   const handleSaveMetadata = () => {
-    setPaperMetadata({ ...metadataDraft });
+    const nextMeta: PaperMetadata = {
+      ...metadataDraft,
+      year: Number(metadataDraft.year) || paperMetadata.year || new Date().getFullYear(),
+      paper_number:
+        metadataDraft.paper_number !== '' && metadataDraft.paper_number !== undefined && metadataDraft.paper_number !== null
+          ? metadataDraft.paper_number
+          : paperMetadata.paper_number || 1,
+    };
+    lastEmittedMetadataRef.current = nextMeta;
+    setPaperMetadata(nextMeta);
     const parsedTarget = targetMarksDraft.trim() ? parseInt(targetMarksDraft.trim(), 10) : null;
     setCustomTargetMarks(!isNaN(Number(parsedTarget)) && (parsedTarget || 0) > 0 ? parsedTarget : null);
     setTags(tagsDraft);
     onUpdateTags?.(tagsDraft);
-    onUpdateMetadata?.(metadataDraft);
+    onUpdateMetadata?.(nextMeta);
     setIsEditingMetadata(false);
   };
 
@@ -272,6 +302,7 @@ export function ExtractionReview({
       ...paperMetadata,
       [target === 'qp' ? 'cambridge_hub_url' : 'cambridge_ms_hub_url']: trimmed ? trimmed : null,
     };
+    lastEmittedMetadataRef.current = updatedMeta;
     setPaperMetadata(updatedMeta);
     setMetadataDraft((prev) => ({
       ...prev,

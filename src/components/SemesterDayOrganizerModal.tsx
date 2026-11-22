@@ -66,6 +66,7 @@ export function SemesterDayOrganizerModal({
   const [collapsedDays, setCollapsedDays] = useState<Record<string, boolean>>({});
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkTargetDay, setBulkTargetDay] = useState<string>(UNSCHEDULED_DAY_KEY);
+  const [hasInitializedBulkTarget, setHasInitializedBulkTarget] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [busyQuizRowIds, setBusyQuizRowIds] = useState<Record<string, boolean>>({});
   const [banner, setBanner] = useState<{ type: 'success' | 'warning'; text: string } | null>(null);
@@ -80,7 +81,10 @@ export function SemesterDayOrganizerModal({
   });
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setHasInitializedBulkTarget(false);
+      return;
+    }
     setWarmMap(getWarmedQuizTimestamps());
     setBanner(null);
     setLocalNowMs(Date.now());
@@ -191,13 +195,12 @@ export function SemesterDayOrganizerModal({
   }, [allDaysUnfiltered, schedulePresets]);
 
   useEffect(() => {
-    if (
-      bulkTargetDay === UNSCHEDULED_DAY_KEY &&
-      allDayDropdownOptions.length > 0
-    ) {
+    if (!isOpen || hasInitializedBulkTarget) return;
+    if (allDayDropdownOptions.length > 0) {
       setBulkTargetDay(allDayDropdownOptions[0].dayKey);
+      setHasInitializedBulkTarget(true);
     }
-  }, [allDayDropdownOptions, bulkTargetDay]);
+  }, [isOpen, hasInitializedBulkTarget, allDayDropdownOptions]);
 
   const metrics = useMemo(() => {
     let active = 0;
@@ -405,7 +408,11 @@ export function SemesterDayOrganizerModal({
     }
   };
 
-  const handleMoveQuizzesToDay = async (quizIds: string[], targetKey: string) => {
+  const handleMoveQuizzesToDay = async (
+    quizIds: string[],
+    targetKey: string,
+    clearSelection = false
+  ) => {
     if (isModalBusy || quizIds.length === 0) return;
     const nextDay = targetKey === UNSCHEDULED_DAY_KEY ? null : normalizeExamDayKey(targetKey);
     if (targetKey !== UNSCHEDULED_DAY_KEY && !nextDay) return;
@@ -418,7 +425,7 @@ export function SemesterDayOrganizerModal({
         setCustomDayKeys((prev) => (prev.includes(nextDay) ? prev : [...prev, nextDay]));
       }
       setSelectedIds((prev) => {
-        if (quizIds.length === 1) return prev;
+        if (!clearSelection && quizIds.length === 1) return prev;
         return new Set();
       });
 
@@ -439,12 +446,10 @@ export function SemesterDayOrganizerModal({
   const handleBulkActivateSelected = async () => {
     if (isModalBusy || selectedIds.size === 0) return;
     const ids = Array.from(selectedIds);
-    const chosenDay =
-      bulkTargetDay !== UNSCHEDULED_DAY_KEY ? normalizeExamDayKey(bulkTargetDay) : null;
 
     setBusyAction('bulk-activate');
     try {
-      const { batch, warm } = await activateExamDayQuizzes(ids, chosenDay);
+      const { batch, warm } = await activateExamDayQuizzes(ids, null);
       onQuizzesChanged(batch.quizzes);
       refreshWarmMap();
       setSelectedIds(new Set());
@@ -956,7 +961,7 @@ export function SemesterDayOrganizerModal({
                 type="button"
                 className="sdo-btn sdo-btn--secondary"
                 disabled={isModalBusy}
-                onClick={() => handleMoveQuizzesToDay(Array.from(selectedIds), bulkTargetDay)}
+                onClick={() => handleMoveQuizzesToDay(Array.from(selectedIds), bulkTargetDay, true)}
               >
                 {busyAction === 'move-day' ? 'Moving…' : 'Move to Day'}
               </button>
