@@ -9,6 +9,7 @@ import {
   deleteSubmission,
   clearSubmissionsForQuiz,
   updateSubmission,
+  saveBatchQuizSubmissionsCloud,
   importSubmissionToken,
   ingestEmergencySubmissionBatch,
   exportAllSubmissionsExcel,
@@ -318,6 +319,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           if (questions && questions.length > 0) {
             let anyChanged = false;
             const autoGradedList: StudentSubmission[] = [];
+            const changedSubs: StudentSubmission[] = [];
             for (const sub of guardedSubs) {
               if (reqSeq !== refreshSeqRef.current) break;
               if ((latestManualEditAtRef.current[sub.id] || 0) > reqStartedAt) {
@@ -332,11 +334,16 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
               );
               if (changed) {
                 anyChanged = true;
-                await updateSubmission(updatedSub);
+                changedSubs.push(updatedSub);
                 autoGradedList.push(updatedSub);
               } else {
                 autoGradedList.push(sub);
               }
+            }
+            if (changedSubs.length === 1) {
+              await updateSubmission(changedSubs[0]);
+            } else if (changedSubs.length > 1) {
+              await saveBatchQuizSubmissionsCloud(changedSubs);
             }
             if (anyChanged && reqSeq === refreshSeqRef.current) {
               const guardedAuto = preservePendingManualEdits(autoGradedList);
@@ -835,6 +842,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
       let totalPreserved = 0;
       const updatedList: StudentSubmission[] = [];
+      const changedSubs: StudentSubmission[] = [];
       for (let sIdx = 0; sIdx < submissions.length; sIdx++) {
         const sub = submissions[sIdx];
         setGradingProgress({
@@ -843,16 +851,29 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           text: `Re-grading candidate: ${sub.studentName} (${sIdx + 1} of ${submissions.length})...`,
         });
 
-        const { updatedSub, preservedCount } = gradeSubmissionDeterministically(
+        const { updatedSub, preservedCount, changed } = gradeSubmissionDeterministically(
           sub,
           questions,
           effectiveTotalMarksRef.current || quiz.totalMarks,
           { onlyUnresolved: false }
         );
 
-        await updateSubmission(updatedSub);
         updatedList.push(updatedSub);
+        if (changed) {
+          changedSubs.push(updatedSub);
+        }
         totalPreserved += preservedCount;
+      }
+
+      if (changedSubs.length === 1) {
+        await updateSubmission(changedSubs[0]);
+      } else if (changedSubs.length > 1) {
+        setGradingProgress({
+          current: changedSubs.length,
+          total: changedSubs.length,
+          text: `Saving ${changedSubs.length} re-graded submissions...`,
+        });
+        await saveBatchQuizSubmissionsCloud(changedSubs);
       }
 
       setSubmissions(updatedList);

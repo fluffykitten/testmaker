@@ -770,7 +770,7 @@ export async function flushSubmissionOutbox(): Promise<{
             sessionStorage.removeItem(`exam_sess_${code}`);
             sessionStorage.removeItem(`exam_sess_${code.toUpperCase()}`);
           }
-        } catch {}
+        } catch { }
         const subPin = (item.submission.forensics as any)?.studentPin as string | undefined;
         const draftIdent = buildStudentDraftIdentifier(
           item.submission.studentName,
@@ -783,7 +783,7 @@ export async function flushSubmissionOutbox(): Promise<{
             item.submission.quizId,
             draftIdent,
             subPin
-          ).catch(() => {});
+          ).catch(() => { });
         }
       } else {
         const errMsg =
@@ -1043,6 +1043,38 @@ export interface ExamForensics {
   studentPin?: string;
 }
 
+const MAX_STORED_ANSWER_CHANGELOG_ENTRIES = 250;
+const MAX_ANSWER_CHANGELOG_PREVIEW_CHARS = 240;
+
+function truncateAnswerLogPreview(val: string | number): string | number {
+  if (typeof val !== 'string') return val;
+  return val.length > MAX_ANSWER_CHANGELOG_PREVIEW_CHARS
+    ? `${val.slice(0, 220)}… (${val.length} chars)`
+    : val;
+}
+
+/**
+ * Compacts forensic metadata before cloud persistence so long essay revision histories
+ * cannot bloat `raw_answers` TOAST blobs into statement timeouts.
+ */
+export function compactForensicsForStorage(forensics?: ExamForensics): ExamForensics | undefined {
+  if (!forensics) return undefined;
+  if (!Array.isArray(forensics.answerChangeLogs) || forensics.answerChangeLogs.length === 0) {
+    return forensics;
+  }
+  const trimmedLogs = forensics.answerChangeLogs
+    .slice(-MAX_STORED_ANSWER_CHANGELOG_ENTRIES)
+    .map((entry) => ({
+      ...entry,
+      previousAnswer: truncateAnswerLogPreview(entry.previousAnswer),
+      newAnswer: truncateAnswerLogPreview(entry.newAnswer),
+    }));
+  return {
+    ...forensics,
+    answerChangeLogs: trimmedLogs,
+  };
+}
+
 export interface StudentSubmission {
   id: string;
   quizId: string;
@@ -1111,7 +1143,7 @@ export function recordDeletedSubmissionIds(ids: string | string[]): void {
       localStorage.setItem(DELETED_SUBMISSIONS_KEY, JSON.stringify(trimmed));
     }
     // Asynchronously push tombstones to cloud
-    syncDeletedSubmissionIdsToCloud(trimmed).catch(() => {});
+    syncDeletedSubmissionIdsToCloud(trimmed).catch(() => { });
   } catch (err) {
     console.warn('Failed to record deleted submission tombstone:', err);
   }
@@ -1267,7 +1299,7 @@ export function getAllSubmissions(): StudentSubmission[] {
         // Auto-prune tombstoned records from localStorage
         try {
           localStorage.setItem(SUBMISSIONS_STORAGE_KEY, JSON.stringify(activeOnly));
-        } catch {}
+        } catch { }
       }
       submissionsMemoryCache = activeOnly;
       return activeOnly;
@@ -1352,7 +1384,7 @@ export async function syncSubmissionsToAppConfig(submissions: StudentSubmission[
     const recentSubmissions = [...submissions]
       .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
       .slice(0, 200);
-      
+
     const { error } = await (supabase.from('app_config' as any) as any)
       .upsert({
         key: 'quiz_submissions',
@@ -1529,6 +1561,7 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
   try {
     // 2. Upsert to Supabase dedicated table
     try {
+      const compactForensics = compactForensicsForStorage(stampedSubmission.forensics);
       const row = {
         id: stampedSubmission.id,
         quiz_id: stampedSubmission.quizId,
@@ -1547,7 +1580,7 @@ export async function saveQuizSubmissionCloud(submission: StudentSubmission): Pr
         proctoring_logs: stampedSubmission.proctoringLogs,
         raw_answers: {
           ...(stampedSubmission.rawAnswers || {}),
-          ...(stampedSubmission.forensics ? { _forensics: stampedSubmission.forensics } : {}),
+          ...(compactForensics ? { _forensics: compactForensics } : {}),
         },
         question_results: stampedSubmission.questionResults,
         topic_breakdown: stampedSubmission.topicBreakdown,
@@ -1713,67 +1746,113 @@ export async function saveBatchQuizSubmissionsCloud(submissions: StudentSubmissi
     : submissions;
   if (validSubmissions.length === 0) return true;
 
-  // 1. Save all to local storage immediately
-  try {
-    const existing = getAllSubmissions();
-    const subIds = new Set(validSubmissions.map((s) => s.id));
-    const filtered = existing.filter((s) => !subIds.has(s.id));
-    const updated = [...validSubmissions, ...filtered];
-    safeSaveSubmissionsToLocalStorage(updated);
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
-  } catch (err) {
-    console.error('Failed to batch save submissions locally:', err);
+  const nowIso = new Date().toISOString();
+  const stampedSubmissions: StudentSubmission[] = validSubmissions.map((submission) => {
+    lastCloudWriteErrorById.delete(submission.id);
+    return {
+      ...submission,
+      updatedAt: nowIso,
+    };
+  });
+
+  const inFlightTokens: Array<{ id: string; token: number }> = [];
+  for (const sub of stampedSubmissions) {
+    const token = ++inFlightSaveSeq;
+    inFlightSubmissionSaves.set(sub.id, { submission: sub, token });
+    inFlightTokens.push({ id: sub.id, token });
   }
 
   let tableSuccess = false;
+  let nextUnsentIndex = 0;
 
-  // 2. Batch upsert to Supabase dedicated table
   try {
-    const rows = validSubmissions.map((submission) => ({
-      id: submission.id,
-      quiz_id: submission.quizId,
-      quiz_code: submission.quizCode.toUpperCase(),
-      quiz_title: submission.quizTitle,
-      subject: submission.subject,
-      student_name: submission.studentName,
-      student_class: submission.studentClass,
-      candidate_number: submission.candidateNumber,
-      submitted_at: submission.submittedAt,
-      duration_seconds: submission.durationSeconds,
-      score: submission.score,
-      total_marks: submission.totalMarks,
-      percentage: submission.percentage,
-      violations_count: submission.violationsCount,
-      proctoring_logs: submission.proctoringLogs,
-      raw_answers: {
-        ...(submission.rawAnswers || {}),
-        ...(submission.forensics ? { _forensics: submission.forensics } : {}),
-      },
-      question_results: submission.questionResults,
-      topic_breakdown: submission.topicBreakdown,
-      status: submission.status || 'submitted',
-      teacher_adjusted_marks: submission.teacherAdjustedMarks || 0,
-      teacher_notes: submission.teacherNotes || '',
-      result_pin: submission.resultPin || '',
-      updated_at: new Date().toISOString(),
-    }));
+    // 1. Save all to local storage & stage pending outbox immediately without dispatching a pre-upsert refetch
+    try {
+      const existing = getAllSubmissions();
+      const subIds = new Set(stampedSubmissions.map((s) => s.id));
+      const filtered = existing.filter((s) => !subIds.has(s.id));
+      const updated = [...stampedSubmissions, ...filtered];
+      safeSaveSubmissionsToLocalStorage(updated);
+      for (const sub of stampedSubmissions) {
+        saveToSubmissionOutbox(sub, 'pending');
+      }
+    } catch (err) {
+      console.error('Failed to batch save submissions locally:', err);
+    }
 
-    const chunkSize = 100;
+    // 2. Batch upsert to Supabase dedicated table
+    const rows = stampedSubmissions.map((submission) => {
+      const compactForensics = compactForensicsForStorage(submission.forensics);
+      return {
+        id: submission.id,
+        quiz_id: submission.quizId,
+        quiz_code: submission.quizCode.toUpperCase(),
+        quiz_title: submission.quizTitle,
+        subject: submission.subject,
+        student_name: submission.studentName,
+        student_class: submission.studentClass,
+        candidate_number: submission.candidateNumber,
+        submitted_at: submission.submittedAt,
+        duration_seconds: submission.durationSeconds,
+        score: submission.score,
+        total_marks: submission.totalMarks,
+        percentage: submission.percentage,
+        violations_count: submission.violationsCount,
+        proctoring_logs: submission.proctoringLogs,
+        raw_answers: {
+          ...(submission.rawAnswers || {}),
+          ...(compactForensics ? { _forensics: compactForensics } : {}),
+        },
+        question_results: submission.questionResults,
+        topic_breakdown: submission.topicBreakdown,
+        status: submission.status || 'submitted',
+        teacher_adjusted_marks: submission.teacherAdjustedMarks || 0,
+        teacher_notes: submission.teacherNotes || '',
+        result_pin: submission.resultPin || '',
+        updated_at: submission.updatedAt || nowIso,
+      };
+    });
+
+    const chunkSize = 20;
     let allChunksSucceeded = true;
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);
+      const chunkSubs = stampedSubmissions.slice(i, i + chunkSize);
       const { error } = await (supabase.from('quiz_submissions' as any) as any).upsert(chunk);
       if (error) {
         allChunksSucceeded = false;
-        console.warn('Could not batch sync submissions to quiz_submissions table:', error.message);
+        const errMsg = error.message || 'Batch upsert failed';
+        console.warn('Could not batch sync submissions to quiz_submissions table:', errMsg);
+        for (const failedSub of stampedSubmissions.slice(i)) {
+          lastCloudWriteErrorById.set(failedSub.id, errMsg);
+          saveToSubmissionOutbox(failedSub, 'failed', errMsg);
+        }
+        nextUnsentIndex = stampedSubmissions.length;
         break;
       }
+      for (const syncedSub of chunkSubs) {
+        markOutboxSynced(syncedSub.id);
+      }
+      nextUnsentIndex = i + chunkSubs.length;
     }
     if (allChunksSucceeded) {
       tableSuccess = true;
     }
-  } catch (err) {
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err || 'Batch upsert error');
     console.warn('Error batch pushing submissions to quiz_submissions table:', err);
+    for (const failedSub of stampedSubmissions.slice(nextUnsentIndex)) {
+      lastCloudWriteErrorById.set(failedSub.id, errMsg);
+      saveToSubmissionOutbox(failedSub, 'failed', errMsg);
+    }
+  } finally {
+    for (const { id, token } of inFlightTokens) {
+      const currentEntry = inFlightSubmissionSaves.get(id);
+      if (currentEntry && currentEntry.token === token) {
+        inFlightSubmissionSaves.delete(id);
+      }
+    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
   }
 
   return tableSuccess;
@@ -1813,7 +1892,7 @@ export async function deleteSubmission(id: string): Promise<void> {
   }
 
   // 5. Asynchronously sync tombstones with cloud
-  syncDeletedSubmissionIdsWithCloud().catch(() => {});
+  syncDeletedSubmissionIdsWithCloud().catch(() => { });
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
 }
@@ -1857,7 +1936,7 @@ export async function clearSubmissionsForQuiz(quizId: string, quizCode?: string)
   }
 
   // 4. Asynchronously sync tombstones with cloud
-  syncDeletedSubmissionIdsWithCloud().catch(() => {});
+  syncDeletedSubmissionIdsWithCloud().catch(() => { });
 
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('submissions_updated'));
 }
@@ -1870,14 +1949,24 @@ export async function fetchAllSubmissionsFromSupabase(): Promise<StudentSubmissi
   const deletedIds = getDeletedSubmissionIds();
   try {
     // 1. Try dedicated table first with smaller pages to stay well under PostgREST's statement timeout
-    const pageSize = 250;
+    const pageSize = 100;
     const allRows: any[] = [];
     for (let from = 0; from < 5000; from += pageSize) {
-      const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
-        .select('*')
-        .order('submitted_at', { ascending: false })
-        .order('id', { ascending: false })
-        .range(from, from + pageSize - 1);
+      let data: any[] | null = null;
+      let error: any = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const res = await (supabase.from('quiz_submissions' as any) as any)
+          .select('*')
+          .order('submitted_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, from + pageSize - 1);
+        data = res.data;
+        error = res.error;
+        if (!error) break;
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
 
       if (error) {
         if (allRows.length === 0) throw error;
@@ -1952,7 +2041,7 @@ export async function loadAndSyncAllSubmissions(): Promise<StudentSubmission[]> 
     const tombstonedInCloud = rawCloudList.filter((s) => deletedIds.has(s.id));
     if (tombstonedInCloud.length > 0) {
       tombstonedInCloud.forEach((s) => {
-        Promise.resolve((supabase.from('quiz_submissions' as any) as any).delete().eq('id', s.id)).catch(() => {});
+        Promise.resolve((supabase.from('quiz_submissions' as any) as any).delete().eq('id', s.id)).catch(() => { });
       });
     }
 
@@ -2010,7 +2099,7 @@ export async function fetchProctorMonitoredSubmissions(
   try {
     const { data, error } = await (supabase.from('quiz_submissions' as any) as any)
       .select(
-        'id, quiz_id, quiz_code, quiz_title, subject, student_name, student_class, candidate_number, submitted_at, duration_seconds, score, total_marks, percentage, violations_count, raw_answers, status, updated_at'
+        'id, quiz_id, quiz_code, quiz_title, subject, student_name, student_class, candidate_number, submitted_at, duration_seconds, score, total_marks, percentage, violations_count, status, updated_at'
       )
       .in('quiz_code', codes)
       .order('submitted_at', { ascending: false })
@@ -2020,9 +2109,19 @@ export async function fetchProctorMonitoredSubmissions(
       const cloudSubs: StudentSubmission[] = data
         .filter((row: any) => row && !deletedIds.has(row.id))
         .map((row: any) => {
-          const rawAnswers = row.raw_answers ? { ...row.raw_answers } : {};
-          const forensics = (row as any).forensics || (rawAnswers as any)._forensics || undefined;
-          delete (rawAnswers as any)._forensics;
+          const existingForensics =
+            (row as any).forensics || (row.raw_answers as any)?._forensics || undefined;
+          const forensics = existingForensics?.proctorStudentId
+            ? existingForensics
+            : {
+              ...(existingForensics || {}),
+              proctorStudentId: getCanonicalProctorStudentId({
+                quizCode: row.quiz_code,
+                studentName: row.student_name,
+                candidateNumber: row.candidate_number,
+                studentClass: row.student_class,
+              }),
+            };
           return {
             id: row.id,
             quizId: row.quiz_id,
@@ -2039,7 +2138,7 @@ export async function fetchProctorMonitoredSubmissions(
             percentage: Number(row.percentage) || 0,
             violationsCount: Number(row.violations_count) || 0,
             proctoringLogs: [],
-            rawAnswers,
+            rawAnswers: {},
             questionResults: [],
             topicBreakdown: {},
             status: (row.status as SubmissionStatus) || 'submitted',
@@ -2140,7 +2239,7 @@ export async function fetchSubmissionsFromSupabase(
           return !doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId);
         });
         safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
-      } catch {}
+      } catch { }
 
       return merged;
     }
@@ -2167,7 +2266,7 @@ export async function fetchSubmissionsFromSupabase(
           return !doesSubmissionMatchScope(s, quizId, cleanCode, cleanTestId);
         });
         safeSaveSubmissionsToLocalStorage([...merged, ...allLocal]);
-      } catch {}
+      } catch { }
       return merged;
     }
   } catch (err) {
@@ -2376,7 +2475,7 @@ export async function setQuizSubmissionsStatus(
       return s;
     });
     safeSaveSubmissionsToLocalStorage(all);
-  } catch {}
+  } catch { }
 
   return true;
 }
@@ -2415,7 +2514,7 @@ export function removeDeviceReceipt(quizCode: string): void {
     const existing = getDeviceReceipts();
     const filtered = existing.filter((r) => r.quizCode.toUpperCase() !== quizCode.toUpperCase());
     localStorage.setItem(DEVICE_RECEIPTS_KEY, JSON.stringify(filtered));
-  } catch {}
+  } catch { }
 }
 
 /**
@@ -2425,7 +2524,7 @@ export function formatProctorTimestamp(timestamp: string | number | undefined | 
   if (!timestamp) return '-';
   const str = String(timestamp).trim();
   if (!str) return '-';
-  
+
   // If it's already a clean formatted time string (like "16:25:31" or "4:25:31 PM"), return it directly
   if (/^\d{1,2}:\d{2}(:\d{2})?(\s?[APap][Mm])?$/.test(str)) {
     return str;

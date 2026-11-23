@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.4`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.5`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.4-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.5-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -105,7 +105,7 @@ npm run mobile:ios       # Open Xcode (archive for TestFlight / App Store)
 
 ## Database Migrations
 
-Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `039`)** in the **Supabase SQL Editor**:
+Run the SQL files inside `supabase/migrations/` **in numerical order (`001` through `040`)** in the **Supabase SQL Editor**:
 
 | Migration Range | Purpose |
 | :--- | :--- |
@@ -131,6 +131,7 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 | [`037_admin_prewarm_and_unified_exam_entry.sql`](supabase/migrations/037_admin_prewarm_and_unified_exam_entry.sql) | 90-minute `exam_paper_cache` TTL with schedule-preserving wait state, authenticated-teacher `prewarm_exam_paper_cache` RPC, and atomic unified `enter_student_exam_session` entry RPC |
 | [`038_fix_submission_index_grant_and_pagination.sql`](supabase/migrations/038_fix_submission_index_grant_and_pagination.sql) | Restores `EXECUTE` on `normalize_roster_class_label(TEXT)` for `anon`/`authenticated` PostgREST writes on `quiz_submissions` (`42501` fix) and adds `idx_quiz_submissions_submitted_at_desc` (`submitted_at DESC, id DESC`) for fast pagination |
 | [`039_teacher_dummy_test_student.sql`](supabase/migrations/039_teacher_dummy_test_student.sql) | Adds the universal **Teacher Test Account** (`PIN: 0000`, valid across all school and custom classes) directly inside `verify_student_pin` while keeping `app_config('school_roster')`, Desk Cards, and printed PIN sheets clean |
+| [`040_quiz_submissions_timeout_and_index_cleanup.sql`](supabase/migrations/040_quiz_submissions_timeout_and_index_cleanup.sql) | Drops unused `quiz_submissions` lookup indexes (`idx_quiz_submissions_attempt_lookup`, `idx_quiz_submissions_candidate_number`, `idx_quiz_submissions_student_name`) to reduce write amplification during batch and single-row upserts |
 
 ---
 
@@ -169,6 +170,16 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.5] — Proctor Polling Payload Optimization, Submission Pagination & Batch Sync Hardening (`040`)
+- **Proctor Polling Payload & 15-Second Reconnect Stabilization:**
+  - Dropped heavy `raw_answers` JSONB retrieval from `fetchProctorMonitoredSubmissions` in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts), synthesizing `forensics.proctorStudentId` canonically on read (with defensive `_forensics` fallback for unit mocks).
+  - Decoupled [`LiveInvigilatorModal.tsx`](src/components/LiveInvigilatorModal.tsx) backfill and Realtime subscription effects onto a stable `[monitoredCodesKey]` dependency backed by `monitoredQuizzesRef` / `quizByCodeRef` and cancellation guards, and memoized `activeExamQuizzes` / `proctorModalQuizzes` in [`QuizManagerPage.tsx`](src/pages/QuizManagerPage.tsx) across 15-second `nowMs` countdown ticks so Realtime channels are no longer torn down and re-polled every 15 seconds.
+- **Submission Pagination, Batch Upsert Chunking & Concurrency Safety:**
+  - Reduced `fetchAllSubmissionsFromSupabase` `pageSize` from `250` to `100` with a 2-attempt (`400 ms` delay) per-page retry in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts) to prevent `57014` statement timeouts on deep offsets.
+  - Added `compactForensicsForStorage` in [`quizSubmissionService.ts`](src/services/quizSubmissionService.ts) and bounded `recordAnswerChange` in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) (`240`-char string previews, `30` revisions per question, `250` total entries) to prevent `_forensics.answerChangeLogs` bloat.
+  - Hardened `saveBatchQuizSubmissionsCloud`: reduced `chunkSize` from `100` to `20`, stamped consistent `updatedAt` timestamps across localStorage and DB payloads, added `inFlightSubmissionSaves` token protection and per-chunk pending/synced/failed outbox tracking, and deferred `submissions_updated` event dispatch until `finally`.
+  - Batched multi-submission auto-grading and deterministic re-grade writes in [`QuizResultsModal.tsx`](src/components/QuizResultsModal.tsx) (uploading only `changed === true` submissions), and added [`supabase/migrations/040_quiz_submissions_timeout_and_index_cleanup.sql`](supabase/migrations/040_quiz_submissions_timeout_and_index_cleanup.sql) to drop 3 unused `quiz_submissions` indexes.
 
 ### [v.2.7.4] — Multi-Image Questions, MC Option Diagrams, Civics (PKn) Subject & Semester Day Exam Time Column
 - **Multi-Image Questions & Per-Option Multiple Choice Diagrams:**

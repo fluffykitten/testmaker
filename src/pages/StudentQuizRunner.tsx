@@ -2502,23 +2502,46 @@ export function StudentQuizRunner({
       const newStr = newAns !== undefined && newAns !== null ? String(newAns) : '';
       if (prevStr === newStr) return;
 
+      const truncatePreview = (raw: string | number | undefined): string | number => {
+        if (typeof raw === 'number') return raw;
+        const s = raw !== undefined && raw !== null ? String(raw) : '';
+        return s.length > 240 ? `${s.slice(0, 220)}… (${s.length} chars)` : s;
+      };
+
       const now = Date.now();
       const timeSinceLastActionMs = now - lastAnswerActionTimeRef.current;
       lastAnswerActionTimeRef.current = now;
 
       const q = questions[qIndex];
-      const qId = q?.id || `q_${qIndex}`;
+      const qId = String(q?.id || `q_${qIndex}`);
       const elapsedExamSeconds = startTime ? Math.max(0, Math.floor((now - startTime) / 1000)) : 0;
 
-      answerChangeHistoryRef.current.push({
+      const history = answerChangeHistoryRef.current;
+      let perQuestionCount = 0;
+      let oldestForQuestionIdx = -1;
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].questionId === qId || history[i].questionIndex === qIndex) {
+          perQuestionCount++;
+          if (oldestForQuestionIdx === -1) oldestForQuestionIdx = i;
+        }
+      }
+      if (perQuestionCount >= 30 && oldestForQuestionIdx !== -1) {
+        history.splice(oldestForQuestionIdx, 1);
+      }
+
+      history.push({
         questionIndex: qIndex,
-        questionId: String(qId),
-        previousAnswer: prevAns !== undefined ? prevAns : '',
-        newAnswer: newAns,
+        questionId: qId,
+        previousAnswer: truncatePreview(prevAns),
+        newAnswer: truncatePreview(newAns),
         timestamp: new Date().toISOString(),
         elapsedExamSeconds,
         timeSinceLastActionMs,
       });
+
+      if (history.length > 250) {
+        answerChangeHistoryRef.current = history.slice(-250);
+      }
     },
     [questions, startTime]
   );

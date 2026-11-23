@@ -304,9 +304,23 @@ export function QuizManagerPage({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeSubjectView, isConfigModalOpen, selectedQuizForResults, selectedQuizForProctor, isSchoolProctorOpen, isPrintDeskCardsOpen, isDayOrganizerOpen, deleteModalState.isOpen, offlineGradingData, isSelectOfflineTestOpen]);
 
+  const activeExamQuizzesRef = useRef<PublishedQuiz[]>([]);
   const activeExamQuizzes = useMemo(() => {
-    return quizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'active' && q.quizMode !== 'game');
+    const next = quizzes.filter((q) => resolveEffectiveQuizStatus(q, nowMs) === 'active' && q.quizMode !== 'game');
+    const prev = activeExamQuizzesRef.current;
+    if (prev.length === next.length && prev.every((q, idx) => q === next[idx])) {
+      return prev;
+    }
+    activeExamQuizzesRef.current = next;
+    return next;
   }, [quizzes, nowMs]);
+
+  const proctorModalQuizzes = useMemo(() => {
+    if (!selectedQuizForProctor) return activeExamQuizzes;
+    return activeExamQuizzes.some((q) => q.id === selectedQuizForProctor.id)
+      ? activeExamQuizzes
+      : [selectedQuizForProctor, ...activeExamQuizzes];
+  }, [selectedQuizForProctor, activeExamQuizzes]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 15_000);
@@ -3558,11 +3572,7 @@ export function QuizManagerPage({
       {/* Live Invigilator Proctoring Cockpit Modal */}
       {selectedQuizForProctor && (
         <LiveInvigilatorModal
-          quizzes={
-            activeExamQuizzes.some((q) => q.id === selectedQuizForProctor.id)
-              ? activeExamQuizzes
-              : [selectedQuizForProctor, ...activeExamQuizzes]
-          }
+          quizzes={proctorModalQuizzes}
           initialFocusQuizCode={selectedQuizForProctor.quizCode}
           onClose={() => setSelectedQuizForProctor(null)}
         />

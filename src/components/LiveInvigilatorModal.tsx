@@ -165,7 +165,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       if (classes && classes.length > 0) {
         setSchoolClasses(classes);
       }
-    }).catch(() => {});
+    }).catch(() => { });
 
     loadAndSyncSchoolRoster().then((list) => {
       if (list && list.length > 0) {
@@ -285,6 +285,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       .join('|');
   }, [monitoredQuizzes]);
 
+  const monitoredQuizzesRef = useRef(monitoredQuizzes);
+  monitoredQuizzesRef.current = monitoredQuizzes;
+  const quizByCodeRef = useRef(quizByCode);
+  quizByCodeRef.current = quizByCode;
+
   const isMultiExam = monitoredQuizzes.length > 1;
   const singleFocusQuiz = monitoredQuizzes.length === 1 ? monitoredQuizzes[0] : null;
 
@@ -322,12 +327,15 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
   // ─── 1. Submissions Backfill from Storage & DB ─────────────────────────────
   useEffect(() => {
-    if (monitoredQuizzes.length === 0) return;
+    const currentMonitoredQuizzes = monitoredQuizzesRef.current;
+    if (currentMonitoredQuizzes.length === 0) return;
+
+    let cancelled = false;
 
     // A. Local submissions backfill
     try {
       const localLoaded: Record<string, ProctorStudentState> = {};
-      monitoredQuizzes.forEach((quiz) => {
+      currentMonitoredQuizzes.forEach((quiz) => {
         const localSubs = getSubmissionsForQuiz(quiz.id, quiz.quizCode);
         if (localSubs && localSubs.length > 0) {
           localSubs.forEach((sub) => {
@@ -372,12 +380,15 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
     // B. Cloud submissions sync (scoped strictly to monitoredQuizzes, read-only)
     fetchProctorMonitoredSubmissions(monitoredQuizzes)
       .then((allSubs) => {
+        if (cancelled) return;
         const cloudLoaded: Record<string, ProctorStudentState> = {};
-        monitoredQuizzes.forEach((quiz) => {
+        const hasDetailedResultsByKey: Record<string, boolean> = {};
+        monitoredQuizzesRef.current.forEach((quiz) => {
           const qCode = (quiz.quizCode || '').trim().toUpperCase();
           const quizSubs = allSubs.filter(
             (s) => s.quizId === quiz.id || s.quizCode.toUpperCase() === qCode
           );
+          const fallbackTotal = Math.max(1, Math.round(Number(quiz.questionCount) || 1));
           quizSubs.forEach((sub) => {
             // Same canonical key as the live channel (P1-B).
             const canonicalId =
@@ -389,16 +400,21 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 studentClass: sub.studentClass,
               });
             const compositeKey = `${qCode}::${canonicalId}`;
+            const hasQuestionResults =
+              Array.isArray(sub.questionResults) && sub.questionResults.length > 0;
             const subProgress = computeSubmissionProgress(sub, quiz.questionCount);
+            const resolvedTotal = hasQuestionResults ? subProgress.totalQuestions : fallbackTotal;
+            const resolvedAnswered = hasQuestionResults ? subProgress.answeredCount : fallbackTotal;
+            hasDetailedResultsByKey[compositeKey] = hasQuestionResults;
             cloudLoaded[compositeKey] = {
               studentId: canonicalId,
               studentName: sub.studentName,
               candidateNumber: sub.candidateNumber,
               candidateClass: sub.studentClass,
               status: 'submitted',
-              answeredCount: subProgress.answeredCount,
-              totalQuestions: subProgress.totalQuestions,
-              currentIndex: subProgress.totalQuestions,
+              answeredCount: resolvedAnswered,
+              totalQuestions: resolvedTotal,
+              currentIndex: resolvedTotal,
               timeLeftSeconds: 0,
               violationsCount: sub.violationsCount || 0,
               multiMonitorDetected: false,
@@ -413,8 +429,20 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
           setStudents((prev) => {
             const next = { ...prev };
             Object.entries(cloudLoaded).forEach(([compKey, row]) => {
-              if (!next[compKey] || next[compKey].status !== 'submitted') {
-                next[compKey] = row;
+              const existing = next[compKey];
+              if (!existing || existing.status !== 'submitted') {
+                const keepExistingCounts =
+                  Boolean(existing) &&
+                  !hasDetailedResultsByKey[compKey] &&
+                  (existing.answeredCount || 0) > 0;
+                next[compKey] = keepExistingCounts
+                  ? {
+                    ...row,
+                    answeredCount: existing.answeredCount,
+                    totalQuestions: existing.totalQuestions || row.totalQuestions,
+                    currentIndex: existing.currentIndex || row.currentIndex,
+                  }
+                  : row;
               }
             });
             return next;
@@ -422,7 +450,11 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         }
       })
       .catch(() => { });
-  }, [monitoredCodesKey, monitoredQuizzes]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [monitoredCodesKey]);
 
   // ─── 1B. Micro-Batch Heartbeats Flush (300ms window for high-volume 200+ concurrency) ─
   useEffect(() => {
@@ -488,7 +520,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
 
   // ─── 2. Multi-Channel Real-time WebSockets Subscription ────────────────────
   useEffect(() => {
-    const codes = monitoredQuizzes
+    const codes = monitoredQuizzesRef.current
       .map((q) => (q.quizCode || '').trim().toUpperCase())
       .filter(Boolean);
 
@@ -519,7 +551,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         ...student,
         studentId: canonicalId,
         quizCode: qCode,
-        quizTitle: student.quizTitle || quizByCode[qCode]?.title,
+        quizTitle: student.quizTitle || quizByCodeRef.current[qCode]?.title,
         // Receipt time, not the sender's clock (P1-A).
         lastHeartbeat: Date.now(),
       };
@@ -544,7 +576,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                 candidateNumber: student.candidateNumber,
                 candidateClass: student.candidateClass,
                 quizCode: qCode,
-                quizTitle: student.quizTitle || quizByCode[qCode]?.title,
+                quizTitle: student.quizTitle || quizByCodeRef.current[qCode]?.title,
                 type: (v.type as any) || 'blur',
                 detail: v.detail,
                 severity:
@@ -586,7 +618,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         ...event,
         studentId: canonicalId,
         quizCode: qCode,
-        quizTitle: event.quizTitle || quizByCode[qCode]?.title,
+        quizTitle: event.quizTitle || quizByCodeRef.current[qCode]?.title,
       };
       setLogEvents((prev) => [enriched, ...prev.slice(0, 999)]);
 
@@ -742,7 +774,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
         const t = setTimeout(() => {
           void Promise.resolve(
             (supabase as any).rpc?.('get_student_exam_paper', { p_code: code })
-          ).catch(() => {});
+          ).catch(() => { });
         }, idx * 80);
         warmTimeouts.push(t);
       });
@@ -755,7 +787,7 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
       warmTimeouts.forEach(clearTimeout);
       destroyProctorSession();
     };
-  }, [monitoredCodesKey, monitoredQuizzes, quizByCode]);
+  }, [monitoredCodesKey]);
 
   // Periodic offline sweep (mark offline if heartbeat missing for >45s)
   useEffect(() => {
@@ -2881,14 +2913,14 @@ export const LiveInvigilatorModal: React.FC<LiveInvigilatorModalProps> = ({
                                 cardRefs.current[compositeKey] = el;
                               }}
                               className={`lip-table-row ${isOverdueLock
-                                  ? 'lip-table-row--overdue'
-                                  : isLocked
-                                    ? 'lip-table-row--locked'
-                                    : isExceeded
-                                      ? 'lip-table-row--exceeded'
-                                      : s.status === 'warning'
-                                        ? 'lip-table-row--warning'
-                                        : ''
+                                ? 'lip-table-row--overdue'
+                                : isLocked
+                                  ? 'lip-table-row--locked'
+                                  : isExceeded
+                                    ? 'lip-table-row--exceeded'
+                                    : s.status === 'warning'
+                                      ? 'lip-table-row--warning'
+                                      : ''
                                 } ${focusedStudentKey === compositeKey ? 'lip-table-row--focused' : ''}`}
                             >
                               <td>
