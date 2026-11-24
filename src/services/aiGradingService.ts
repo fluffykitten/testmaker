@@ -3,7 +3,7 @@
 // Cambridge International Mark Scheme, providing point-by-point criteria breakdowns.
 
 import type { Question, MarkScheme } from '../types/database';
-import { parseRobustJson, getApiKeyForChunk } from '../lib/gemini';
+import { parseRobustJson, getGeminiFreeApiKey } from '../lib/gemini';
 import { isArabicText, normalizeArabicText } from './deterministicGradingService';
 
 export interface AICriteriaPoint {
@@ -318,8 +318,8 @@ export async function evaluateAnswerWithGemini(
     return emptyResult;
   }
 
-  // Dynamically resolve active Gemini API key from key pool
-  const activeKey = getApiKeyForChunk(0) || import.meta.env.VITE_GEMINI_API_KEY || '';
+  // Strictly use the Free Gemini API key for essay grading (never the Paid key)
+  const activeKey = getGeminiFreeApiKey();
 
   const injectionCheck = detectPromptInjectionAttempt(studentAnswer);
   const attachInjectionWarning = (result: AIEvaluationResult): AIEvaluationResult => {
@@ -353,12 +353,7 @@ export async function evaluateAnswerWithGemini(
     studentAnswer
   );
 
-  const candidateModels = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
-  ];
+  const candidateModels = ['gemini-3.5-flash-lite'];
 
   for (const model of candidateModels) {
     try {
@@ -629,8 +624,8 @@ export async function generateStudentImprovementPlan(
     });
   }
 
-  // 2. Attempt Gemini Enrichment if API key is active
-  const activeKey = getApiKeyForChunk(0) || (import.meta.env as any)?.VITE_GEMINI_API_KEY || '';
+  // 2. Attempt Gemini Enrichment if Free API key is active
+  const activeKey = getGeminiFreeApiKey();
   if (!activeKey) {
     return fallback;
   }
@@ -673,7 +668,7 @@ Return ONLY valid JSON matching this exact schema:
   "encouragingWords": "1 warm, uplifting, motivational paragraph encouraging the student to believe in their academic growth."
 }`;
 
-  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const candidateModels = ['gemini-3.5-flash-lite'];
 
   for (const model of candidateModels) {
     try {

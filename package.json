@@ -1,7 +1,7 @@
 {
   "name": "testmaker",
   "private": true,
-  "version": "2.7.5",
+  "version": "2.7.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -57,6 +57,7 @@
     "test:table-choice": "node --import ./scripts/register-ts.mjs scripts/test-table-choice.mjs",
     "test:mark-scheme": "node --import ./scripts/register-ts.mjs scripts/test-mark-scheme-strictness.mjs",
     "test:languages-bidi": "node --import ./scripts/register-ts.mjs scripts/test-languages-and-bidi.mjs",
+    "test:docx-export": "node --import ./scripts/register-ts.mjs scripts/test-docx-export-fidelity.mjs",
     "test:stress-200": "node scripts/simulate-200-students-stress-and-redteam.mjs",
     "test:stress-realistic": "node scripts/stress-test-realistic-exam-sitting.mjs",
     "preview": "vite preview",

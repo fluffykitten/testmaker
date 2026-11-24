@@ -22,7 +22,20 @@ import {
   TabStopPosition,
   LeaderType,
   UnderlineType,
+  TableLayoutType,
+  HeightRule,
 } from 'docx';
+import {
+  fitImageDimensions,
+  prepareDocxImageBytes,
+  type LoadedImageData,
+} from '../utils/docxImageUtils';
+import {
+  parseFormattedTextToDocxChildren,
+  normalizeCommonLatexForDocx,
+  type DocxRunStyleOpts,
+  type DocxInlineChild,
+} from '../utils/docxMathUtils';
 import { exportFileUniversal } from './fileExportBridge';
 import type { Question } from '../types/database';
 import type { ExamHeaderConfig } from './testBuilderService';
@@ -36,7 +49,6 @@ import {
   stripInlineMarkdownImage,
 } from '../utils/questionDiagramUtils';
 import { parseMcqOption } from '../utils/mcqUtils';
-import { protectCurrencySymbols, restoreCurrencySymbols } from '../components/ExamMathText';
 import { stripPassageControlTags, parseInstructionLines } from '../lib/readingPassageUtils';
 import {
   stripDuplicateOptionsFromStem,
@@ -48,30 +60,41 @@ export interface DocxExportOptions extends Partial<ExportLayoutOptions> {
 }
 
 /**
- * Fetches and prepares image data (PNG/JPEG) for Word ImageRun embedding.
+ * Decode a data URI or fetch a remote URL and convert/measure it into a valid
+ * PNG/JPEG byte buffer with true natural pixel dimensions for Word/OOXML.
  */
-async function loadImageData(urlOrBase64: string): Promise<{ data: Uint8Array; width: number; height: number } | null> {
+async function loadImageData(urlOrBase64: string): Promise<LoadedImageData | null> {
   try {
     if (!urlOrBase64) return null;
 
+    let rawBytes: Uint8Array | null = null;
     if (urlOrBase64.startsWith('data:')) {
-      const parts = urlOrBase64.split(',');
-      const base64Part = parts[1];
-      if (!base64Part) return null;
-      const binaryStr = atob(base64Part);
-      const len = binaryStr.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
+      const commaIdx = urlOrBase64.indexOf(',');
+      if (commaIdx === -1) return null;
+      const meta = urlOrBase64.slice(5, commaIdx).toLowerCase();
+      const payload = urlOrBase64.slice(commaIdx + 1);
+      if (!payload) return null;
+
+      if (meta.includes(';base64')) {
+        const binaryStr = atob(payload.replace(/\s+/g, ''));
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        rawBytes = bytes;
+      } else {
+        const decoded = decodeURIComponent(payload);
+        rawBytes = new TextEncoder().encode(decoded);
       }
-      return { data: bytes, width: 380, height: 220 };
+    } else {
+      const res = await fetch(urlOrBase64);
+      if (!res.ok) return null;
+      const arrayBuffer = await res.arrayBuffer();
+      rawBytes = new Uint8Array(arrayBuffer);
     }
 
-    const res = await fetch(urlOrBase64);
-    if (!res.ok) return null;
-    const arrayBuffer = await res.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    return { data: bytes, width: 380, height: 220 };
+    if (!rawBytes || rawBytes.length === 0) return null;
+    return await prepareDocxImageBytes(rawBytes);
   } catch (err) {
     console.warn('Failed to load diagram for DOCX export:', err);
     return null;
@@ -79,399 +102,557 @@ async function loadImageData(urlOrBase64: string): Promise<{ data: Uint8Array; w
 }
 
 /**
+ * Converts text into inline DOCX runs (TextRun | Math), supporting balanced
+ * LaTeX, \\ce{...} chemistry, isotope pre-scripts, Markdown, and HTML sub/sup.
+ */
+export function parseFormattedTextChildren(
+  rawText: string,
+  baseOpts: DocxRunStyleOpts = {}
+): DocxInlineChild[] {
+  if (!rawText) return [];
+  const cleanRaw = stripPassageControlTags(rawText);
+  if (!cleanRaw) return [];
+  return parseFormattedTextToDocxChildren(cleanRaw, baseOpts);
+}
+
+/**
  * Transforms raw text containing LaTeX math, Markdown, HTML sub/sup tags,
- * and scientific notation into docx `TextRun` objects with native `subScript` and `superScript`.
+ * and scientific notation into docx TextRun objects (filtering native Math runs
+ * for callers strictly typed to TextRun[]).
  */
 export function parseFormattedTextToDocxRuns(
   rawText: string,
   baseOpts: { size?: number; bold?: boolean; color?: string; italics?: boolean; underline?: boolean; font?: string } = {}
 ): TextRun[] {
-  if (!rawText) return [];
-  const cleanRaw = stripPassageControlTags(rawText);
-  if (!cleanRaw) return [];
+  const children = parseFormattedTextChildren(rawText, baseOpts);
+  const runs = children.filter((child): child is TextRun => child instanceof TextRun);
+  if (runs.length > 0) return runs;
+  const fallback = normalizeCommonLatexForDocx(stripPassageControlTags(rawText || ''));
+  return fallback
+    ? [
+      new TextRun({
+        text: fallback,
+        size: baseOpts.size,
+        bold: baseOpts.bold,
+        color: baseOpts.color,
+        italics: baseOpts.italics,
+        underline: baseOpts.underline ? { type: UnderlineType.SINGLE } : undefined,
+        font: baseOpts.font,
+      }),
+    ]
+    : [];
+}
+const A4_CONTENT_WIDTH_DXA = 10206;
 
-  // Step 1: Pre-process common LaTeX math symbols and standard chemistry/physics replacements
-  const protectedText = protectCurrencySymbols(cleanRaw);
-  let processed = protectedText
-    // Replace arrows & special math symbols
-    .replace(/\\xrightarrow\[(.*?)\]\{(.*?)\}/g, ' ──[$1]($2)──> ')
-    .replace(/\\xrightarrow\{(.*?)\}/g, ' ──($1)──> ')
-    .replace(/\\rightarrow/g, ' → ')
-    .replace(/\\leftarrow/g, ' ← ')
-    .replace(/\\rightleftharpoons/g, ' ⇌ ')
-    .replace(/\\times/g, ' × ')
-    .replace(/\\cdot/g, ' · ')
-    .replace(/\\div/g, ' ÷ ')
-    .replace(/\\pm/g, ' ± ')
-    .replace(/\\mp/g, ' ∓ ')
-    .replace(/\\approx/g, ' ≈ ')
-    .replace(/\\neq/g, ' ≠ ')
-    .replace(/\\le(q)?/g, ' ≤ ')
-    .replace(/\\ge(q)?/g, ' ≥ ')
-    .replace(/\\infty/g, ' ∞ ')
-    // Checkboxes / Tickboxes
-    .replace(/(?:[-*]\s*)?\[\s*\]/g, '☐ ')
-    .replace(/(?:[-*]\s*)?\[\s*[✓xXvV]\s*\]/g, '☑ ')
-    // LaTeX spacing commands: \, \: \; \! \ ~
-    .replace(/\\,/g, ' ')
-    .replace(/\\:/g, ' ')
-    .replace(/\\;/g, ' ')
-    .replace(/\\!/g, '')
-    .replace(/\\ /g, ' ')
-    .replace(/~/g, ' ')
-    // Comprehensive Temperature formats: 25^\circ C, 25^{\circ}\text{C}, 25\degree C, 25\celsius, 45\,°C
-    .replace(/\\(degreeC|celsius)\b/g, '°C')
-    .replace(/\\degree\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\\degree\s*C\b/gi, '°C')
-    .replace(/\^\{\\circ\s*\\text\{\s*C\s*\}\}/gi, '°C')
-    .replace(/\^\{\\circ\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/\^\{\\circ\s*C\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\mathrm\{\s*C\s*\}/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*C\b/gi, '°C')
-    .replace(/(\^\{?\\circ\}?)\s*\\text\{\s*F\s*\}/gi, '°F')
-    .replace(/(\^\{?\\circ\}?)\s*F\b/gi, '°F')
-    .replace(/\^\{\\circ\}/g, '°')
-    .replace(/\^\\circ/g, '°')
-    .replace(/\\degree\b/g, '°')
-    .replace(/\\circ\b/g, '°')
-    // Greek letters
-    .replace(/\\Delta/g, 'Δ')
-    .replace(/\\delta/g, 'δ')
-    .replace(/\\alpha/g, 'α')
-    .replace(/\\beta/g, 'β')
-    .replace(/\\gamma/g, 'γ')
-    .replace(/\\theta/g, 'θ')
-    .replace(/\\pi/g, 'π')
-    .replace(/\\mu/g, 'μ')
-    .replace(/\\sigma/g, 'σ')
-    .replace(/\\omega/g, 'ω')
-    .replace(/\\Omega/g, 'Ω')
-    .replace(/\\lambda/g, 'λ')
-    .replace(/\\phi/g, 'ϕ')
-    // Fractions: \frac{a}{b} -> (a / b)
-    .replace(/\\frac\{(.*?)\}\{(.*?)\}/g, '($1 / $2)')
-    // Font wrappers inside LaTeX
-    .replace(/\\text\{(.*?)\}/g, '$1')
-    .replace(/\\mathrm\{(.*?)\}/g, '$1')
-    .replace(/\\mathbf\{(.*?)\}/g, '$1')
-    .replace(/\\mathit\{(.*?)\}/g, '$1')
-    .replace(/\\quad/g, '   ')
-    // Convert HTML tags to standard bracketed markers for tokenization
-    .replace(/<sub>(.*?)<\/sub>/gi, '_{$1}')
-    .replace(/<sup>(.*?)<\/sup>/gi, '^{$1}')
-    // Nuclide / Isotope notation: _^{40}_{20}W or {}^{40}_{20}W -> ^{40}_{20}W
-    .replace(/(?:\{\}\s*)?(?:_\^|\^)\{([^{}]+)\}\s*_\{([^{}]+)\}/g, '^{$1}_{$2}')
-    .replace(/(?:\{\}\s*)?_\{([^{}]+)\}\s*\^\{([^{}]+)\}/g, '^{$2}_{$1}')
-    .replace(/(?:\{\}\s*)?(?:_\^|\^)([0-9a-zA-Z]+)\s*_([0-9a-zA-Z]+)/g, '^{$1}_{$2}')
-    .replace(/(?:\{\}\s*)?_([0-9a-zA-Z]+)\s*\^([0-9a-zA-Z]+)/g, '^{$2}_{$1}')
-    .replace(/\\prescript\{([^{}]+)\}\{([^{}]+)\}/g, '^{$1}_{$2}')
-    .replace(/(?:\{\}\s*)?_?\^\{([^{}]+)\}/g, '^{$1}')
-    // Remove any remaining orphan empty braces {}
-    .replace(/\{\}/g, '')
-    // Clean percentage escaping
-    .replace(/\\%/g, '%')
-    // Remove outer LaTeX math delimiters while keeping content
-    .replace(/\$\$(.*?)\$\$/g, '$1')
-    .replace(/\$(.*?)\$/g, '$1')
-    .replace(/\\\[(.*?)\\\]/g, '$1')
-    .replace(/\\\((.*?)\\\)/g, '$1');
-
-  // Restore protected currency
-  processed = restoreCurrencySymbols(processed);
-
-  // Step 2: Convert digit and single-character sub/super syntax (e.g. H_2SO_4 -> H_{2}SO_{4}, Fe^2+ -> Fe^{2+})
-  processed = processed
-    .replace(/([a-zA-Z0-9)\]])_(\d+)/g, '$1_{$2}')
-    .replace(/([a-zA-Z0-9)\]])_([a-zA-Z+-])(?![a-zA-Z0-9])/g, '$1_{$2}')
-    .replace(/([a-zA-Z0-9)\]])\^(\d*[+-]|[+-]\d+)(?=[\s;,.)\]-]|$)/g, '$1^{$2}')
-    .replace(/([a-zA-Z0-9)\]])\^(\d+)/g, '$1^{$2}')
-    .replace(/([a-zA-Z0-9)\]])\^([a-zA-Z])(?![a-zA-Z0-9])/g, '$1^{$2}');
-
-  // Convert unicode sub/superscripts to standard markers
-  const unicodeSubMap: Record<string, string> = {
-    '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4',
-    '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
-    '₊': '+', '₋': '-', '₌': '=', '₍': '(', '₎': ')',
-    'ₐ': 'a', 'ₑ': 'e', 'ₕ': 'h', 'ᵢ': 'i', 'ⱼ': 'j',
-    'ₖ': 'k', 'ₗ': 'l', 'ₘ': 'm', 'ₙ': 'n', 'ₒ': 'o',
-    'ₚ': 'p', 'ᵣ': 'r', 'ₛ': 's', 'ₜ': 't', 'ᵤ': 'u', 'ᵥ': 'v', 'ₓ': 'x',
-  };
-  const unicodeSuperMap: Record<string, string> = {
-    '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
-    '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
-    '⁺': '+', '⁻': '-', '⁼': '=', '⁽': '(', '⁾': ')',
-    'ⁿ': 'n', 'ⁱ': 'i',
-  };
-
-  for (const [uni, asc] of Object.entries(unicodeSubMap)) {
-    processed = processed.replaceAll(uni, `_{${asc}}`);
-  }
-  for (const [uni, asc] of Object.entries(unicodeSuperMap)) {
-    processed = processed.replaceAll(uni, `^{${asc}}`);
-  }
-
-  // Tokenize string by subscript _{...}, superscript ^{...}, [u]...[/u], ***...***, **...**, and *...*
-  const underlineStyle = baseOpts.underline ? { type: UnderlineType.SINGLE } : undefined;
-  const runs: TextRun[] = [];
-  const tokenRegex = /(_\{[^{}]*\}|\^\{[^{}]*\}|\[u\][\s\S]*?\[\/u\]|\*\*\*[^\s*][\s\S]*?\*\*\*|\*\*[^*]+\*\*|\*(?!\s)(?:[^*\n]*?\S)?\*)/gi;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokenRegex.exec(processed)) !== null) {
-    if (match.index > lastIndex) {
-      const plainText = processed.substring(lastIndex, match.index);
-      if (plainText) {
-        runs.push(
-          new TextRun({
-            text: plainText,
-            size: baseOpts.size,
-            bold: baseOpts.bold,
-            color: baseOpts.color,
-            italics: baseOpts.italics,
-            underline: underlineStyle,
-            font: baseOpts.font,
-          })
-        );
-      }
-    }
-
-    const matchedStr = match[0];
-    if (matchedStr.startsWith('_{') && matchedStr.endsWith('}')) {
-      const subContent = matchedStr.slice(2, -1);
-      if (subContent) {
-        runs.push(
-          new TextRun({
-            text: subContent,
-            subScript: true,
-            size: baseOpts.size,
-            bold: baseOpts.bold,
-            color: baseOpts.color,
-            italics: baseOpts.italics,
-            underline: underlineStyle,
-            font: baseOpts.font,
-          })
-        );
-      }
-    } else if (matchedStr.startsWith('^{') && matchedStr.endsWith('}')) {
-      const superContent = matchedStr.slice(2, -1);
-      if (superContent) {
-        runs.push(
-          new TextRun({
-            text: superContent,
-            superScript: true,
-            size: baseOpts.size,
-            bold: baseOpts.bold,
-            color: baseOpts.color,
-            italics: baseOpts.italics,
-            underline: underlineStyle,
-            font: baseOpts.font,
-          })
-        );
-      }
-    } else if (/^\[u\]/i.test(matchedStr) && /\[\/u\]$/i.test(matchedStr)) {
-      const inner = matchedStr.slice(3, -4);
-      if (inner) {
-        runs.push(...parseFormattedTextToDocxRuns(inner, { ...baseOpts, underline: true }));
-      }
-    } else if (matchedStr.startsWith('***') && matchedStr.endsWith('***') && matchedStr.length > 6) {
-      const inner = matchedStr.slice(3, -3);
-      if (inner) {
-        runs.push(...parseFormattedTextToDocxRuns(inner, { ...baseOpts, bold: true, italics: true }));
-      }
-    } else if (matchedStr.startsWith('**') && matchedStr.endsWith('**')) {
-      const boldContent = matchedStr.slice(2, -2);
-      if (boldContent) {
-        runs.push(...parseFormattedTextToDocxRuns(boldContent, { ...baseOpts, bold: true }));
-      }
-    } else if (matchedStr.startsWith('*') && matchedStr.endsWith('*') && matchedStr.length > 2) {
-      const italicContent = matchedStr.slice(1, -1);
-      if (italicContent) {
-        runs.push(...parseFormattedTextToDocxRuns(italicContent, { ...baseOpts, italics: true }));
-      }
-    }
-
-    lastIndex = tokenRegex.lastIndex;
-  }
-
-  if (lastIndex < processed.length) {
-    const trailing = processed.substring(lastIndex);
-    if (trailing) {
-      runs.push(
-        new TextRun({
-          text: trailing,
-          size: baseOpts.size,
-          bold: baseOpts.bold,
-          color: baseOpts.color,
-          italics: baseOpts.italics,
-          underline: underlineStyle,
-          font: baseOpts.font,
-        })
-      );
-    }
-  }
-
-  return runs.length > 0
-    ? runs
-    : [new TextRun({ text: cleanRaw, size: baseOpts.size, bold: baseOpts.bold, color: baseOpts.color, italics: baseOpts.italics, underline: underlineStyle, font: baseOpts.font })];
+/**
+ * Scales an image proportionally inside maxW x maxH without upscaling and returns
+ * a properly typed `ImageRun` (`'png' | 'jpg'`).
+ */
+function createDocxImageRun(
+  imgData: LoadedImageData,
+  maxW: number,
+  maxH: number,
+  allowUpscale = false
+): ImageRun {
+  const dims = fitImageDimensions(imgData.naturalWidth, imgData.naturalHeight, maxW, maxH, allowUpscale);
+  return new ImageRun({
+    type: imgData.type,
+    data: imgData.data,
+    transformation: dims,
+  });
 }
 
 /**
- * Converts text containing Markdown tables into Docx Paragraphs and Table objects
+ * Strips leaked AI image placeholders, fixes missing space after Table/Fig references,
+ * and cleans duplicate adjacent table captions before rendering into DOCX runs.
  */
-function convertTextAndTablesToDocxElements(
+export function sanitizeExamTextForDocx(
   rawText: string,
-  prefix = '',
-  textSize = 22,
-  fontName = 'Times New Roman'
-): (Paragraph | Table)[] {
-  if (!rawText) return [];
-  const normalized = rawText.replace(/\\n/g, '\n');
-  const lines = normalized.split('\n');
+  opts: { isStudentPaper?: boolean } = {}
+): string {
+  if (!rawText) return '';
+  let text = stripPassageControlTags(rawText);
+
+  if (opts.isStudentPaper) {
+    // Strip leaked AI generation placeholders such as [Figure 3.1: ...] or [Diagram: ...]
+    text = text.replace(
+      /\[\s*(?:Figure|Fig\.?|Diagram|Insert(?:\s+Diagram)?)\s*(?:\d+(?:\.\d+)*)?\s*:[^\]]*\]/gi,
+      ''
+    );
+  }
+
+  // Repair fused labels like "Table 7.1to" -> "Table 7.1 to" or "Fig. 3.1shows" -> "Fig. 3.1 shows"
+  text = text
+    .replace(/\b(Tables?|Figs?\.?)\s*(\d+(?:\.\d+)*)([a-zA-Z])/g, '$1 $2 $3')
+    .replace(/\bTable\s+\d+(?:\.\d+)*\.\s*(Table\s+\d+(?:\.\d+)*\b)/gi, '$1')
+    .replace(/\b(Table\s+\d+(?:\.\d+)*)\s*\1\b/gi, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n[ \t]+\n/g, '\n\n')
+    .trim();
+
+  // Remove redundant standalone "Table X.Y" caption lines when an earlier line already references a Table
+  if (/\bTable\s+\d+(?:\.\d+)*\b/i.test(text)) {
+    const lines = text.split('\n');
+    let seenTableMention = false;
+    const filtered: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const isStandaloneTableCaption = /^Table\s+\d+(?:\.\d+)*\.?$/i.test(trimmed);
+      if (isStandaloneTableCaption && seenTableMention) {
+        continue;
+      }
+      if (/\bTable\s+\d+(?:\.\d+)*\b/i.test(trimmed)) {
+        seenTableMention = true;
+      }
+      filtered.push(line);
+    }
+    text = filtered.join('\n').trim();
+  }
+
+  return text;
+}
+
+/**
+ * Removes redundant repeated sub-question labels from the start of `subText` (and
+ * subsequent paragraphs inside `subText`), e.g. `subId = "(b)(i)"`,
+ * `subText = "Isotopes...\n(i) Explain..."` -> `"Isotopes...\nExplain..."`.
+ */
+export function stripDuplicateSubQuestionPrefix(subText: string, subId: string): string {
+  if (!subText || !subId) return subText || '';
+  const trimmedSubId = subId.trim().toLowerCase();
+  const tokenMatches = trimmedSubId.match(/\([a-z0-9]+\)|[a-z0-9]+/gi) || [];
+  const candidateTokens = new Set<string>([trimmedSubId, ...tokenMatches.map((t) => t.toLowerCase())]);
+  const hasRomanLeaf = /\([ivx]{1,4}\)$/i.test(trimmedSubId);
+
+  const stripLine = (line: string, isFirstLine: boolean): string => {
+    let result = line.trimStart();
+    for (let pass = 0; pass < 3; pass++) {
+      const match = result.match(/^(\([a-z0-9]{1,4}\)(?:\([a-z0-9]{1,4}\))?|[a-z0-9]{1,3}[.)])\s+/i);
+      if (!match) break;
+      const rawPrefix = match[1].toLowerCase();
+      const inner = rawPrefix.replace(/^[.(]+|[.)]+$/g, '');
+      const matchesCandidate =
+        candidateTokens.has(rawPrefix) || candidateTokens.has(inner) || candidateTokens.has(`(${inner})`);
+      const matchesMismatchedRoman = isFirstLine && hasRomanLeaf && /^\([ivx]{1,4}\)$/i.test(rawPrefix);
+      if (matchesCandidate || matchesMismatchedRoman) {
+        result = result.slice(match[0].length).trimStart();
+      } else {
+        break;
+      }
+    }
+    return result;
+  };
+
+  return subText
+    .replace(/\r\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .split('\n')
+    .map((line, idx) => stripLine(line, idx === 0))
+    .join('\n');
+}
+
+/**
+ * Computes integer DXA column widths that always sum exactly to `totalWidthDxa`.
+ */
+export function computeFixedTableColumnWidths(
+  colCount: number,
+  totalWidthDxa: number,
+  options: { explicitRatios?: number[]; rows?: string[][] } = {}
+): number[] {
+  const safeCount = Math.max(1, colCount);
+  const { explicitRatios, rows } = options;
+
+  let weights: number[];
+  if (explicitRatios && explicitRatios.length === safeCount) {
+    weights = explicitRatios.map((r) => Math.max(1, r));
+  } else if (rows && rows.length > 0) {
+    weights = Array.from({ length: safeCount }, (_, colIdx) => {
+      let maxLen = 8;
+      for (const row of rows) {
+        const raw = (row[colIdx] || '').replace(/\$|\\\(|\\\)|\\text\{|\}/g, '').trim();
+        // Give blank / writable columns plenty of writing space
+        const effectiveLen = raw.length === 0 ? 18 : Math.min(48, raw.length);
+        if (effectiveLen > maxLen) maxLen = effectiveLen;
+      }
+      return maxLen;
+    });
+  } else {
+    weights = Array.from({ length: safeCount }, () => 1);
+  }
+
+  const weightSum = weights.reduce((acc, w) => acc + w, 0) || safeCount;
+  const widths = weights.map((w) => Math.max(480, Math.floor((w / weightSum) * totalWidthDxa)));
+  const currentSum = widths.reduce((acc, w) => acc + w, 0);
+  const delta = totalWidthDxa - currentSum;
+  if (delta !== 0) {
+    let widestIdx = 0;
+    for (let i = 1; i < widths.length; i++) {
+      if (widths[i] > widths[widestIdx]) widestIdx = i;
+    }
+    widths[widestIdx] = Math.max(480, widths[widestIdx] + delta);
+  }
+  return widths;
+}
+
+export interface MarkdownBlockOptions {
+  prefix?: string;
+  textSize?: number;
+  fontName?: string;
+  indentLeft?: number;
+  hanging?: number;
+  trailingMarks?: number;
+  maxWidthDxa?: number;
+  blankFillableCells?: boolean;
+  sanitizeStudentPlaceholders?: boolean;
+  color?: string;
+}
+
+export interface MarkdownBlocksResult {
+  elements: (Paragraph | Table)[];
+  hasFillableTable: boolean;
+  isPureTableCompletion: boolean;
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+  return trimmed.split('|').map((c) => c.trim());
+}
+
+function isPlaceholderOnlyCellText(cellText: string): boolean {
+  const cleaned = cellText.trim();
+  if (!cleaned) return true;
+  return /^(?:☐|☑|\[\s*\]|_{2,}|\.{3,}|[-–—])$/.test(cleaned);
+}
+
+/**
+ * Converts Markdown/LaTeX question or sub-question text (including multi-line prose,
+ * bullet lists, and pipe tables) into properly spaced OOXML Paragraphs and fixed-width Tables.
+ */
+export function convertMarkdownBlocksToDocxElements(
+  rawText: string,
+  opts: MarkdownBlockOptions = {}
+): MarkdownBlocksResult {
+  if (!rawText) {
+    return { elements: [], hasFillableTable: false, isPureTableCompletion: false };
+  }
+
+  const {
+    prefix = '',
+    textSize = 22,
+    fontName = 'Times New Roman',
+    indentLeft = prefix ? 450 : 0,
+    hanging = prefix ? 450 : 0,
+    trailingMarks,
+    maxWidthDxa = Math.max(5000, A4_CONTENT_WIDTH_DXA - (indentLeft || 0)),
+    blankFillableCells = false,
+    sanitizeStudentPlaceholders = false,
+    color = '1f2937',
+  } = opts;
+
+  const sanitized = sanitizeExamTextForDocx(rawText, { isStudentPaper: sanitizeStudentPlaceholders });
+  const normalized = sanitized.replace(/\r\n/g, '\n').replace(/\\n/g, '\n');
+  const rawLines = normalized.split('\n');
+
+  type ParsedBlock =
+    | { kind: 'paragraph'; text: string }
+    | { kind: 'bullet'; text: string }
+    | { kind: 'table'; rows: string[][] };
+
+  const blocks: ParsedBlock[] = [];
+  let textBuffer: string[] = [];
+  let tableBuffer: string[] = [];
+
+  const flushParagraphBuffer = () => {
+    if (textBuffer.length === 0) return;
+    const joined = textBuffer.join(' ').replace(/\s{2,}/g, ' ').trim();
+    if (joined) blocks.push({ kind: 'paragraph', text: joined });
+    textBuffer = [];
+  };
+
+  const flushTableBuffer = () => {
+    if (tableBuffer.length === 0) return;
+    const dataOrHeaderRows = tableBuffer
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !/^\|?[-:\s|]+\|?$/.test(l) && /-/.test(l) === false ? true : !/^\|?[\s:|-]+\|?$/.test(l));
+    if (dataOrHeaderRows.length > 0) {
+      const parsedRows = dataOrHeaderRows.map(splitMarkdownTableRow);
+      blocks.push({ kind: 'table', rows: parsedRows });
+    }
+    tableBuffer = [];
+  };
+
+  for (const rawLine of rawLines) {
+    const trimmed = rawLine.trim();
+    const isTableLine = trimmed.startsWith('|') && (trimmed.match(/\|/g)?.length || 0) >= 2;
+    if (isTableLine) {
+      flushParagraphBuffer();
+      tableBuffer.push(trimmed);
+      continue;
+    }
+
+    if (tableBuffer.length > 0) {
+      flushTableBuffer();
+    }
+
+    if (!trimmed) {
+      flushParagraphBuffer();
+      continue;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*•]\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraphBuffer();
+      if (bulletMatch[1].trim()) {
+        blocks.push({ kind: 'bullet', text: bulletMatch[1].trim() });
+      }
+      continue;
+    }
+
+    textBuffer.push(trimmed);
+    // Keep standalone prompt headers ending cleanly in ":" on their own paragraph
+    if (trimmed.endsWith(':')) {
+      flushParagraphBuffer();
+    }
+  }
+  flushTableBuffer();
+  flushParagraphBuffer();
+
+  // Decide which non-table paragraph gets prefix and which gets trailing [marks]
+  const firstNonTableIdx = blocks.findIndex((b) => b.kind !== 'table');
+  let markTargetIdx = -1;
+  const lastTableIdx = blocks.map((b) => b.kind).lastIndexOf('table');
+  if (trailingMarks !== undefined) {
+    if (lastTableIdx >= 0) {
+      // Place marks on the last non-table block after the last table, or before the first table
+      const postTableParaIdx = blocks.findIndex((b, i) => i > lastTableIdx && b.kind !== 'table');
+      if (postTableParaIdx >= 0) {
+        for (let i = blocks.length - 1; i > lastTableIdx; i--) {
+          if (blocks[i].kind !== 'table') {
+            markTargetIdx = i;
+            break;
+          }
+        }
+      } else {
+        for (let i = lastTableIdx - 1; i >= 0; i--) {
+          if (blocks[i].kind !== 'table') {
+            markTargetIdx = i;
+            break;
+          }
+        }
+      }
+    } else {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i].kind !== 'table') {
+          markTargetIdx = i;
+          break;
+        }
+      }
+    }
+  }
+
   const elements: (Paragraph | Table)[] = [];
+  let hasFillableTable = false;
+  let hasPostTablePrompt = false;
 
-  let currentTextLines: string[] = [];
-  let currentTableLines: string[] = [];
-  let inTable = false;
-  let activePrefix = prefix;
-
-  const flushText = () => {
-    if (currentTextLines.length === 0) return;
-    const textStr = currentTextLines.join(' ');
+  // If the entire block list starts with a table and has prefix/marks, emit an intro line
+  if (blocks.length > 0 && firstNonTableIdx !== 0 && (prefix || trailingMarks !== undefined)) {
+    const introChildren: DocxInlineChild[] = [];
+    if (prefix) {
+      introChildren.push(new TextRun({ text: prefix, bold: true, size: textSize, color: '111827', font: fontName }));
+    }
+    if (trailingMarks !== undefined && markTargetIdx === -1) {
+      introChildren.push(new TextRun({ text: `\t[${trailingMarks}]`, bold: true, size: textSize, color: '4b5563', font: fontName }));
+    }
     elements.push(
       new Paragraph({
-        children: [
-          ...(activePrefix
-            ? [new TextRun({ text: activePrefix, bold: true, size: textSize, color: '111827', font: fontName })]
-            : []),
-          ...parseFormattedTextToDocxRuns(textStr, { size: textSize, color: '1f2937', font: fontName }),
-        ],
-        indent: prefix ? { left: 450, hanging: 450 } : undefined,
+        children: introChildren,
+        indent: indentLeft ? { left: indentLeft, hanging: hanging || 0 } : undefined,
+        tabStops: trailingMarks !== undefined && markTargetIdx === -1
+          ? [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }]
+          : undefined,
         spacing: { before: 80, after: 60, line: 276 },
       })
     );
-    currentTextLines = [];
-    activePrefix = '';
-  };
+  }
 
-  const flushTable = () => {
-    if (currentTableLines.length === 0) return;
-    const rawRows = currentTableLines
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !/^\|[-:\s|]+\|$/.test(l));
+  blocks.forEach((block, idx) => {
+    if (idx > lastTableIdx && lastTableIdx >= 0 && block.kind !== 'table') {
+      const isTableReminderOnly =
+        /^(?:complete|fill\s+in)\s+(?:the\s+)?(?:missing\s+)?(?:values?|cells?|blanks?|table)\.?\s*$/i.test(
+          block.text.trim()
+        );
+      if (!isTableReminderOnly) {
+        hasPostTablePrompt = true;
+      }
+    }
 
-    if (rawRows.length > 0) {
-      const headerLine = rawRows[0];
-      const headerCells = headerLine
-        .slice(1, -1)
-        .split('|')
-        .map((c) => c.trim());
+    if (block.kind === 'paragraph') {
+      const attachPrefix = idx === firstNonTableIdx && Boolean(prefix);
+      const attachMarks = idx === markTargetIdx && trailingMarks !== undefined;
+      const children: DocxInlineChild[] = [
+        ...(attachPrefix
+          ? [new TextRun({ text: prefix, bold: true, size: textSize, color: '111827', font: fontName })]
+          : []),
+        ...parseFormattedTextChildren(block.text, { size: textSize, color, font: fontName }),
+        ...(attachMarks
+          ? [new TextRun({ text: `\t[${trailingMarks}]`, bold: true, size: textSize, color: '4b5563', font: fontName })]
+          : []),
+      ];
 
-      const dataRows = rawRows.slice(1);
-      const colCount = Math.max(1, headerCells.length);
-      const cellWidth = Math.floor(100 / colCount);
+      elements.push(
+        new Paragraph({
+          children,
+          indent: indentLeft ? { left: indentLeft, hanging: attachPrefix ? hanging : 0 } : undefined,
+          tabStops: attachMarks ? [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }] : undefined,
+          spacing: { before: idx === 0 ? 80 : 50, after: 60, line: 276 },
+        })
+      );
+    } else if (block.kind === 'bullet') {
+      const attachMarks = idx === markTargetIdx && trailingMarks !== undefined;
+      const bulletIndent = (indentLeft || 0) + 360;
+      const children: DocxInlineChild[] = [
+        new TextRun({ text: '•  ', bold: true, size: textSize, color: '374151', font: fontName }),
+        ...parseFormattedTextChildren(block.text, { size: textSize, color, font: fontName }),
+        ...(attachMarks
+          ? [new TextRun({ text: `\t[${trailingMarks}]`, bold: true, size: textSize, color: '4b5563', font: fontName })]
+          : []),
+      ];
+      elements.push(
+        new Paragraph({
+          children,
+          indent: { left: bulletIndent, hanging: 220 },
+          tabStops: attachMarks ? [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }] : undefined,
+          spacing: { before: 30, after: 40, line: 264 },
+        })
+      );
+    } else {
+      // Fixed-width OOXML Table with normalized cells and clean writable blanks
+      const rawRows = block.rows;
+      const colCount = Math.max(1, ...rawRows.map((r) => r.length));
+      const normalizedRows = rawRows.map((r) =>
+        Array.from({ length: colCount }, (_, ci) => (r[ci] ?? '').trim())
+      );
+      const colWidths = computeFixedTableColumnWidths(colCount, maxWidthDxa, { rows: normalizedRows });
+      const cellMargins = { top: 70, bottom: 70, left: 100, right: 100 };
+
+      const headerCells = normalizedRows[0];
+      const dataRows = normalizedRows.slice(1);
 
       const tableRows: TableRow[] = [
         new TableRow({
           tableHeader: true,
-          children: headerCells.map(
-            (cellText) =>
-              new TableCell({
-                width: { size: cellWidth, type: WidthType.PERCENTAGE },
-                children: [
-                  new Paragraph({
-                    alignment: AlignmentType.CENTER,
-                    children: parseFormattedTextToDocxRuns(cellText, { size: 20, bold: true, font: fontName }),
-                  }),
-                ],
-                shading: { fill: 'f3f4f6' },
-                borders: {
-                  top: { style: BorderStyle.SINGLE, size: 6, color: '374151' },
-                  bottom: { style: BorderStyle.SINGLE, size: 6, color: '374151' },
-                  left: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
-                  right: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
-                },
-              })
-          ),
+          cantSplit: true,
+          children: headerCells.map((cellText, colIdx) => {
+            const cleanCell =
+              blankFillableCells && isPlaceholderOnlyCellText(cellText)
+                ? ''
+                : cellText.replace(/\[\s*\]|[☐☑]/g, '').trim();
+            return new TableCell({
+              width: { size: colWidths[colIdx], type: WidthType.DXA },
+              margins: cellMargins,
+              children: [
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  children: parseFormattedTextChildren(cleanCell, { size: Math.min(20, textSize), bold: true, font: fontName }),
+                }),
+              ],
+              shading: { fill: 'f3f4f6' },
+              borders: {
+                top: { style: BorderStyle.SINGLE, size: 6, color: '374151' },
+                bottom: { style: BorderStyle.SINGLE, size: 6, color: '374151' },
+                left: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
+                right: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
+              },
+            });
+          }),
         }),
       ];
 
-      dataRows.forEach((rowLine) => {
-        const cells = rowLine
-          .slice(1, -1)
-          .split('|')
-          .map((c) => c.trim());
+      for (const row of dataRows) {
+        let rowHasWritableCell = false;
+        const rowCells = row.map((rawCellText, colIdx) => {
+          const isBlank =
+            isPlaceholderOnlyCellText(rawCellText) || /_{2,}|\[\s*\]|[☐☑]/.test(rawCellText);
+          if (isBlank) {
+            hasFillableTable = true;
+            rowHasWritableCell = true;
+          }
+          let displayCell = rawCellText;
+          if (blankFillableCells) {
+            if (isPlaceholderOnlyCellText(rawCellText)) {
+              displayCell = '';
+            } else {
+              displayCell = rawCellText
+                .replace(/\[\s*\]|[☐☑]/g, '______')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+            }
+          }
+          return new TableCell({
+            width: { size: colWidths[colIdx], type: WidthType.DXA },
+            margins: cellMargins,
+            children: [
+              new Paragraph({
+                alignment: colIdx === 0 && !isBlank && rawCellText.length > 18 ? AlignmentType.LEFT : AlignmentType.CENTER,
+                children: displayCell
+                  ? parseFormattedTextChildren(displayCell, { size: Math.min(20, textSize), font: fontName })
+                  : [new TextRun({ text: ' ', size: Math.min(20, textSize), font: fontName })],
+              }),
+            ],
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 4, color: 'd1d5db' },
+              bottom: { style: BorderStyle.SINGLE, size: 4, color: 'd1d5db' },
+              left: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
+              right: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
+            },
+          });
+        });
 
         tableRows.push(
           new TableRow({
-            children: cells.map(
-              (cellText) =>
-                new TableCell({
-                  width: { size: cellWidth, type: WidthType.PERCENTAGE },
-                  children: [
-                    new Paragraph({
-                      alignment: AlignmentType.CENTER,
-                      children: parseFormattedTextToDocxRuns(cellText, { size: 20, font: fontName }),
-                    }),
-                  ],
-                  borders: {
-                    top: { style: BorderStyle.SINGLE, size: 4, color: 'd1d5db' },
-                    bottom: { style: BorderStyle.SINGLE, size: 4, color: 'd1d5db' },
-                    left: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
-                    right: { style: BorderStyle.SINGLE, size: 4, color: '9ca3af' },
-                  },
-                })
-            ),
+            cantSplit: true,
+            height: rowHasWritableCell ? { value: 420, rule: HeightRule.ATLEAST } : undefined,
+            children: rowCells,
           })
         );
-      });
+      }
 
       elements.push(
         new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
+          width: { size: maxWidthDxa, type: WidthType.DXA },
+          columnWidths: colWidths,
+          layout: TableLayoutType.FIXED,
           alignment: AlignmentType.CENTER,
           rows: tableRows,
         })
       );
-      elements.push(new Paragraph({ text: '', spacing: { before: 80, after: 80 } }));
+      elements.push(new Paragraph({ text: '', spacing: { before: 70, after: 70 } }));
     }
-    currentTableLines = [];
-  };
+  });
 
-  for (const line of lines) {
-    const isTableLine = line.trim().startsWith('|') && line.trim().endsWith('|');
-    if (isTableLine) {
-      if (!inTable) {
-        flushText();
-        inTable = true;
-      }
-      currentTableLines.push(line);
-    } else {
-      if (inTable) {
-        flushTable();
-        inTable = false;
-      }
-      currentTextLines.push(line);
-    }
-  }
+  const inlineBlankCount = (sanitized.match(/(?:\.{8,}|_{8,})/g) || []).length;
+  const hasInlineAnswerBlanks = inlineBlankCount >= 2;
+  const isPureTableCompletion =
+    (hasFillableTable && !hasPostTablePrompt) || hasInlineAnswerBlanks;
 
-  if (inTable) flushTable();
-  else flushText();
-
-  return elements;
+  return { elements, hasFillableTable, isPureTableCompletion };
 }
 
 /**
- * Builds an authentic Cambridge / IGCSE Candidate Information table with box grids.
+ * Builds an authentic Cambridge / IGCSE Candidate Information table with fixed DXA box grids.
  */
-function buildCambridgeCandidateTable(): Table {
+function buildCambridgeCandidateTable(totalWidthDxa = A4_CONTENT_WIDTH_DXA): Table {
   const boxBorder = { style: BorderStyle.SINGLE, size: 6, color: '000000' };
   const cellMargins = { top: 60, bottom: 60, left: 80, right: 80 };
+  const outerColWidths = computeFixedTableColumnWidths(3, totalWidthDxa, { explicitRatios: [46, 28, 26] });
 
-  const createNumberBoxes = (label: string, count: number, cellPercent: number) => {
+  const createNumberBoxes = (label: string, count: number, outerCellDxa: number) => {
+    const innerTotalDxa = Math.max(1200, outerCellDxa - 160);
+    const boxWidths = computeFixedTableColumnWidths(count, innerTotalDxa);
     return new TableCell({
-      width: { size: cellPercent, type: WidthType.PERCENTAGE },
+      width: { size: outerCellDxa, type: WidthType.DXA },
       margins: cellMargins,
       children: [
         new Paragraph({
@@ -479,13 +660,16 @@ function buildCambridgeCandidateTable(): Table {
           spacing: { after: 30 },
         }),
         new Table({
-          width: { size: 100, type: WidthType.PERCENTAGE },
+          width: { size: innerTotalDxa, type: WidthType.DXA },
+          columnWidths: boxWidths,
+          layout: TableLayoutType.FIXED,
           rows: [
             new TableRow({
+              cantSplit: true,
               children: Array.from({ length: count }).map(
-                () =>
+                (_, bi) =>
                   new TableCell({
-                    width: { size: Math.round(100 / count), type: WidthType.PERCENTAGE },
+                    width: { size: boxWidths[bi], type: WidthType.DXA },
                     children: [new Paragraph({ text: ' ', spacing: { before: 30, after: 30 } })],
                     borders: { top: boxBorder, bottom: boxBorder, left: boxBorder, right: boxBorder },
                   })
@@ -504,12 +688,15 @@ function buildCambridgeCandidateTable(): Table {
   };
 
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: totalWidthDxa, type: WidthType.DXA },
+    columnWidths: outerColWidths,
+    layout: TableLayoutType.FIXED,
     rows: [
       new TableRow({
+        cantSplit: true,
         children: [
           new TableCell({
-            width: { size: 46, type: WidthType.PERCENTAGE },
+            width: { size: outerColWidths[0], type: WidthType.DXA },
             margins: cellMargins,
             children: [
               new Paragraph({
@@ -517,7 +704,7 @@ function buildCambridgeCandidateTable(): Table {
                 spacing: { after: 50 },
               }),
               new Paragraph({
-                tabStops: [{ type: TabStopType.RIGHT, position: 4000, leader: LeaderType.DOT }],
+                tabStops: [{ type: TabStopType.RIGHT, position: Math.max(2000, outerColWidths[0] - 240), leader: LeaderType.DOT }],
                 children: [new TextRun('\t')],
               }),
             ],
@@ -528,38 +715,36 @@ function buildCambridgeCandidateTable(): Table {
               right: boxBorder,
             },
           }),
-          createNumberBoxes('CENTRE\nNUMBER', 5, 28),
-          createNumberBoxes('CANDIDATE\nNUMBER', 4, 26),
+          createNumberBoxes('CENTRE\nNUMBER', 5, outerColWidths[1]),
+          createNumberBoxes('CANDIDATE\nNUMBER', 4, outerColWidths[2]),
         ],
       }),
     ],
   });
 }
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  const cleanBase64 = base64.replace(/^data:image\/\w+;base64,/, '');
-  const binaryString = atob(cleanBase64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
 /**
  * Builds the complete authentic Cambridge IGCSE Cover Page elements for Word documents.
  */
-function buildCambridgeCoverDocxElements(headerConfig: ExamHeaderConfig, questions: Question[]): (Paragraph | Table)[] {
+async function buildCambridgeCoverDocxElements(
+  headerConfig: ExamHeaderConfig,
+  questions: Question[]
+): Promise<(Paragraph | Table)[]> {
   const details = getCambridgeCoverDetails(headerConfig, questions);
   const elements: (Paragraph | Table)[] = [];
 
   // Top 2-Logo Header: School Logo (Left) and Cambridge International Logo (Right)
   try {
-    const schoolBytes = base64ToUint8Array(details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO);
-    const cambridgeBytes = base64ToUint8Array(details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO);
+    const [schoolImg, cambridgeImg] = await Promise.all([
+      loadImageData(details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO),
+      loadImageData(details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO),
+    ]);
+    const logoColWidths = computeFixedTableColumnWidths(2, A4_CONTENT_WIDTH_DXA);
 
     const logoTable = new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: A4_CONTENT_WIDTH_DXA, type: WidthType.DXA },
+      columnWidths: logoColWidths,
+      layout: TableLayoutType.FIXED,
       borders: {
         top: { style: BorderStyle.NONE, size: 0, color: 'auto' },
         bottom: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
@@ -568,37 +753,26 @@ function buildCambridgeCoverDocxElements(headerConfig: ExamHeaderConfig, questio
       },
       rows: [
         new TableRow({
+          cantSplit: true,
           children: [
             new TableCell({
-              width: { size: 50, type: WidthType.PERCENTAGE },
+              width: { size: logoColWidths[0], type: WidthType.DXA },
               margins: { bottom: 120 },
-              children: [
-                new Paragraph({
-                  children: [
-                    new ImageRun({
-                      data: schoolBytes,
-                      transformation: { width: 170, height: 42 },
-                      type: 'png',
-                    }),
-                  ],
-                }),
-              ],
+              children: schoolImg
+                ? [new Paragraph({ children: [createDocxImageRun(schoolImg, 170, 56)] })]
+                : [new Paragraph({ text: '' })],
             }),
             new TableCell({
-              width: { size: 50, type: WidthType.PERCENTAGE },
+              width: { size: logoColWidths[1], type: WidthType.DXA },
               margins: { bottom: 120 },
-              children: [
-                new Paragraph({
-                  alignment: AlignmentType.RIGHT,
-                  children: [
-                    new ImageRun({
-                      data: cambridgeBytes,
-                      transformation: { width: 190, height: 42 },
-                      type: 'png',
-                    }),
-                  ],
-                }),
-              ],
+              children: cambridgeImg
+                ? [
+                  new Paragraph({
+                    alignment: AlignmentType.RIGHT,
+                    children: [createDocxImageRun(cambridgeImg, 190, 56)],
+                  }),
+                ]
+                : [new Paragraph({ text: '' })],
             }),
           ],
         }),
@@ -736,16 +910,14 @@ function buildCambridgeCoverDocxElements(headerConfig: ExamHeaderConfig, questio
     );
   });
 
-  // Footer info
+  // Footer info (native Word NUMPAGES field so total page count is always accurate)
   elements.push(
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [
-        new TextRun({
-          text: `This document has ${details.estimatedPages} pages. Any blank pages are indicated.`,
-          font: 'Arial',
-          size: 15,
-        }),
+        new TextRun({ text: 'This document has ', font: 'Arial', size: 15 }),
+        new TextRun({ children: [PageNumber.TOTAL_PAGES], font: 'Arial', size: 15 }),
+        new TextRun({ text: ' pages. Any blank pages are indicated.', font: 'Arial', size: 15 }),
       ],
       spacing: { before: 240, after: 80 },
     })
@@ -773,23 +945,27 @@ function buildCambridgeCoverDocxElements(headerConfig: ExamHeaderConfig, questio
 function buildWorksheetHeaderTable(schoolName: string, totalMarks: number): Table {
   const borderGrey = { style: BorderStyle.SINGLE, size: 4, color: 'cbd5e1' };
   const cellMargins = { top: 100, bottom: 100, left: 120, right: 120 };
+  const colWidths = computeFixedTableColumnWidths(2, A4_CONTENT_WIDTH_DXA, { explicitRatios: [75, 25] });
 
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: A4_CONTENT_WIDTH_DXA, type: WidthType.DXA },
+    columnWidths: colWidths,
+    layout: TableLayoutType.FIXED,
     rows: [
       new TableRow({
+        cantSplit: true,
         children: [
           new TableCell({
-            width: { size: 75, type: WidthType.PERCENTAGE },
+            width: { size: colWidths[0], type: WidthType.DXA },
             margins: cellMargins,
             children: [
               ...(schoolName
                 ? [
-                    new Paragraph({
-                      children: [new TextRun({ text: schoolName.toUpperCase(), bold: true, size: 22, color: '1e40af', font: 'Arial' })],
-                      spacing: { after: 40 },
-                    }),
-                  ]
+                  new Paragraph({
+                    children: [new TextRun({ text: schoolName.toUpperCase(), bold: true, size: 22, color: '1e40af', font: 'Arial' })],
+                    spacing: { after: 40 },
+                  }),
+                ]
                 : []),
               new Paragraph({
                 children: [
@@ -810,7 +986,7 @@ function buildWorksheetHeaderTable(schoolName: string, totalMarks: number): Tabl
             borders: { top: borderGrey, bottom: borderGrey, left: borderGrey, right: { style: BorderStyle.NONE, size: 0, color: 'auto' } },
           }),
           new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
+            width: { size: colWidths[1], type: WidthType.DXA },
             margins: cellMargins,
             children: [
               new Paragraph({
@@ -835,13 +1011,14 @@ function buildWorksheetHeaderTable(schoolName: string, totalMarks: number): Tabl
 }
 
 /**
- * Generates and downloads a student exam paper as a .docx file
+ * Builds the `docx` `Document` object for a student exam paper without triggering
+ * browser download, enabling both browser export and Node verification tests.
  */
-export async function exportStudentPaperDocx(
+export async function buildStudentPaperDocxDocument(
   headerConfig: ExamHeaderConfig,
   rawQuestions: Question[],
   options: DocxExportOptions = {}
-): Promise<void> {
+): Promise<Document> {
   const questions = resolveQuestionResources(rawQuestions, {
     autoRenumberFigures: options.autoRenumberFigures ?? true,
   });
@@ -861,7 +1038,7 @@ export async function exportStudentPaperDocx(
 
   // ─── 1. Cover Page / Header ───────────────────────────────────────────────
   if (isCambridge) {
-    docParagraphs.push(...buildCambridgeCoverDocxElements(headerConfig, questions));
+    docParagraphs.push(...(await buildCambridgeCoverDocxElements(headerConfig, questions)));
   } else {
     if (template === 'school_worksheet') {
       docParagraphs.push(buildWorksheetHeaderTable(schoolName || headerConfig.schoolName || '', totalMarks));
@@ -921,18 +1098,22 @@ export async function exportStudentPaperDocx(
             ...(b.type === 'bullet' || singlePlainLine
               ? [new TextRun({ text: '• ', size: 16, font: 'Arial' })]
               : []),
-            ...parseFormattedTextToDocxRuns(b.text, { size: 16, font: 'Arial' }),
+            ...parseFormattedTextChildren(b.text, { size: 16, font: 'Arial' }),
           ],
           spacing: { after: 30 },
         })
     );
 
     const instTable = new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: A4_CONTENT_WIDTH_DXA, type: WidthType.DXA },
+      columnWidths: [A4_CONTENT_WIDTH_DXA],
+      layout: TableLayoutType.FIXED,
       rows: [
         new TableRow({
+          cantSplit: true,
           children: [
             new TableCell({
+              width: { size: A4_CONTENT_WIDTH_DXA, type: WidthType.DXA },
               margins: { top: 80, bottom: 80, left: 100, right: 100 },
               children: [
                 new Paragraph({
@@ -942,10 +1123,10 @@ export async function exportStudentPaperDocx(
                 ...instructionParagraphs,
                 ...(headerConfig.additionalMaterials
                   ? [
-                      new Paragraph({
-                        children: [new TextRun({ text: `• Additional Materials: ${headerConfig.additionalMaterials}`, size: 16, font: 'Arial' })],
-                      }),
-                    ]
+                    new Paragraph({
+                      children: [new TextRun({ text: `• Additional Materials: ${headerConfig.additionalMaterials}`, size: 16, font: 'Arial' })],
+                    }),
+                  ]
                   : []),
                 new Paragraph({
                   children: [new TextRun({ text: '• The number of marks is given in brackets [ ] at the end of each question.', size: 16, font: 'Arial' })],
@@ -979,8 +1160,16 @@ export async function exportStudentPaperDocx(
       stripDuplicateOptionsFromStem(q.question_text || '', q.options),
       q.sub_questions
     );
-    const stemElements = convertTextAndTablesToDocxElements(cleanStem, `${qNum}.  `, 22, fontName);
-    docParagraphs.push(...stemElements);
+    const stemBlocks = convertMarkdownBlocksToDocxElements(cleanStem, {
+      prefix: `${qNum}.  `,
+      textSize: 22,
+      fontName,
+      indentLeft: 450,
+      hanging: 450,
+      blankFillableCells: true,
+      sanitizeStudentPlaceholders: true,
+    });
+    docParagraphs.push(...stemBlocks.elements);
 
     // Embed Main Question Diagrams if present (only if NOT an insert diagram when booklet is attached)
     const stemDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
@@ -997,16 +1186,7 @@ export async function exportStudentPaperDocx(
           docParagraphs.push(
             new Paragraph({
               alignment: AlignmentType.CENTER,
-              children: [
-                new ImageRun({
-                  type: 'png',
-                  data: imgData.data,
-                  transformation: {
-                    width: imgData.width,
-                    height: imgData.height,
-                  },
-                }),
-              ],
+              children: [createDocxImageRun(imgData, 420, 260)],
               spacing: { before: 120, after: 60 },
             })
           );
@@ -1041,7 +1221,7 @@ export async function exportStudentPaperDocx(
             indent: { left: 800, hanging: 380 },
             children: [
               new TextRun({ text: `${letter}    `, bold: true, size: 20, font: fontName }),
-              ...(text ? parseFormattedTextToDocxRuns(text, { size: 20, color: '374151', font: fontName }) : []),
+              ...(text ? parseFormattedTextChildren(text, { size: 20, color: '374151', font: fontName }) : []),
             ],
             spacing: { before: 50, after: 40, line: 260 },
           })
@@ -1053,16 +1233,7 @@ export async function exportStudentPaperDocx(
             docParagraphs.push(
               new Paragraph({
                 indent: { left: 800 },
-                children: [
-                  new ImageRun({
-                    type: 'png',
-                    data: optImgData.data,
-                    transformation: {
-                      width: Math.min(240, optImgData.width),
-                      height: Math.min(140, optImgData.height),
-                    },
-                  }),
-                ],
+                children: [createDocxImageRun(optImgData, 240, 140)],
                 spacing: { before: 20, after: 80 },
               })
             );
@@ -1071,21 +1242,24 @@ export async function exportStudentPaperDocx(
       }
     }
 
-    // Sub-questions with hanging indent (a) and right-aligned mark tab
+    // Sub-questions with hanging indent (a), Markdown table support, and right-aligned mark tab
     if (q.sub_questions && q.sub_questions.length > 0) {
       for (const sq of q.sub_questions) {
-        docParagraphs.push(
-          new Paragraph({
-            indent: { left: 800, hanging: 380 },
-            tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
-            children: [
-              new TextRun({ text: `${sq.sub_id}  `, bold: true, size: 20, font: fontName }),
-              ...parseFormattedTextToDocxRuns(stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options), { size: 20, font: fontName }),
-              new TextRun({ text: `\t[${sq.marks || 1}]`, bold: true, size: 20, color: '4b5563', font: fontName }),
-            ],
-            spacing: { before: 80, after: 60, line: 260 },
-          })
+        const cleanSubText = stripDuplicateSubQuestionPrefix(
+          stripDuplicateOptionsFromStem(sq.question_text || '', (sq as any).options || q.options),
+          sq.sub_id || ''
         );
+        const subBlocks = convertMarkdownBlocksToDocxElements(cleanSubText, {
+          prefix: `${sq.sub_id}  `,
+          textSize: 20,
+          fontName,
+          indentLeft: 800,
+          hanging: 380,
+          trailingMarks: sq.marks || 1,
+          blankFillableCells: true,
+          sanitizeStudentPlaceholders: true,
+        });
+        docParagraphs.push(...subBlocks.elements);
 
         // Sub-question diagrams if present (only if NOT an insert resource when booklet is attached)
         const subDiagramUrls = resolveQuestionImageUrlsExcludingStandaloneSvg({
@@ -1100,16 +1274,7 @@ export async function exportStudentPaperDocx(
               docParagraphs.push(
                 new Paragraph({
                   alignment: AlignmentType.CENTER,
-                  children: [
-                    new ImageRun({
-                      type: 'png',
-                      data: subImgData.data,
-                      transformation: {
-                        width: Math.min(340, subImgData.width),
-                        height: Math.min(180, subImgData.height),
-                      },
-                    }),
-                  ],
+                  children: [createDocxImageRun(subImgData, 360, 220)],
                   spacing: { before: 100, after: 40 },
                 })
               );
@@ -1134,8 +1299,8 @@ export async function exportStudentPaperDocx(
           }
         }
 
-        // Native full-width answer lines
-        if (includeAnswerLines && template !== 'separate_answer_booklet') {
+        // Native full-width answer lines (suppressed when the sub-question is purely table-completion)
+        if (includeAnswerLines && template !== 'separate_answer_booklet' && !subBlocks.isPureTableCompletion) {
           const subLinesCount = Math.max(1, (sq.marks || 1) * linesPerMark);
           for (let li = 0; li < subLinesCount; li++) {
             docParagraphs.push(
@@ -1149,7 +1314,12 @@ export async function exportStudentPaperDocx(
           }
         }
       }
-    } else if (includeAnswerLines && template !== 'separate_answer_booklet' && q.question_style !== 'Multiple Choice') {
+    } else if (
+      includeAnswerLines &&
+      template !== 'separate_answer_booklet' &&
+      q.question_style !== 'Multiple Choice' &&
+      !stemBlocks.isPureTableCompletion
+    ) {
       // Main Question Native Full-Width Answer Lines
       const lineCount = Math.max(1, (q.marks || 1) * linesPerMark);
       for (let li = 0; li < lineCount; li++) {
@@ -1265,8 +1435,8 @@ export async function exportStudentPaperDocx(
 
         const headerText = qRef
           ? (/^figs?/i.test(qRef)
-              ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`
-              : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`)
+            ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`
+            : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`)
           : `Resource for Question ${q.question_number || qIdx + 1}${topic ? ` — ${topic}` : ''}`;
 
         docParagraphs.push(
@@ -1289,16 +1459,7 @@ export async function exportStudentPaperDocx(
           docParagraphs.push(
             new Paragraph({
               alignment: AlignmentType.CENTER,
-              children: [
-                new ImageRun({
-                  type: 'png',
-                  data: imgData.data,
-                  transformation: {
-                    width: Math.min(520, imgData.width),
-                    height: Math.min(350, imgData.height),
-                  },
-                }),
-              ],
+              children: [createDocxImageRun(imgData, 500, 350)],
               spacing: { before: 100, after: 180 },
             })
           );
@@ -1322,8 +1483,8 @@ export async function exportStudentPaperDocx(
 
           const sqHeaderText = sqRef
             ? (/^figs?/i.test(sqRef)
-                ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` — ${sqTopic}` : ''}`
-                : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` — ${sqTopic}` : ''}`)
+              ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` — ${sqTopic}` : ''}`
+              : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` — ${sqTopic}` : ''}`)
             : `Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` — ${sqTopic}` : ''}`;
 
           docParagraphs.push(
@@ -1346,16 +1507,7 @@ export async function exportStudentPaperDocx(
             docParagraphs.push(
               new Paragraph({
                 alignment: AlignmentType.CENTER,
-                children: [
-                  new ImageRun({
-                    type: 'png',
-                    data: sqImgData.data,
-                    transformation: {
-                      width: Math.min(520, sqImgData.width),
-                      height: Math.min(320, sqImgData.height),
-                    },
-                  }),
-                ],
+                children: [createDocxImageRun(sqImgData, 500, 320)],
                 spacing: { before: 80, after: 180 },
               })
             );
@@ -1429,9 +1581,25 @@ export async function exportStudentPaperDocx(
     ],
   });
 
+  return doc;
+}
+
+/**
+ * Generates and downloads a student exam paper as a .docx file
+ */
+export async function exportStudentPaperDocx(
+  headerConfig: ExamHeaderConfig,
+  rawQuestions: Question[],
+  options: DocxExportOptions = {}
+): Promise<void> {
+  const doc = await buildStudentPaperDocxDocument(headerConfig, rawQuestions, options);
   const blob = await Packer.toBlob(doc);
   const safeTitle = (headerConfig.title || 'Exam_Paper').replace(/[^a-zA-Z0-9_-]/g, '_');
-  await exportFileUniversal(blob, `${safeTitle}_Student_Paper.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  await exportFileUniversal(
+    blob,
+    `${safeTitle}_Student_Paper.docx`,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  );
 }
 
 /**
@@ -1663,7 +1831,11 @@ export async function exportTeacherMarkSchemeDocx(
       stripDuplicateOptionsFromStem(q.question_text || '', q.options),
       q.sub_questions
     );
-    const stemElements = convertTextAndTablesToDocxElements(cleanStem, '', 19, 'Arial');
+    const stemElements = convertMarkdownBlocksToDocxElements(cleanStem, {
+      textSize: 19,
+      fontName: 'Arial',
+      color: '1f2937',
+    }).elements;
     docParagraphs.push(...stemElements);
 
     // Embed Question Diagrams if present
@@ -1678,16 +1850,7 @@ export async function exportTeacherMarkSchemeDocx(
         docParagraphs.push(
           new Paragraph({
             alignment: AlignmentType.CENTER,
-            children: [
-              new ImageRun({
-                type: 'png',
-                data: imgData.data,
-                transformation: {
-                  width: Math.min(360, imgData.width),
-                  height: Math.min(200, imgData.height),
-                },
-              }),
-            ],
+            children: [createDocxImageRun(imgData, 360, 200)],
             spacing: { before: 100, after: 100 },
           })
         );
@@ -1704,7 +1867,7 @@ export async function exportTeacherMarkSchemeDocx(
             indent: { left: 400, hanging: 240 },
             children: [
               new TextRun({ text: `${letter}   `, bold: true, size: 18, color: '1e3a8a', font: 'Arial' }),
-              ...(text ? parseFormattedTextToDocxRuns(text, { size: 18, color: '4b5563', font: 'Arial' }) : []),
+              ...(text ? parseFormattedTextChildren(text, { size: 18, color: '4b5563', font: 'Arial' }) : []),
             ],
             spacing: { before: 20, after: 20 },
           })
@@ -1716,16 +1879,7 @@ export async function exportTeacherMarkSchemeDocx(
             docParagraphs.push(
               new Paragraph({
                 indent: { left: 400 },
-                children: [
-                  new ImageRun({
-                    type: 'png',
-                    data: optImgData.data,
-                    transformation: {
-                      width: Math.min(220, optImgData.width),
-                      height: Math.min(130, optImgData.height),
-                    },
-                  }),
-                ],
+                children: [createDocxImageRun(optImgData, 220, 130)],
                 spacing: { before: 20, after: 60 },
               })
             );
@@ -1735,30 +1889,32 @@ export async function exportTeacherMarkSchemeDocx(
     }
 
     // Mark Scheme Table for this Question
+    const msColWidths = computeFixedTableColumnWidths(4, A4_CONTENT_WIDTH_DXA, { explicitRatios: [15, 55, 18, 12] });
     const rows: TableRow[] = [
       new TableRow({
         tableHeader: true,
+        cantSplit: true,
         children: [
           new TableCell({
-            width: { size: 15, type: WidthType.PERCENTAGE },
+            width: { size: msColWidths[0], type: WidthType.DXA },
             children: [new Paragraph({ children: [new TextRun({ text: 'Part', bold: true, size: 17, color: 'ffffff', font: 'Arial' })] })],
             shading: { fill: '1e3a8a' },
             margins: { top: 60, bottom: 60, left: 60, right: 60 },
           }),
           new TableCell({
-            width: { size: 55, type: WidthType.PERCENTAGE },
+            width: { size: msColWidths[1], type: WidthType.DXA },
             children: [new Paragraph({ children: [new TextRun({ text: 'Marking Criteria & Model Answer', bold: true, size: 17, color: 'ffffff', font: 'Arial' })] })],
             shading: { fill: '1e3a8a' },
             margins: { top: 60, bottom: 60, left: 60, right: 60 },
           }),
           new TableCell({
-            width: { size: 18, type: WidthType.PERCENTAGE },
+            width: { size: msColWidths[2], type: WidthType.DXA },
             children: [new Paragraph({ children: [new TextRun({ text: 'Acceptable / ECF', bold: true, size: 17, color: 'ffffff', font: 'Arial' })] })],
             shading: { fill: '1e3a8a' },
             margins: { top: 60, bottom: 60, left: 60, right: 60 },
           }),
           new TableCell({
-            width: { size: 12, type: WidthType.PERCENTAGE },
+            width: { size: msColWidths[3], type: WidthType.DXA },
             children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'Marks', bold: true, size: 17, color: 'ffffff', font: 'Arial' })] })],
             shading: { fill: '1e3a8a' },
             margins: { top: 60, bottom: 60, left: 60, right: 60 },
@@ -1776,11 +1932,18 @@ export async function exportTeacherMarkSchemeDocx(
               ? (sub.mark_scheme as string[]).join('\n• ')
               : 'Credit scientifically accurate answer with appropriate working.';
 
+        const subStemClean = stripDuplicateSubQuestionPrefix(sub.question_text || '', sub.sub_id || '');
         const cellParagraphs: Paragraph[] = [
           new Paragraph({
             children: [
-              new TextRun({ text: `${sub.question_text ? `Stem: ${sub.question_text}\n` : ''}`, italics: true, size: 16, color: '6b7280', font: 'Arial' }),
-              ...parseFormattedTextToDocxRuns(msText, { size: 18, font: 'Arial' }),
+              ...(subStemClean
+                ? [
+                  new TextRun({ text: 'Stem: ', italics: true, size: 16, color: '6b7280', font: 'Arial' }),
+                  ...parseFormattedTextChildren(subStemClean, { size: 16, italics: true, color: '6b7280', font: 'Arial' }),
+                  new TextRun({ text: '\n', size: 16, font: 'Arial' }),
+                ]
+                : []),
+              ...parseFormattedTextChildren(msText, { size: 18, font: 'Arial' }),
             ],
             spacing: { after: 40 },
           }),
@@ -1791,7 +1954,7 @@ export async function exportTeacherMarkSchemeDocx(
             new Paragraph({
               children: [
                 new TextRun({ text: '💡 Examiner Guidance: ', bold: true, size: 16, color: '2563eb', font: 'Arial' }),
-                ...parseFormattedTextToDocxRuns(sub.guidance, { size: 16, italics: true, font: 'Arial' }),
+                ...parseFormattedTextChildren(sub.guidance, { size: 16, italics: true, font: 'Arial' }),
               ],
               spacing: { before: 40 },
             })
@@ -1803,7 +1966,7 @@ export async function exportTeacherMarkSchemeDocx(
             new Paragraph({
               children: [
                 new TextRun({ text: '⚠️ Common Trap: ', bold: true, size: 16, color: 'd97706', font: 'Arial' }),
-                ...parseFormattedTextToDocxRuns(sub.common_misconceptions.join('; '), { size: 16, italics: true, font: 'Arial' }),
+                ...parseFormattedTextChildren(sub.common_misconceptions.join('; '), { size: 16, italics: true, font: 'Arial' }),
               ],
               spacing: { before: 40 },
             })
@@ -1812,24 +1975,25 @@ export async function exportTeacherMarkSchemeDocx(
 
         rows.push(
           new TableRow({
+            cantSplit: true,
             children: [
               new TableCell({
-                width: { size: 15, type: WidthType.PERCENTAGE },
+                width: { size: msColWidths[0], type: WidthType.DXA },
                 margins: { top: 60, bottom: 60, left: 60, right: 60 },
                 children: [new Paragraph({ children: [new TextRun({ text: sub.sub_id, bold: true, size: 18, font: 'Arial' })] })],
               }),
               new TableCell({
-                width: { size: 55, type: WidthType.PERCENTAGE },
+                width: { size: msColWidths[1], type: WidthType.DXA },
                 margins: { top: 60, bottom: 60, left: 60, right: 60 },
                 children: cellParagraphs,
               }),
               new TableCell({
-                width: { size: 18, type: WidthType.PERCENTAGE },
+                width: { size: msColWidths[2], type: WidthType.DXA },
                 margins: { top: 60, bottom: 60, left: 60, right: 60 },
                 children: [new Paragraph({ children: [new TextRun({ text: 'Allow ECF from previous part', size: 16, italics: true, color: '4b5563', font: 'Arial' })] })],
               }),
               new TableCell({
-                width: { size: 12, type: WidthType.PERCENTAGE },
+                width: { size: msColWidths[3], type: WidthType.DXA },
                 margins: { top: 60, bottom: 60, left: 60, right: 60 },
                 children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `[${sub.marks || 1}]`, bold: true, size: 18, font: 'Arial' })] })],
               }),
@@ -1845,7 +2009,7 @@ export async function exportTeacherMarkSchemeDocx(
       const traps = ms?.common_misconceptions?.join('; ') || '';
 
       const cellParagraphs: Paragraph[] = points.map(
-        (p) => new Paragraph({ children: [new TextRun({ text: '• ', bold: true, font: 'Arial' }), ...parseFormattedTextToDocxRuns(p, { size: 18, font: 'Arial' })], spacing: { after: 30 } })
+        (p) => new Paragraph({ children: [new TextRun({ text: '• ', bold: true, font: 'Arial' }), ...parseFormattedTextChildren(p, { size: 18, font: 'Arial' })], spacing: { after: 30 } })
       );
 
       if (guidance) {
@@ -1853,7 +2017,7 @@ export async function exportTeacherMarkSchemeDocx(
           new Paragraph({
             children: [
               new TextRun({ text: '💡 Examiner Guidance: ', bold: true, size: 16, color: '2563eb', font: 'Arial' }),
-              ...parseFormattedTextToDocxRuns(guidance, { size: 16, italics: true, font: 'Arial' }),
+              ...parseFormattedTextChildren(guidance, { size: 16, italics: true, font: 'Arial' }),
             ],
             spacing: { before: 40 },
           })
@@ -1865,7 +2029,7 @@ export async function exportTeacherMarkSchemeDocx(
           new Paragraph({
             children: [
               new TextRun({ text: '⚠️ Common Trap: ', bold: true, size: 16, color: 'd97706', font: 'Arial' }),
-              ...parseFormattedTextToDocxRuns(traps, { size: 16, italics: true, font: 'Arial' }),
+              ...parseFormattedTextChildren(traps, { size: 16, italics: true, font: 'Arial' }),
             ],
             spacing: { before: 40 },
           })
@@ -1874,24 +2038,25 @@ export async function exportTeacherMarkSchemeDocx(
 
       rows.push(
         new TableRow({
+          cantSplit: true,
           children: [
             new TableCell({
-              width: { size: 15, type: WidthType.PERCENTAGE },
+              width: { size: msColWidths[0], type: WidthType.DXA },
               margins: { top: 60, bottom: 60, left: 60, right: 60 },
               children: [new Paragraph({ children: [new TextRun({ text: `Q${qNum}`, bold: true, size: 18, font: 'Arial' })] })],
             }),
             new TableCell({
-              width: { size: 55, type: WidthType.PERCENTAGE },
+              width: { size: msColWidths[1], type: WidthType.DXA },
               margins: { top: 60, bottom: 60, left: 60, right: 60 },
               children: cellParagraphs,
             }),
             new TableCell({
-              width: { size: 18, type: WidthType.PERCENTAGE },
+              width: { size: msColWidths[2], type: WidthType.DXA },
               margins: { top: 60, bottom: 60, left: 60, right: 60 },
-              children: [new Paragraph({ children: parseFormattedTextToDocxRuns(acceptable, { size: 16, color: '4b5563', font: 'Arial' }) })],
+              children: [new Paragraph({ children: parseFormattedTextChildren(acceptable, { size: 16, color: '4b5563', font: 'Arial' }) })],
             }),
             new TableCell({
-              width: { size: 12, type: WidthType.PERCENTAGE },
+              width: { size: msColWidths[3], type: WidthType.DXA },
               margins: { top: 60, bottom: 60, left: 60, right: 60 },
               children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `[${q.marks || 1}]`, bold: true, size: 18, font: 'Arial' })] })],
             }),
@@ -1902,7 +2067,9 @@ export async function exportTeacherMarkSchemeDocx(
 
     docParagraphs.push(
       new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
+        width: { size: A4_CONTENT_WIDTH_DXA, type: WidthType.DXA },
+        columnWidths: msColWidths,
+        layout: TableLayoutType.FIXED,
         rows: rows,
       })
     );
@@ -1944,14 +2111,21 @@ export async function exportMcqAnswerSheetDocx(
   const details = getCambridgeCoverDetails(headerConfig, questions);
   const elements: (Paragraph | Table)[] = [];
 
+  const mcqContentWidthDxa = 10706; // A4 (11906) - left 600 - right 600
+  const mcqHeaderColWidths = computeFixedTableColumnWidths(3, mcqContentWidthDxa, { explicitRatios: [35, 30, 35] });
+
   // Top 2-Logo Header
   try {
-    const schoolBytes = base64ToUint8Array(options.schoolLogoUrl || details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO);
-    const cambridgeBytes = base64ToUint8Array(details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO);
+    const [schoolImg, cambridgeImg] = await Promise.all([
+      loadImageData(options.schoolLogoUrl || details.schoolLogoUrl || DEFAULT_SCHOOL_LOGO),
+      loadImageData(details.cambridgeLogoUrl || DEFAULT_CAMBRIDGE_LOGO),
+    ]);
 
     elements.push(
       new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
+        width: { size: mcqContentWidthDxa, type: WidthType.DXA },
+        columnWidths: mcqHeaderColWidths,
+        layout: TableLayoutType.FIXED,
         borders: {
           top: { style: BorderStyle.NONE, size: 0, color: 'auto' },
           bottom: { style: BorderStyle.SINGLE, size: 8, color: '111827' },
@@ -1960,17 +2134,16 @@ export async function exportMcqAnswerSheetDocx(
         },
         rows: [
           new TableRow({
+            cantSplit: true,
             children: [
               new TableCell({
-                width: { size: 35, type: WidthType.PERCENTAGE },
-                children: [
-                  new Paragraph({
-                    children: [new ImageRun({ data: schoolBytes, transformation: { width: 150, height: 38 }, type: 'png' })],
-                  }),
-                ],
+                width: { size: mcqHeaderColWidths[0], type: WidthType.DXA },
+                children: schoolImg
+                  ? [new Paragraph({ children: [createDocxImageRun(schoolImg, 150, 48)] })]
+                  : [new Paragraph({ text: '' })],
               }),
               new TableCell({
-                width: { size: 30, type: WidthType.PERCENTAGE },
+                width: { size: mcqHeaderColWidths[1], type: WidthType.DXA },
                 children: [
                   new Paragraph({
                     alignment: AlignmentType.CENTER,
@@ -1981,13 +2154,15 @@ export async function exportMcqAnswerSheetDocx(
                 ],
               }),
               new TableCell({
-                width: { size: 35, type: WidthType.PERCENTAGE },
-                children: [
-                  new Paragraph({
-                    alignment: AlignmentType.RIGHT,
-                    children: [new ImageRun({ data: cambridgeBytes, transformation: { width: 160, height: 36 }, type: 'png' })],
-                  }),
-                ],
+                width: { size: mcqHeaderColWidths[2], type: WidthType.DXA },
+                children: cambridgeImg
+                  ? [
+                    new Paragraph({
+                      alignment: AlignmentType.RIGHT,
+                      children: [createDocxImageRun(cambridgeImg, 160, 48)],
+                    }),
+                  ]
+                  : [new Paragraph({ text: '' })],
               }),
             ],
           }),
@@ -2007,7 +2182,7 @@ export async function exportMcqAnswerSheetDocx(
   elements.push(new Paragraph({ text: '', spacing: { before: 80, after: 80 } }));
 
   // Candidate Box
-  elements.push(buildCambridgeCandidateTable());
+  elements.push(buildCambridgeCandidateTable(mcqContentWidthDxa));
   elements.push(new Paragraph({ text: '', spacing: { before: 100, after: 100 } }));
 
   // Instructions
@@ -2026,10 +2201,11 @@ export async function exportMcqAnswerSheetDocx(
     })
   );
 
-  // Bubble Grid (3 Columns)
+  // Bubble Grid (2 or 3 Columns)
   const totalQuestions = questions.length || 40;
   const numCols = totalQuestions > 30 ? 3 : 2;
   const perCol = Math.ceil(totalQuestions / numCols);
+  const gridColWidths = computeFixedTableColumnWidths(numCols, mcqContentWidthDxa);
 
   const gridCells: TableCell[] = [];
   for (let c = 0; c < numCols; c++) {
@@ -2058,7 +2234,7 @@ export async function exportMcqAnswerSheetDocx(
 
     gridCells.push(
       new TableCell({
-        width: { size: Math.floor(100 / numCols), type: WidthType.PERCENTAGE },
+        width: { size: gridColWidths[c], type: WidthType.DXA },
         margins: { top: 60, bottom: 60, left: 80, right: 80 },
         children: colParagraphs,
         borders: {
@@ -2073,8 +2249,10 @@ export async function exportMcqAnswerSheetDocx(
 
   elements.push(
     new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [new TableRow({ children: gridCells })],
+      width: { size: mcqContentWidthDxa, type: WidthType.DXA },
+      columnWidths: gridColWidths,
+      layout: TableLayoutType.FIXED,
+      rows: [new TableRow({ cantSplit: true, children: gridCells })],
     })
   );
 
@@ -2083,12 +2261,15 @@ export async function exportMcqAnswerSheetDocx(
   // Score Box
   elements.push(
     new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: mcqContentWidthDxa, type: WidthType.DXA },
+      columnWidths: [mcqContentWidthDxa],
+      layout: TableLayoutType.FIXED,
       rows: [
         new TableRow({
+          cantSplit: true,
           children: [
             new TableCell({
-              width: { size: 100, type: WidthType.PERCENTAGE },
+              width: { size: mcqContentWidthDxa, type: WidthType.DXA },
               margins: { top: 80, bottom: 80, left: 100, right: 100 },
               children: [
                 new Paragraph({
@@ -2146,34 +2327,30 @@ export async function exportInsertBookletDocx(
   const docParagraphs: (Paragraph | Table)[] = [];
 
   // 1. Top Header with Logos
+  const insertContentWidthDxa = 10466; // A4 (11906) - left 720 - right 720
+  const insertLogoColWidths = computeFixedTableColumnWidths(2, insertContentWidthDxa);
   const schoolImg = await loadImageData(schoolLogo);
   const cambImg = await loadImageData(cambridgeLogo);
 
   if (schoolImg || cambImg) {
     docParagraphs.push(
       new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
+        width: { size: insertContentWidthDxa, type: WidthType.DXA },
+        columnWidths: insertLogoColWidths,
+        layout: TableLayoutType.FIXED,
         rows: [
           new TableRow({
+            cantSplit: true,
             children: [
               new TableCell({
-                width: { size: 50, type: WidthType.PERCENTAGE },
+                width: { size: insertLogoColWidths[0], type: WidthType.DXA },
                 children: [
                   ...(schoolImg
                     ? [
-                        new Paragraph({
-                          children: [
-                            new ImageRun({
-                              type: 'png',
-                              data: schoolImg.data,
-                              transformation: {
-                                width: Math.min(160, schoolImg.width),
-                                height: Math.min(48, schoolImg.height),
-                              },
-                            }),
-                          ],
-                        }),
-                      ]
+                      new Paragraph({
+                        children: [createDocxImageRun(schoolImg, 160, 56)],
+                      }),
+                    ]
                     : []),
                 ],
                 borders: {
@@ -2184,24 +2361,15 @@ export async function exportInsertBookletDocx(
                 },
               }),
               new TableCell({
-                width: { size: 50, type: WidthType.PERCENTAGE },
+                width: { size: insertLogoColWidths[1], type: WidthType.DXA },
                 children: [
                   ...(cambImg
                     ? [
-                        new Paragraph({
-                          alignment: AlignmentType.RIGHT,
-                          children: [
-                            new ImageRun({
-                              type: 'png',
-                              data: cambImg.data,
-                              transformation: {
-                                width: Math.min(180, cambImg.width),
-                                height: Math.min(48, cambImg.height),
-                              },
-                            }),
-                          ],
-                        }),
-                      ]
+                      new Paragraph({
+                        alignment: AlignmentType.RIGHT,
+                        children: [createDocxImageRun(cambImg, 180, 56)],
+                      }),
+                    ]
                     : []),
                 ],
                 borders: {
@@ -2256,12 +2424,15 @@ export async function exportInsertBookletDocx(
   // 3. Information & Instructions Box
   docParagraphs.push(
     new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
+      width: { size: insertContentWidthDxa, type: WidthType.DXA },
+      columnWidths: [insertContentWidthDxa],
+      layout: TableLayoutType.FIXED,
       rows: [
         new TableRow({
+          cantSplit: true,
           children: [
             new TableCell({
-              width: { size: 100, type: WidthType.PERCENTAGE },
+              width: { size: insertContentWidthDxa, type: WidthType.DXA },
               margins: { top: 120, bottom: 120, left: 160, right: 160 },
               children: [
                 new Paragraph({
@@ -2324,8 +2495,8 @@ export async function exportInsertBookletDocx(
 
       const headerText = qRef
         ? (/^figs?/i.test(qRef)
-            ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`
-            : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`)
+          ? `${qRef} for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`
+          : `${qRef} — Resource for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`)
         : `Resource for Question ${q.question_number || qIdx + 1}${topic ? ` (${topic})` : ''}`;
 
       docParagraphs.push(
@@ -2351,16 +2522,7 @@ export async function exportInsertBookletDocx(
         docParagraphs.push(
           new Paragraph({
             alignment: AlignmentType.CENTER,
-            children: [
-              new ImageRun({
-                type: 'png',
-                data: imgData.data,
-                transformation: {
-                  width: Math.min(540, imgData.width),
-                  height: Math.min(460, imgData.height),
-                },
-              }),
-            ],
+            children: [createDocxImageRun(imgData, 500, 440)],
             spacing: { before: 100, after: 200 },
           })
         );
@@ -2385,8 +2547,8 @@ export async function exportInsertBookletDocx(
 
         const sqHeaderText = sqRef
           ? (/^figs?/i.test(sqRef)
-              ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` (${sqTopic})` : ''}`
-              : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` (${sqTopic})` : ''}`)
+            ? `${sqRef} for Question ${q.question_number || qIdx + 1}${sqTopic ? ` (${sqTopic})` : ''}`
+            : `${sqRef} — Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` (${sqTopic})` : ''}`)
           : `Resource for Question ${q.question_number || qIdx + 1} ${sq.sub_id}${sqTopic ? ` (${sqTopic})` : ''}`;
 
         docParagraphs.push(
@@ -2412,16 +2574,7 @@ export async function exportInsertBookletDocx(
           docParagraphs.push(
             new Paragraph({
               alignment: AlignmentType.CENTER,
-              children: [
-                new ImageRun({
-                  type: 'png',
-                  data: sqImgData.data,
-                  transformation: {
-                    width: Math.min(540, sqImgData.width),
-                    height: Math.min(460, sqImgData.height),
-                  },
-                }),
-              ],
+              children: [createDocxImageRun(sqImgData, 500, 440)],
               spacing: { before: 100, after: 200 },
             })
           );

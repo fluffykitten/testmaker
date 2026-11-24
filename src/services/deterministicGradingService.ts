@@ -887,11 +887,22 @@ export function extractAcceptableAnswers(question: Question, subIndex?: number):
   // Check simple options (for MCQ / Single choice)
   if (question.options && question.options.length > 0) {
     const cIdx = resolveMcqCorrectOptionIndex(question, subIndex);
-    result.push(question.options[cIdx]);
-    result.push(String.fromCharCode(65 + cIdx));
+    if (cIdx >= 0 && cIdx < question.options.length) {
+      if (typeof question.options[cIdx] === 'string') {
+        result.push(question.options[cIdx]);
+      }
+      result.push(String.fromCharCode(65 + cIdx));
+    }
   }
 
-  return Array.from(new Set(result.map((s) => s.trim()).filter(Boolean)));
+  return Array.from(
+    new Set(
+      result
+        .filter((s): s is string => typeof s === 'string')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 /**

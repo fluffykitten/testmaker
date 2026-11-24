@@ -377,6 +377,7 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
 
     // 1. Listen for local window events
     const handleSubmissionsUpdated = () => {
+      if (isAutoGradingRef.current) return;
       refreshSubmissions();
     };
     window.addEventListener('submissions_updated', handleSubmissionsUpdated);
@@ -410,7 +411,9 @@ export function QuizResultsModal({ quiz, onClose }: QuizResultsModalProps) {
           if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
           realtimeRefreshTimer = setTimeout(() => {
             realtimeRefreshTimer = null;
-            refreshSubmissions();
+            if (!isAutoGradingRef.current) {
+              refreshSubmissions();
+            }
           }, 2500);
         }
       )

@@ -17,6 +17,7 @@ import { getTopicMasteryTiers } from '../lib/settings';
 import { exportFileUniversal } from './fileExportBridge';
 import type {
   StudentSubmission,
+  QuestionSubmissionResult,
   AnswerChangeLogEntry,
   QuestionTimeAnalytics,
 } from './quizSubmissionService';
@@ -72,6 +73,47 @@ export function sanitizeSpreadsheetCell(value: unknown): string {
     return `'${str}`;
   }
   return str;
+}
+
+/**
+ * Formats a candidate's response for Excel export, expanding multi-part sub-question
+ * essay/structured answers when the parent `studentAnswer` is empty.
+ */
+function formatQuestionCandidateAnswerForExcel(qr: QuestionSubmissionResult): string {
+  const subs = qr.subQuestionResults || [];
+  if (subs.length > 0) {
+    const parts = subs.map((sr, sIdx) => {
+      const label = sr.subId || `(${String.fromCharCode(97 + sIdx)})`;
+      const ans = formatCandidateAnswer(sr.studentAnswer, undefined, qr.gradingMethod, false);
+      return `${label} ${ans}`;
+    });
+    const hasParent =
+      qr.studentAnswer !== undefined &&
+      qr.studentAnswer !== null &&
+      String(qr.studentAnswer).trim() !== '';
+    if (hasParent) {
+      const parentFormatted = formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, false);
+      if (parentFormatted && parentFormatted !== '(No response)') {
+        return `${parentFormatted}\n${parts.join('\n')}`;
+      }
+    }
+    return parts.join('\n');
+  }
+  return formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, false);
+}
+
+function estimateWrappedRowHeight(texts: string[], charsPerLine = 42, minHeight = 22, maxHeight = 240): number {
+  let maxLines = 1;
+  for (const t of texts) {
+    if (!t) continue;
+    const rawLines = String(t).split('\n');
+    let count = 0;
+    for (const line of rawLines) {
+      count += Math.max(1, Math.ceil(line.length / charsPerLine));
+    }
+    if (count > maxLines) maxLines = count;
+  }
+  return Math.max(minHeight, Math.min(maxHeight, maxLines * 15 + 8));
 }
 
 const BORDER_THIN: Partial<ExcelJS.Borders> = {
@@ -1006,6 +1048,122 @@ export async function exportAllSubmissionsExcelICM(
   }
 
   // ═════════════════════════════════════════════════════════════════════════════
+  // SHEET 3B: WRITTEN / STRUCTURED ESSAY RESPONSES (INDIVIDUAL CANDIDATE TEXT)
+  // ═════════════════════════════════════════════════════════════════════════════
+  const writtenRows: Array<{
+    studentName: string;
+    studentClass: string;
+    qLabel: string;
+    partLabel: string;
+    earnedMarks: number;
+    maxMarks: number;
+    answerText: string;
+    feedbackText: string;
+  }> = [];
+
+  submissions.forEach((sub) => {
+    (sub.questionResults || []).forEach((qr, qIdx) => {
+      const subs = qr.subQuestionResults || [];
+      const isWrittenOrStructured = subs.length > 0 || !qr.options || qr.options.length === 0;
+      if (!isWrittenOrStructured) return;
+
+      const qLabel = `Q${qr.questionNumber || qIdx + 1}`;
+      if (subs.length > 0) {
+        subs.forEach((sr, sIdx) => {
+          writtenRows.push({
+            studentName: sub.studentName,
+            studentClass: sub.studentClass || 'General',
+            qLabel,
+            partLabel: sr.subId || `(${String.fromCharCode(97 + sIdx)})`,
+            earnedMarks: Number(sr.earnedMarks) || 0,
+            maxMarks: Number(sr.maxMarks) || 1,
+            answerText: formatCandidateAnswer(sr.studentAnswer, undefined, qr.gradingMethod, false),
+            feedbackText: sr.feedback || '-',
+          });
+        });
+      } else {
+        writtenRows.push({
+          studentName: sub.studentName,
+          studentClass: sub.studentClass || 'General',
+          qLabel,
+          partLabel: '-',
+          earnedMarks: Number(qr.earnedMarks) || 0,
+          maxMarks: Number(qr.maxMarks) || 1,
+          answerText: formatCandidateAnswer(qr.studentAnswer, undefined, qr.gradingMethod, false),
+          feedbackText: qr.aiFeedback || '-',
+        });
+      }
+    });
+  });
+
+  if (writtenRows.length > 0) {
+    const wsWritten = wb.addWorksheet('Written Responses', {
+      views: [{ state: 'frozen', ySplit: 6 }],
+      properties: { tabColor: { argb: ICM_BRAND.colors.blue } },
+    });
+
+    const wHeaders = [
+      { title: 'Candidate Name', width: 24, align: 'left' },
+      { title: 'Class', width: 12, align: 'center' },
+      { title: 'Question #', width: 12, align: 'center' },
+      { title: 'Part', width: 10, align: 'center' },
+      { title: 'Marks Earned', width: 13, align: 'center' },
+      { title: 'Max Marks', width: 12, align: 'center' },
+      { title: 'Student Answer', width: 52, align: 'left' },
+      { title: 'Examiner Feedback', width: 38, align: 'left' },
+    ];
+    wHeaders.forEach((h, idx) => {
+      wsWritten.getColumn(idx + 1).width = h.width;
+    });
+
+    renderIcmBanner(wsWritten, 'Written & Structured Essay Responses', 'H', metaInfo);
+
+    const wHeaderRow = wsWritten.getRow(6);
+    wHeaderRow.height = 28;
+    wHeaders.forEach((h, idx) => {
+      const cell = wHeaderRow.getCell(idx + 1);
+      cell.value = h.title;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ICM_BRAND.colors.blue } };
+      cell.font = { name: 'Segoe UI', size: 9.5, bold: true, color: { argb: ICM_BRAND.colors.white } };
+      cell.alignment = { horizontal: h.align as ExcelJS.Alignment['horizontal'], vertical: 'middle' };
+      cell.border = { bottom: { style: 'medium', color: { argb: ICM_BRAND.colors.green } } };
+    });
+
+    writtenRows.forEach((wr, idx) => {
+      const rowNum = 7 + idx;
+      const row = wsWritten.getRow(rowNum);
+      row.height = estimateWrappedRowHeight([wr.answerText, wr.feedbackText], 46);
+      const isZebra = idx % 2 === 1;
+
+      const rowVals: Array<string | number> = [
+        sanitizeSpreadsheetCell(wr.studentName),
+        sanitizeSpreadsheetCell(wr.studentClass),
+        wr.qLabel,
+        sanitizeSpreadsheetCell(wr.partLabel),
+        wr.earnedMarks,
+        wr.maxMarks,
+        sanitizeSpreadsheetCell(wr.answerText),
+        sanitizeSpreadsheetCell(wr.feedbackText),
+      ];
+
+      rowVals.forEach((val, cIdx) => {
+        const cell = row.getCell(cIdx + 1);
+        cell.value = val;
+        cell.font = { name: 'Segoe UI', size: 9, color: { argb: ICM_BRAND.colors.slateText } };
+        cell.border = BORDER_THIN;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? ICM_BRAND.colors.zebraRow : ICM_BRAND.colors.white } };
+        cell.alignment = {
+          horizontal: wHeaders[cIdx].align as ExcelJS.Alignment['horizontal'],
+          vertical: 'middle',
+          wrapText: cIdx >= 6,
+        };
+      });
+    });
+
+    wsWritten.autoFilter = `A6:H${6 + writtenRows.length}`;
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
   // SHEET 4: PROCTORING & SECURITY AUDIT TRAIL
   // ═════════════════════════════════════════════════════════════════════════════
   if (!isOffline) {
@@ -1559,12 +1717,12 @@ export function buildSingleSubmissionWorkbookICM(
     submission.questionResults.forEach((qr, idx) => {
       const rowNum = 7 + idx;
       const row = wsResp.getRow(rowNum);
-      row.height = 22;
       const isZebra = idx % 2 === 1;
 
-      const candAns = formatCandidateAnswer(qr.studentAnswer, qr.options, qr.gradingMethod, false);
+      const candAns = formatQuestionCandidateAnswerForExcel(qr);
       const modelSol = formatCandidateAnswer(qr.correctAnswer, qr.options, qr.gradingMethod, false) || qr.correctAnswer || '-';
       const miscon = qr.misconceptions?.join('; ') || '-';
+      row.height = estimateWrappedRowHeight([candAns, modelSol, miscon], 36);
 
       const vals = [
         `Q${qr.questionNumber || idx + 1}`,
@@ -1582,7 +1740,11 @@ export function buildSingleSubmissionWorkbookICM(
         cell.font = { name: 'Segoe UI', size: 9, color: { argb: ICM_BRAND.colors.slateText } };
         cell.border = BORDER_THIN;
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isZebra ? ICM_BRAND.colors.zebraRow : ICM_BRAND.colors.white } };
-        cell.alignment = { horizontal: respHeaders[cIdx].align as ExcelJS.Alignment['horizontal'], vertical: 'middle' };
+        cell.alignment = {
+          horizontal: respHeaders[cIdx].align as ExcelJS.Alignment['horizontal'],
+          vertical: 'middle',
+          wrapText: cIdx >= 4,
+        };
 
         // Result Color Tag
         if (cIdx === 3) {

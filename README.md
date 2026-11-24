@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.5`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.6`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.5-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.6-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -170,6 +170,16 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.6] — High-Fidelity `.docx` Exam Export, Native OMML Math & 150-Student Supabase Scaling
+- **`.docx` Exam Export Overhaul (Images, Tables, OMML Math & Content Hygiene):**
+  - Created [`src/utils/docxImageUtils.ts`](src/utils/docxImageUtils.ts) (`getImageDimensionsFromBytes`, `fitImageDimensions`, `prepareDocxImageBytes`) to decode real PNG/JPEG/WebP/SVG pixel dimensions, transcode WebP/SVG payloads into valid PNGs via browser `<canvas>` (rejecting raw WebP/SVG bytes if un-transcodable), and scale proportionally without upscaling across all 5 exporters in [`docxExportService.ts`](src/services/docxExportService.ts).
+  - Created [`src/utils/docxMathUtils.ts`](src/utils/docxMathUtils.ts) (`parseFormattedTextToDocxChildren`, `convertMhchemToFormattedText`, `normalizeCommonLatexForDocx`) to convert balanced LaTeX (`\frac`, `\sqrt`), `\ce{...}` chemistry, and nuclide isotopes (`^{37}_{17}\text{Cl}`, `^{63}_{29}\text{Cu}^{+}`) into native Word OMML (`<m:oMath>`, `<m:f>`, `<m:rad>`, `<m:sPre>`), while preserving protected currency symbols (`$15`).
+  - Upgraded `convertMarkdownBlocksToDocxElements` and `computeFixedTableColumnWidths` to emit fixed `dxa` `columnWidths` + `TableLayoutType.FIXED` + `cantSplit` tables in both stems and sub-questions, preserve multi-line breaks/bullet lists, blank `[ ]`/`☐` fillable cells, suppress redundant dotted answer lines beneath pure completion tables or inline blanks, strip duplicated sub-question prefixes and `[Figure ...]` placeholders (`sanitizeExamTextForDocx`, `stripDuplicateSubQuestionPrefix`), and use Word's native `PageNumber.TOTAL_PAGES` (`NUMPAGES`) field on cover pages.
+  - Added automated OOXML verification in [`scripts/test-docx-export-fidelity.mjs`](scripts/test-docx-export-fidelity.mjs) (`npm run test:docx-export`) and exported `buildStudentPaperDocxDocument`.
+- **Supabase 150-Student Concurrency Migration & Grading/Reporting Hardening:**
+  - Added [`supabase/migrations/20261124_optimize_indexes_and_rls_for_150_students.sql`](supabase/migrations/20261124_optimize_indexes_and_rls_for_150_students.sql) adding covering foreign-key indexes on `teacher_auth_sessions(teacher_id)` and `custom_tests(user_id)` and consolidating duplicate permissive RLS policies on `app_config` and `proctor_audit_events`.
+  - Refined MCQ re-grading & AI essay grading handling ([`deterministicGradingService.ts`](src/services/deterministicGradingService.ts), [`QuizResultsModal.tsx`](src/components/QuizResultsModal.tsx), [`aiGradingService.ts`](src/services/aiGradingService.ts)) and ICM Excel export formatting ([`icmExcelExportService.ts`](src/services/icmExcelExportService.ts)).
 
 ### [v.2.7.5] — Proctor Polling Payload Optimization, Submission Pagination & Batch Sync Hardening (`040`)
 - **Proctor Polling Payload & 15-Second Reconnect Stabilization:**
