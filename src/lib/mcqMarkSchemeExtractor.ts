@@ -18,7 +18,7 @@ function toCanonicalOptionLetter(raw: string): string | null {
   const cleaned = raw.trim();
   if (ARABIC_OPT_TO_LATIN[cleaned]) return ARABIC_OPT_TO_LATIN[cleaned];
   const upper = cleaned.toUpperCase();
-  if (upper.length === 1 && upper >= 'A' && upper <= 'F') return upper;
+  if (upper.length === 1 && upper >= 'A' && upper <= 'H') return upper;
   return null;
 }
 
@@ -29,7 +29,7 @@ const MCQ_KEY_HEADER_RE =
   /(?:multiple\s*choice\s*mark\s*scheme|answer\s*key|kunci\s*jawaban|(?:question|no\.?|soal)\s+(?:answer|key|kunci)(?:\s+marks?)?)/i;
 const PAGE_TABLE_ANCHOR_RE =
   /(?:question|no\.?|soal)\s+(?:answer|key|jawaban|kunci)(?:\s+marks?)?/gi;
-const PAIR_RE = /(?:^|\s)(\d{1,3})\s*[.):-]?\s*(هـ|[A-Eأإآابجده])(?=\s|$)/giu;
+const PAIR_RE = /(?:^|\s)(\d{1,3})\s*[.):-]?\s*(هـ|[A-Hأإآابجده])(?=\s|$)/giu;
 
 /**
  * Deterministically parses a tabular Multiple Choice Mark Scheme / Answer Key

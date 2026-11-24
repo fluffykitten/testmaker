@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.6`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.7`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.6-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.7-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -170,6 +170,13 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.7] — Extended A–H MCQ Option & Mark Scheme Support + PDF Upload Optimization Plan
+- **Extended MCQ / Matching Letter Support (`A–H`):**
+  - Updated `toCanonicalOptionLetter` and `PAIR_RE` in [`mcqMarkSchemeExtractor.ts`](src/lib/mcqMarkSchemeExtractor.ts) from `A–E`/`A–F` to `A–H` so deterministic official Mark Scheme reconciliation covers 6–8 choice matching exercises (such as Cambridge IGCSE 0510 Listening Exercise 4 `A–H` statements).
+  - Updated `letters` and `parseMcqOption` in [`mcqUtils.ts`](src/utils/mcqUtils.ts) to normalize `A`–`H` option prefixes cleanly.
+- **PDF Upload Optimization Blueprint:**
+  - Documented per-chunk Mark Scheme slicing/text-first routing and zero-value page stripping (`sourcePageNumbers` remapping) in [`Plan/pdf_upload_token_optimization_plan.md`](Plan/pdf_upload_token_optimization_plan.md).
 
 ### [v.2.7.6] — High-Fidelity `.docx` Exam Export, Native OMML Math & 150-Student Supabase Scaling
 - **`.docx` Exam Export Overhaul (Images, Tables, OMML Math & Content Hygiene):**
