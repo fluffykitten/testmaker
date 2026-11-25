@@ -359,6 +359,12 @@ export interface PaperMetadata {
   cambridge_ms_hub_url?: string | null;
 }
 
+export interface OptionDiagramBbox {
+  option_index: number; // 0 = A, 1 = B, 2 = C, 3 = D, 4 = E, ...
+  page_number?: number | null; // 1-indexed page number where this option's image appears
+  bounding_box: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000
+}
+
 export interface ExtractedQuestion {
   question_number: string;
   parent_question_id: string | null;
@@ -390,6 +396,7 @@ export interface ExtractedQuestion {
   bounding_box: [number, number, number, number] | any | null; // [ymin, xmin, ymax, xmax] 0-1000
   options: string[] | null;
   option_diagrams?: (string | null)[] | null;
+  option_diagram_bboxes?: OptionDiagramBbox[] | null;
   audio_url?: string | null;
   audio_metadata?: AudioMetadata | null;
   passage_ref?: string | null;

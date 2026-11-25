@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.7`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.8`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.7-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.8-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -170,6 +170,14 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.8] — Automatic Per-Option Visual Cropping & Capped Multiple Select Partial Credit
+- **Automatic Per-Option Visual Extraction (`option_diagram_bboxes`):**
+  - Added `OptionDiagramBbox` and `ExtractedQuestion.option_diagram_bboxes` in [`database.ts`](src/types/database.ts) and updated STEM and Languages extraction prompts in [`gemini.ts`](src/lib/gemini.ts) so image-only MCQs (`A–D` / `A–E`, including cross-page option layouts) emit individual per-option bounding boxes and page numbers.
+  - Wired `chunkOffset` page-number remapping and cross-chunk `option_index` merging in [`pdfProcessor.ts`](src/lib/pdfProcessor.ts), plus automatic 4× local Canvas cropping (`${question_number}__opt_${option_index}`) in [`diagramCropper.ts`](src/lib/diagramCropper.ts).
+- **Multiple Select Capped Partial Credit:**
+  - Updated `gradeDeterministicAnswer` in [`deterministicGradingService.ts`](src/services/deterministicGradingService.ts) (used by both online and offline Excel grading) so exact matches earn full `maxMarks`, imperfect/partial selections with at least 1 correct choice earn `1` mark (when `maxMarks > 1`), and `0` correct selections earn `0`.
+  - Updated regression coverage in [`scripts/test-multiple-select-grading.mjs`](scripts/test-multiple-select-grading.mjs) (`npm run test:multi-select`).
 
 ### [v.2.7.7] — Extended A–H MCQ Option & Mark Scheme Support + PDF Upload Optimization Plan
 - **Extended MCQ / Matching Letter Support (`A–H`):**

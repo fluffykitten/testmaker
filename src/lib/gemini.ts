@@ -239,12 +239,13 @@ CAMBRIDGE PAPER 2 & PAPER 1 MULTIPLE CHOICE EXAMS (CHEMISTRY 0620/1x/2x, PHYSICS
      c) ALSO populate the "options" array with self-contained row summaries combining the column headers and cell values:
         e.g. "options": ["A. cause: collisions between gas particles | effect: collisions become less frequent", "B. ...", "C. ...", "D. ..."] (or for ✓/✗ tables: "A. electrical energy: ✗ | electrolysis: ✗", etc.).
      d) If the question ALSO has molecular structures or apparatus diagrams above the table (e.g. Q31 showing structures X and Y above the comparison table), set "has_diagram": true, "diagram_source": "qp", and "bounding_box" around the structures X and Y!
-2. GRAPHICAL 4-OPTION MCQs ("choice_grid" — DIAGRAMS A, B, C, D):
-   - When options A, B, C, D are 4 visual diagrams, apparatus setups, reaction pathway graphs, or organic structural formulas (e.g. Q2 acidic gas diffusion apparatus A–D; Q10 reaction pathway diagrams A–D; Q32 structures of butanoic acid A–D; Q35 polymer chain + monomer diagrams A–D):
-     a) Set "has_diagram": true, "diagram_source": "qp", "diagram_type": "choice_grid".
-     b) Set a single generous "bounding_box" encompassing all 4 visual option diagrams A, B, C, D together (and if there is a stem diagram immediately above them, such as the polymer chain in Q35, include both the stem diagram and options A–D in the bounding box).
-     c) In "options", provide clear descriptive text/formula labels for each visual option rather than bare letters:
-        e.g. for Q32: ["A. propan-1-ol ($CH_3CH_2CH_2OH$)", "B. butan-1-ol ($CH_3CH_2CH_2CH_2OH$)", "C. propanoic acid ($CH_3CH_2COOH$)", "D. butanoic acid ($CH_3CH_2CH_2COOH$)"].
+2. GRAPHICAL / IMAGE-ONLY MCQs (4-OPTION A–D OR 5-OPTION A–E VISUAL CHOICES):
+   - When options A, B, C, D (or A–E) are individual visual diagrams, Cartesian graphs, apparatus setups, reaction pathway graphs, or organic structural formulas (including when A–C appear on one page and D–E continue on the next page):
+     a) Emit "option_diagram_bboxes" as an array with ONE entry per visual option:
+        [{ "option_index": 0, "page_number": <1-indexed page in this chunk>, "bounding_box": [ymin, xmin, ymax, xmax] }, ...]
+        where option_index 0 = A, 1 = B, 2 = C, 3 = D, 4 = E, and each bounding_box tightly encloses that option's diagram/graph (0–1000 scale).
+     b) If there is NO separate stem diagram above the options, set "has_diagram": false and "bounding_box": null (because the images live in "option_diagram_bboxes"). If there IS also a separate stem diagram above the options, set "has_diagram": true with "bounding_box" around ONLY the stem diagram.
+     c) In "options", provide the letter labels (e.g. ["A", "B", "C", "D", "E"] for pure graphs/illustrations, or concise labels like ["A. propan-1-ol ($CH_3CH_2CH_2OH$)", ...] when clearly identifiable).
 3. NUMBERED STATEMENTS IN MCQs (1, 2, 3, 4):
    - When a question lists numbered statements (1, 2, 3 or 1, 2, 3, 4) followed by "Which statements are correct?" and options like "A 1 and 2", "B 1 and 4", "C 2 and 3", "D 3 and 4":
      * Keep all numbered statements 1–4 inside "question_text" (formatted as a clean list).
@@ -1186,6 +1187,7 @@ CRITICAL READING COMPREHENSION, INFOGRAPHIC & PASSAGE CATALOG RULES:
    - Extract ALL options into "options" preserving their printed labels (e.g. ["A. ...", "B. ...", "C. ...", "D. ...", "E. ..."] OR ["أ. ...", "ب. ...", "ج. ...", "د. ...", "ه. ..."]). NEVER add a redundant "A. " prefix before an option that already starts with "أ." / "ب." / "ج." / "د." / "ه.".
    - Set "total_marks": 1 (or the printed bracketed [Total: X] mark).
    - Ignore bare template figure labels like "Fig. 18.1" when no actual picture/diagram is drawn; DO set "has_diagram": true when an actual photo or illustration accompanies the question.
+   - IMAGE-ONLY / VISUAL OPTIONS (e.g. Listening Exercise 1 pictures A–D): When each option A, B, C, D (or A–E) is a separate picture/illustration with no option text, set "options": ["A", "B", "C", "D"] (matching the printed letters), set "has_diagram": false, and emit "option_diagram_bboxes": [{ "option_index": 0, "page_number": <1-indexed page in chunk>, "bounding_box": [ymin, xmin, ymax, xmax] }, ...] tightly enclosing each option's picture (0–1000 scale).
    - CRITICAL (ZERO DUPLICATION): NEVER write or duplicate the choices (A–E or أ–هـ) inside "question_text"! The "question_text" field must contain ONLY the question stem / prompt and any dialogue/reading text. Placing choices in both fields causes ugly duplicates in the user interface!
 
 4. MULTIPLE SELECT / COMPLEX MULTIPLE CHOICE ("Pilihan Ganda Kompleks" / "MCC" / "[Multiple Select]" / "Choose more than one"):

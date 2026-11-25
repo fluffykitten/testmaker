@@ -826,6 +826,12 @@ export function mergeChunkQuestions(
         ...q,
         question_number: qNumClean,
         page_number: (q.page_number || 1) + chunkOffset,
+        option_diagram_bboxes: Array.isArray(q.option_diagram_bboxes) && q.option_diagram_bboxes.length > 0
+          ? q.option_diagram_bboxes.map((entry) => ({
+              ...entry,
+              page_number: (entry.page_number || q.page_number || 1) + chunkOffset,
+            }))
+          : q.option_diagram_bboxes,
         sub_questions: (q.sub_questions || []).map((sq) => ({
           ...sq,
           page_number: sq.page_number ? sq.page_number + chunkOffset : (q.page_number || 1) + chunkOffset,
@@ -937,6 +943,19 @@ export function mergeChunkQuestions(
           !anyAdjustedSubHasDiagram &&
           (adjustedQ.page_number === existing.page_number || !existing.page_number);
 
+        const mergedOptionBboxesMap = new Map<number, { option_index: number; page_number?: number | null; bounding_box: [number, number, number, number] }>();
+        for (const entry of existing.option_diagram_bboxes || []) {
+          if (entry && Number.isInteger(entry.option_index)) mergedOptionBboxesMap.set(entry.option_index, entry);
+        }
+        for (const entry of adjustedQ.option_diagram_bboxes || []) {
+          if (entry && Number.isInteger(entry.option_index) && !mergedOptionBboxesMap.has(entry.option_index)) {
+            mergedOptionBboxesMap.set(entry.option_index, entry);
+          }
+        }
+        const mergedOptionDiagramBboxes = mergedOptionBboxesMap.size > 0
+          ? Array.from(mergedOptionBboxesMap.values()).sort((a, b) => a.option_index - b.option_index)
+          : undefined;
+
         questionMap.set(mergeKey, {
           ...existing,
           passage_ref: existing.passage_ref || adjustedQ.passage_ref || null,
@@ -946,6 +965,7 @@ export function mergeChunkQuestions(
             adjustedQ.options && adjustedQ.options.length > (existing.options?.length || 0)
               ? adjustedQ.options
               : existing.options,
+          option_diagram_bboxes: mergedOptionDiagramBboxes,
           data_tables: mergedDataTables,
           mark_scheme:
             chooseBetterMarkScheme(

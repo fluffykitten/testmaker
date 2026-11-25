@@ -538,6 +538,13 @@ export interface QuestionWithDiagram {
   resource_ref?: string | null;
   insert_page_number?: number | null;
   bounding_box?: [number, number, number, number] | any | null;
+  options?: string[] | null;
+  option_diagrams?: (string | null)[] | null;
+  option_diagram_bboxes?: Array<{
+    option_index: number;
+    page_number?: number | null;
+    bounding_box: [number, number, number, number];
+  }> | null;
   sub_questions?: Array<{
     sub_id: string;
     has_diagram?: boolean;
@@ -688,13 +695,17 @@ export async function cropDiagramsLocally(
       acc + (q.sub_questions?.filter((sub) => sub.has_diagram || sub.bounding_box || sub.diagram_source)?.length || 0),
     0
   );
+  const totalOptionDiagramCount = questions.reduce(
+    (acc, q) => acc + (Array.isArray(q.option_diagram_bboxes) ? q.option_diagram_bboxes.length : 0),
+    0
+  );
 
-  if (diagramQuestions.length === 0 && totalSubDiagramCount === 0) {
+  if (diagramQuestions.length === 0 && totalSubDiagramCount === 0 && totalOptionDiagramCount === 0) {
     onProgress?.('No diagrams detected.');
     return new Map();
   }
 
-  onProgress?.(`Processing ${diagramQuestions.length + totalSubDiagramCount} diagram(s) at high resolution…`);
+  onProgress?.(`Processing ${diagramQuestions.length + totalSubDiagramCount + totalOptionDiagramCount} diagram(s) at high resolution…`);
 
   const results = new Map<string, DiagramCropItem>();
 
@@ -903,6 +914,61 @@ export async function cropDiagramsLocally(
         } catch (subCropErr) {
           console.warn(`Failed to crop diagram for Q${q.question_number} sub ${sIdx}:`, subCropErr);
         }
+      }
+    }
+
+    // 3. Crop Per-Option Visual Diagrams (e.g. image-only MCQs A–E, including cross-page options)
+    for (const q of questions) {
+      if (!Array.isArray(q.option_diagram_bboxes) || q.option_diagram_bboxes.length === 0) continue;
+      const optCount = Math.max(
+        Array.isArray(q.options) ? q.options.length : 0,
+        ...q.option_diagram_bboxes.map((b) => (Number.isInteger(b?.option_index) ? b.option_index + 1 : 0))
+      );
+      const nextOptionDiagrams: (string | null)[] = Array.from(
+        { length: optCount },
+        (_, idx) => (Array.isArray(q.option_diagrams) ? q.option_diagrams[idx] || null : null)
+      );
+
+      for (const entry of q.option_diagram_bboxes) {
+        if (!entry || !Number.isInteger(entry.option_index) || entry.option_index < 0) continue;
+        if (!Array.isArray(entry.bounding_box) || entry.bounding_box.length < 4) continue;
+
+        try {
+          const targetPage =
+            entry.page_number && entry.page_number > 0
+              ? entry.page_number
+              : (q.page_number && q.page_number > 0 ? q.page_number : 1);
+          const safePageNumber = Math.max(1, Math.min(qpDoc.numPages, targetPage));
+
+          if (!qpPageCache.has(safePageNumber)) {
+            onProgress?.(`Rendering Question Paper page ${safePageNumber} at ${RENDER_SCALE}x resolution…`);
+            const canvas = await renderPdfPage(qpDoc, safePageNumber);
+            qpPageCache.set(safePageNumber, canvas);
+          }
+
+          const normalizedBox = normalizeBoundingBox(entry.bounding_box);
+          const sourceCanvas = qpPageCache.get(safePageNumber)!;
+          const optLetter = String.fromCharCode(65 + entry.option_index);
+
+          onProgress?.(`Cropping option ${optLetter} diagram for Q${q.question_number}…`);
+          const blob = await cropFromCanvas(sourceCanvas, normalizedBox);
+          const localUrl = URL.createObjectURL(blob);
+          const optKey = `${q.question_number}__opt_${entry.option_index}`;
+
+          results.set(optKey, {
+            blob,
+            localUrl,
+            sourceDoc: 'qp',
+            pageNumber: safePageNumber,
+          });
+          nextOptionDiagrams[entry.option_index] = localUrl;
+        } catch (optCropErr) {
+          console.warn(`Failed to crop option ${entry.option_index} diagram for Q${q.question_number}:`, optCropErr);
+        }
+      }
+
+      if (nextOptionDiagrams.some(Boolean)) {
+        q.option_diagrams = nextOptionDiagrams;
       }
     }
 
