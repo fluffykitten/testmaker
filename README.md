@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.8`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.9`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.8-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.9-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -170,6 +170,15 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.9] — Candidate Card / Desk Card Modes & 13 × 9.5 cm Side-by-Side Foldable Print Layout
+- **Separate Candidate Card (With PIN) vs. Desk Card (No PIN) Modes:**
+  - Added `CardPrintType = 'candidate_card' | 'desk_card'` in [`candidateCardPrintService.ts`](src/services/candidateCardPrintService.ts) and a **1. Card Type** toggle in [`CandidateCardPrintModal.tsx`](src/components/CandidateCardPrintModal.tsx).
+  - `candidate_card` renders the full `CANDIDATE CARD` slip with `PERSONAL EXAM PIN`, while `desk_card` renders `DESK CARD`, omits `PERSONAL EXAM PIN` / PIN digits completely, and vertically centers the candidate profile block.
+- **Side-by-Side Foldable Layout (2/page · 13 cm × 9.5 cm per panel):**
+  - Added `CardPrintLayout = 'side_by_side' | 'duplex_back' | 'front_only'` (defaulting to `side_by_side` in [`CandidateCardPrintModal.tsx`](src/components/CandidateCardPrintModal.tsx)).
+  - Renders 2 foldable `190 mm × 130 mm` strips per A4 portrait sheet with Left = Exam Schedule (`95 mm × 130 mm`, omitting `.back-candidate-strip` for extra timetable room), a dashed center `FOLD` guide, and Right = Card Front (`95 mm × 130 mm`).
+  - Added regression assertions `DC-18`, `DC-19`, and `DC-20` in [`scripts/test-candidate-desk-cards.mjs`](scripts/test-candidate-desk-cards.mjs) (`npm run test:desk-cards`).
 
 ### [v.2.7.8] — Automatic Per-Option Visual Cropping & Capped Multiple Select Partial Credit
 - **Automatic Per-Option Visual Extraction (`option_diagram_bboxes`):**

@@ -385,5 +385,84 @@ if (fs.existsSync(uploadedWorkbookPath)) {
   console.log('SKIP: DC-15..17 skipped (local uploaded workbook fixture not present)');
 }
 
+// ── 8. Card Type Modes (Candidate Card With PIN vs Desk Card No PIN) ──────────
+
+const cardSampleStudents = [
+  {
+    id: 'st_card_1',
+    name: 'Alya Rahma',
+    class: 'X IPA 1',
+    candidateNumber: '262710001',
+    room: 'Room 1 - Akhwat',
+    seatNumber: '12',
+    pin: '7391',
+  },
+];
+
+const candidateCardHtml = renderCandidateDeskCardsHtml(cardSampleStudents, [], {
+  cardType: 'candidate_card',
+  includeScheduleBack: false,
+});
+check(
+  'DC-18: Candidate Card mode includes CANDIDATE CARD, PERSONAL EXAM PIN, and spaced PIN digits',
+  candidateCardHtml.includes('CANDIDATE CARD') &&
+    candidateCardHtml.includes('PERSONAL EXAM PIN') &&
+    candidateCardHtml.includes('7 3 9 1')
+);
+
+const deskCardHtml = renderCandidateDeskCardsHtml(cardSampleStudents, [], {
+  cardType: 'desk_card',
+  includeScheduleBack: false,
+});
+check(
+  'DC-19: Desk Card mode displays DESK CARD and omits PERSONAL EXAM PIN, card-pin-box, and PIN digits',
+  deskCardHtml.includes('DESK CARD') &&
+    !deskCardHtml.includes('PERSONAL EXAM PIN') &&
+    !deskCardHtml.includes('class="card-pin-box"') &&
+    !deskCardHtml.includes('7 3 9 1')
+);
+
+const sideBySideStudents = Array.from({ length: 4 }, (_, i) => ({
+  id: `st_sbs_${i + 1}`,
+  name: `Student ${i + 1}`,
+  class: 'X IPA 1',
+  candidateNumber: `26271001${i}`,
+  room: 'Room 1 - Akhwat',
+  seatNumber: `${i + 1}`,
+  pin: `420${i}`,
+}));
+
+const sideBySideCandidateHtml = renderCandidateDeskCardsHtml(
+  sideBySideStudents,
+  ICM_SEMESTER1_2026_2027_SCHEDULE,
+  {
+    cardType: 'candidate_card',
+    layout: 'side_by_side',
+  }
+);
+const sideSheetCount = (sideBySideCandidateHtml.match(/class="desk-card-sheet desk-card-sheet--side-by-side"/g) || []).length;
+const firstSbsRowMatch = sideBySideCandidateHtml.match(/<div class="side-by-side-row">[\s\S]*?<\/section>/);
+const firstRowSnippet = firstSbsRowMatch ? firstSbsRowMatch[0] : '';
+const schedPos = firstRowSnippet.indexOf('desk-card-slot--side-left');
+const foldPos = firstRowSnippet.indexOf('class="fold-divider"');
+const frontPos = firstRowSnippet.indexOf('desk-card-slot--side-right');
+
+check(
+  'DC-20: Side-by-Side Foldable chunks 4 students into 2 single-sided sheets (2/page, 13cm x 9.5cm), puts Left Schedule before FOLD & Right Card Front, omits candidate strip, and supports Desk Card',
+  sideSheetCount === 2 &&
+    sideBySideCandidateHtml.includes('grid-template-rows: repeat(2, 130mm);') &&
+    sideBySideCandidateHtml.includes('grid-template-columns: 95mm 95mm;') &&
+    schedPos > 0 &&
+    foldPos > schedPos &&
+    frontPos > foldPos &&
+    !sideBySideCandidateHtml.includes('class="back-candidate-strip"') &&
+    sideBySideCandidateHtml.includes('PERSONAL EXAM PIN') &&
+    !renderCandidateDeskCardsHtml(sideBySideStudents, ICM_SEMESTER1_2026_2027_SCHEDULE, {
+      cardType: 'desk_card',
+      layout: 'side_by_side',
+    }).includes('PERSONAL EXAM PIN'),
+  `sheets=${sideSheetCount}, positions=${schedPos}/${foldPos}/${frontPos}`
+);
+
 console.log(`\nCandidate Desk Card tests: ${passed} passed, ${failed} failed.`);
 if (failed > 0) process.exit(1);

@@ -13,8 +13,12 @@ import {
 import type { RosterStudent } from './studentRosterService';
 
 export type DuplexFlipEdge = 'long' | 'short';
+export type CardPrintType = 'candidate_card' | 'desk_card';
+export type CardPrintLayout = 'side_by_side' | 'duplex_back' | 'front_only';
 
 export interface CandidateDeskCardRenderOptions {
+  cardType?: CardPrintType;
+  layout?: CardPrintLayout;
   includeScheduleBack?: boolean;
   duplexFlip?: DuplexFlipEdge;
   sortMode?: DeskCardSortMode;
@@ -65,25 +69,44 @@ function formatSpacedPin(pin: string): string {
 function renderFrontCardSlot(
   student: RosterStudent | null,
   schoolName: string,
-  examTitle: string
+  examTitle: string,
+  cardType: CardPrintType = 'candidate_card',
+  isSideBySide: boolean = false
 ): string {
+  const slotClass = isSideBySide
+    ? 'desk-card-slot desk-card-slot--side-right'
+    : 'desk-card-slot';
+
   if (!student) {
     return '<div class="desk-card-slot desk-card-slot--empty" aria-hidden="true"></div>';
   }
 
+  const isDeskOnly = cardType === 'desk_card';
   const cleanRoom = student.room?.trim() || 'Room TBA';
   const cleanSeat = student.seatNumber?.trim() || '-';
   const cleanCandNum = student.candidateNumber?.trim() || '-';
   const spacedPin = formatSpacedPin(student.pin || '----');
+  const cardHeading = isDeskOnly ? 'DESK CARD' : 'CANDIDATE CARD';
+
+  const pinBoxHtml = isDeskOnly
+    ? ''
+    : `
+        <div class="card-pin-box">
+          <div class="pin-box-left">
+            <span class="pin-box-label">PERSONAL EXAM PIN</span>
+            <span class="pin-box-note">Keep confidential &bull; Enter at lobby</span>
+          </div>
+          <div class="pin-box-digits">${spacedPin}</div>
+        </div>`;
 
   return `
-    <div class="desk-card-slot">
-      <div class="desk-card desk-card--front">
+    <div class="${slotClass}">
+      <div class="desk-card desk-card--front${isDeskOnly ? ' desk-card--desk-only' : ''}">
         <div class="card-header">
           <img src="${DEFAULT_SCHOOL_LOGO}" alt="ICM Logo" class="card-logo card-logo--icm" />
           <div class="card-header-center">
             <div class="card-kicker">${escapeHtml(schoolName)}</div>
-            <div class="card-title">CANDIDATE CARD</div>
+            <div class="card-title">${cardHeading}</div>
             <div class="card-sub">${escapeHtml(examTitle)}</div>
           </div>
           <img src="${DEFAULT_CAMBRIDGE_LOGO}" alt="Cambridge International Logo" class="card-logo card-logo--cambridge" />
@@ -116,14 +139,7 @@ function renderFrontCardSlot(
             </div>
           </div>
         </div>
-
-        <div class="card-pin-box">
-          <div class="pin-box-left">
-            <span class="pin-box-label">PERSONAL EXAM PIN</span>
-            <span class="pin-box-note">Keep confidential &bull; Enter at lobby</span>
-          </div>
-          <div class="pin-box-digits">${spacedPin}</div>
-        </div>
+${pinBoxHtml}
       </div>
     </div>
   `.trim();
@@ -132,8 +148,14 @@ function renderFrontCardSlot(
 function renderBackCardSlot(
   student: RosterStudent | null,
   scheduleEntries: ExamScheduleEntry[],
-  examTitle: string
+  examTitle: string,
+  opts: { showCandidateStrip?: boolean; isSideBySide?: boolean } = {}
 ): string {
+  const { showCandidateStrip = true, isSideBySide = false } = opts;
+  const slotClass = isSideBySide
+    ? 'desk-card-slot desk-card-slot--back desk-card-slot--side-left'
+    : 'desk-card-slot desk-card-slot--back';
+
   if (!student) {
     return '<div class="desk-card-slot desk-card-slot--empty" aria-hidden="true"></div>';
   }
@@ -167,8 +189,16 @@ function renderBackCardSlot(
     .filter(Boolean)
     .join(' · ');
 
+  const candidateStripHtml = showCandidateStrip
+    ? `
+        <div class="back-candidate-strip">
+          <span class="back-cand-name">${escapeHtml(student.name)}</span>
+          <span class="back-cand-loc">${escapeHtml(locationSummary)}</span>
+        </div>`
+    : '';
+
   return `
-    <div class="desk-card-slot desk-card-slot--back">
+    <div class="${slotClass}">
       <div class="desk-card desk-card--back">
         <div class="back-header">
           <div class="back-title-wrap">
@@ -177,12 +207,7 @@ function renderBackCardSlot(
           </div>
           <span class="back-class-pill">${escapeHtml(student.class)}</span>
         </div>
-
-        <div class="back-candidate-strip">
-          <span class="back-cand-name">${escapeHtml(student.name)}</span>
-          <span class="back-cand-loc">${escapeHtml(locationSummary)}</span>
-        </div>
-
+${candidateStripHtml}
         <table class="sched-table">
           <thead>
             <tr>
@@ -209,56 +234,108 @@ export function renderCandidateDeskCardsHtml(
   scheduleEntries: ExamScheduleEntry[],
   options: CandidateDeskCardRenderOptions = {}
 ): string {
-  const includeBack = options.includeScheduleBack ?? true;
+  const cardType: CardPrintType = options.cardType || 'candidate_card';
+  const layout: CardPrintLayout =
+    options.layout ?? (options.includeScheduleBack === false ? 'front_only' : 'duplex_back');
+  const isSideBySide = layout === 'side_by_side';
+  const includeBack = layout === 'duplex_back';
+  const isDeskOnly = cardType === 'desk_card';
+  const docModeTitle = isDeskOnly ? 'Desk Cards (No PIN)' : 'Candidate Cards (With PIN)';
   const duplexFlip: DuplexFlipEdge = options.duplexFlip || 'long';
   const sortMode: DeskCardSortMode = options.sortMode || 'room_seat';
   const examTitle = options.examTitle?.trim() || '1st Semester Exam • A.Y. 2026/2027';
   const schoolName = options.schoolName?.trim() || 'SMA INSAN CENDEKIA MADANI';
 
   const sortedStudents = sortStudentsForDeskCards(students, sortMode);
-  const pages = chunkArray(sortedStudents, 6);
 
-  const sheetsHtml = pages
-    .map((pageStudents, pageIdx) => {
-      const frontSlots: Array<RosterStudent | null> = Array.from(
-        { length: 6 },
-        (_, i) => pageStudents[i] ?? null
-      );
-      const frontCardsHtml = frontSlots
-        .map((st) => renderFrontCardSlot(st, schoolName, examTitle))
-        .join('\n');
+  let sheetsHtml: string;
+  let totalPaperCount: number;
 
-      const frontSheet = `
-        <section class="desk-card-sheet desk-card-sheet--front" data-sheet-index="${pageIdx + 1}">
-          ${frontCardsHtml}
-        </section>
-      `;
+  if (isSideBySide) {
+    const sidePages = chunkArray(sortedStudents, 2);
+    totalPaperCount = sidePages.length;
+    sheetsHtml = sidePages
+      .map((pageStudents, pageIdx) => {
+        const rowsHtml = Array.from({ length: 2 }, (_, i) => pageStudents[i] ?? null)
+          .map((st) => {
+            if (!st) {
+              return `<div class="side-by-side-row side-by-side-row--empty" aria-hidden="true"></div>`;
+            }
+            const leftHtml = renderBackCardSlot(st, scheduleEntries, examTitle, {
+              showCandidateStrip: false,
+              isSideBySide: true,
+            });
+            const rightHtml = renderFrontCardSlot(st, schoolName, examTitle, cardType, true);
+            return `
+              <div class="side-by-side-row">
+                ${leftHtml}
+                <div class="fold-divider" aria-hidden="true"><span class="fold-label">FOLD</span></div>
+                ${rightHtml}
+              </div>
+            `.trim();
+          })
+          .join('\n');
 
-      if (!includeBack) return frontSheet;
+        return `
+          <section class="desk-card-sheet desk-card-sheet--side-by-side" data-sheet-index="${pageIdx + 1}">
+            ${rowsHtml}
+          </section>
+        `;
+      })
+      .join('\n');
+  } else {
+    const pages = chunkArray(sortedStudents, 6);
+    const frontPageCount = pages.length;
+    totalPaperCount = includeBack ? frontPageCount * 2 : frontPageCount;
+    sheetsHtml = pages
+      .map((pageStudents, pageIdx) => {
+        const frontSlots: Array<RosterStudent | null> = Array.from(
+          { length: 6 },
+          (_, i) => pageStudents[i] ?? null
+        );
+        const frontCardsHtml = frontSlots
+          .map((st) => renderFrontCardSlot(st, schoolName, examTitle, cardType))
+          .join('\n');
 
-      const backSlots = mirrorDeskCardSlots(pageStudents, duplexFlip);
-      const backCardsHtml = backSlots
-        .map((st) => renderBackCardSlot(st, scheduleEntries, examTitle))
-        .join('\n');
+        const frontSheet = `
+          <section class="desk-card-sheet desk-card-sheet--front" data-sheet-index="${pageIdx + 1}">
+            ${frontCardsHtml}
+          </section>
+        `;
 
-      const backSheet = `
-        <section class="desk-card-sheet desk-card-sheet--back" data-sheet-index="${pageIdx + 1}">
-          ${backCardsHtml}
-        </section>
-      `;
+        if (!includeBack) return frontSheet;
 
-      return `${frontSheet}\n${backSheet}`;
-    })
-    .join('\n');
+        const backSlots = mirrorDeskCardSlots(pageStudents, duplexFlip);
+        const backCardsHtml = backSlots
+          .map((st) => renderBackCardSlot(st, scheduleEntries, examTitle))
+          .join('\n');
 
-  const frontPageCount = pages.length;
-  const totalPaperCount = includeBack ? frontPageCount * 2 : frontPageCount;
+        const backSheet = `
+          <section class="desk-card-sheet desk-card-sheet--back" data-sheet-index="${pageIdx + 1}">
+            ${backCardsHtml}
+          </section>
+        `;
+
+        return `${frontSheet}\n${backSheet}`;
+      })
+      .join('\n');
+  }
+
+  const gridLabel = isSideBySide ? 'Side-by-Side Foldable, 2/page &bull; 13 &times; 9.5 cm' : '2 &times; 3 A4 Grid';
+  const layoutMetaNote = isSideBySide
+    ? 'Side-by-Side Foldable (2 per page &bull; 13 cm &times; 9.5 cm &bull; Cut Horizontally &amp; Fold)'
+    : includeBack
+      ? `Duplex ${duplexFlip === 'short' ? 'Short-Edge' : 'Long-Edge'} Mirrored`
+      : 'Front Side Only';
+  const tipNote = isSideBySide
+    ? 'Tip: Print Single-Sided A4 Portrait at 100% Scale (Cut &amp; Fold Along Center)'
+    : `Tip: Print A4 Portrait at 100% Scale${includeBack ? ` (${duplexFlip === 'short' ? 'Flip on Short Edge' : 'Flip on Long Edge'})` : ''}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Candidate Desk Cards (${sortedStudents.length}) — ${escapeHtml(examTitle)}</title>
+  <title>${docModeTitle} (${sortedStudents.length}) — ${escapeHtml(examTitle)}</title>
   <style>
     @page {
       size: A4 portrait;
@@ -385,6 +462,75 @@ export function renderCandidateDeskCardsHtml(
     .desk-card-slot--empty {
       border-color: #e2e8f0;
       background: transparent;
+    }
+
+    /* ── Side-by-Side Foldable Layout (2 rows/page: 13 cm H x 9.5 cm W per panel) ── */
+    .desk-card-sheet--side-by-side {
+      width: 190mm;
+      height: auto;
+      min-height: 260mm;
+      padding: 0;
+      margin: 0 auto;
+      grid-template-columns: 190mm;
+      grid-template-rows: repeat(2, 130mm);
+      gap: 0;
+    }
+
+    .side-by-side-row {
+      position: relative;
+      width: 190mm;
+      height: 130mm;
+      display: grid;
+      grid-template-columns: 95mm 95mm;
+      border-bottom: 1px dashed #94a3b8;
+      overflow: hidden;
+    }
+
+    .side-by-side-row:last-child {
+      border-bottom: none;
+    }
+
+    .side-by-side-row--empty {
+      border-bottom-color: #e2e8f0;
+    }
+
+    .fold-divider {
+      position: absolute;
+      top: 2mm;
+      bottom: 2mm;
+      left: 50%;
+      transform: translateX(-50%);
+      border-left: 1px dashed #94a3b8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .fold-label {
+      background: #ffffff;
+      color: #94a3b8;
+      font-size: 5.2pt;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 2px 1px;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+    }
+
+    .desk-card-slot--side-left,
+    .desk-card-slot--side-right {
+      border: none;
+      border-radius: 0;
+    }
+
+    .desk-card-slot--side-left {
+      padding: 2.2mm 4.5mm 2.2mm 1.5mm;
+    }
+
+    .desk-card-slot--side-right {
+      padding: 2.2mm 1.5mm 2.2mm 4.5mm;
     }
 
     .desk-card {
@@ -517,6 +663,11 @@ export function renderCandidateDeskCardsHtml(
       justify-content: center;
       gap: 3px;
       padding: 1.5mm 0;
+    }
+
+    .desk-card--desk-only .card-profile {
+      flex: 1;
+      justify-content: center;
     }
 
     .profile-row--name {
@@ -762,17 +913,17 @@ export function renderCandidateDeskCardsHtml(
 <body>
   <div class="print-toolbar no-print">
     <div class="toolbar-info">
-      <div class="toolbar-title">🪪 Printable Examination Candidate Desk Cards (2 &times; 3 A4 Grid)</div>
+      <div class="toolbar-title">🪪 Printable ${docModeTitle} (${gridLabel})</div>
       <div class="toolbar-meta">
         ${sortedStudents.length} candidate${sortedStudents.length === 1 ? '' : 's'} &middot;
         ${totalPaperCount} printable A4 page${totalPaperCount === 1 ? '' : 's'}
-        (${includeBack ? `Duplex ${duplexFlip === 'short' ? 'Short-Edge' : 'Long-Edge'} Mirrored` : 'Front Side Only'})
+        (${layoutMetaNote})
       </div>
     </div>
     <div class="toolbar-controls">
       <span class="toolbar-pill">Sort: ${sortMode === 'room_seat' ? 'Room & Seat #' : 'Class & Cand #'}</span>
-      <span class="toolbar-pill">Tip: Print A4 Portrait at 100% Scale${includeBack ? ` (${duplexFlip === 'short' ? 'Flip on Short Edge' : 'Flip on Long Edge'})` : ''}</span>
-      <button type="button" class="toolbar-btn" onclick="window.print()">🖨️ Print Desk Cards</button>
+      <span class="toolbar-pill">${tipNote}</span>
+      <button type="button" class="toolbar-btn" onclick="window.print()">🖨️ Print ${docModeTitle}</button>
     </div>
   </div>
 

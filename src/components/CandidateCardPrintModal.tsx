@@ -8,6 +8,8 @@ import {
   sortClassNames,
 } from '../lib/examSchedule';
 import {
+  type CardPrintLayout,
+  type CardPrintType,
   type DuplexFlipEdge,
   openCandidateDeskCardsPrintWindow,
 } from '../services/candidateCardPrintService';
@@ -55,7 +57,8 @@ export function CandidateCardPrintModal({
   );
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [sortMode, setSortMode] = useState<DeskCardSortMode>('room_seat');
-  const [includeScheduleBack, setIncludeScheduleBack] = useState<boolean>(true);
+  const [cardType, setCardType] = useState<CardPrintType>('candidate_card');
+  const [printLayout, setPrintLayout] = useState<CardPrintLayout>('side_by_side');
   const [duplexFlip, setDuplexFlip] = useState<DuplexFlipEdge>('long');
   const [examTitle, setExamTitle] = useState<string>(initialExamTitle);
   const [printError, setPrintError] = useState<string | null>(null);
@@ -152,13 +155,20 @@ export function CandidateCardPrintModal({
 
   if (!isOpen) return null;
 
-  const frontSheetCount = Math.ceil(targetStudents.length / 6);
-  const totalSheetCount = includeScheduleBack ? frontSheetCount * 2 : frontSheetCount;
+  const totalSheetCount =
+    printLayout === 'side_by_side'
+      ? Math.ceil(targetStudents.length / 2)
+      : printLayout === 'duplex_back'
+        ? Math.ceil(targetStudents.length / 6) * 2
+        : Math.ceil(targetStudents.length / 6);
+  const duplexFrontCount = Math.ceil(targetStudents.length / 6);
 
   const handleOpenPrintPreview = () => {
     setPrintError(null);
     const res = openCandidateDeskCardsPrintWindow(targetStudents, schedule, {
-      includeScheduleBack,
+      cardType,
+      layout: printLayout,
+      includeScheduleBack: printLayout === 'duplex_back',
       duplexFlip,
       sortMode,
       examTitle,
@@ -267,10 +277,44 @@ export function CandidateCardPrintModal({
 
         {/* Body */}
         <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {/* Card Type Picker */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-secondary, #64748b)', marginBottom: '6px' }}>
+              1. Card Type
+            </label>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {[
+                { key: 'candidate_card', label: '🪪 Candidate Card (With PIN)' },
+                { key: 'desk_card', label: '🪧 Desk Card (No PIN)' },
+              ].map((opt) => {
+                const active = cardType === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setCardType(opt.key as CardPrintType)}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: '8px',
+                      border: `1.5px solid ${active ? '#4f46e5' : 'var(--color-border, #cbd5e1)'}`,
+                      background: active ? 'rgba(79, 70, 229, 0.1)' : 'transparent',
+                      color: active ? '#4f46e5' : 'var(--color-text-primary, #0f172a)',
+                      fontWeight: 700,
+                      fontSize: '0.82rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Scope Picker */}
           <div>
             <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-secondary, #64748b)', marginBottom: '6px' }}>
-              1. Candidate Print Scope {isSyncing ? '(Syncing latest roster...)' : ''}
+              2. Candidate Print Scope {isSyncing ? '(Syncing latest roster...)' : ''}
             </label>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: scopeType === 'all' ? 0 : '8px' }}>
               {[
@@ -397,7 +441,7 @@ export function CandidateCardPrintModal({
             </div>
           </div>
 
-          {/* Back Side / Duplex Toggle */}
+          {/* Print Layout Picker */}
           <div
             style={{
               padding: '12px 14px',
@@ -409,36 +453,64 @@ export function CandidateCardPrintModal({
               gap: '8px',
             }}
           >
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '0.86rem' }}>
-              <input
-                type="checkbox"
-                checked={includeScheduleBack}
-                onChange={(e) => setIncludeScheduleBack(e.target.checked)}
-              />
-              <span>Include Exam Schedule on Reverse Side (Duplex Mirrored)</span>
+            <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-secondary, #64748b)' }}>
+              3. Print Layout
             </label>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {[
+                { key: 'side_by_side', label: '📖 Side-by-Side Foldable (2/page · 13×9.5 cm)' },
+                { key: 'duplex_back', label: '🔄 Duplex Mirrored Back (6/page)' },
+                { key: 'front_only', label: '📄 Front Only (6/page)' },
+              ].map((opt) => {
+                const active = printLayout === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setPrintLayout(opt.key as CardPrintLayout)}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: '8px',
+                      border: `1.5px solid ${active ? '#4f46e5' : 'var(--color-border, #cbd5e1)'}`,
+                      background: active ? 'rgba(79, 70, 229, 0.1)' : 'var(--color-surface, #ffffff)',
+                      color: active ? '#4f46e5' : 'var(--color-text-primary, #0f172a)',
+                      fontWeight: 700,
+                      fontSize: '0.78rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
 
-            {includeScheduleBack && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', paddingLeft: '22px' }}>
+            {printLayout !== 'front_only' && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', paddingTop: '2px' }}>
                 <span style={{ fontSize: '0.76rem', color: 'var(--color-text-secondary, #64748b)' }}>
-                  {schedule.length} schedule session{schedule.length === 1 ? '' : 's'} active (filtered per candidate class/grade)
+                  {schedule.length} schedule session{schedule.length === 1 ? '' : 's'} active &middot;{' '}
+                  {printLayout === 'side_by_side'
+                    ? 'Left = Schedule, Right = Card Front (cut & fold)'
+                    : 'Filtered per candidate class/grade'}
                 </span>
-                <select
-                  value={duplexFlip}
-                  onChange={(e) => setDuplexFlip(e.target.value as DuplexFlipEdge)}
-                  style={{
-                    padding: '5px 8px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--color-border, #cbd5e1)',
-                    fontSize: '0.76rem',
-                    fontWeight: 600,
-                    background: 'var(--color-surface, #ffffff)',
-                    color: 'var(--color-text-primary, #0f172a)',
-                  }}
-                >
-                  <option value="long">Duplex: Flip Long Edge (Standard)</option>
-                  <option value="short">Duplex: Flip Short Edge</option>
-                </select>
+                {printLayout === 'duplex_back' && (
+                  <select
+                    value={duplexFlip}
+                    onChange={(e) => setDuplexFlip(e.target.value as DuplexFlipEdge)}
+                    style={{
+                      padding: '5px 8px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--color-border, #cbd5e1)',
+                      fontSize: '0.76rem',
+                      fontWeight: 600,
+                      background: 'var(--color-surface, #ffffff)',
+                      color: 'var(--color-text-primary, #0f172a)',
+                    }}
+                  >
+                    <option value="long">Duplex: Flip Long Edge (Standard)</option>
+                    <option value="short">Duplex: Flip Short Edge</option>
+                  </select>
+                )}
               </div>
             )}
           </div>
@@ -459,10 +531,16 @@ export function CandidateCardPrintModal({
               color: '#4338ca',
             }}
           >
-            <span>Ready to generate {targetStudents.length} candidate card{targetStudents.length === 1 ? '' : 's'}</span>
+            <span>
+              Ready to generate {targetStudents.length} {cardType === 'desk_card' ? 'desk' : 'candidate'} card{targetStudents.length === 1 ? '' : 's'} ({cardType === 'desk_card' ? 'no PIN' : 'with PIN'})
+            </span>
             <span>
               {totalSheetCount} A4 page{totalSheetCount === 1 ? '' : 's'}
-              {includeScheduleBack && frontSheetCount > 0 ? ` (${frontSheetCount} front + ${frontSheetCount} mirrored back)` : ''}
+              {printLayout === 'duplex_back' && duplexFrontCount > 0
+                ? ` (${duplexFrontCount} front + ${duplexFrontCount} mirrored back)`
+                : printLayout === 'side_by_side' && totalSheetCount > 0
+                  ? ' (single-sided, cut & fold)'
+                  : ''}
             </span>
           </div>
 
