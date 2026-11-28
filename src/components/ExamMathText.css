@@ -12,7 +12,7 @@
 .exam-text-line.exam-text-arabic {
   direction: rtl;
   text-align: right;
-  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif;
+  font-family: 'Noto Naskh Arabic', 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif;
   font-size: 1.45rem;
   line-height: 2.2;
 }
@@ -30,7 +30,7 @@
 .exam-arabic-inline {
   direction: rtl;
   unicode-bidi: isolate;
-  font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif;
+  font-family: 'Noto Naskh Arabic', 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif;
   font-size: 1.2em;
   line-height: 1.7;
   padding: 0 2px;

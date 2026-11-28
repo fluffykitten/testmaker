@@ -4,7 +4,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { tryBuildPaperOutline } from './paperOutline';
 import { isAnswerKeyStartPageText } from './markSchemeDetect';
-import { containsArabicScript } from './arabicTextUtils';
+import { containsArabicScript, hasCorruptedArabicTextLayer } from './arabicTextUtils';
 import type { GeminiPageImage, CropRegion } from './gemini';
 
 // Configure pdf.js worker in browser
@@ -694,6 +694,30 @@ export async function detectArabicPagesInPdf(
     console.warn('[pdfChunker] Arabic page scan failed, falling back to default PDF mode:', err);
   }
   return arabicPages;
+}
+
+/**
+ * Scans a PDF and returns 1-indexed page numbers whose Arabic text layer shows CMap
+ * corruption (Presentation Forms, detached harakat, or inline mojibake). Clean UTF-8
+ * Arabic pages are omitted so they bypass PNG vision OCR and keep exact Unicode text.
+ */
+export async function detectCorruptedArabicPagesInPdf(
+  fileOrBytes: File | Uint8Array | ArrayBuffer,
+  preloadedPageTexts?: string[]
+): Promise<Set<number>> {
+  const corruptedPages = new Set<number>();
+  try {
+    const pageTexts = preloadedPageTexts ?? (await readPdfPageTexts(fileOrBytes));
+    pageTexts.forEach((pageText, idx) => {
+      if (hasCorruptedArabicTextLayer(pageText)) {
+        corruptedPages.add(idx + 1);
+      }
+    });
+  } catch (err) {
+    console.warn('[pdfChunker] Corrupted Arabic page scan failed, falling back to Arabic page set:', err);
+    return detectArabicPagesInPdf(fileOrBytes, preloadedPageTexts);
+  }
+  return corruptedPages;
 }
 
 function canvasToBase64Png(canvas: HTMLCanvasElement): string {

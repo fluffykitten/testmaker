@@ -42,6 +42,113 @@ export function normalizeExtractedArabicText(text: string): string {
     .replace(DETACHED_HARAKAT_RE, '$1$2');
 }
 
+const ARABIC_INLINE_MOJIBAKE_RE =
+  /[\u0621-\u064A\u064B-\u065F][a-z?$%<>~\\|`]|(?:^|[\s])[a-z?$%<>~\\|`][\u0621-\u064A]|[\u0621-\u064A][a-z?$%<>~\\|`][\u0621-\u064A]/i;
+const ORPHANED_TOKEN_INITIAL_HARAKAT_RE = /(?:^|\s)[\u064B-\u065F\u0670]/;
+const ARABIC_TOKEN_RE = /[\u0621-\u064A\u064B-\u065F\u0670]+/g;
+const ALLOWED_SINGLE_ARABIC_TOKENS = new Set(['و', 'أ', 'ب', 'ج', 'د', 'ه']);
+
+/**
+ * Detects whether an extracted PDF text page contains Arabic ToUnicode CMap corruption
+ * (Presentation Forms, detached/orphaned harakat, inline ASCII mojibake, or fragmented ligatures).
+ * Clean UTF-8 Arabic PDFs (e.g. browser-printed HTML or modern Word exports) return `false`
+ * so extraction uses their exact Unicode text layer instead of error-prone PNG vision OCR.
+ */
+export function hasCorruptedArabicTextLayer(pageText: string): boolean {
+  if (!pageText || !containsArabicScript(pageText)) return false;
+
+  if (new RegExp(ARABIC_PRESENTATION_FORM_RUN_RE.source).test(pageText)) return true;
+  if (new RegExp(DETACHED_HARAKAT_RE.source).test(pageText)) return true;
+  if (ORPHANED_TOKEN_INITIAL_HARAKAT_RE.test(pageText)) return true;
+  if (ARABIC_INLINE_MOJIBAKE_RE.test(pageText)) return true;
+
+  const tokens = pageText.match(ARABIC_TOKEN_RE) || [];
+  if (tokens.length >= 12) {
+    let singleBaseCount = 0;
+    for (const tok of tokens) {
+      const stripped = tok.replace(/[\u064B-\u065F\u0670]/g, '');
+      if (stripped.length === 1 && !ALLOWED_SINGLE_ARABIC_TOKENS.has(stripped)) {
+        singleBaseCount++;
+      }
+    }
+    if (singleBaseCount / tokens.length >= 0.35) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+const ARABIC_BASE_LETTER_RE = /[\u0621-\u064A]/g;
+const ARABIC_COMBINING_HARAKAT_RE = /[\u064B-\u065F\u0670]/g;
+const ARABIC_LAM_SUKUN_RE = /\u0627\u0644\u0652/g;
+const OPTION_PREFIX_STRIP_RE = /^(?:[أإآابجدهو]|[A-H])[.):\s-]+/i;
+
+/**
+ * Audits an extracted Arabic question + options for signs of AI over-diacritization
+ * ("auto-tashkil"), duplicate auto-corrected distractors, or detached/corrupted encoding
+ * so non-Arabic speakers can immediately spot extractions that warrant visual PDF comparison.
+ */
+export function auditArabicQuestionFidelity(question: {
+  question_text?: string | null;
+  options?: string[] | null;
+}): { status: 'ok' | 'warning'; issues: string[] } {
+  const issues: string[] = [];
+  const rawParts: string[] = [];
+
+  if (typeof question?.question_text === 'string' && question.question_text.trim()) {
+    rawParts.push(question.question_text);
+  }
+  const rawOptions = Array.isArray(question?.options) ? question.options : [];
+  for (const opt of rawOptions) {
+    if (typeof opt === 'string' && opt.trim()) rawParts.push(opt);
+  }
+
+  const combined = rawParts.join('\n');
+  if (!containsArabicScript(combined)) {
+    return { status: 'ok', issues: [] };
+  }
+
+  // Check 1: Duplicate MCQ option bodies (AI may have normalized away a subtle distractor)
+  if (rawOptions.length >= 2) {
+    const normalizedBodies = rawOptions
+      .map((opt) =>
+        String(opt || '')
+          .trim()
+          .replace(OPTION_PREFIX_STRIP_RE, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      )
+      .filter(Boolean);
+    if (new Set(normalizedBodies).size < normalizedBodies.length) {
+      issues.push('Duplicate MCQ options detected — AI may have auto-corrected a distractor.');
+    }
+  }
+
+  // Check 2: Possible AI auto-tashkil (sukun on bare ال or unusually dense diacritics)
+  const baseLetters = combined.match(ARABIC_BASE_LETTER_RE)?.length ?? 0;
+  const harakatCount = combined.match(ARABIC_COMBINING_HARAKAT_RE)?.length ?? 0;
+  const lamSukunCount = combined.match(ARABIC_LAM_SUKUN_RE)?.length ?? 0;
+  if (lamSukunCount >= 2 || (baseLetters >= 20 && harakatCount / baseLetters >= 0.72)) {
+    issues.push(
+      "High harakat density / 'الْ' detected — possible AI auto-tashkil (extra harakat added). Compare with original PDF page."
+    );
+  }
+
+  // Check 3: Corrupted Presentation Form glyphs or detached harakat artifacts
+  if (
+    new RegExp(ARABIC_PRESENTATION_FORM_RUN_RE.source).test(combined) ||
+    new RegExp(DETACHED_HARAKAT_RE.source).test(combined)
+  ) {
+    issues.push('Detached harakat or Presentation Form characters detected.');
+  }
+
+  return {
+    status: issues.length > 0 ? 'warning' : 'ok',
+    issues,
+  };
+}
+
 /**
  * Shared prompt instructions injected across all subject domains (STEM, Humanities, Languages)
  * so Arabic verses, Hadith, vocabulary, and mixed Arabic + Indonesian/English stems are
@@ -51,6 +158,9 @@ export function buildArabicExtractionGuidance(): string {
   return `ARABIC SCRIPT & MIXED ARABIC + INDONESIAN/ENGLISH EXTRACTION PROTOCOL (CRITICAL):
 - Many exam PDFs (PAI, Al-Qur'an Hadis, Fiqih, Bahasa Arab) store a CORRUPTED embedded PDF text layer for Arabic: letters may be reversed left-to-right, harakat split across lines, Allah/lam-alif ligatures scrambled, or hamza letters omitted (for example, printing "ا ْلَْلْبَاب" / "ْلَْا" in the PDF text layer when the page visually shows "الْأَلْبَابِ" and "الْأَ").
 - ALWAYS read ALL Arabic words, verses, Hadith, and short inline Arabic terms VISUALLY from the rendered page image(s). NEVER copy corrupted or reversed Arabic sequences from an underlying PDF text layer.
+- NO AUTO-TASHKIL / LITERAL DIACRITICS ONLY (STRICT):
+  * ONLY output a harakah/diacritic (َ, ِ, ُ, ْ, ّ, ٰ, ً, ٍ, ٌ) if that exact mark is VISUALLY PRINTED on that letter in the source page image.
+  * NEVER auto-vowellize (auto-tashkil) unvowelled letters, NEVER add a sukun (ْ) onto bare "ال" (e.g. keep "الغَدَاء وَ العَشَاء" as printed, NOT "الْغَدَاءِ وَ الْعِشَاءِ"), NEVER invent unprinted final grammatical case endings (i'rab) such as "ٌ" on "مُحَمَّد" if not printed, and NEVER convert partially vowelled Arabic into fully vowelled Arabic.
 - PAY SPECIAL ATTENTION TO SHORT INLINE ARABIC SNIPPETS INSIDE INDONESIAN/ENGLISH SENTENCES (e.g. tajwid/nahwu questions like "menemukan bacaan الْأَلْبَابِ ... hukum bacaan pada bagian الْأَ dalam kata tersebut"):
   * Carefully inspect every single letter (especially أ, إ, آ, ء, ع, غ, ه, و, ي) and every harakat/diacritic (َ, ِ, ُ, ْ, ّ, ٰ, ً, ٍ, ٌ) visually on the page image.
   * When an inline excerpt refers to a word or phrase inside the verse/quote printed directly above it, cross-check that the extracted inline word and sub-part characters strictly match that printed verse/word visually.

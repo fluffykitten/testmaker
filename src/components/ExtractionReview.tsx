@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { normalizeQuestionStyle, type ExtractionResult, type ExtractedQuestion, type SubQuestion, type PaperMetadata, type ExtractedPassage } from '../types/database';
-import { type DiagramCropItem } from '../lib/diagramCropper';
+import { type DiagramCropItem, renderPdfPageToCanvas } from '../lib/diagramCropper';
+import { auditArabicQuestionFidelity, containsArabicScript } from '../lib/arabicTextUtils';
 import { ExamMathText } from './ExamMathText';
 import { QuestionEditorModal } from './QuestionEditorModal';
 import { DiagramCropModal } from './DiagramCropModal';
@@ -143,6 +144,41 @@ export function ExtractionReview({
         hasOfficialMarkScheme: hasAttachedOfficialMs,
       }),
     [questions, hasAttachedOfficialMs]
+  );
+
+  const arabicAuditByIndex = useMemo(
+    () => questions.map((q) => auditArabicQuestionFidelity(q)),
+    [questions]
+  );
+
+  const [comparePdfState, setComparePdfState] = useState<{
+    qNum: string;
+    pageNumber: number;
+    dataUrl: string | null;
+    loading: boolean;
+    error?: string | null;
+  } | null>(null);
+
+  const openComparePdfPage = useCallback(
+    async (qNum: string, pageNumber: number) => {
+      if (!pdfFile) return;
+      const safePage = Math.max(1, pageNumber || 1);
+      setComparePdfState({ qNum, pageNumber: safePage, dataUrl: null, loading: true, error: null });
+      try {
+        const canvas = await renderPdfPageToCanvas(pdfFile, safePage, 2.0);
+        const dataUrl = canvas.toDataURL('image/png');
+        setComparePdfState({ qNum, pageNumber: safePage, dataUrl, loading: false, error: null });
+      } catch (err) {
+        setComparePdfState({
+          qNum,
+          pageNumber: safePage,
+          dataUrl: null,
+          loading: false,
+          error: err instanceof Error ? err.message : 'Failed to render PDF page',
+        });
+      }
+    },
+    [pdfFile]
   );
 
   const getDiagramUrl = useCallback(
@@ -1166,6 +1202,34 @@ export function ExtractionReview({
                         : `⚠️ MS Check (${qMsAudit.issues.length})`}
                     </span>
                   )}
+
+                  {arabicAuditByIndex[idx]?.status === 'warning' && (
+                    <span
+                      className="review-badge badge--ms-warning"
+                      title={arabicAuditByIndex[idx].issues.join('\n')}
+                    >
+                      {`⚠️ Arabic Check (${arabicAuditByIndex[idx].issues.length})`}
+                    </span>
+                  )}
+
+                  {pdfFile &&
+                    (containsArabicScript(q.question_text || '') ||
+                      (q.options || []).some((o) => containsArabicScript(o))) && (
+                      <button
+                        type="button"
+                        className="review-badge"
+                        style={{
+                          cursor: 'pointer',
+                          border: '1px solid rgba(59, 130, 246, 0.45)',
+                          background: 'rgba(59, 130, 246, 0.1)',
+                          color: 'inherit',
+                        }}
+                        title="Open the original PDF page image to visually verify Arabic letters & harakat"
+                        onClick={() => openComparePdfPage(q.question_number, q.page_number || 1)}
+                      >
+                        {`👁️ Compare PDF (p.${q.page_number || 1})`}
+                      </button>
+                    )}
 
                   <span className="review-badge badge--paper">
                     📄 Paper {q.paper_number || paperMetadata?.paper_number || 1}
@@ -2379,6 +2443,66 @@ export function ExtractionReview({
                 >
                   Apply Changes
                 </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {comparePdfState &&
+        createPortal(
+          <div
+            className="review-metadata-modal-backdrop"
+            style={{ zIndex: 10000 }}
+            onClick={() => setComparePdfState(null)}
+          >
+            <div
+              className="review-metadata-modal"
+              style={{ maxWidth: '860px', width: '94vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="review-metadata-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontWeight: 700 }}>
+                  👁️ Original PDF Page {comparePdfState.pageNumber} — Q{comparePdfState.qNum}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="review-meta-cancel-btn"
+                    disabled={comparePdfState.loading || comparePdfState.pageNumber <= 1}
+                    onClick={() => openComparePdfPage(comparePdfState.qNum, comparePdfState.pageNumber - 1)}
+                  >
+                    ◀ Prev Page
+                  </button>
+                  <button
+                    type="button"
+                    className="review-meta-cancel-btn"
+                    disabled={comparePdfState.loading}
+                    onClick={() => openComparePdfPage(comparePdfState.qNum, comparePdfState.pageNumber + 1)}
+                  >
+                    Next Page ▶
+                  </button>
+                  <button
+                    type="button"
+                    className="review-meta-cancel-btn"
+                    onClick={() => setComparePdfState(null)}
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+              </div>
+              <div style={{ overflow: 'auto', padding: 12, textAlign: 'center', background: '#f4f4f5', flex: 1 }}>
+                {comparePdfState.loading && <div style={{ padding: 24 }}>Rendering PDF page…</div>}
+                {comparePdfState.error && (
+                  <div style={{ padding: 24, color: '#dc2626' }}>{comparePdfState.error}</div>
+                )}
+                {comparePdfState.dataUrl && (
+                  <img
+                    src={comparePdfState.dataUrl}
+                    alt={`PDF Page ${comparePdfState.pageNumber}`}
+                    style={{ maxWidth: '100%', height: 'auto', border: '1px solid #d4d4d8', background: '#fff' }}
+                  />
+                )}
               </div>
             </div>
           </div>,

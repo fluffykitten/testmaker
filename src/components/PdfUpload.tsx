@@ -3,6 +3,7 @@ import { getSavedSettings } from '../lib/settings';
 import { getGeminiApiKeys, type SubjectDomain } from '../lib/gemini';
 import { classifySubject, type SubjectMatch } from '../lib/subjectClassifier';
 import { readPdfTextLayout } from '../lib/paperOutline';
+import { isStructuredDocFile } from '../lib/deterministicDocImporter';
 import './PdfUpload.css';
 
 interface PdfUploadProps {
@@ -70,10 +71,24 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
     return null;
   }, [MAX_FILE_SIZE]);
 
+  const validateQpFile = useCallback((file: File): string | null => {
+    if (file.type !== 'application/pdf' && !isStructuredDocFile(file)) {
+      return 'Supported Question Paper formats: PDF, DOCX, or HTML.';
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      return `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum size is 25 MB.`;
+    }
+    return null;
+  }, [MAX_FILE_SIZE]);
+
   // Identify the syllabus from the cover so the domain toggle and the extraction prompt
   // follow the paper rather than the previous upload. Detection is only a hint: any
   // failure leaves the teacher's choice untouched and never blocks the upload.
   const detectSubject = useCallback(async (file: File) => {
+    if (isStructuredDocFile(file)) {
+      setDetected(null);
+      return;
+    }
     setDetecting(true);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -108,7 +123,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
     setQpDragOver(false);
     const file = e.dataTransfer.files[0];
     if (file) {
-      const err = validateFile(file);
+      const err = validateQpFile(file);
       if (err) setError(err);
       else {
         setError(null);
@@ -182,7 +197,7 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
                 Stage past examination papers, official mark schemes, and resource inserts.
               </p>
             </div>
-            <span className="upload-format-badge">PDF • Max 25 MB</span>
+            <span className="upload-format-badge">PDF / DOCX / HTML • Max 25 MB</span>
           </div>
 
           <div className="upload-card-body">
@@ -196,11 +211,11 @@ export function PdfUpload({ onFilesSelected, isProcessing }: PdfUploadProps) {
               <input
                 ref={qpInputRef}
                 type="file"
-                accept="application/pdf"
+                accept="application/pdf,.docx,.html,.htm,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/html"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const err = validateFile(file);
+                    const err = validateQpFile(file);
                     if (err) setError(err);
                     else { setError(null); setQpFile(file); void detectSubject(file); }
                   }

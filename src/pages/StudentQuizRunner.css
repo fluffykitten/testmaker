@@ -346,6 +346,71 @@
   font-size: 1.0625rem;
 }
 
+/* Text Size Controls */
+.sq-font-scale-group {
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sq-font-scale-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 0.78125rem;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.sq-font-scale-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.14);
+  color: var(--color-primary-600, #4f46e5);
+}
+
+.sq-font-scale-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.sq-font-scale-reset {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  min-width: 44px;
+  text-align: center;
+}
+
+.sq-font-scale-reset:disabled {
+  opacity: 0.8;
+}
+
+:root.dark .sq-font-scale-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.22);
+  color: var(--color-primary-400, #818cf8);
+}
+
+@media (max-width: 640px) {
+  .sq-font-scale-reset {
+    display: none;
+  }
+
+  .sq-font-scale-btn {
+    padding: 4px 7px;
+    font-size: 0.75rem;
+  }
+}
+
 /* Security Alert Bar */
 .sq-security-alert-bar {
   background: linear-gradient(90deg, #b91c1c, #dc2626);
@@ -484,7 +549,7 @@
 }
 
 .sq-q-stem {
-  font-size: 1.0625rem;
+  font-size: calc(1.0625rem * var(--sq-font-scale, 1));
   line-height: 1.65;
   color: var(--color-text-primary);
   margin-bottom: 24px;
@@ -498,9 +563,15 @@
   direction: rtl !important;
   text-align: right !important;
   font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', 'Noto Naskh Arabic', 'Geeza Pro', 'Al Bayan', 'DecoType Naskh', serif, sans-serif !important;
-  font-size: 1.55rem !important;
+  font-size: calc(1.55rem * var(--sq-font-scale, 1)) !important;
   line-height: 2.3 !important;
   letter-spacing: 0.02em;
+}
+
+.sq-runner-body .exam-math-wrapper.exam-math-arabic,
+.sq-runner-body .exam-text-block.exam-text-arabic,
+.sq-runner-body .exam-text-line.exam-text-arabic {
+  font-size: calc(1.45rem * var(--sq-font-scale, 1));
 }
 
 .sq-stimulus-card {
@@ -531,7 +602,7 @@
 }
 
 .sq-stimulus-body {
-  font-size: 0.9375rem;
+  font-size: calc(0.9375rem * var(--sq-font-scale, 1));
   line-height: 1.65;
   color: var(--color-text-primary);
 }
@@ -677,7 +748,7 @@
 
 .sq-sub-text {
   flex: 1;
-  font-size: 0.9375rem;
+  font-size: calc(0.9375rem * var(--sq-font-scale, 1));
 }
 
 .sq-sub-marks {
@@ -715,7 +786,7 @@
   gap: 14px;
   text-align: left;
   font-family: inherit;
-  font-size: 0.9375rem;
+  font-size: calc(0.9375rem * var(--sq-font-scale, 1));
   cursor: pointer;
   transition: all var(--transition-fast);
 }
@@ -830,7 +901,7 @@
 .sq-choice-btn.sq-choice-btn--arabic .sq-choice-letter,
 .sq-choice-btn[dir="rtl"] .sq-choice-letter {
   font-family: 'Amiri', 'Scheherazade New', 'Traditional Arabic', serif !important;
-  font-size: 1.35rem !important;
+  font-size: calc(1.35rem * var(--sq-font-scale, 1)) !important;
   font-weight: 700 !important;
   width: 36px;
   height: 36px;
@@ -841,7 +912,7 @@
 
 .sq-choice-btn.sq-choice-btn--arabic .sq-choice-text,
 .sq-choice-btn[dir="rtl"] .sq-choice-text {
-  font-size: 1.45rem !important;
+  font-size: calc(1.45rem * var(--sq-font-scale, 1)) !important;
   line-height: 2.2 !important;
   font-weight: 500;
   display: block;
@@ -869,7 +940,7 @@
   padding: 14px;
   color: var(--color-text-primary);
   font-family: inherit;
-  font-size: 0.9375rem;
+  font-size: calc(0.9375rem * var(--sq-font-scale, 1));
   outline: none;
   resize: vertical;
   transition: all var(--transition-fast);

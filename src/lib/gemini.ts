@@ -2334,7 +2334,8 @@ export function buildGeminiMultimodalParts(
   markSchemeBase64?: string,
   insertBase64?: string,
   pageImages?: GeminiPageImage[],
-  msPageImages?: GeminiPageImage[]
+  msPageImages?: GeminiPageImage[],
+  qpPlainText?: string
 ): any[] {
   const parts: any[] = [{ text: promptText }];
 
@@ -2355,6 +2356,10 @@ export function buildGeminiMultimodalParts(
         }
       );
     }
+  } else if (qpPlainText && qpPlainText.trim().length > 0) {
+    parts.push({
+      text: `\n=== DOCUMENT 1: QUESTION PAPER (EXACT VERBATIM UTF-8 TEXT — Copy every Arabic letter, space, and harakah character-for-character from this text. NEVER add, remove, or shift any harakah/diacritic.) ===\n${qpPlainText}`,
+    });
   } else {
     parts.push(
       {
@@ -2428,7 +2433,8 @@ async function callGeminiModel(
   promptText: string = getStemExtractionPrompt(true),
   targetApiKey?: string,
   pageImages?: GeminiPageImage[],
-  msPageImages?: GeminiPageImage[]
+  msPageImages?: GeminiPageImage[],
+  qpPlainText?: string
 ): Promise<Response> {
   const keyPool = getGeminiApiKeys();
   const primaryKey = targetApiKey || keyPool[0] || getApiKeyForChunk(0);
@@ -2447,7 +2453,8 @@ async function callGeminiModel(
       markSchemeBase64,
       insertBase64,
       pageImages,
-      msPageImages
+      msPageImages,
+      qpPlainText
     );
 
     const controller = new AbortController();
@@ -2618,6 +2625,8 @@ export interface ExtractionOptions {
   pageImages?: GeminiPageImage[];
   /** High-resolution lossless page images for an Arabic-containing mark scheme. */
   msPageImages?: GeminiPageImage[];
+  /** Exact verbatim UTF-8 text extracted from clean (uncorrupted) Arabic PDFs to prevent visual OCR harakat shifts. */
+  qpPlainText?: string;
 }
 
 /**
@@ -2700,7 +2709,8 @@ export async function extractQuestionsFromPdf(
         promptText,
         activeKey,
         options.pageImages,
-        options.msPageImages
+        options.msPageImages,
+        options.qpPlainText
       );
 
       if (!response.ok) {

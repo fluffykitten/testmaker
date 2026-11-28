@@ -179,6 +179,9 @@ import {
 } from '../assets/logoConstants';
 import './StudentQuizRunner.css';
 
+const EXAM_FONT_SCALE_STEPS = [0.9, 1, 1.15, 1.3, 1.5] as const;
+const EXAM_FONT_SCALE_STORAGE_KEY = 'icm_exam_font_scale';
+
 interface StudentQuizRunnerProps {
   testIdOrCode?: string;
   initialQuestions?: Question[];
@@ -581,6 +584,46 @@ export function StudentQuizRunner({
   const [showMobileNav, setShowMobileNav] = useState<boolean>(false);
   const [timeWarning, setTimeWarning] = useState<string | null>(null);
   const [isStemScrolledPast, setIsStemScrolledPast] = useState<boolean>(false);
+  const [examFontScale, setExamFontScale] = useState<number>(() => {
+    try {
+      const stored = window.localStorage.getItem(EXAM_FONT_SCALE_STORAGE_KEY);
+      const parsed = stored ? Number(stored) : NaN;
+      if ((EXAM_FONT_SCALE_STEPS as readonly number[]).includes(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Ignore storage access failures in restricted environments
+    }
+    return 1;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(EXAM_FONT_SCALE_STORAGE_KEY, String(examFontScale));
+    } catch {
+      // Ignore storage access failures in restricted environments
+    }
+  }, [examFontScale]);
+
+  const decreaseExamFontScale = useCallback(() => {
+    setExamFontScale((prev) => {
+      const idx = (EXAM_FONT_SCALE_STEPS as readonly number[]).indexOf(prev);
+      if (idx === -1) return 1;
+      return EXAM_FONT_SCALE_STEPS[Math.max(0, idx - 1)];
+    });
+  }, []);
+
+  const increaseExamFontScale = useCallback(() => {
+    setExamFontScale((prev) => {
+      const idx = (EXAM_FONT_SCALE_STEPS as readonly number[]).indexOf(prev);
+      if (idx === -1) return 1;
+      return EXAM_FONT_SCALE_STEPS[Math.min(EXAM_FONT_SCALE_STEPS.length - 1, idx + 1)];
+    });
+  }, []);
+
+  const resetExamFontScale = useCallback(() => {
+    setExamFontScale(1);
+  }, []);
 
   // Grading, Verification & AI Evaluation State
   const [isGrading, setIsGrading] = useState<boolean>(false);
@@ -7410,6 +7453,40 @@ export function StudentQuizRunner({
         </div>
 
         <div className="sq-header-actions">
+          {/* Exam Text Size Controls */}
+          <div className="sq-font-scale-group" role="group" aria-label="Text size">
+            <button
+              type="button"
+              className="sq-font-scale-btn"
+              onClick={decreaseExamFontScale}
+              disabled={examFontScale <= EXAM_FONT_SCALE_STEPS[0]}
+              title="Decrease text size"
+              aria-label="Decrease text size"
+            >
+              A-
+            </button>
+            <button
+              type="button"
+              className="sq-font-scale-btn sq-font-scale-reset"
+              onClick={resetExamFontScale}
+              disabled={examFontScale === 1}
+              title="Reset text size to 100%"
+              aria-label={`Current text size ${Math.round(examFontScale * 100)} percent, click to reset`}
+            >
+              {Math.round(examFontScale * 100)}%
+            </button>
+            <button
+              type="button"
+              className="sq-font-scale-btn"
+              onClick={increaseExamFontScale}
+              disabled={examFontScale >= EXAM_FONT_SCALE_STEPS[EXAM_FONT_SCALE_STEPS.length - 1]}
+              title="Increase text size"
+              aria-label="Increase text size"
+            >
+              A+
+            </button>
+          </div>
+
           {/* Violations Badge */}
           {securityEnabled && (strikeCount > 0 || violations.length > 0) && (
             <div className="sq-violation-badge" title="Security alerts recorded">
@@ -7614,7 +7691,10 @@ export function StudentQuizRunner({
       )}
 
       {/* Main Runner Body */}
-      <main className={`sq-runner-body ${isReadingSplitActive ? 'sq-runner-body--reading-split' : ''}`}>
+      <main
+        className={`sq-runner-body ${isReadingSplitActive ? 'sq-runner-body--reading-split' : ''}`}
+        style={{ '--sq-font-scale': examFontScale } as React.CSSProperties}
+      >
         {/* Left / Center: Question View */}
         <section className="sq-question-panel">
           <div className="sq-question-card animate-scale-up" ref={questionCardRef} key={currentIndex}>

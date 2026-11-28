@@ -23,6 +23,7 @@ import {
   splitSaveMyExamsPdfBySections,
   readPdfPageTexts,
   detectArabicPagesInPdf,
+  detectCorruptedArabicPagesInPdf,
   renderPdfPagesToImages,
   uint8ArrayToBase64,
   type SaveMyExamsMeta,
@@ -65,6 +66,10 @@ import {
 } from './readingPassageUtils';
 import { addTagsToQuestions } from '../services/questionTagService';
 import { uploadPastPaperPdf, uploadInsertBookletPdf } from '../services/storageService';
+import {
+  importStructuredDocumentDeterministically,
+  isStructuredDocFile,
+} from './deterministicDocImporter';
 
 export { stitchPassagesToQuestions } from './passageExtractor';
 
@@ -214,7 +219,7 @@ export async function saveExtractedQuestions(
 
   // 2b. Upload source Question Paper PDF to R2 / Supabase Storage for persistent citations
   let sourcePdfUrl: string | null = null;
-  if (_qpFile) {
+  if (_qpFile && !isStructuredDocFile(_qpFile)) {
     onProgress?.('Uploading source Question Paper PDF for citations…');
     try {
       sourcePdfUrl = await uploadPastPaperPdf(_qpFile, {
@@ -1022,6 +1027,30 @@ export async function runExtractionPipeline(
   msBase64?: string;
 }> {
   try {
+    if (isStructuredDocFile(file)) {
+      onStateChange({
+        stage: 'extracting',
+        message: 'Importing structured HTML / DOCX verbatim (zero AI re-typing)…',
+        progress: 45,
+        result: null,
+        error: null,
+      });
+      const result = await importStructuredDocumentDeterministically(file);
+      onStateChange({
+        stage: 'reviewing',
+        message: `Imported ${result.questions.length} question(s) verbatim. Review and confirm.`,
+        progress: 90,
+        result,
+        error: null,
+      });
+      return {
+        result,
+        diagramData: new Map(),
+        previewUrls: new Map(),
+        hasMarkScheme: false,
+      };
+    }
+
     // Stage 1: Parallel / Multi-Chunk AI Extraction
     onStateChange({
       stage: 'extracting',
@@ -1084,20 +1113,23 @@ export async function runExtractionPipeline(
       }
     }
 
-    // Scan Question Paper (and compact Mark Scheme) for Arabic script so affected chunks bypass
-    // corrupted PDF ToUnicode text streams via lossless 2.8x PNG page images.
-    const arabicPages = await detectArabicPagesInPdf(bytesToChunk);
+    // Scan Question Paper (and compact Mark Scheme) for Arabic script and CMap corruption so
+    // only corrupted PDF ToUnicode text streams bypass into 2.8x PNG images, while clean UTF-8
+    // Arabic PDFs keep their exact native Unicode characters and harakat.
+    const qpPageTexts = await readPdfPageTexts(bytesToChunk);
+    const arabicPages = await detectArabicPagesInPdf(bytesToChunk, qpPageTexts);
+    const corruptedArabicPages = await detectCorruptedArabicPagesInPdf(bytesToChunk, qpPageTexts);
     const msPageTexts = msBytesForVisualScan
       ? await readPdfPageTexts(msBytesForVisualScan)
       : [];
-    const msArabicPages = msBytesForVisualScan
-      ? await detectArabicPagesInPdf(msBytesForVisualScan, msPageTexts)
+    const msCorruptedArabicPages = msBytesForVisualScan
+      ? await detectCorruptedArabicPagesInPdf(msBytesForVisualScan, msPageTexts)
       : new Set<number>();
     const officialMcqKey = msPageTexts.length > 0 ? parseOfficialMcqAnswerKey(msPageTexts) : new Map<string, string>();
-    const msMaxArabicPage = msArabicPages.size > 0 ? Math.max(...Array.from(msArabicPages)) : 0;
+    const msMaxCorruptedArabicPage = msCorruptedArabicPages.size > 0 ? Math.max(...Array.from(msCorruptedArabicPages)) : 0;
     const msPageImages =
-      msBytesForVisualScan && msMaxArabicPage > 0 && msMaxArabicPage <= 8
-        ? await renderPdfPagesToImages(msBytesForVisualScan, 1, msMaxArabicPage)
+      msBytesForVisualScan && msMaxCorruptedArabicPage > 0 && msMaxCorruptedArabicPage <= 8
+        ? await renderPdfPagesToImages(msBytesForVisualScan, 1, msMaxCorruptedArabicPage)
         : undefined;
 
     const isSaveMyExams =
@@ -1183,6 +1215,15 @@ export async function runExtractionPipeline(
       });
     }
 
+    const buildCleanArabicChunkText = (startPage: number, endPage: number): string | undefined => {
+      const slice = qpPageTexts.slice(Math.max(0, startPage - 1), endPage);
+      const joined = slice
+        .map((txt, i) => `--- Question Paper Page ${i + 1} (1-indexed within this chunk) ---\n${(txt || '').trim()}`)
+        .join('\n\n')
+        .trim();
+      return joined.length >= 40 ? joined : undefined;
+    };
+
     if (chunks.length > 1) {
       const apiKeys = getGeminiApiKeys();
       const isMultiKey = apiKeys.length >= 2;
@@ -1203,13 +1244,17 @@ export async function runExtractionPipeline(
           const keyLabel = isMultiKey ? `Key ${(idx % apiKeys.length) + 1}` : `Part ${idx + 1}/${chunks.length}`;
           const sectionLabel = chunk.targetSection ? `[${chunk.targetSection} Questions • Pages ${chunk.startPage}–${chunk.endPage}]` : `[Pages ${chunk.startPage}–${chunk.endPage}]`;
 
-          const chunkHasArabic =
-            detectedSubject?.syllabusCode === 'PAI' ||
-            detectedSubject?.syllabusCode === 'BAR' ||
-            detectedSubject?.syllabusCode === 'ARA' ||
+          const chunkNeedsVisualArabic = Array.from(corruptedArabicPages).some(
+            (p) => p >= chunk.startPage && p <= chunk.endPage
+          );
+          const chunkPageImages = chunkNeedsVisualArabic
+            ? await renderPdfPagesToImages(bytesToChunk, chunk.startPage, chunk.endPage, 2.8, corruptedArabicPages)
+            : undefined;
+          const chunkHasCleanArabic =
+            !chunkNeedsVisualArabic &&
             Array.from(arabicPages).some((p) => p >= chunk.startPage && p <= chunk.endPage);
-          const chunkPageImages = chunkHasArabic
-            ? await renderPdfPagesToImages(bytesToChunk, chunk.startPage, chunk.endPage, 2.8, arabicPages)
+          const chunkPlainText = chunkHasCleanArabic
+            ? buildCleanArabicChunkText(chunk.startPage, chunk.endPage)
             : undefined;
 
           return extractQuestionsFromPdf(
@@ -1240,6 +1285,7 @@ export async function runExtractionPipeline(
               subjectProfile: detectedSubject ?? undefined,
               pageImages: chunkPageImages && chunkPageImages.length > 0 ? chunkPageImages : undefined,
               msPageImages: msPageImages && msPageImages.length > 0 ? msPageImages : undefined,
+              qpPlainText: chunkPlainText,
             }
           );
         })
@@ -1336,13 +1382,13 @@ export async function runExtractionPipeline(
       };
     } else {
       // Single chunk for short documents
-      const singleChunkHasArabic =
-        detectedSubject?.syllabusCode === 'PAI' ||
-        detectedSubject?.syllabusCode === 'BAR' ||
-        detectedSubject?.syllabusCode === 'ARA' ||
-        arabicPages.size > 0;
-      const singlePageImages = singleChunkHasArabic
-        ? await renderPdfPagesToImages(bytesToChunk, chunks[0].startPage, chunks[0].endPage, 2.8, arabicPages)
+      const singleChunkNeedsVisualArabic = corruptedArabicPages.size > 0;
+      const singlePageImages = singleChunkNeedsVisualArabic
+        ? await renderPdfPagesToImages(bytesToChunk, chunks[0].startPage, chunks[0].endPage, 2.8, corruptedArabicPages)
+        : undefined;
+      const singleHasCleanArabic = !singleChunkNeedsVisualArabic && arabicPages.size > 0;
+      const singlePlainText = singleHasCleanArabic
+        ? buildCleanArabicChunkText(chunks[0].startPage, chunks[0].endPage)
         : undefined;
 
       result = await extractQuestionsFromPdf(
@@ -1372,6 +1418,7 @@ export async function runExtractionPipeline(
           subjectProfile: detectedSubject ?? undefined,
           pageImages: singlePageImages && singlePageImages.length > 0 ? singlePageImages : undefined,
           msPageImages: msPageImages && msPageImages.length > 0 ? msPageImages : undefined,
+          qpPlainText: singlePlainText,
         }
       );
       let verifiedPassages = result.passages || [];

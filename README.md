@@ -1,9 +1,9 @@
 # ICM Exam Platform
 
-**Version `2.7.9`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
+**Version `2.7.10`** · Cambridge International Assessment Authoring, Proctoring & Diagnostic Suite  
 Built for **Insan Cendekia Madani (ICM)** · Compatible with Web, Android, and iOS via Capacitor
 
-[![Version](https://img.shields.io/badge/version-2.7.9-0f4c81.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.7.10-0f4c81.svg)](#changelog)
 [![React](https://img.shields.io/badge/React-19-149eca.svg)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6.svg)](https://www.typescriptlang.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e.svg)](https://supabase.com/)
@@ -170,6 +170,17 @@ Run the SQL files inside `supabase/migrations/` **in numerical order (`001` thro
 ---
 
 ## Changelog
+
+### [v.2.7.10] — Exam Mode Text Size Control, Deterministic `.html`/`.docx` Importer & Arabic Extraction Hardening
+- **In-Exam Font Size Control (`A-` / `100%` / `A+`):**
+  - Added a student-facing text-scaling control (`90%`–`150%`, persisted in `localStorage`) in [`StudentQuizRunner.tsx`](src/pages/StudentQuizRunner.tsx) and [`StudentQuizRunner.css`](src/pages/StudentQuizRunner.css) using `--sq-font-scale` so stems, passages, MCQ options, sub-questions, textareas, and Arabic harakat scale cleanly without distorting pointer coordinates.
+- **Deterministic `.html` & `.docx` Exam Importer:**
+  - Created [`deterministicDocImporter.ts`](src/lib/deterministicDocImporter.ts) to parse structured `.html` and `.docx` exam papers verbatim without AI hallucination, preserving exact Arabic harakat, spaces, and shared reading passages.
+  - Enabled `PDF / DOCX / HTML` upload on the Question Paper slot in [`PdfUpload.tsx`](src/components/PdfUpload.tsx) and wired deterministic short-circuiting in [`pdfProcessor.ts`](src/lib/pdfProcessor.ts).
+- **Arabic Extraction Guardrails, Fidelity Auditor & Rendering Polish:**
+  - Added strict `NO AUTO-TASHKIL` rules, `auditArabicQuestionFidelity`, and `hasCorruptedArabicTextLayer` in [`arabicTextUtils.ts`](src/lib/arabicTextUtils.ts), plus `⚠️ Arabic Check` badges and a side-by-side `👁️ Compare PDF (p.N)` modal in [`ExtractionReview.tsx`](src/components/ExtractionReview.tsx).
+  - Added CMap corruption detection (`detectCorruptedArabicPagesInPdf`) in [`pdfChunker.ts`](src/lib/pdfChunker.ts) and UTF-8 `qpPlainText` routing in [`gemini.ts`](src/lib/gemini.ts) / [`pdfProcessor.ts`](src/lib/pdfProcessor.ts).
+  - Loaded Google Font `Noto Naskh Arabic` in [`index.html`](index.html) and prioritized it in [`ExamMathText.css`](src/components/ExamMathText.css) for crisp Arabic diacritic rendering.
 
 ### [v.2.7.9] — Candidate Card / Desk Card Modes & 13 × 9.5 cm Side-by-Side Foldable Print Layout
 - **Separate Candidate Card (With PIN) vs. Desk Card (No PIN) Modes:**
